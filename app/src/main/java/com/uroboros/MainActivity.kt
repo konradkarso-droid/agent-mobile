@@ -43,7 +43,7 @@ class MainActivity : AppCompatActivity() {
                     "Пока пусто. Всего записей в базе: $total"
                 } else {
                     val lines = results.joinToString("\n\n") { sticker ->
-                        "• ${sticker.content}\n  (обращений: ${sticker.accessCount})"
+                        "• ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
                     }
                     "Всего записей в базе: $total\n\n$lines"
                 }
