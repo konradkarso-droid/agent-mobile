@@ -37,12 +37,13 @@ class HourglassMemory(private val dao: StickerDao) {
         val now = System.currentTimeMillis()
         result.forEach {
             val timeSinceLastAccess = now - it.lastAccessedAt
+            val isFirstAccess = it.accessCount == 0
             it.accessCount += 1
 
             val currentLayer = Layer.valueOf(it.layer)
             val debounce = Prism.warmDebounce(currentLayer)
 
-            if (timeSinceLastAccess >= debounce) {
+            if (isFirstAccess || timeSinceLastAccess >= debounce) {
                 val warmer = Prism.warmerLayer(currentLayer)
                 if (warmer != currentLayer) {
                     it.layer = warmer.name
