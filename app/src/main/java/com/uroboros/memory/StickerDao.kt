@@ -7,7 +7,6 @@ import androidx.room.Update
 
 @Dao
 interface StickerDao {
-
     @Insert
     suspend fun insert(sticker: Sticker): Long
 
@@ -19,6 +18,9 @@ interface StickerDao {
 
     @Query("SELECT * FROM stickers WHERE content LIKE '%' || :query || '%' ORDER BY createdAt DESC LIMIT :limit")
     suspend fun search(query: String, limit: Int): List<Sticker>
+
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC")
+    suspend fun getAll(): List<Sticker>
 
     @Update
     suspend fun update(sticker: Sticker)
