@@ -36,16 +36,21 @@ class HourglassMemory(private val dao: StickerDao) {
 
         val now = System.currentTimeMillis()
         result.forEach {
-            it.lastAccessedAt = now
+            val timeSinceLastAccess = now - it.lastAccessedAt
             it.accessCount += 1
 
             val currentLayer = Layer.valueOf(it.layer)
-            val warmer = Prism.warmerLayer(currentLayer)
-            if (warmer != currentLayer) {
-                it.layer = warmer.name
-                it.expiryTime = Prism.newInterval(warmer)?.let { interval -> now + interval }
+            val debounce = Prism.warmDebounce(currentLayer)
+
+            if (timeSinceLastAccess >= debounce) {
+                val warmer = Prism.warmerLayer(currentLayer)
+                if (warmer != currentLayer) {
+                    it.layer = warmer.name
+                    it.expiryTime = Prism.newInterval(warmer)?.let { interval -> now + interval }
+                }
             }
 
+            it.lastAccessedAt = now
             dao.update(it)
         }
         return result
