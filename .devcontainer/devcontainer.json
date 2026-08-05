@@ -1,0 +1,5 @@
+{
+  "name": "Uroboros Mobile (Android)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+  "postCreateCommand": "bash .devcontainer/setup-android-sdk.sh"
+}
