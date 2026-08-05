@@ -7,12 +7,18 @@ class HourglassMemory(private val dao: StickerDao) {
         val spectrum = Prism.split(all)
         val layerPicks = Prism.filter(spectrum, query.orEmpty())
 
-        val combined = if (!query.isNullOrBlank()) {
-            val textMatches = dao.search(query, limit)
-            (layerPicks + textMatches).distinctBy { it.id }
-        } else {
-            layerPicks
+        if (query.isNullOrBlank()) {
+            // Пустой запрос — просто "посмотреть, что в памяти",
+            // не считается обращением к конкретным стикерам
+            return layerPicks
+                .sortedByDescending { it.createdAt }
+                .take(limit)
         }
+
+        // Целенаправленный поиск — реальный сигнал интереса,
+        // вот тут обращение действительно засчитывается
+        val textMatches = dao.search(query, limit)
+        val combined = (layerPicks + textMatches).distinctBy { it.id }
 
         val result = combined
             .sortedByDescending { it.createdAt }
