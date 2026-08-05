@@ -1,0 +1,9 @@
+R_DEF: Internal format may change without notice
+local
+id buttonSave
+id buttonShow
+id editTextInput
+id textResults
+layout activity_main
+string app_name
+style Theme.UroborosMobile

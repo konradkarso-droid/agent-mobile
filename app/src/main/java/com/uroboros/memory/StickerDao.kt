@@ -14,4 +14,15 @@ interface StickerDao {
     @Query("SELECT * FROM stickers WHERE id = :id")
     suspend fun getById(id: Long): Sticker?
 
-    @Query("SELECT *
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun getRecent(limit: Int): List<Sticker>
+
+    @Query("SELECT * FROM stickers WHERE content LIKE '%' || :query || '%' ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun search(query: String, limit: Int): List<Sticker>
+
+    @Update
+    suspend fun update(sticker: Sticker)
+
+    @Query("SELECT COUNT(*) FROM stickers")
+    suspend fun count(): Int
+}

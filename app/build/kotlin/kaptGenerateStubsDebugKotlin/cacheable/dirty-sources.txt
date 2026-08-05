@@ -1,0 +1,5 @@
+/workspaces/agent-mobile/app/src/main/java/com/uroboros/memory/Sticker.kt
+/workspaces/agent-mobile/app/src/main/java/com/uroboros/memory/TrustedMediator.kt
+/workspaces/agent-mobile/app/src/main/java/com/uroboros/MainActivity.kt
+/workspaces/agent-mobile/app/src/main/java/com/uroboros/memory/StickerDao.kt
+/workspaces/agent-mobile/app/src/main/java/com/uroboros/memory/MemoryDatabase.kt
