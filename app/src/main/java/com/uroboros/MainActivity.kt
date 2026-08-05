@@ -34,18 +34,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.buttonShow.setOnClickListener {
+            binding.buttonShow.isEnabled = false
             lifecycleScope.launch {
-                val query = binding.editTextInput.text.toString().ifBlank { null }
-                val results = mediator.getContext(query = query, limit = 20)
-                val total = mediator.totalStickers()
+                try {
+                    val query = binding.editTextInput.text.toString().ifBlank { null }
+                    val results = mediator.getContext(query = query, limit = 20)
+                    val total = mediator.totalStickers()
 
-                binding.textResults.text = if (results.isEmpty()) {
-                    "Пока пусто. Всего записей в базе: $total"
-                } else {
-                    val lines = results.joinToString("\n\n") { sticker ->
-                        "• ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
+                    binding.textResults.text = if (results.isEmpty()) {
+                        "Пока пусто. Всего записей в базе: $total"
+                    } else {
+                        val lines = results.joinToString("\n\n") { sticker ->
+                            "• ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
+                        }
+                        "Всего записей в базе: $total\n\n$lines"
                     }
-                    "Всего записей в базе: $total\n\n$lines"
+                } finally {
+                    binding.buttonShow.isEnabled = true
                 }
             }
         }
