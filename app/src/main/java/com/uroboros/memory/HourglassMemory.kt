@@ -19,16 +19,14 @@ class HourglassMemory(private val dao: StickerDao) {
     suspend fun getContext(query: String?, limit: Int): List<Sticker> {
         migrateExpired()
 
-        val all = dao.getAll()
-        val spectrum = Prism.split(all)
-        val layerPicks = Prism.filter(spectrum, query.orEmpty())
-
         if (query.isNullOrBlank()) {
-            return layerPicks
-                .sortedByDescending { it.createdAt }
-                .take(limit)
+            val all = dao.getAll()
+            return all.sortedByDescending { it.createdAt }.take(limit)
         }
 
+        val all = dao.getAll()
+        val spectrum = Prism.split(all)
+        val layerPicks = Prism.filter(spectrum, query)
         val textMatches = dao.search(query, limit)
         val combined = (layerPicks + textMatches).distinctBy { it.id }
 
@@ -41,8 +39,6 @@ class HourglassMemory(private val dao: StickerDao) {
             it.lastAccessedAt = now
             it.accessCount += 1
 
-            // Двустороннее движение: реальное обращение — сигнал важности,
-            // поднимаем на слой теплее (RED — предел, дальше некуда)
             val currentLayer = Layer.valueOf(it.layer)
             val warmer = Prism.warmerLayer(currentLayer)
             if (warmer != currentLayer) {
