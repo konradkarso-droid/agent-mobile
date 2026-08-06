@@ -1,6 +1,10 @@
 package com.uroboros.memory
 
+import android.util.Log
+
 class HourglassMemory(private val dao: StickerDao) {
+
+    private val HOT_LAYERS = listOf(Layer.RED.name, Layer.ORANGE.name, Layer.YELLOW.name, Layer.GREEN.name)
 
     suspend fun migrateExpired() {
         val now = System.currentTimeMillis()
@@ -65,6 +69,17 @@ class HourglassMemory(private val dao: StickerDao) {
         val (layer, interval) = Prism.classify(sticker)
         sticker.layer = layer.name
         sticker.expiryTime = interval?.let { System.currentTimeMillis() + it }
-        return dao.insert(sticker)
+        val newId = dao.insert(sticker)
+
+        // --- RiskTrigger: log-only stage, does not block or alter saving ---
+        val hotPool = dao.getByTagInLayers(sticker.tag, HOT_LAYERS).filter { it.id != newId }
+        val saved = sticker.copy(id = newId)
+        val decision = RiskTrigger.evaluate(saved, hotPool)
+        Log.d(
+            "RiskTrigger",
+            "sticker id=$newId tag=${sticker.tag} shouldReview=${decision.shouldReview} reasons=${decision.reasons}"
+        )
+
+        return newId
     }
 }
