@@ -6,8 +6,13 @@ import org.junit.Test
 
 class RiskTriggerTest {
 
-    private fun sticker(content: String, importance: Importance = Importance.MEDIUM, tag: String = "test"): Sticker =
-        Sticker(content = content, tag = tag, importance = importance.name)
+    private fun sticker(
+        content: String,
+        importance: Importance = Importance.MEDIUM,
+        tag: String = "test",
+        id: Long = 0
+    ): Sticker =
+        Sticker(id = id, content = content, tag = tag, importance = importance.name)
 
     @Test
     fun `plain low-signal sticker does not trigger review`() {
@@ -35,7 +40,7 @@ class RiskTriggerTest {
 
     @Test
     fun `negation mismatch on similar content triggers contradiction`() {
-        val existing = sticker("я живу в Москве постоянно", tag = "личное")
+        val existing = sticker("я живу в Москве постоянно", tag = "личное", id = 1)
         val candidate = sticker("я не живу в Москве постоянно", tag = "личное")
         val decision = RiskTrigger.evaluate(candidate, listOf(existing))
         assertTrue(decision.shouldReview)
@@ -44,7 +49,7 @@ class RiskTriggerTest {
 
     @Test
     fun `number mismatch on similar content triggers contradiction`() {
-        val existing = sticker("встреча назначена на 15 число", tag = "план")
+        val existing = sticker("встреча назначена на 15 число", tag = "план", id = 2)
         val candidate = sticker("встреча назначена на 20 число", tag = "план")
         val decision = RiskTrigger.evaluate(candidate, listOf(existing))
         assertTrue(decision.shouldReview)
@@ -53,7 +58,7 @@ class RiskTriggerTest {
 
     @Test
     fun `unrelated existing sticker does not trigger contradiction`() {
-        val existing = sticker("рецепт борща на ужин", tag = "еда")
+        val existing = sticker("рецепт борща на ужин", tag = "еда", id = 3)
         val candidate = sticker("завтра дедлайн по проекту", tag = "работа")
         val decision = RiskTrigger.evaluate(candidate, listOf(existing))
         assertFalse(decision.shouldReview)
