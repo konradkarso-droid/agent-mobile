@@ -16,12 +16,16 @@ class HourglassMemory(private val dao: StickerDao) {
         }
     }
 
+    private fun rankOrder(): Comparator<Sticker> =
+        compareByDescending<Sticker> { Importance.valueOf(it.importance).ordinal }
+            .thenByDescending { it.createdAt }
+
     suspend fun getContext(query: String?, limit: Int): List<Sticker> {
         migrateExpired()
 
         if (query.isNullOrBlank()) {
             val all = dao.getAll()
-            return all.sortedByDescending { it.createdAt }.take(limit)
+            return all.sortedWith(rankOrder()).take(limit)
         }
 
         val all = dao.getAll()
@@ -31,7 +35,7 @@ class HourglassMemory(private val dao: StickerDao) {
         val combined = (layerPicks + textMatches).distinctBy { it.id }
 
         val result = combined
-            .sortedByDescending { it.createdAt }
+            .sortedWith(rankOrder())
             .take(limit)
 
         val now = System.currentTimeMillis()
