@@ -22,6 +22,9 @@ interface StickerDao {
     @Query("SELECT * FROM stickers ORDER BY createdAt DESC")
     suspend fun getAll(): List<Sticker>
 
+    @Query("SELECT * FROM stickers WHERE tag = :tag AND layer IN (:layers)")
+    suspend fun getByTagInLayers(tag: String, layers: List<String>): List<Sticker>
+
     @Update
     suspend fun update(sticker: Sticker)
 
