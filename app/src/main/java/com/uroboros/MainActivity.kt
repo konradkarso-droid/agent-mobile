@@ -1,5 +1,4 @@
 package com.uroboros
-
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -7,19 +6,14 @@ import androidx.lifecycle.lifecycleScope
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.memory.TrustedMediator
 import kotlinx.coroutines.launch
-
 class MainActivity : AppCompatActivity() {
-
     private lateinit var binding: ActivityMainBinding
     private lateinit var mediator: TrustedMediator
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
         mediator = TrustedMediator(applicationContext)
-
         binding.buttonSave.setOnClickListener {
             val text = binding.editTextInput.text.toString()
             if (text.isBlank()) {
@@ -32,7 +26,6 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "Сохранено", Toast.LENGTH_SHORT).show()
             }
         }
-
         binding.buttonShow.setOnClickListener {
             binding.buttonShow.isEnabled = false
             lifecycleScope.launch {
@@ -40,7 +33,6 @@ class MainActivity : AppCompatActivity() {
                     val query = binding.editTextInput.text.toString().ifBlank { null }
                     val results = mediator.getContext(query = query, limit = 20)
                     val total = mediator.totalStickers()
-
                     binding.textResults.text = if (results.isEmpty()) {
                         "Пока пусто. Всего записей в базе: $total"
                     } else {
@@ -53,6 +45,22 @@ class MainActivity : AppCompatActivity() {
                     binding.buttonShow.isEnabled = true
                 }
             }
+        }
+        binding.buttonShow.setOnLongClickListener {
+            lifecycleScope.launch {
+                val pending = mediator.getPendingReview()
+                if (pending.isEmpty()) {
+                    Toast.makeText(this@MainActivity, "Замороженных записей нет", Toast.LENGTH_SHORT).show()
+                } else {
+                    val preview = pending.joinToString("\n\n") { sticker ->
+                        "• ${sticker.content}\n  [${sticker.layer}]"
+                    }
+                    binding.textResults.text = "Разблокировано ${pending.size} записей:\n\n$preview"
+                    mediator.clearAllPendingReview()
+                    Toast.makeText(this@MainActivity, "Снят флаг у ${pending.size} записей", Toast.LENGTH_SHORT).show()
+                }
+            }
+            true
         }
     }
 }
