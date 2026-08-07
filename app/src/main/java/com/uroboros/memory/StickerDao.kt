@@ -25,6 +25,12 @@ interface StickerDao {
     @Query("SELECT * FROM stickers WHERE tag = :tag AND layer IN (:layers)")
     suspend fun getByTagInLayers(tag: String, layers: List<String>): List<Sticker>
 
+    @Query("SELECT * FROM stickers WHERE reviewPending = 1 ORDER BY createdAt DESC")
+    suspend fun getPendingReview(): List<Sticker>
+
+    @Query("UPDATE stickers SET reviewPending = 0 WHERE id = :id")
+    suspend fun clearReviewPending(id: Long)
+
     @Update
     suspend fun update(sticker: Sticker)
 
