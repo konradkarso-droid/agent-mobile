@@ -28,14 +28,14 @@ class HourglassMemory(private val dao: StickerDao) {
         migrateExpired()
 
         if (query.isNullOrBlank()) {
-            val all = dao.getAll()
+            val all = dao.getAll().filterNot { it.reviewPending }
             return all.sortedWith(rankOrder()).take(limit)
         }
 
-        val all = dao.getAll()
+        val all = dao.getAll().filterNot { it.reviewPending }
         val spectrum = Prism.split(all)
         val layerPicks = Prism.filter(spectrum, query)
-        val textMatches = dao.search(query, limit)
+        val textMatches = dao.search(query, limit).filterNot { it.reviewPending }
         val combined = (layerPicks + textMatches).distinctBy { it.id }
 
         val result = combined
@@ -71,14 +71,23 @@ class HourglassMemory(private val dao: StickerDao) {
         sticker.expiryTime = interval?.let { System.currentTimeMillis() + it }
         val newId = dao.insert(sticker)
 
-        // --- RiskTrigger: log-only stage, does not block or alter saving ---
-        val hotPool = dao.getByTagInLayers(sticker.tag, HOT_LAYERS).filter { it.id != newId }
-        val saved = sticker.copy(id = newId)
-        val decision = RiskTrigger.evaluate(saved, hotPool)
-        Log.d(
-            "RiskTrigger",
-            "sticker id=$newId tag=${sticker.tag} shouldReview=${decision.shouldReview} reasons=${decision.reasons}"
-        )
+        // --- RiskTrigger: now a real hard checkpoint (sets reviewPending), guarded so a
+        // RiskTrigger failure degrades gracefully instead of cascading into saveEvent ---
+        try {
+            val hotPool = dao.getByTagInLayers(sticker.tag, HOT_LAYERS).filter { it.id != newId }
+            val saved = sticker.copy(id = newId)
+            val decision = RiskTrigger.evaluate(saved, hotPool)
+            Log.d(
+                "RiskTrigger",
+                "sticker id=$newId tag=${sticker.tag} shouldReview=${decision.shouldReview} reasons=${decision.reasons}"
+            )
+            if (decision.shouldReview) {
+                saved.reviewPending = true
+                dao.update(saved)
+            }
+        } catch (e: Exception) {
+            Log.e("RiskTrigger", "evaluation failed for sticker id=$newId, save not blocked", e)
+        }
 
         return newId
     }
