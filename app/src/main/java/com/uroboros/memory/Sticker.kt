@@ -17,5 +17,6 @@ data class Sticker(
     val tag: String = "general",
     var layer: String = Layer.GREEN.name,
     var expiryTime: Long? = null,
-    var importance: String = Importance.MEDIUM.name
+    var importance: String = Importance.MEDIUM.name,
+    var reviewPending: Boolean = false
 )
