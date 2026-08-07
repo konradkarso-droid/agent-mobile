@@ -31,6 +31,9 @@ interface StickerDao {
     @Query("UPDATE stickers SET reviewPending = 0 WHERE id = :id")
     suspend fun clearReviewPending(id: Long)
 
+    @Query("UPDATE stickers SET reviewPending = 0 WHERE reviewPending = 1")
+    suspend fun clearAllReviewPending(): Int
+
     @Update
     suspend fun update(sticker: Sticker)
 
