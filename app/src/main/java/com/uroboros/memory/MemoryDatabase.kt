@@ -5,9 +5,10 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [Sticker::class], version = 4, exportSchema = false)
+@Database(entities = [Sticker::class, ActionEvidence::class], version = 5, exportSchema = false)
 abstract class MemoryDatabase : RoomDatabase() {
     abstract fun stickerDao(): StickerDao
+    abstract fun actionEvidenceDao(): ActionEvidenceDao
     companion object {
         @Volatile
         private var INSTANCE: MemoryDatabase? = null
