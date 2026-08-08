@@ -11,6 +11,19 @@ object RiskTrigger {
         "не уверена", "может быть", "предположительно", "скорее всего"
     )
 
+    private val WORD_NUMBERS = mapOf(
+        "ноль" to "0", "один" to "1", "одна" to "1", "одно" to "1",
+        "два" to "2", "две" to "2", "три" to "3", "четыре" to "4",
+        "пять" to "5", "шесть" to "6", "семь" to "7", "восемь" to "8",
+        "девять" to "9", "десять" to "10", "одиннадцать" to "11",
+        "двенадцать" to "12", "тринадцать" to "13", "четырнадцать" to "14",
+        "пятнадцать" to "15", "шестнадцать" to "16", "семнадцать" to "17",
+        "восемнадцать" to "18", "девятнадцать" to "19", "двадцать" to "20",
+        "тридцать" to "30", "сорок" to "40", "пятьдесят" to "50",
+        "шестьдесят" to "60", "семьдесят" to "70", "восемьдесят" to "80",
+        "девяносто" to "90", "сто" to "100"
+    )
+
     private const val CONTRADICTION_JACCARD_THRESHOLD = 0.5
     private const val LONG_CONTENT_CHARS = 240
 
@@ -96,8 +109,15 @@ object RiskTrigger {
             .filter { it.isNotBlank() }
             .toSet()
 
-    private fun extractNumbers(text: String): Set<String> =
-        Regex("\\d+").findAll(text).map { it.value }.toSet()
+    private fun extractNumbers(text: String): Set<String> {
+        val digitNumbers = Regex("\\d+").findAll(text).map { it.value }.toSet()
+        val lowerText = text.lowercase()
+        val wordNumbers = WORD_NUMBERS.entries
+            .filter { (word, _) -> Regex("\\b${word}\\b").containsMatchIn(lowerText) }
+            .map { it.value }
+            .toSet()
+        return digitNumbers + wordNumbers
+    }
 
     private fun jaccard(a: Set<String>, b: Set<String>): Double {
         if (a.isEmpty() || b.isEmpty()) return 0.0
