@@ -24,6 +24,18 @@ object RiskTrigger {
         "девяносто" to "90", "сто" to "100"
     )
 
+    // Ordered longest-first so the longest matching suffix is stripped.
+    // Deliberately crude (no dictionary, no morphology) — this is cheap
+    // friction toward the reviewPending checkpoint, not a linguistic tool.
+    private val SUFFIXES = listOf(
+        "иями",
+        "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими",
+        "ев", "ов", "ам", "ям", "ах", "ях", "ом", "ем", "ей",
+        "юю", "ая", "яя", "ое", "ее", "ых", "их", "ию", "ья", "ье", "ий", "ый",
+        "ы", "и", "а", "я", "о", "е", "у", "ю", "й", "ь"
+    )
+
+    private const val MIN_ROOT_LENGTH = 3
     private const val CONTRADICTION_JACCARD_THRESHOLD = 0.5
     private const val LONG_CONTENT_CHARS = 240
 
@@ -78,17 +90,17 @@ object RiskTrigger {
     }
 
     private fun findContradiction(candidate: Sticker, pool: List<Sticker>): Sticker? {
-        val candidateWords = tokenize(candidate.content)
-        val candidateHasNegation = candidateWords.any { it in NEGATION_MARKERS }
+        val candidateWords = stemmedTokenize(candidate.content)
+        val candidateHasNegation = tokenize(candidate.content).any { it in NEGATION_MARKERS }
         val candidateNumbers = extractNumbers(candidate.content)
 
         for (existing in pool) {
             if (existing.id == candidate.id) continue
-            val existingWords = tokenize(existing.content)
+            val existingWords = stemmedTokenize(existing.content)
             val overlap = jaccard(candidateWords, existingWords)
             if (overlap < CONTRADICTION_JACCARD_THRESHOLD) continue
 
-            val existingHasNegation = existingWords.any { it in NEGATION_MARKERS }
+            val existingHasNegation = tokenize(existing.content).any { it in NEGATION_MARKERS }
             val negationMismatch = candidateHasNegation != existingHasNegation
 
             val existingNumbers = extractNumbers(existing.content)
@@ -108,6 +120,21 @@ object RiskTrigger {
             .split(Regex("[^\\p{L}\\p{N}]+"))
             .filter { it.isNotBlank() }
             .toSet()
+
+    // Used only for Jaccard overlap in findContradiction, so Russian case/number
+    // endings ("кота" vs "котов") don't artificially suppress the overlap score
+    // before negation/number comparison even runs.
+    private fun stemmedTokenize(text: String): Set<String> =
+        tokenize(text).map { stem(it) }.toSet()
+
+    private fun stem(word: String): String {
+        for (suffix in SUFFIXES) {
+            if (word.length - suffix.length >= MIN_ROOT_LENGTH && word.endsWith(suffix)) {
+                return word.substring(0, word.length - suffix.length)
+            }
+        }
+        return word
+    }
 
     private fun extractNumbers(text: String): Set<String> {
         val digitNumbers = Regex("\\d+").findAll(text).map { it.value }.toSet()
