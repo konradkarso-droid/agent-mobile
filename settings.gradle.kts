@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "UroborosMobile"
 include(":app")
+include(":gguf_lib")
