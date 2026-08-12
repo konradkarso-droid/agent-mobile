@@ -631,13 +631,13 @@ static chat_template_result apply_chat_template(const std::vector<common_chat_ms
     if (!g_state.chat_templates) {
         std::string prompt;
         for (auto & msg : messages) {
-            if (msg.role == "system")         prompt += msg.content + "\n";
-            else if (msg.role == "user")      prompt += "User: " + msg.content + "\n";
-            else if (msg.role == "assistant") prompt += "Assistant: " + msg.content + "\n";
+            if (msg.role == "system")         prompt += "<|im_start|>system\n" + msg.content + "<|im_end|>\n";
+            else if (msg.role == "user")      prompt += "<|im_start|>user\n" + msg.content + "<|im_end|>\n";
+            else if (msg.role == "assistant") prompt += "<|im_start|>assistant\n" + msg.content + "<|im_end|>\n";
         }
-        if (add_generation_prompt) prompt += "Assistant:";
+        if (add_generation_prompt) prompt += "<|im_start|>assistant\n";
         out.prompt = prompt;
-        out.stops  = {"\nUser:", "\nuser:", "\n\nUser:"};
+        out.stops  = {"<|im_end|>", "<|im_start|>"};
         out.stops.insert(out.stops.end(), COMMON_STOP_STRINGS.begin(), COMMON_STOP_STRINGS.end());
         return out;
     }
@@ -1438,6 +1438,14 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         env->DeleteLocalRef(jerr);
         return JNI_FALSE;
     }
+        // TEMP DIAGNOSTIC: dump assembled prompt to UI via onError, then abort
+        {
+            std::string diag = std::string("PROMPT_DUMP:[") + tmpl_result.prompt + "]";
+            jstring jerr = env->NewStringUTF(diag.c_str());
+            env->CallVoidMethod(callback, g_onError, jerr);
+            env->DeleteLocalRef(jerr);
+            return JNI_FALSE;
+        }
 
     auto tokens = tokenize_string(tmpl_result.prompt, true);
 
@@ -1543,6 +1551,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         if (n > 0) {
             buf[n] = '\0';
             generated_text.append(buf, n);
+            if (n_generated < 10) { generated_text.append("[" + std::to_string((int)id) + "]"); }
 
             // Two-phase antiprompt detection — use indices, not substr copies
             // Phase 1: Check for FULL stop string match in unsent region
