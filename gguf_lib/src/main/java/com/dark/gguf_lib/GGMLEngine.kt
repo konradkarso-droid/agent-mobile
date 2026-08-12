@@ -757,6 +757,7 @@ class GGMLEngine {
      * design notes.
      */
     fun listBackendsJson(): String = GGUFNativeLib.nativeListBackendsJson()
+    fun getDebugLog(): String = GGUFNativeLib.nativeGetDebugLog()
 
     /**
      * Canonical VLM-KV cache key.

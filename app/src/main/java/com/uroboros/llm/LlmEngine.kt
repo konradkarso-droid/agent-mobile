@@ -57,6 +57,7 @@ class LlmEngine(private val context: Context) {
         engine.generateFlow(prompt, maxTokens)
 
     fun stopGeneration() = engine.stopGeneration()
+    fun getDebugLog(): String = engine.getDebugLog()
 
     suspend fun unload() = engine.unload()
 }
