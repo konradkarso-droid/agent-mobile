@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">Uroboros Mobile</string>
-    <style name="Theme.UroborosMobile" parent="Theme.MaterialComponents.DayNight.NoActionBar"/>
-</resources>

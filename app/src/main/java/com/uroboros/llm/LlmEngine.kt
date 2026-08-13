@@ -22,12 +22,12 @@ class LlmEngine(private val context: Context) {
             flashAttn = params.flashAttn,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
-            cacheTypeK = params.cacheTypeK,
-            cacheTypeV = params.cacheTypeV,
+                cacheTypeK = params.cacheTypeK,
+                cacheTypeV = params.cacheTypeV,
         )
         if (ok) {
-            engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
-            engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
+                engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
+                engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
         }
         return ok
     }
@@ -43,12 +43,12 @@ class LlmEngine(private val context: Context) {
             flashAttn = params.flashAttn,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
-            cacheTypeK = params.cacheTypeK,
-            cacheTypeV = params.cacheTypeV,
+                cacheTypeK = params.cacheTypeK,
+                cacheTypeV = params.cacheTypeV,
         )
         if (ok) {
-            engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
-            engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
+                engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
+                engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
         }
         return ok
     }

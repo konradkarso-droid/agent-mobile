@@ -815,7 +815,7 @@ class GGMLEngine {
 
         /** Conservative default loading parameters keyed off [detectDeviceTier]. */
         fun getRecommendedParams(context: Context): LoadingParams = when (detectDeviceTier(context)) {
-            DeviceTier.LOW_END   -> LoadingParams(contextSize = 2048, cacheTypeK = "q4_0", cacheTypeV = "q4_0")
+                DeviceTier.LOW_END    -> LoadingParams(contextSize = 2048, cacheTypeK = "f16", cacheTypeV = "f16")
             DeviceTier.MID_RANGE -> LoadingParams(contextSize = 4096, cacheTypeK = "q8_0", cacheTypeV = "q8_0")
             DeviceTier.HIGH_END  -> LoadingParams(contextSize = 8192, cacheTypeK = "q8_0", cacheTypeV = "q8_0")
         }

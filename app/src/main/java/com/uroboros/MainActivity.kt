@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             binding.buttonSave.setOnLongClickListener {
+                Toast.makeText(this@MainActivity, "Долгое нажатие сработало", Toast.LENGTH_SHORT).show()
                 val log = llmEngine.getDebugLog()
                 binding.textResults.text = if (log.isBlank()) {
                     "Лог пуст"

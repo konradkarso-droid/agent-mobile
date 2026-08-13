@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <cstdarg>
 #include <cstring>
 #include <cstdio>
 #include <cmath>
@@ -42,9 +43,31 @@
 #include <nlohmann/json.hpp>
 
 #define TAG "gguf_lib"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+// In-memory debug log buffer, mirrors every LOGI/LOGW/LOGE call so the UI
+// can display it without adb/logcat access.
+static std::mutex g_debug_log_mutex;
+static std::string g_debug_log;
+static const size_t MAX_DEBUG_LOG_SIZE = 64 * 1024;
+
+static void capture_log(const char* level, const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    std::lock_guard<std::mutex> lock(g_debug_log_mutex);
+    g_debug_log += level;
+    g_debug_log += ": ";
+    g_debug_log += buf;
+    g_debug_log += "\n";
+    if (g_debug_log.size() > MAX_DEBUG_LOG_SIZE) {
+        g_debug_log.erase(0, g_debug_log.size() - MAX_DEBUG_LOG_SIZE / 2);
+    }
+}
+#define LOGI(...) do { __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__); capture_log("I", __VA_ARGS__); } while (0)
+#define LOGW(...) do { __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__); capture_log("W", __VA_ARGS__); } while (0)
+#define LOGE(...) do { __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__); capture_log("E", __VA_ARGS__); } while (0)
 
 using json = nlohmann::ordered_json;
 
@@ -627,7 +650,6 @@ static chat_template_result apply_chat_template(const std::vector<common_chat_ms
     chat_template_result out;
 
     ensure_chat_templates_loaded();
-
     if (!g_state.chat_templates) {
         std::string prompt;
         for (auto & msg : messages) {
@@ -1438,15 +1460,6 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         env->DeleteLocalRef(jerr);
         return JNI_FALSE;
     }
-        // TEMP DIAGNOSTIC: dump assembled prompt to UI via onError, then abort
-        {
-            std::string diag = std::string("PROMPT_DUMP:[") + tmpl_result.prompt + "]";
-            jstring jerr = env->NewStringUTF(diag.c_str());
-            env->CallVoidMethod(callback, g_onError, jerr);
-            env->DeleteLocalRef(jerr);
-            return JNI_FALSE;
-        }
-
     auto tokens = tokenize_string(tmpl_result.prompt, true);
 
     if (tokens.empty()) {
@@ -1551,7 +1564,6 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         if (n > 0) {
             buf[n] = '\0';
             generated_text.append(buf, n);
-            if (n_generated < 10) { generated_text.append("[" + std::to_string((int)id) + "]"); }
 
             // Two-phase antiprompt detection — use indices, not substr copies
             // Phase 1: Check for FULL stop string match in unsent region
@@ -4317,4 +4329,12 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeTextDigest(
 
     std::string out = text_digest::compress(text_str, query_str, opts);
     return env->NewStringUTF(out.c_str());
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetDebugLog(
+    JNIEnv * env, jobject /*thiz*/) {
+    std::lock_guard<std::mutex> lock(g_debug_log_mutex);
+    return env->NewStringUTF(g_debug_log.c_str());
 }

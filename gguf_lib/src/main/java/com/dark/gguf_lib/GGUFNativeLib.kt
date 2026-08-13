@@ -385,4 +385,5 @@ internal object GGUFNativeLib {
      * ```
      */
     external fun nativeListBackendsJson(): String
+    external fun nativeGetDebugLog(): String
 }
