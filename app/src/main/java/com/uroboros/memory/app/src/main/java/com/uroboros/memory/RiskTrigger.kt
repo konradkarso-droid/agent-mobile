@@ -39,6 +39,10 @@ object RiskTrigger {
     private const val CONTRADICTION_JACCARD_THRESHOLD = 0.5
     private const val LONG_CONTENT_CHARS = 240
 
+    // Порог схожести для распознавания "той же самой" ошибки компилятора
+    // (item 7a: лавинообразный расход энергии при зацикливании).
+    private const val REPEATED_ERROR_JACCARD_THRESHOLD = 0.7
+
     data class Decision(
         val shouldReview: Boolean,
         val reasons: List<String>,
@@ -80,6 +84,18 @@ object RiskTrigger {
             shouldReview = trigger,
             reasons = if (trigger) reasons else emptyList()
         )
+    }
+
+    /**
+     * Считает две ошибки компилятора "той же самой" по текстовому сходству
+     * (переиспользует ту же стемминг+Jaccard инфраструктуру, что и поиск
+     * противоречий, только в обратную сторону: не различие, а повтор).
+     * Используется item 7a для лавинообразного расхода энергии при зацикливании.
+     */
+    fun isRepeatedError(currentError: String, previousError: String): Boolean {
+        val a = stemmedTokenize(currentError)
+        val b = stemmedTokenize(previousError)
+        return jaccard(a, b) >= REPEATED_ERROR_JACCARD_THRESHOLD
     }
 
     private fun hasUncertaintyMarker(text: String): Boolean {
