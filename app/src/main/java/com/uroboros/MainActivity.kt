@@ -71,6 +71,73 @@ class MainActivity : AppCompatActivity() {
 
         binding.buttonShow.setOnClickListener {
             binding.buttonShow.isEnabled = false
+            lifecycleScope.launch {
+                try {
+                    val query = binding.editTextInput.text.toString().ifBlank { null }
+                    val results = mediator.getContext(query = query, limit = 20)
+                    val total = mediator.totalStickers()
+                    binding.textResults.text = if (results.isEmpty()) {
+                        "Пока пусто. Всего записей в базе: $total"
+                    } else {
+                        val lines = results.joinToString("\n\n") { sticker ->
+                            "• ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
+                        }
+                        "Всего записей в базе: $total\n\n$lines"
+                    }
+                } finally {
+                    binding.buttonShow.isEnabled = true
+                }
+            }
+        }
+
+        binding.buttonShow.setOnLongClickListener {
+            lifecycleScope.launch {
+                val pending = mediator.getPendingReview()
+                if (pending.isEmpty()) {
+                    Toast.makeText(this@MainActivity, "Замороженных записей нет", Toast.LENGTH_SHORT).show()
+                } else {
+                    val preview = pending.joinToString("\n\n") { sticker ->
+                        "• ${sticker.content}\n  [${sticker.layer}]"
+                    }
+                    binding.textResults.text = "Разблокировано ${pending.size} записей:\n\n$preview"
+                    mediator.clearAllPendingReview()
+                    Toast.makeText(this@MainActivity, "Снят флаг у ${pending.size} записей", Toast.LENGTH_SHORT).show()
+                }
+            }
+            true
+        }
+
+        binding.buttonLoadModel.setOnClickListener {
+            pickModelLauncher.launch(arrayOf("*/*"))
+        }
+
+        binding.buttonGenerate.setOnClickListener {
+            val prompt = binding.editTextInput.text.toString()
+            if (prompt.isBlank()) {
+                Toast.makeText(this, "Введите запрос для генерации", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            binding.buttonGenerate.isEnabled = false
+            binding.textResults.text = ""
+            lifecycleScope.launch {
+                llmEngine.generateFlow(prompt).collect { event ->
+                    when (event) {
+                        is GenerationEvent.Token -> {
+                            binding.textResults.append(event.text)
+                        }
+                        is GenerationEvent.Done -> {
+                            binding.buttonGenerate.isEnabled = true
+                        }
+                        is GenerationEvent.Error -> {
+                            binding.textResults.append("\n\n[Ошибка: ${event.message}]")
+                            binding.buttonGenerate.isEnabled = true
+                        }
+                        else -> {
+                            // Progress/Metrics/VLM-события игнорируем для текстового теста
+                        }
+                    }
+                }
+            }
         }
     }
 }
