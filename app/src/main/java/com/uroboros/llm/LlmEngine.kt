@@ -4,9 +4,17 @@ import android.content.Context
 import android.net.Uri
 import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.GenerationEvent
+import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.safety.SafetyZone
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
-class LlmEngine(private val context: Context) {
+class LlmEngine(
+    private val context: Context,
+    private val watchdog: DeviceSafetyWatchdog
+) {
 
     private val engine = GGMLEngine()
 
@@ -53,10 +61,40 @@ class LlmEngine(private val context: Context) {
         return ok
     }
 
-    fun generateFlow(prompt: String, maxTokens: Int = 512): Flow<GenerationEvent> =
-        engine.generateFlow(prompt, maxTokens)
+    /**
+     * Обёртка над generateFlow, которая физический watchdog реально исполняет:
+     * FATIGUE — задержка между токенами; CRITICAL или истёкший хард-таймаут —
+     * генерация останавливается до выхода из опасной зоны. Модель не участвует
+     * в этом решении (Bible principle #1).
+     */
+    fun generateFlow(prompt: String, maxTokens: Int = 512): Flow<GenerationEvent> = flow {
+        watchdog.markInferenceStarted()
+        try {
+            engine.generateFlow(prompt, maxTokens).collect { event ->
+                val zone = watchdog.zone.value
 
-    fun stopGeneration() = engine.stopGeneration()
+                if (zone == SafetyZone.CRITICAL || watchdog.shouldForceCooldown()) {
+                    engine.stopGeneration()
+                    watchdog.resetInferenceTimer()
+                    return@collect
+                }
+
+                if (zone == SafetyZone.FATIGUE) {
+                    delay(100)
+                }
+
+                emit(event)
+            }
+        } finally {
+            watchdog.resetInferenceTimer()
+        }
+    }
+
+    fun stopGeneration() {
+        engine.stopGeneration()
+        watchdog.resetInferenceTimer()
+    }
+
     fun getDebugLog(): String = engine.getDebugLog()
 
     suspend fun unload() = engine.unload()
