@@ -54,7 +54,7 @@ class ToteEngine<S>(
             }
 
             val isRepeat = lastSignature != null &&
-                repeatDetector.isSameFailure(outcome.signature, lastSignature!!)
+                repeatDetector.isSameFailure(outcome.signature, lastSignature)
             consecutiveSimilar = if (isRepeat) consecutiveSimilar + 1 else 0
             lastSignature = outcome.signature
 
