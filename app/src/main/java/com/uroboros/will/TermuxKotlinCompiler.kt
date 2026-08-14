@@ -79,7 +79,7 @@ class TermuxKotlinCompiler(private val context: Context) {
         }
 
         try {
-            context.startService(runIntent)
+            context.startForegroundService(runIntent)
         } catch (e: Exception) {
             TermuxResultService.cancelWait(requestId)
             return CompileResult.Unavailable("не удалось запустить Termux: ${e.javaClass.simpleName}: ${e.message}")
@@ -155,7 +155,7 @@ class TermuxKotlinCompiler(private val context: Context) {
             putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
         }
         try {
-            context.startService(cleanupIntent)
+            context.startForegroundService(cleanupIntent)
             withTimeoutOrNull(CLEANUP_TIMEOUT_MS) { deferred.await() }
         } catch (e: Exception) {
             // best-effort
