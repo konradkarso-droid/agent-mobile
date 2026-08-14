@@ -21,7 +21,8 @@ enum class ActionType {
     WRITE_MEMORY,
     NETWORK_CALL,
     FILE_WRITE,
-    FILE_DELETE
+    FILE_DELETE,
+    EXTERNAL_PROCESS
 }
 
 /**
@@ -74,7 +75,8 @@ object ActionGate {
         ActionType.SEND_MESSAGE,
         ActionType.WRITE_MEMORY,
         ActionType.NETWORK_CALL,
-        ActionType.FILE_WRITE
+        ActionType.FILE_WRITE,
+        ActionType.EXTERNAL_PROCESS
         // FILE_DELETE намеренно НЕ в списке — добавить явно, когда реально понадобится
     )
 
