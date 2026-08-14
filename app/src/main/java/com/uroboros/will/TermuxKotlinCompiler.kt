@@ -13,12 +13,6 @@ import com.uroboros.util.DataSieve
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
-/**
- * Компилирует небольшие самодостаточные Kotlin-фрагменты через kotlinc внутри Termux
- * (не пересобирает всё приложение — см. item 6b/7a). Требует установленного Termux
- * с allow-external-apps=true и выданного пользователем разрешения RUN_COMMAND.
- */
-
 sealed class CompileResult {
     data class Success(val stdout: String) : CompileResult()
     data class CompileFailure(val stdout: String, val stderr: String, val exitCode: Int) : CompileResult()
@@ -44,11 +38,9 @@ class TermuxKotlinCompiler(private val context: Context) {
             return CompileResult.Denied(verdict.reason)
         }
 
-        if (!isTermuxAvailable()) {
-            return CompileResult.Unavailable(
-                "Termux не установлен, не имеет разрешения RUN_COMMAND, " +
-                "или allow-external-apps не включён в termux.properties"
-            )
+        val availability = checkTermuxAvailability()
+        if (availability != null) {
+            return CompileResult.Unavailable(availability)
         }
 
         val fragmentId = UUID.randomUUID().toString()
@@ -90,13 +82,13 @@ class TermuxKotlinCompiler(private val context: Context) {
             context.startService(runIntent)
         } catch (e: Exception) {
             TermuxResultService.cancelWait(requestId)
-            return CompileResult.Unavailable("не удалось запустить Termux: ${e.message}")
+            return CompileResult.Unavailable("не удалось запустить Termux: ${e.javaClass.simpleName}: ${e.message}")
         }
 
         val result = withTimeoutOrNull(TOTAL_TIMEOUT_MS) { deferred.await() }
         if (result == null) {
             TermuxResultService.cancelWait(requestId)
-            return CompileResult.Unavailable("Termux не ответил вовремя")
+            return CompileResult.Unavailable("Termux не ответил вовремя (${TOTAL_TIMEOUT_MS}мс) — возможно, неверный ключ PendingIntent extra или allow-external-apps не включён")
         }
 
         maybeCleanup()
@@ -111,16 +103,29 @@ class TermuxKotlinCompiler(private val context: Context) {
         }
     }
 
-    private fun isTermuxAvailable(): Boolean {
-        return try {
+    /** Возвращает null если всё ок, иначе точную причину недоступности. */
+    private fun checkTermuxAvailability(): String? {
+        val packageFound = try {
             context.packageManager.getPackageInfo("com.termux", 0)
-            context.packageManager.checkPermission(
-                "com.termux.permission.RUN_COMMAND",
-                context.packageName
-            ) == PackageManager.PERMISSION_GRANTED
+            true
         } catch (e: PackageManager.NameNotFoundException) {
             false
         }
+        if (!packageFound) {
+            return "пакет com.termux не найден (Termux не установлен или установлен под другим package name)"
+        }
+
+        val permissionState = context.packageManager.checkPermission(
+            "com.termux.permission.RUN_COMMAND",
+            context.packageName
+        )
+        if (permissionState != PackageManager.PERMISSION_GRANTED) {
+            return "пакет com.termux найден, но com.termux.permission.RUN_COMMAND НЕ выдано " +
+                "(checkPermission вернул $permissionState, нужно ${PackageManager.PERMISSION_GRANTED}). " +
+                "Проверь Настройки → Приложения → ${context.packageName} → Разрешения"
+        }
+
+        return null
     }
 
     private suspend fun maybeCleanup() {
@@ -153,7 +158,7 @@ class TermuxKotlinCompiler(private val context: Context) {
             context.startService(cleanupIntent)
             withTimeoutOrNull(CLEANUP_TIMEOUT_MS) { deferred.await() }
         } catch (e: Exception) {
-            // очистка — best-effort, не критично, если не получилось
+            // best-effort
         } finally {
             TermuxResultService.cancelWait(requestId)
         }
