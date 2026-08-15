@@ -1,0 +1,3 @@
+[submodule "gguf_lib/src/main/cpp/llama.cpp-android"]
+	path = gguf_lib/src/main/cpp/llama.cpp-android
+	url = https://github.com/Siddhesh2377/llama.cpp-android.git
