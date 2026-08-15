@@ -11,8 +11,9 @@ import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
-import com.uroboros.will.CompileResult
+import com.uroboros.will.ToteResult
 import com.uroboros.will.TermuxKotlinCompiler
+import com.uroboros.will.tasks.KotlinCodingTask
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -22,6 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var llmEngine: LlmEngine
     private lateinit var watchdog: DeviceSafetyWatchdog
     private lateinit var termuxCompiler: TermuxKotlinCompiler
+    private lateinit var codingTask: KotlinCodingTask
 
     private val pickModelLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
@@ -48,6 +50,7 @@ class MainActivity : AppCompatActivity() {
         watchdog = DeviceSafetyWatchdog(applicationContext, lifecycleScope)
         llmEngine = LlmEngine(applicationContext, watchdog)
         termuxCompiler = TermuxKotlinCompiler(applicationContext)
+        codingTask = KotlinCodingTask(termuxCompiler, llmEngine)
 
         binding.buttonSave.setOnClickListener {
             val text = binding.editTextInput.text.toString()
@@ -144,25 +147,30 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // ВРЕМЕННО: тест TermuxKotlinCompiler долгим нажатием на "Generate".
-        // Убрать/заменить, когда TermuxKotlinCompiler будет подключён через ToteEngine (item 7a шаг 4б).
+        // Item 7a шаг 4б: реальный TOTE-цикл (KotlinCodingTask) вместо временного
+        // прямого вызова TermuxKotlinCompiler. Задача пока захардкожена внутри
+        // KotlinCodingTask, не берётся из текстового поля.
         binding.buttonGenerate.setOnLongClickListener {
-            binding.textResults.text = "Компилирую тестовый фрагмент через Termux..."
+            if (!llmEngine.isLoaded) {
+                Toast.makeText(this@MainActivity, "Сначала загрузите модель", Toast.LENGTH_SHORT).show()
+                return@setOnLongClickListener true
+            }
+            binding.textResults.text = "Запускаю TOTE-цикл (компиляция + LLM)..."
             lifecycleScope.launch {
-                val testFragment = "fun main() { println(\"hello from termux\") }"
-                when (val result = termuxCompiler.compile(testFragment)) {
-                    is CompileResult.Success -> {
-                        binding.textResults.text = "УСПЕХ:\n${result.stdout}"
-                    }
-                    is CompileResult.CompileFailure -> {
+                when (val result = codingTask.run()) {
+                    is ToteResult.Success -> {
                         binding.textResults.text =
-                            "ОШИБКА КОМПИЛЯЦИИ (код ${result.exitCode}):\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}"
+                            "УСПЕХ за ${result.iterations} итераций:\n\n${result.finalState.code}"
                     }
-                    is CompileResult.Unavailable -> {
-                        binding.textResults.text = "НЕДОСТУПНО: ${result.reason}"
+                    is ToteResult.Evacuated -> {
+                        binding.textResults.text =
+                            "ЭВАКУАЦИЯ после ${result.iterations} итераций: ${result.reason}\n\n" +
+                                "Последний код:\n${result.lastState.code}"
                     }
-                    is CompileResult.Denied -> {
-                        binding.textResults.text = "ОТКЛОНЕНО ActionGate: ${result.reason}"
+                    is ToteResult.HardStopped -> {
+                        binding.textResults.text =
+                            "ЖЁСТКИЙ СТОП после ${result.iterations} итераций (достигнут лимит)\n\n" +
+                                "Последний код:\n${result.lastState.code}"
                     }
                 }
             }
