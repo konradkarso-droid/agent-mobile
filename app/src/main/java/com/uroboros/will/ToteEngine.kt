@@ -27,8 +27,17 @@ fun interface RepeatDetector {
 
 sealed class ToteResult<out S> {
     data class Success<S>(val finalState: S, val iterations: Int) : ToteResult<S>()
-    data class Evacuated<S>(val lastState: S, val iterations: Int, val reason: String) : ToteResult<S>()
-    data class HardStopped<S>(val lastState: S, val iterations: Int) : ToteResult<S>()
+    data class Evacuated<S>(
+        val lastState: S,
+        val iterations: Int,
+        val reason: String,
+        val lastOutcome: StepOutcome?
+    ) : ToteResult<S>()
+    data class HardStopped<S>(
+        val lastState: S,
+        val iterations: Int,
+        val lastOutcome: StepOutcome?
+    ) : ToteResult<S>()
 }
 
 class ToteEngine<S>(
@@ -42,12 +51,14 @@ class ToteEngine<S>(
     suspend fun run(initialState: S): ToteResult<S> {
         var state = initialState
         var lastSignature: String? = null
+        var lastOutcome: StepOutcome? = null
         var consecutiveSimilar = 0
         var iteration = 0
 
         while (iteration < maxIterations) {
             iteration++
             val outcome = test.invoke(state)
+            lastOutcome = outcome
 
             if (outcome.success) {
                 return ToteResult.Success(state, iteration)
@@ -68,20 +79,22 @@ class ToteEngine<S>(
             if (consecutiveSimilar >= stuckThreshold) {
                 return ToteResult.Evacuated(
                     state, iteration,
-                    "застряли: $consecutiveSimilar похожих неудач подряд"
+                    "застряли: $consecutiveSimilar похожих неудач подряд",
+                    lastOutcome
                 )
             }
 
             when (energyBudget.zone) {
                 WillZone.EVACUATION -> return ToteResult.Evacuated(
                     state, iteration,
-                    "энергия исчерпана (${energyBudget.energy.value}%)"
+                    "энергия исчерпана (${energyBudget.energy.value}%)",
+                    lastOutcome
                 )
                 WillZone.REFLECTION, WillZone.STORM -> {
                     state = operate.invoke(state, outcome)
                 }
             }
         }
-        return ToteResult.HardStopped(state, iteration)
+        return ToteResult.HardStopped(state, iteration, lastOutcome)
     }
 }
