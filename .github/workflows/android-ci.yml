@@ -28,6 +28,9 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install required CMake version
+        run: sdkmanager --install "cmake;3.31.4"
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
