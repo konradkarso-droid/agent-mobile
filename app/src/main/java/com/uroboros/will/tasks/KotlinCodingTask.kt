@@ -65,11 +65,18 @@ class KotlinCodingTask(
     private val operate = StepOperate<KotlinCodeState> { state, outcome ->
         val prompt = buildPrompt(state, outcome)
         val generated = StringBuilder()
+        var generationError: String? = null
         llmEngine.generateFlow(prompt, maxTokens = 512).collect { event ->
             when (event) {
                 is GenerationEvent.Token -> generated.append(event.text)
+                is GenerationEvent.Error -> generationError = event.message
                 else -> Unit
             }
+        }
+        if (generationError != null) {
+            // Генерация упала — возвращаем состояние как есть, но с пометкой ошибки,
+            // чтобы следующий Test честно провалился на том же коде, а не на пустом.
+            return@StepOperate state.copy(lastError = "Ошибка генерации: $generationError")
         }
         val cleanCode = extractKotlinCode(generated.toString())
         state.copy(code = cleanCode, lastError = outcome.detail)
