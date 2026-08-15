@@ -14,11 +14,11 @@ data class StepOutcome(
 )
 
 fun interface StepTest<S> {
-    fun invoke(state: S): StepOutcome
+    suspend fun invoke(state: S): StepOutcome
 }
 
 fun interface StepOperate<S> {
-    fun invoke(state: S, outcome: StepOutcome): S
+    suspend fun invoke(state: S, outcome: StepOutcome): S
 }
 
 fun interface RepeatDetector {
@@ -39,7 +39,7 @@ class ToteEngine<S>(
     private val maxIterations: Int = 20,
     private val stuckThreshold: Int = 5
 ) {
-    fun run(initialState: S): ToteResult<S> {
+    suspend fun run(initialState: S): ToteResult<S> {
         var state = initialState
         var lastSignature: String? = null
         var consecutiveSimilar = 0
