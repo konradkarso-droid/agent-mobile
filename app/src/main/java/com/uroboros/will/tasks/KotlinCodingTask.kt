@@ -2,6 +2,7 @@ package com.uroboros.will.tasks
 
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.llm.LlmEngine
+import com.uroboros.memory.TrustedMediator
 import com.uroboros.will.CompileResult
 import com.uroboros.will.StepOperate
 import com.uroboros.will.StepOutcome
@@ -19,6 +20,11 @@ import kotlinx.coroutines.flow.collect
  * Ось "полезный объём кода" (item 8a, ось 2) сюда пока не добавлена — usefulProgress
  * временно всегда true. Задача для первого прогона — захардкожена (не реальный ввод
  * пользователя).
+ *
+ * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
+ * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
+ * от числа итераций) пока НЕ реализована — используется дефолтная важность, это
+ * отдельный следующий шаг.
  */
 
 data class KotlinCodeState(
@@ -28,7 +34,8 @@ data class KotlinCodeState(
 
 class KotlinCodingTask(
     private val termuxCompiler: TermuxKotlinCompiler,
-    private val llmEngine: LlmEngine
+    private val llmEngine: LlmEngine,
+    private val mediator: TrustedMediator
 ) {
 
     private val test = StepTest<KotlinCodeState> { state ->
@@ -103,6 +110,21 @@ class KotlinCodingTask(
         return withoutFirstFence.substringBeforeLast("```").trim()
     }
 
+    /** "Вакцина-строка" — сохраняет извлечённый урок в Sticker-память. */
+    private suspend fun saveVaccineLine(result: ToteResult<KotlinCodeState>) {
+        val text = when (result) {
+            is ToteResult.Success ->
+                "[TOTE] Успех за ${result.iterations} итераций. Итоговый код:\n${result.finalState.code}"
+            is ToteResult.Evacuated ->
+                "[TOTE] Эвакуация после ${result.iterations} итераций (${result.reason}). " +
+                    "Последняя ошибка:\n${result.lastOutcome?.detail ?: "(нет данных)"}"
+            is ToteResult.HardStopped ->
+                "[TOTE] Жёсткий стоп после ${result.iterations} итераций (лимит). " +
+                    "Последняя ошибка:\n${result.lastOutcome?.detail ?: "(нет данных)"}"
+        }
+        mediator.saveEvent(text)
+    }
+
     suspend fun run(): ToteResult<KotlinCodeState> {
         // Захардкоженная задача для первого сквозного теста цикла (не реальный ввод) —
         // намеренно неполный код, чтобы первый Test точно упал и запустил Operate (LLM).
@@ -111,6 +133,8 @@ class KotlinCodingTask(
             lastError = null
         )
         val engine = ToteEngine(test = test, operate = operate)
-        return engine.run(initialState)
+        val result = engine.run(initialState)
+        saveVaccineLine(result)
+        return result
     }
 }
