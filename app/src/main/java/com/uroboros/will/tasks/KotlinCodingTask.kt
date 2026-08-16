@@ -4,6 +4,7 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.util.StructuralBoundary
 import com.uroboros.will.CompileResult
 import com.uroboros.will.StepOperate
 import com.uroboros.will.StepOutcome
@@ -17,10 +18,11 @@ import kotlinx.coroutines.flow.collect
  * Кодинг-инстанциация общего TOTE-цикла (item 7a) — первая конкретная реализация
  * StepTest/StepOperate поверх EnergyBudget+ToteEngine+TermuxKotlinCompiler+LlmEngine.
  *
- * Фаза 1 (текущая): StepTest проверяет ТОЛЬКО компиляцию (Y/N).
- * Ось "полезный объём кода" (item 8a, ось 2) сюда пока не добавлена — usefulProgress
- * временно всегда true. Задача для первого прогона — захардкожена (не реальный ввод
- * пользователя).
+ * Фаза 2 (2026-08-16): StepTest теперь проверяет компиляцию (Y/N) И ось "полезный
+ * объём кода" (item 8a, ось 2) через StructuralBoundary — эвристика first-pass,
+ * серая зона с эмерджентными порогами. AST-эскалация (kotlin-compiler-embeddable
+ * через Termux) пока НЕ реализована — StructuralBoundary.AstEscalator не подключён,
+ * поэтому NEEDS_CONFIRMATION пока трактуется мягко (см. ниже), а не блокируется.
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -30,7 +32,10 @@ import kotlinx.coroutines.flow.collect
 
 data class KotlinCodeState(
     val code: String,
-    val lastError: String? = null
+    val lastError: String? = null,
+    // Код ДО последней правки operate() — нужен для структурного сравнения в test().
+    // null на самом первом шаге: сравнивать не с чем, и это не подозрительно по дизайну.
+    val previousCode: String? = null
 )
 
 class KotlinCodingTask(
@@ -48,14 +53,37 @@ class KotlinCodingTask(
                 signature = "OK",
                 detail = result.stdout
             )
-            is CompileResult.CompileFailure -> StepOutcome(
-                success = false,
-                // TODO(item 8a, ось 2): заменить на реальную оценку "полезного объёма" —
-                // пока считаем прогресс полезным по умолчанию, ось ещё не спроектирована.
-                usefulProgress = true,
-                signature = result.stderr.ifBlank { result.stdout },
-                detail = result.stderr
-            )
+            is CompileResult.CompileFailure -> {
+                val structural = evaluateStructural(state)
+                val baseSignature = result.stderr.ifBlank { result.stdout }
+                when (structural?.verdict) {
+                    StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
+                        success = false,
+                        usefulProgress = false,
+                        signature = baseSignature,
+                        detail = "${result.stderr}\n[структурная проверка: подозрительное " +
+                            "сокращение функции '${structural.functionName}' " +
+                            "(${(structural.shrinkRatio * 100).toInt()}%), возможна потеря логики]"
+                    )
+                    StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION -> StepOutcome(
+                        success = false,
+                        // AST-эскалация ещё не подключена — до её появления не блокируем,
+                        // только помечаем в detail. TODO: как только AstEscalator готов,
+                        // здесь должен быть реальный вызов подтверждения, а не мягкое "true".
+                        usefulProgress = true,
+                        signature = baseSignature,
+                        detail = "${result.stderr}\n[структурная проверка: серая зона для " +
+                            "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%), " +
+                            "требуется AST-подтверждение — пока не реализовано]"
+                    )
+                    else -> StepOutcome(
+                        success = false,
+                        usefulProgress = true,
+                        signature = baseSignature,
+                        detail = result.stderr
+                    )
+                }
+            }
             is CompileResult.Unavailable -> StepOutcome(
                 success = false,
                 usefulProgress = false,
@@ -69,6 +97,18 @@ class KotlinCodingTask(
                 detail = result.reason
             )
         }
+    }
+
+    /**
+     * Находит "худший" вердикт среди функций, изменившихся между previousCode и code.
+     * Возвращает null, если сравнивать не с чем (первый шаг) или ничего не изменилось.
+     */
+    private fun evaluateStructural(state: KotlinCodeState): StructuralBoundary.ShrinkResult? {
+        val previous = state.previousCode ?: return null
+        val results = StructuralBoundary.evaluateShrink(previous, state.code)
+        return results
+            .filter { it.verdict != StructuralBoundary.ShrinkVerdict.CLEAN }
+            .maxByOrNull { it.shrinkRatio }
     }
 
     private val operate = StepOperate<KotlinCodeState> { state, outcome ->
@@ -88,7 +128,7 @@ class KotlinCodingTask(
             return@StepOperate state.copy(lastError = "Ошибка генерации: $generationError")
         }
         val cleanCode = extractKotlinCode(generated.toString())
-        state.copy(code = cleanCode, lastError = outcome.detail)
+        state.copy(code = cleanCode, lastError = outcome.detail, previousCode = state.code)
     }
 
     private fun buildPrompt(state: KotlinCodeState, outcome: StepOutcome): String {
