@@ -13,6 +13,19 @@ android {
         versionCode = 1
         versionName = "0.1"
     }
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "uroboros_debug"
+            keyAlias = "uroboros_debug_key"
+            keyPassword = "uroboros_debug"
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
     buildFeatures {
         viewBinding = true
     }
