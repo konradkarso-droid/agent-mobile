@@ -13,6 +13,13 @@ import com.uroboros.safety.SafetyZone
  * независимый жёсткий обрыв внутри LlmEngine (defense in depth) — просто позволяет
  * циклу уйти в честную эвакуацию заранее, а не тратить попытку на заведомо
  * оборванный вызов модели.
+ *
+ * Условие успеха (2026-08-16): success ОДНОГО compile Y/N уже недостаточно —
+ * item 8a ось 2 (структурная проверка "полезного объёма") может пометить формально
+ * успешный шаг как usefulProgress=false (например, "успех" получен вырезанием рабочей
+ * логики). Такой шаг НЕ завершает цикл — он идёт по обычному пути failure-обработки
+ * (repeat-detection/energy damage/stuck-threshold), что и является прямой защитой
+ * от reward-hacking на этой метрике.
  */
 
 data class StepOutcome(
@@ -70,7 +77,7 @@ class ToteEngine<S>(
             val outcome = test.invoke(state)
             lastOutcome = outcome
 
-            if (outcome.success) {
+            if (outcome.success && outcome.usefulProgress) {
                 return ToteResult.Success(state, iteration)
             }
 
