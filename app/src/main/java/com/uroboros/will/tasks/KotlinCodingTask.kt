@@ -66,7 +66,7 @@ class KotlinCodingTask(
         val prompt = buildPrompt(state, outcome)
         val generated = StringBuilder()
         var generationError: String? = null
-        llmEngine.generateFlow(prompt, maxTokens = 512).collect { event ->
+        llmEngine.generateFlow(prompt, maxTokens = 100).collect { event ->
             when (event) {
                 is GenerationEvent.Token -> generated.append(event.text)
                 is GenerationEvent.Error -> generationError = event.message
