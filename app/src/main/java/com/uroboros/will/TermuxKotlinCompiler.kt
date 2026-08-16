@@ -48,6 +48,9 @@ class TermuxKotlinCompiler(private val context: Context) {
 
         val script = buildString {
             append("mkdir -p ~/uroboros_tote && ")
+            // Попытка отключить jansi — не гарантирует тишину (см. фильтрацию ниже),
+            // но не вредит, оставляем на случай других версий окружения.
+            append("export JDK_JAVA_OPTIONS=\"-Dorg.fusesource.jansi.internal.CLibrary.disable=true\" && ")
             append("echo \"\$1\" | base64 -d > ~/uroboros_tote/\$2.kt && ")
             append("timeout 60s kotlinc ~/uroboros_tote/\$2.kt -include-runtime ")
             append("-d ~/uroboros_tote/\$2.jar; ")
@@ -94,13 +97,44 @@ class TermuxKotlinCompiler(private val context: Context) {
         maybeCleanup()
 
         val cappedStdout = DataSieve.capBytes(result.stdout, MAX_OUTPUT_BYTES)
-        val cappedStderr = DataSieve.capBytes(result.stderr, MAX_OUTPUT_BYTES)
+        val rawStderr = DataSieve.capBytes(result.stderr, MAX_OUTPUT_BYTES)
+        val cleanedStderr = stripEnvironmentNoise(rawStderr)
 
-        return if (result.exitCode == 0) {
-            CompileResult.Success(cappedStdout)
-        } else {
-            CompileResult.CompileFailure(cappedStdout, cappedStderr, result.exitCode)
+        return when {
+            result.exitCode == 0 -> CompileResult.Success(cappedStdout)
+            // После вычистки шума ничего осмысленного не осталось — значит, упал
+            // сам инструмент/окружение (например, jansi), а не код. Не отдаём это
+            // модели как "ошибку в коде", иначе она начнёт "чинить" системный мусор.
+            cleanedStderr.isBlank() || isInfrastructureFailure(cleanedStderr) ->
+                CompileResult.Unavailable("сбой компилятора/окружения (не код): ${rawStderr.take(300)}")
+            else -> CompileResult.CompileFailure(cappedStdout, cleanedStderr, result.exitCode)
         }
+    }
+
+    /** Убирает известный посторонний шум (например, предупреждения jansi) из stderr. */
+    private fun stripEnvironmentNoise(text: String): String {
+        val noiseMarkers = listOf(
+            "jansi",
+            "libjansi.so",
+            "Failed to load native library",
+            "in namespace (default)"
+        )
+        return text.lineSequence()
+            .filterNot { line -> noiseMarkers.any { marker -> line.contains(marker, ignoreCase = true) } }
+            .joinToString("\n")
+            .trim()
+    }
+
+    /** Признаки того, что упал сам инструмент/окружение, а не код в .kt-файле. */
+    private fun isInfrastructureFailure(stderr: String): Boolean {
+        val markers = listOf(
+            "UnsatisfiedLinkError",
+            "libc.so.6",
+            "java.lang.NoClassDefFoundError",
+            "Could not find or load main class",
+            "OutOfMemoryError"
+        )
+        return markers.any { stderr.contains(it, ignoreCase = true) }
     }
 
     /** Возвращает null если всё ок, иначе точную причину недоступности. */
