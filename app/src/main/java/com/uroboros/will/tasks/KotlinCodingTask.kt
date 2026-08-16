@@ -18,11 +18,14 @@ import kotlinx.coroutines.flow.collect
  * Кодинг-инстанциация общего TOTE-цикла (item 7a) — первая конкретная реализация
  * StepTest/StepOperate поверх EnergyBudget+ToteEngine+TermuxKotlinCompiler+LlmEngine.
  *
- * Фаза 2 (2026-08-16): StepTest теперь проверяет компиляцию (Y/N) И ось "полезный
- * объём кода" (item 8a, ось 2) через StructuralBoundary — эвристика first-pass,
- * серая зона с эмерджентными порогами. AST-эскалация (kotlin-compiler-embeddable
- * через Termux) пока НЕ реализована — StructuralBoundary.AstEscalator не подключён,
- * поэтому NEEDS_CONFIRMATION пока трактуется мягко (см. ниже), а не блокируется.
+ * Фаза 2 (2026-08-16): StepTest проверяет и компиляцию (Y/N), и ось "полезный объём
+ * кода" (item 8a, ось 2) через StructuralBoundary — эвристика first-pass, серая зона
+ * с эмерджентными порогами. Проверка теперь стоит на ОБЕИХ ветках — и на успешной
+ * компиляции, и на провальной — потому что "успех" ценой вырезанной логики обязан
+ * не засчитываться как прогресс (см. ToteEngine: success && usefulProgress).
+ * AST-эскалация (kotlin-compiler-embeddable через Termux) пока НЕ реализована —
+ * StructuralBoundary.AstEscalator не подключён, поэтому NEEDS_CONFIRMATION пока
+ * трактуется мягко (не блокирует), а SUSPICIOUS — блокирует уже сейчас.
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -47,12 +50,37 @@ class KotlinCodingTask(
 
     private val test = StepTest<KotlinCodeState> { state ->
         when (val result = termuxCompiler.compile(state.code)) {
-            is CompileResult.Success -> StepOutcome(
-                success = true,
-                usefulProgress = true,
-                signature = "OK",
-                detail = result.stdout
-            )
+            is CompileResult.Success -> {
+                val structural = evaluateStructural(state)
+                when (structural?.verdict) {
+                    StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
+                        success = true,
+                        usefulProgress = false,
+                        signature = "OK",
+                        detail = "${result.stdout}\n[структурная проверка: подозрительное " +
+                            "сокращение функции '${structural.functionName}' " +
+                            "(${(structural.shrinkRatio * 100).toInt()}%) — компиляция прошла, " +
+                            "но прогресс НЕ засчитан из-за риска потери логики]"
+                    )
+                    StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION -> StepOutcome(
+                        success = true,
+                        // AST-эскалация ещё не подключена — до её появления не блокируем,
+                        // только помечаем в detail. TODO: как только AstEscalator готов,
+                        // здесь должен быть реальный вызов подтверждения, а не мягкое "true".
+                        usefulProgress = true,
+                        signature = "OK",
+                        detail = "${result.stdout}\n[структурная проверка: серая зона для " +
+                            "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%), " +
+                            "требуется AST-подтверждение — пока не реализовано]"
+                    )
+                    else -> StepOutcome(
+                        success = true,
+                        usefulProgress = true,
+                        signature = "OK",
+                        detail = result.stdout
+                    )
+                }
+            }
             is CompileResult.CompileFailure -> {
                 val structural = evaluateStructural(state)
                 val baseSignature = result.stderr.ifBlank { result.stdout }
@@ -67,9 +95,6 @@ class KotlinCodingTask(
                     )
                     StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION -> StepOutcome(
                         success = false,
-                        // AST-эскалация ещё не подключена — до её появления не блокируем,
-                        // только помечаем в detail. TODO: как только AstEscalator готов,
-                        // здесь должен быть реальный вызов подтверждения, а не мягкое "true".
                         usefulProgress = true,
                         signature = baseSignature,
                         detail = "${result.stderr}\n[структурная проверка: серая зона для " +
