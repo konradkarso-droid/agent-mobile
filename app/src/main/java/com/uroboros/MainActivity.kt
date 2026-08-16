@@ -50,7 +50,7 @@ class MainActivity : AppCompatActivity() {
         watchdog = DeviceSafetyWatchdog(applicationContext, lifecycleScope)
         llmEngine = LlmEngine(applicationContext, watchdog)
         termuxCompiler = TermuxKotlinCompiler(applicationContext)
-        codingTask = KotlinCodingTask(termuxCompiler, llmEngine)
+        codingTask = KotlinCodingTask(termuxCompiler, llmEngine, mediator)
 
         binding.buttonSave.setOnClickListener {
             val text = binding.editTextInput.text.toString()
