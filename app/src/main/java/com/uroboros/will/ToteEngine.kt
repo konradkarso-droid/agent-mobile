@@ -1,9 +1,18 @@
 package com.uroboros.will
 
+import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.safety.SafetyZone
+
 /**
  * Универсальный TOTE-цикл (Test-Operate-Test-Exit).
  * Не знает ничего о конкретном домене (кодинг, память и т.д.) — это решает вызывающий код
  * через StepTest/StepOperate. Использует EnergyBudget (item 7a) и защиту от зацикливания (item 8a).
+ *
+ * Мост с DeviceSafetyWatchdog (item 8, продолжение): перед каждым вызовом Operate
+ * (обычно — обращение к LLM) цикл проверяет физическую зону. Это НЕ заменяет
+ * независимый жёсткий обрыв внутри LlmEngine (defense in depth) — просто позволяет
+ * циклу уйти в честную эвакуацию заранее, а не тратить попытку на заведомо
+ * оборванный вызов модели.
  */
 
 data class StepOutcome(
@@ -43,6 +52,7 @@ sealed class ToteResult<out S> {
 class ToteEngine<S>(
     private val test: StepTest<S>,
     private val operate: StepOperate<S>,
+    private val watchdog: DeviceSafetyWatchdog,
     private val energyBudget: EnergyBudget = EnergyBudget(),
     private val repeatDetector: RepeatDetector = RepeatDetector { a, b -> a == b },
     private val maxIterations: Int = 20,
@@ -91,6 +101,14 @@ class ToteEngine<S>(
                     lastOutcome
                 )
                 WillZone.REFLECTION, WillZone.STORM -> {
+                    val physicalZone = watchdog.zone.value
+                    if (physicalZone == SafetyZone.CRITICAL) {
+                        return ToteResult.Evacuated(
+                            state, iteration,
+                            "физическая защита: устройство в критической зоне ($physicalZone)",
+                            lastOutcome
+                        )
+                    }
                     state = operate.invoke(state, outcome)
                 }
             }
