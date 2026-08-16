@@ -3,6 +3,7 @@ package com.uroboros.will.tasks
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.TrustedMediator
+import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.will.CompileResult
 import com.uroboros.will.StepOperate
 import com.uroboros.will.StepOutcome
@@ -35,7 +36,8 @@ data class KotlinCodeState(
 class KotlinCodingTask(
     private val termuxCompiler: TermuxKotlinCompiler,
     private val llmEngine: LlmEngine,
-    private val mediator: TrustedMediator
+    private val mediator: TrustedMediator,
+    private val watchdog: DeviceSafetyWatchdog
 ) {
 
     private val test = StepTest<KotlinCodeState> { state ->
@@ -132,7 +134,7 @@ class KotlinCodingTask(
             code = "fun add(a: Int, b: Int): Int {",
             lastError = null
         )
-        val engine = ToteEngine(test = test, operate = operate)
+        val engine = ToteEngine(test = test, operate = operate, watchdog = watchdog)
         val result = engine.run(initialState)
         saveVaccineLine(result)
         return result
