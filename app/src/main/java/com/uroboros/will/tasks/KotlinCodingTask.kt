@@ -19,11 +19,19 @@ import kotlinx.coroutines.flow.collect
  * Кодинг-инстанциация общего TOTE-цикла (item 7a) — первая конкретная реализация
  * StepTest/StepOperate поверх EnergyBudget+ToteEngine+TermuxKotlinCompiler+LlmEngine.
  *
- * Фаза 3 (2026-08-17): структурная проверка (item 8a, ось 2) теперь трёхступенчатая —
- * (C) StructuralBoundary — быстрая текстовая эвристика по конструкциям, всегда;
- * (B) BytecodeShrinkEscalator — только при NEEDS_CONFIRMATION от C, сравнивает реальный
- * байткод обеих версий функции через TermuxKotlinCompiler; (A) полноценный AST —
- * отложено до нового железа (item 7b), не реализовано.
+ * Фаза 4 (2026-08-17): структурная проверка (item 8a, ось 2, stage C→B) теперь
+ * вызывается ТОЛЬКО на ветке CompileResult.Success, не на CompileFailure. Причина
+ * (найдено живым тестом на устройстве, лог показал "сравнивать не с чем" на всех
+ * промежуточных сломанных итерациях): findFunctionSpans() требует парную
+ * открывающую/закрывающую скобку — на синтаксически неполном коде (типичное
+ * промежуточное состояние между попытками починки) функция физически не
+ * распознаётся, и это неотличимо от "функцию удалили" на уровне возвращаемого
+ * результата. Реальная защита от reward-hacking (ради которой ось и строилась)
+ * нужна только там, где компиляция УЖЕ прошла — то есть где формальный "успех"
+ * мог быть получен ценой урезанной логики; там же обе стороны сравнения по
+ * определению синтаксически валидны (раз скомпилировались), так что и сама
+ * эвристика C наконец-то может содержательно сработать. На CompileFailure
+ * success уже false и так не даёт ложного успеха — доп. проверка там не нужна.
  *
  * Диагностика (2026-08-17): каждая итерация test() дописывает строку в debugLog —
  * что вернула компиляция, вердикт C, результат эскалации B, если была. Доступ через
@@ -95,33 +103,17 @@ class KotlinCodingTask(
                 }
             }
             is CompileResult.CompileFailure -> {
-                val structural = resolveStructuralVerdict(state)
-                logIteration(iterationNum, "компиляция: ОШИБКА (${result.stderr.take(150)})", structural)
-                val baseSignature = result.stderr.ifBlank { result.stdout }
-                when (structural?.verdict) {
-                    StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
-                        success = false,
-                        usefulProgress = false,
-                        signature = baseSignature,
-                        detail = "${result.stderr}\n[структурная проверка: подозрительное " +
-                            "сокращение функции '${structural.functionName}' " +
-                            "(${(structural.shrinkRatio * 100).toInt()}%), возможна потеря логики]"
-                    )
-                    StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION -> StepOutcome(
-                        success = false,
-                        usefulProgress = true,
-                        signature = baseSignature,
-                        detail = "${result.stderr}\n[структурная проверка: серая зона для " +
-                            "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%) " +
-                            "не разрешена даже после байткод-эскалации]"
-                    )
-                    else -> StepOutcome(
-                        success = false,
-                        usefulProgress = true,
-                        signature = baseSignature,
-                        detail = result.stderr
-                    )
-                }
+                // Структурная проверка сюда намеренно НЕ вызывается (см. комментарий
+                // класса, фаза 4) — на сломанном промежуточном коде она не может дать
+                // содержательный результат, а success уже false и так блокирует
+                // ложный успех.
+                logIteration(iterationNum, "компиляция: ОШИБКА (${result.stderr.take(150)})", null)
+                StepOutcome(
+                    success = false,
+                    usefulProgress = true,
+                    signature = result.stderr.ifBlank { result.stdout },
+                    detail = result.stderr
+                )
             }
             is CompileResult.Unavailable -> {
                 logIteration(iterationNum, "компиляция: НЕДОСТУПНА (${result.reason})", null)
@@ -146,7 +138,7 @@ class KotlinCodingTask(
 
     private fun logIteration(iterationNum: Int, compileSummary: String, structural: StructuralBoundary.ShrinkResult?) {
         val structuralSummary = if (structural == null) {
-            "структурная проверка: сравнивать не с чем или изменений нет"
+            "структурная проверка: не выполнялась или сравнивать не с чем"
         } else {
             "структурная проверка: функция '${structural.functionName}', " +
                 "сокращение ${(structural.shrinkRatio * 100).toInt()}%, вердикт ${structural.verdict}"
@@ -155,9 +147,10 @@ class KotlinCodingTask(
     }
 
     /**
-     * Stage C → (если нужно) Stage B. Находит "худший" вердикт среди функций,
-     * изменившихся между previousCode и code через StructuralBoundary (stage C);
-     * если результат — NEEDS_CONFIRMATION, уточняет его через BytecodeShrinkEscalator
+     * Stage C → (если нужно) Stage B. Вызывается ТОЛЬКО из ветки CompileResult.Success
+     * (см. комментарий класса, фаза 4). Находит "худший" вердикт среди функций,
+     * изменившихся между previousCode и code через StructuralBoundary (stage C); если
+     * результат — NEEDS_CONFIRMATION, уточняет его через BytecodeShrinkEscalator
      * (stage B). Возвращает null, если сравнивать не с чем (первый шаг) или ничего
      * не изменилось.
      */
