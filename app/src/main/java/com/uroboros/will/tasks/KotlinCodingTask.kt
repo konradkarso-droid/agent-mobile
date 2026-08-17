@@ -22,18 +22,12 @@ import kotlinx.coroutines.flow.collect
  * Фаза 3 (2026-08-17): структурная проверка (item 8a, ось 2) теперь трёхступенчатая —
  * (C) StructuralBoundary — быстрая текстовая эвристика по конструкциям, всегда;
  * (B) BytecodeShrinkEscalator — только при NEEDS_CONFIRMATION от C, сравнивает реальный
- * байткод обеих версий функции через TermuxKotlinCompiler (двойной поход в Termux,
- * но только для серой зоны, не на каждый шаг); (A) полноценный AST — отложено до
- * нового железа (item 7b), не реализовано. Обе ветки compile-результата (Success и
- * CompileFailure) прогоняются через один и тот же resolveStructuralVerdict(), чтобы
- * не дублировать C→B логику в двух местах.
+ * байткод обеих версий функции через TermuxKotlinCompiler; (A) полноценный AST —
+ * отложено до нового железа (item 7b), не реализовано.
  *
- * Стартовая задача (2026-08-17): заменена с "одна незакрытая скобка" (не давала
- * структурной проверке ничего сравнить на первом шаге — previousCode был null дольше
- * содержательного шага) на функцию с полноценным телом и логической опечаткой
- * (tota вместо total) — компиляция всё равно падает на первом шаге, но структура
- * достаточно богатая (if/for/val/var), чтобы C/B реально сработали со второго шага.
- * По-прежнему захардкожено, не реальный ввод пользователя.
+ * Диагностика (2026-08-17): каждая итерация test() дописывает строку в debugLog —
+ * что вернула компиляция, вердикт C, результат эскалации B, если была. Доступ через
+ * getDebugLog() — вызывающий код (MainActivity) вешает это на долгое нажатие.
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -57,10 +51,18 @@ class KotlinCodingTask(
     private val bytecodeEscalator: BytecodeShrinkEscalator = BytecodeShrinkEscalator(termuxCompiler)
 ) {
 
+    private val debugLog = mutableListOf<String>()
+
+    /** Детальный лог по каждой итерации TOTE-цикла — компиляция + вердикты C/B. */
+    fun getDebugLog(): String =
+        if (debugLog.isEmpty()) "Лог пуст (цикл ещё не запускался)" else debugLog.joinToString("\n\n---\n\n")
+
     private val test = StepTest<KotlinCodeState> { state ->
+        val iterationNum = debugLog.size + 1
         when (val result = termuxCompiler.compile(state.code)) {
             is CompileResult.Success -> {
                 val structural = resolveStructuralVerdict(state)
+                logIteration(iterationNum, "компиляция: УСПЕХ", structural)
                 when (structural?.verdict) {
                     StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
                         success = true,
@@ -94,6 +96,7 @@ class KotlinCodingTask(
             }
             is CompileResult.CompileFailure -> {
                 val structural = resolveStructuralVerdict(state)
+                logIteration(iterationNum, "компиляция: ОШИБКА (${result.stderr.take(150)})", structural)
                 val baseSignature = result.stderr.ifBlank { result.stdout }
                 when (structural?.verdict) {
                     StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
@@ -120,19 +123,35 @@ class KotlinCodingTask(
                     )
                 }
             }
-            is CompileResult.Unavailable -> StepOutcome(
-                success = false,
-                usefulProgress = false,
-                signature = "UNAVAILABLE:${result.reason}",
-                detail = result.reason
-            )
-            is CompileResult.Denied -> StepOutcome(
-                success = false,
-                usefulProgress = false,
-                signature = "DENIED:${result.reason}",
-                detail = result.reason
-            )
+            is CompileResult.Unavailable -> {
+                logIteration(iterationNum, "компиляция: НЕДОСТУПНА (${result.reason})", null)
+                StepOutcome(
+                    success = false,
+                    usefulProgress = false,
+                    signature = "UNAVAILABLE:${result.reason}",
+                    detail = result.reason
+                )
+            }
+            is CompileResult.Denied -> {
+                logIteration(iterationNum, "компиляция: ОТКЛОНЕНА (${result.reason})", null)
+                StepOutcome(
+                    success = false,
+                    usefulProgress = false,
+                    signature = "DENIED:${result.reason}",
+                    detail = result.reason
+                )
+            }
         }
+    }
+
+    private fun logIteration(iterationNum: Int, compileSummary: String, structural: StructuralBoundary.ShrinkResult?) {
+        val structuralSummary = if (structural == null) {
+            "структурная проверка: сравнивать не с чем или изменений нет"
+        } else {
+            "структурная проверка: функция '${structural.functionName}', " +
+                "сокращение ${(structural.shrinkRatio * 100).toInt()}%, вердикт ${structural.verdict}"
+        }
+        debugLog.add("Итерация $iterationNum:\n$compileSummary\n$structuralSummary")
     }
 
     /**
@@ -213,6 +232,7 @@ class KotlinCodingTask(
     }
 
     suspend fun run(): ToteResult<KotlinCodeState> {
+        debugLog.clear()
         // Захардкоженная задача для теста цикла с реальной структурной проверкой
         // (не реальный ввод пользователя) — функция с полноценным телом и логической
         // опечаткой (tota вместо total), чтобы компиляция упала, но было что сравнивать
