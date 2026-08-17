@@ -19,23 +19,17 @@ import kotlinx.coroutines.flow.collect
  * Кодинг-инстанциация общего TOTE-цикла (item 7a) — первая конкретная реализация
  * StepTest/StepOperate поверх EnergyBudget+ToteEngine+TermuxKotlinCompiler+LlmEngine.
  *
- * Фаза 4 (2026-08-17): структурная проверка (item 8a, ось 2, stage C→B) теперь
- * вызывается ТОЛЬКО на ветке CompileResult.Success, не на CompileFailure. Причина
- * (найдено живым тестом на устройстве, лог показал "сравнивать не с чем" на всех
- * промежуточных сломанных итерациях): findFunctionSpans() требует парную
- * открывающую/закрывающую скобку — на синтаксически неполном коде (типичное
- * промежуточное состояние между попытками починки) функция физически не
- * распознаётся, и это неотличимо от "функцию удалили" на уровне возвращаемого
- * результата. Реальная защита от reward-hacking (ради которой ось и строилась)
- * нужна только там, где компиляция УЖЕ прошла — то есть где формальный "успех"
- * мог быть получен ценой урезанной логики; там же обе стороны сравнения по
- * определению синтаксически валидны (раз скомпилировались), так что и сама
- * эвристика C наконец-то может содержательно сработать. На CompileFailure
- * success уже false и так не даёт ложного успеха — доп. проверка там не нужна.
+ * Фаза 5 (2026-08-17): исправлена диагностическая слепота, найденная живым тестом —
+ * раньше и "сравнивать не с чем" (нет previousCode), и "функция не распознана"
+ * (сломанный синтаксис), и "сравнение прошло, вердикт честный CLEAN" логировались
+ * ОДНОЙ И ТОЙ ЖЕ строкой "не выполнялась или сравнивать не с чем", что не давало
+ * отличить "проверка не сработала" от "проверка сработала и всё чисто". Теперь
+ * resolveStructuralVerdict() возвращает StructuralCheckOutcome с явной причиной.
  *
- * Диагностика (2026-08-17): каждая итерация test() дописывает строку в debugLog —
- * что вернула компиляция, вердикт C, результат эскалации B, если была. Доступ через
- * getDebugLog() — вызывающий код (MainActivity) вешает это на долгое нажатие.
+ * Структурная проверка (stage C→B) по-прежнему вызывается ТОЛЬКО на ветке
+ * CompileResult.Success (фаза 4, 2026-08-17) — на CompileFailure success уже false
+ * и так блокирует ложный успех, а сломанный промежуточный код чаще всего не
+ * распознаётся структурным парсером вообще.
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -50,6 +44,14 @@ data class KotlinCodeState(
     // null на самом первом шаге: сравнивать не с чем, и это не подозрительно по дизайну.
     val previousCode: String? = null
 )
+
+/** Явный исход структурной проверки — чтобы отличать "не сработала" от "сработала и чисто". */
+private sealed class StructuralCheckOutcome {
+    object NoPreviousCode : StructuralCheckOutcome()
+    object FunctionsNotParsed : StructuralCheckOutcome()
+    object NoSignificantChange : StructuralCheckOutcome()
+    data class Flagged(val result: StructuralBoundary.ShrinkResult) : StructuralCheckOutcome()
+}
 
 class KotlinCodingTask(
     private val termuxCompiler: TermuxKotlinCompiler,
@@ -69,8 +71,9 @@ class KotlinCodingTask(
         val iterationNum = debugLog.size + 1
         when (val result = termuxCompiler.compile(state.code)) {
             is CompileResult.Success -> {
-                val structural = resolveStructuralVerdict(state)
-                logIteration(iterationNum, "компиляция: УСПЕХ", structural)
+                val outcome = resolveStructuralVerdict(state)
+                val structural = (outcome as? StructuralCheckOutcome.Flagged)?.result
+                logIteration(iterationNum, "компиляция: УСПЕХ", outcome)
                 when (structural?.verdict) {
                     StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
                         success = true,
@@ -107,7 +110,7 @@ class KotlinCodingTask(
                 // класса, фаза 4) — на сломанном промежуточном коде она не может дать
                 // содержательный результат, а success уже false и так блокирует
                 // ложный успех.
-                logIteration(iterationNum, "компиляция: ОШИБКА (${result.stderr.take(150)})", null)
+                debugLog.add("Итерация $iterationNum:\nкомпиляция: ОШИБКА (${result.stderr.take(150)})\nструктурная проверка: пропущена (CompileFailure)")
                 StepOutcome(
                     success = false,
                     usefulProgress = true,
@@ -116,7 +119,7 @@ class KotlinCodingTask(
                 )
             }
             is CompileResult.Unavailable -> {
-                logIteration(iterationNum, "компиляция: НЕДОСТУПНА (${result.reason})", null)
+                debugLog.add("Итерация $iterationNum:\nкомпиляция: НЕДОСТУПНА (${result.reason})\nструктурная проверка: пропущена")
                 StepOutcome(
                     success = false,
                     usefulProgress = false,
@@ -125,7 +128,7 @@ class KotlinCodingTask(
                 )
             }
             is CompileResult.Denied -> {
-                logIteration(iterationNum, "компиляция: ОТКЛОНЕНА (${result.reason})", null)
+                debugLog.add("Итерация $iterationNum:\nкомпиляция: ОТКЛОНЕНА (${result.reason})\nструктурная проверка: пропущена")
                 StepOutcome(
                     success = false,
                     usefulProgress = false,
@@ -136,36 +139,45 @@ class KotlinCodingTask(
         }
     }
 
-    private fun logIteration(iterationNum: Int, compileSummary: String, structural: StructuralBoundary.ShrinkResult?) {
-        val structuralSummary = if (structural == null) {
-            "структурная проверка: не выполнялась или сравнивать не с чем"
-        } else {
-            "структурная проверка: функция '${structural.functionName}', " +
-                "сокращение ${(structural.shrinkRatio * 100).toInt()}%, вердикт ${structural.verdict}"
+    private fun logIteration(iterationNum: Int, compileSummary: String, outcome: StructuralCheckOutcome) {
+        val structuralSummary = when (outcome) {
+            is StructuralCheckOutcome.NoPreviousCode ->
+                "структурная проверка: нет предыдущей версии кода (первый шаг)"
+            is StructuralCheckOutcome.FunctionsNotParsed ->
+                "структурная проверка: функции не распознаны парсером (возможно, был сломанный синтаксис на предыдущем шаге)"
+            is StructuralCheckOutcome.NoSignificantChange ->
+                "структурная проверка: выполнена, значимых изменений не найдено (CLEAN)"
+            is StructuralCheckOutcome.Flagged -> {
+                val r = outcome.result
+                "структурная проверка: функция '${r.functionName}', " +
+                    "сокращение ${(r.shrinkRatio * 100).toInt()}%, вердикт ${r.verdict}"
+            }
         }
         debugLog.add("Итерация $iterationNum:\n$compileSummary\n$structuralSummary")
     }
 
     /**
-     * Stage C → (если нужно) Stage B. Вызывается ТОЛЬКО из ветки CompileResult.Success
-     * (см. комментарий класса, фаза 4). Находит "худший" вердикт среди функций,
-     * изменившихся между previousCode и code через StructuralBoundary (stage C); если
-     * результат — NEEDS_CONFIRMATION, уточняет его через BytecodeShrinkEscalator
-     * (stage B). Возвращает null, если сравнивать не с чем (первый шаг) или ничего
-     * не изменилось.
+     * Stage C → (если нужно) Stage B. Вызывается ТОЛЬКО из ветки CompileResult.Success.
+     * Возвращает явный StructuralCheckOutcome, различающий "нечего сравнивать",
+     * "не удалось распарсить функции" и "сравнение прошло, но чисто" — раньше все три
+     * случая тонули в одном и том же "null", что маскировало реальную работу проверки.
      */
-    private suspend fun resolveStructuralVerdict(state: KotlinCodeState): StructuralBoundary.ShrinkResult? {
-        val previous = state.previousCode ?: return null
+    private suspend fun resolveStructuralVerdict(state: KotlinCodeState): StructuralCheckOutcome {
+        val previous = state.previousCode ?: return StructuralCheckOutcome.NoPreviousCode
         val results = StructuralBoundary.evaluateShrink(previous, state.code)
+        if (results.isEmpty()) return StructuralCheckOutcome.FunctionsNotParsed
+
         val worst = results
             .filter { it.verdict != StructuralBoundary.ShrinkVerdict.CLEAN }
-            .maxByOrNull { it.shrinkRatio } ?: return null
+            .maxByOrNull { it.shrinkRatio }
+            ?: return StructuralCheckOutcome.NoSignificantChange
 
-        return if (worst.verdict == StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION) {
+        val resolved = if (worst.verdict == StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION) {
             bytecodeEscalator.refine(worst)
         } else {
             worst
         }
+        return StructuralCheckOutcome.Flagged(resolved)
     }
 
     private val operate = StepOperate<KotlinCodeState> { state, outcome ->
