@@ -203,6 +203,13 @@ object StructuralBoundary {
             var current: GrayZoneThresholds = GrayZoneThresholds(INITIAL_LOW, INITIAL_HIGH)
                 private set
 
+            /** Resets thresholds to their initial values — used by tests so one
+             * test's recalibration doesn't leak into another (current is a single
+             * shared instance for the whole JVM process). */
+            fun resetToInitial() {
+                current = GrayZoneThresholds(INITIAL_LOW, INITIAL_HIGH)
+            }
+
             /**
              * Recalibrates the gray-zone bounds from a set of shrink ratios
              * that have ALREADY been AST-confirmed as clean (not reviewPending).
