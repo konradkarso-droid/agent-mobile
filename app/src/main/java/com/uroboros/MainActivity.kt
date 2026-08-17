@@ -97,7 +97,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Item 8a диагностика (2026-08-17): детальный лог TOTE-цикла (компиляция +
+        // вердикты структурной проверки C/B по каждой итерации). Перенесено сюда с
+        // "Показать память" — просмотр/снятие reviewPending переехал на долгое
+        // нажатие "Загрузить модель" (см. ниже).
         binding.buttonShow.setOnLongClickListener {
+            binding.textResults.text = codingTask.getDebugLog()
+            true
+        }
+
+        binding.buttonLoadModel.setOnClickListener {
+            pickModelLauncher.launch(arrayOf("*/*"))
+        }
+
+        // Перенесено с "Показать память" (2026-08-17) — просмотр/снятие reviewPending
+        // по-прежнему нужно (единственный способ разморозить записи, помеченные
+        // RiskTrigger), просто освободили слот под лог TOTE-цикла выше.
+        binding.buttonLoadModel.setOnLongClickListener {
             lifecycleScope.launch {
                 val pending = mediator.getPendingReview()
                 if (pending.isEmpty()) {
@@ -112,10 +128,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             true
-        }
-
-        binding.buttonLoadModel.setOnClickListener {
-            pickModelLauncher.launch(arrayOf("*/*"))
         }
 
         binding.buttonGenerate.setOnClickListener {
