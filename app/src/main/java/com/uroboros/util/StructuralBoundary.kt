@@ -12,11 +12,13 @@ package com.uroboros.util
  *
  * Three-stage escalation for the shrink verdict (2026-08-17, user confirmed):
  * (C) construct-signal heuristic below — always runs first, on-device, no
- * external process; (B) NOT YET IMPLEMENTED — a second stage reusing the
- * existing TermuxKotlinCompiler channel (kotlinc verbose output) to refine
- * an ambiguous C verdict without a new heavy dependency; (A) full AST parse
- * via kotlin-compiler-embeddable — explicitly DEFERRED until stronger
- * hardware exists (item 7b), too resource-heavy for the current target device.
+ * external process; (B) implemented separately in BytecodeShrinkEscalator —
+ * reuses the existing TermuxKotlinCompiler channel to compare real bytecode
+ * size for gray-zone (NEEDS_CONFIRMATION) cases, resistant to cosmetic
+ * text reformatting that stage C's text heuristic can't see through; (A)
+ * full AST parse via kotlin-compiler-embeddable — explicitly DEFERRED until
+ * stronger hardware exists (item 7b), too resource-heavy for the current
+ * target device.
  */
 object StructuralBoundary {
 
@@ -185,7 +187,12 @@ object StructuralBoundary {
         val beforeLines: Int,
         val afterLines: Int, // 0 if the function no longer exists
         val shrinkRatio: Double, // 0.0..1.0, based on construct-signal count (stage C), not raw lines
-        val verdict: ShrinkVerdict
+        val verdict: ShrinkVerdict,
+        // Full function source text (signature through closing brace), for stage-B escalation
+        // (BytecodeShrinkEscalator). Null when there's nothing to compile (function removed
+        // entirely, or extraction wasn't possible).
+        val beforeSource: String? = null,
+        val afterSource: String? = null
     )
 
     /**
@@ -197,6 +204,8 @@ object StructuralBoundary {
      * that would fool a pure line-count comparison.
      */
     fun evaluateShrink(before: String, after: String, thresholds: GrayZoneThresholds = GrayZoneThresholds.current): List<ShrinkResult> {
+        val beforeLinesList = before.lines()
+        val afterLinesList = after.lines()
         val beforeSpans = findFunctionSpans(before).associateBy { it.name }
         val afterSpans = findFunctionSpans(after).associateBy { it.name }
 
@@ -218,7 +227,12 @@ object StructuralBoundary {
                     ratio >= thresholds.highBound -> ShrinkVerdict.SUSPICIOUS
                     else -> ShrinkVerdict.NEEDS_CONFIRMATION
                 }
-                ShrinkResult(name, beforeSpan.bodyLineCount, afterSpan.bodyLineCount, ratio.coerceIn(0.0, 1.0), verdict)
+                val beforeSource = beforeLinesList.subList(beforeSpan.startLine, beforeSpan.endLine + 1).joinToString("\n")
+                val afterSource = afterLinesList.subList(afterSpan.startLine, afterSpan.endLine + 1).joinToString("\n")
+                ShrinkResult(
+                    name, beforeSpan.bodyLineCount, afterSpan.bodyLineCount,
+                    ratio.coerceIn(0.0, 1.0), verdict, beforeSource, afterSource
+                )
             }
         }
     }
@@ -278,18 +292,5 @@ object StructuralBoundary {
                 return sorted[idx]
             }
         }
-    }
-
-    // --- Stage B (kotlinc-assisted refinement) and Stage A (full AST): NOT implemented yet ---
-
-    /**
-     * To be implemented (stage A, deferred until item 7b hardware): routes a
-     * NEEDS_CONFIRMATION/SUSPICIOUS ShrinkResult to a full AST parse via
-     * kotlin-compiler-embeddable, run through the existing Termux RUN_COMMAND
-     * channel (TermuxKotlinCompiler). Returns true if the AST parse confirms
-     * the shrink was dead-code-only.
-     */
-    interface AstEscalator {
-        suspend fun confirmClean(functionName: String, before: String, after: String): Boolean
     }
 }
