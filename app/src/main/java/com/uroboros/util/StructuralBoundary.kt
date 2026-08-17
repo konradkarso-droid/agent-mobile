@@ -10,10 +10,13 @@ package com.uroboros.util
  * item 6b (extracting clean whole-function templates for the local
  * solved-problem store).
  *
- * Heuristic-only pass. Ambiguous cases are meant to escalate to a full
- * AST parse via kotlin-compiler-embeddable (through the existing Termux
- * RUN_COMMAND channel, TermuxKotlinCompiler) — that escalation path is
- * NOT implemented here yet (see AstEscalator stub below).
+ * Three-stage escalation for the shrink verdict (2026-08-17, user confirmed):
+ * (C) construct-signal heuristic below — always runs first, on-device, no
+ * external process; (B) NOT YET IMPLEMENTED — a second stage reusing the
+ * existing TermuxKotlinCompiler channel (kotlinc verbose output) to refine
+ * an ambiguous C verdict without a new heavy dependency; (A) full AST parse
+ * via kotlin-compiler-embeddable — explicitly DEFERRED until stronger
+ * hardware exists (item 7b), too resource-heavy for the current target device.
  */
 object StructuralBoundary {
 
@@ -21,7 +24,8 @@ object StructuralBoundary {
         val name: String,
         val startLine: Int, // inclusive, 0-based
         val endLine: Int,   // inclusive, 0-based
-        val bodyLineCount: Int
+        val bodyLineCount: Int,
+        val constructSignalCount: Int
     )
 
     // Matches "fun name(" possibly preceded by modifiers (private/suspend/etc),
@@ -29,10 +33,22 @@ object StructuralBoundary {
     //   private suspend fun String.doThing(x: Int): Boolean {
     private val FUN_SIGNATURE = Regex("""\bfun\s+(?:[A-Za-z_][A-Za-z0-9_<>,.\s]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(""")
 
+    // Language constructs counted as "meaningful signal" for the shrink axis (item 8a, stage C).
+    // Deliberately conservative/simple — a heuristic upgrade over raw line count, NOT a real
+    // parser; can still be fooled by adversarial reformatting, which is exactly what stage B/A
+    // exist to catch when this stage's verdict lands in the gray zone.
+    private val CONSTRUCT_KEYWORDS = listOf(
+        "if", "else", "for", "while", "when", "return", "val", "var", "try", "catch", "throw"
+    )
+    private val KEYWORD_REGEXES = CONSTRUCT_KEYWORDS.map { Regex("\\b$it\\b") }
+    // identifier( — heuristic for function/method calls; deliberately not excluding "fun name("
+    // itself (the signature line isn't part of the counted body range anyway).
+    private val CALL_HEURISTIC = Regex("""\b[A-Za-z_][A-Za-z0-9_]*\s*\(""")
+
     /**
      * Finds top-level and class-member named functions in [source].
      * Deliberately does NOT descend into lambdas/anonymous functions —
-     * those are left to the AST escalation path, not this heuristic.
+     * those are left to later escalation stages, not this heuristic.
      *
      * Brace balance ignores braces inside string literals, char literals,
      * line comments, and block comments, to avoid the classic false-match
@@ -52,12 +68,15 @@ object StructuralBoundary {
                 if (openLine != null) {
                     val closeLine = findMatchingCloseBraceLine(lines, openLine)
                     if (closeLine != null) {
+                        val bodyLines = lines.subList(openLine, closeLine + 1)
+                        val signalCount = bodyLines.sumOf { countConstructSignals(it) }
                         spans.add(
                             FunctionSpan(
                                 name = name,
                                 startLine = i,
                                 endLine = closeLine,
-                                bodyLineCount = closeLine - openLine + 1
+                                bodyLineCount = closeLine - openLine + 1,
+                                constructSignalCount = signalCount
                             )
                         )
                         i = closeLine + 1
@@ -66,11 +85,22 @@ object StructuralBoundary {
                 }
                 // expression-body function (fun x() = ...) or unmatched brace
                 // (single-expression syntax, no {} body) — no shrink-tracking
-                // for these via this heuristic; skip, leave to AST path.
+                // for these via this heuristic; skip, leave to later stages.
             }
             i++
         }
         return spans
+    }
+
+    /** Counts construct-signal occurrences on one (already brace-stripped) source line. */
+    private fun countConstructSignals(rawLine: String): Int {
+        val clean = stripNonCode(rawLine)
+        var count = 0
+        for (regex in KEYWORD_REGEXES) {
+            count += regex.findAll(clean).count()
+        }
+        count += CALL_HEURISTIC.findAll(clean).count()
+        return count
     }
 
     /** Scans forward from [fromLine] for the first un-ignored '{'. */
@@ -107,11 +137,12 @@ object StructuralBoundary {
 
     /**
      * Removes string/char literal contents and comments from [line] so brace
-     * counting can't be fooled by braces inside them. Returns the cleaned
-     * line plus whether a block comment is still open at end-of-line.
-     * Deliberately simple — no raw-string ("""...""") or template-expression
-     * ("${...}") handling; those stay ambiguous by design and are meant to
-     * push the caller toward AST escalation rather than a wrong heuristic answer.
+     * counting AND construct-signal counting can't be fooled by keywords or
+     * braces inside them. Returns the cleaned line plus whether a block
+     * comment is still open at end-of-line. Deliberately simple — no
+     * raw-string ("""...""") or template-expression ("${...}") handling;
+     * those stay ambiguous by design and are meant to push the caller
+     * toward later escalation stages rather than a wrong heuristic answer.
      */
     private fun stripNonCodeTracked(line: String, startInBlockComment: Boolean): Pair<String, Boolean> {
         val out = StringBuilder()
@@ -153,14 +184,17 @@ object StructuralBoundary {
         val functionName: String,
         val beforeLines: Int,
         val afterLines: Int, // 0 if the function no longer exists
-        val shrinkRatio: Double, // 0.0..1.0, meaningless if afterLines == 0
+        val shrinkRatio: Double, // 0.0..1.0, based on construct-signal count (stage C), not raw lines
         val verdict: ShrinkVerdict
     )
 
     /**
      * Compares functions present in [before] against [after] by name.
      * A function that disappears entirely is NOT suspicious (clean removal).
-     * A function that survives but shrank is classified via the gray zone.
+     * A function that survives but shrank is classified via the gray zone,
+     * using the construct-signal count (stage C heuristic) rather than raw
+     * line count — resistant to whitespace/blank-line reformatting tricks
+     * that would fool a pure line-count comparison.
      */
     fun evaluateShrink(before: String, after: String, thresholds: GrayZoneThresholds = GrayZoneThresholds.current): List<ShrinkResult> {
         val beforeSpans = findFunctionSpans(before).associateBy { it.name }
@@ -172,8 +206,13 @@ object StructuralBoundary {
                 // whole function removed — clean by design, not scored further
                 ShrinkResult(name, beforeSpan.bodyLineCount, 0, 0.0, ShrinkVerdict.CLEAN)
             } else {
-                val ratio = if (beforeSpan.bodyLineCount == 0) 0.0
-                    else 1.0 - (afterSpan.bodyLineCount.toDouble() / beforeSpan.bodyLineCount.toDouble())
+                // Signal count is the primary measure; if a function somehow has zero
+                // counted signals (e.g. a body that's just delegating calls we didn't
+                // catch), fall back to line count so we don't silently skip scoring it.
+                val beforeMass = if (beforeSpan.constructSignalCount > 0) beforeSpan.constructSignalCount else beforeSpan.bodyLineCount
+                val afterMass = if (beforeSpan.constructSignalCount > 0) afterSpan.constructSignalCount else afterSpan.bodyLineCount
+                val ratio = if (beforeMass == 0) 0.0
+                    else 1.0 - (afterMass.toDouble() / beforeMass.toDouble())
                 val verdict = when {
                     ratio <= thresholds.lowBound -> ShrinkVerdict.CLEAN
                     ratio >= thresholds.highBound -> ShrinkVerdict.SUSPICIOUS
@@ -191,7 +230,7 @@ object StructuralBoundary {
             // Placeholder starting values — not derived from any external
             // statistic (none exists for this specific question). Meant to
             // be superseded by recalibrateFromConfirmedCleanRatios() once
-            // enough AST-confirmed data exists (item 6 consolidation pass).
+            // enough confirmed data exists (item 6 consolidation pass).
             private const val INITIAL_LOW = 0.20
             private const val INITIAL_HIGH = 0.50
 
@@ -212,7 +251,7 @@ object StructuralBoundary {
 
             /**
              * Recalibrates the gray-zone bounds from a set of shrink ratios
-             * that have ALREADY been AST-confirmed as clean (not reviewPending).
+             * that have ALREADY been confirmed as clean (not reviewPending).
              * Caller is responsible for that filtering — this function does
              * pure arithmetic only, no judgment call, so the model is
              * structurally outside this decision loop.
@@ -241,13 +280,14 @@ object StructuralBoundary {
         }
     }
 
-    // --- AST escalation: NOT implemented yet, stub only ---
+    // --- Stage B (kotlinc-assisted refinement) and Stage A (full AST): NOT implemented yet ---
 
     /**
-     * To be implemented: routes a NEEDS_CONFIRMATION/SUSPICIOUS ShrinkResult
-     * to a full AST parse via kotlin-compiler-embeddable, run through the
-     * existing Termux RUN_COMMAND channel (TermuxKotlinCompiler). Returns
-     * true if the AST parse confirms the shrink was dead-code-only.
+     * To be implemented (stage A, deferred until item 7b hardware): routes a
+     * NEEDS_CONFIRMATION/SUSPICIOUS ShrinkResult to a full AST parse via
+     * kotlin-compiler-embeddable, run through the existing Termux RUN_COMMAND
+     * channel (TermuxKotlinCompiler). Returns true if the AST parse confirms
+     * the shrink was dead-code-only.
      */
     interface AstEscalator {
         suspend fun confirmClean(functionName: String, before: String, after: String): Boolean
