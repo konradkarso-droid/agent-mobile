@@ -1,6 +1,7 @@
 package com.uroboros.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Before
 import org.junit.Test
 
 /**
@@ -11,6 +12,11 @@ import org.junit.Test
 class StructuralBoundaryTest {
 
     private val defaultThresholds = StructuralBoundary.GrayZoneThresholds(lowBound = 0.20, highBound = 0.50)
+
+    @Before
+    fun resetThresholds() {
+        StructuralBoundary.GrayZoneThresholds.resetToInitial()
+    }
 
     @Test
     fun `whole function removal is CLEAN, not suspicious`() {
