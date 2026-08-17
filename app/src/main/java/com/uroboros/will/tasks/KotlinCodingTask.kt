@@ -5,6 +5,7 @@ import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.util.StructuralBoundary
+import com.uroboros.will.BytecodeShrinkEscalator
 import com.uroboros.will.CompileResult
 import com.uroboros.will.StepOperate
 import com.uroboros.will.StepOutcome
@@ -18,14 +19,14 @@ import kotlinx.coroutines.flow.collect
  * Кодинг-инстанциация общего TOTE-цикла (item 7a) — первая конкретная реализация
  * StepTest/StepOperate поверх EnergyBudget+ToteEngine+TermuxKotlinCompiler+LlmEngine.
  *
- * Фаза 2 (2026-08-16): StepTest проверяет и компиляцию (Y/N), и ось "полезный объём
- * кода" (item 8a, ось 2) через StructuralBoundary — эвристика first-pass, серая зона
- * с эмерджентными порогами. Проверка теперь стоит на ОБЕИХ ветках — и на успешной
- * компиляции, и на провальной — потому что "успех" ценой вырезанной логики обязан
- * не засчитываться как прогресс (см. ToteEngine: success && usefulProgress).
- * AST-эскалация (kotlin-compiler-embeddable через Termux) пока НЕ реализована —
- * StructuralBoundary.AstEscalator не подключён, поэтому NEEDS_CONFIRMATION пока
- * трактуется мягко (не блокирует), а SUSPICIOUS — блокирует уже сейчас.
+ * Фаза 3 (2026-08-17): структурная проверка (item 8a, ось 2) теперь трёхступенчатая —
+ * (C) StructuralBoundary — быстрая текстовая эвристика по конструкциям, всегда;
+ * (B) BytecodeShrinkEscalator — только при NEEDS_CONFIRMATION от C, сравнивает реальный
+ * байткод обеих версий функции через TermuxKotlinCompiler (двойной поход в Termux,
+ * но только для серой зоны, не на каждый шаг); (A) полноценный AST — отложено до
+ * нового железа (item 7b), не реализовано. Обе ветки compile-результата (Success и
+ * CompileFailure) прогоняются через один и тот же resolveStructuralVerdict(), чтобы
+ * не дублировать C→B логику в двух местах.
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -45,13 +46,14 @@ class KotlinCodingTask(
     private val termuxCompiler: TermuxKotlinCompiler,
     private val llmEngine: LlmEngine,
     private val mediator: TrustedMediator,
-    private val watchdog: DeviceSafetyWatchdog
+    private val watchdog: DeviceSafetyWatchdog,
+    private val bytecodeEscalator: BytecodeShrinkEscalator = BytecodeShrinkEscalator(termuxCompiler)
 ) {
 
     private val test = StepTest<KotlinCodeState> { state ->
         when (val result = termuxCompiler.compile(state.code)) {
             is CompileResult.Success -> {
-                val structural = evaluateStructural(state)
+                val structural = resolveStructuralVerdict(state)
                 when (structural?.verdict) {
                     StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
                         success = true,
@@ -64,14 +66,16 @@ class KotlinCodingTask(
                     )
                     StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION -> StepOutcome(
                         success = true,
-                        // AST-эскалация ещё не подключена — до её появления не блокируем,
-                        // только помечаем в detail. TODO: как только AstEscalator готов,
-                        // здесь должен быть реальный вызов подтверждения, а не мягкое "true".
+                        // Это состояние означает, что даже после эскалации в stage B
+                        // (BytecodeShrinkEscalator) вердикт остался неопределённым —
+                        // либо одна из двух компиляций байткода не удалась, либо
+                        // Termux/ActionGate отказали. Fail-closed: не блокируем, но
+                        // явно помечаем как требующее подтверждения.
                         usefulProgress = true,
                         signature = "OK",
                         detail = "${result.stdout}\n[структурная проверка: серая зона для " +
-                            "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%), " +
-                            "требуется AST-подтверждение — пока не реализовано]"
+                            "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%) " +
+                            "не разрешена даже после байткод-эскалации]"
                     )
                     else -> StepOutcome(
                         success = true,
@@ -82,7 +86,7 @@ class KotlinCodingTask(
                 }
             }
             is CompileResult.CompileFailure -> {
-                val structural = evaluateStructural(state)
+                val structural = resolveStructuralVerdict(state)
                 val baseSignature = result.stderr.ifBlank { result.stdout }
                 when (structural?.verdict) {
                     StructuralBoundary.ShrinkVerdict.SUSPICIOUS -> StepOutcome(
@@ -98,8 +102,8 @@ class KotlinCodingTask(
                         usefulProgress = true,
                         signature = baseSignature,
                         detail = "${result.stderr}\n[структурная проверка: серая зона для " +
-                            "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%), " +
-                            "требуется AST-подтверждение — пока не реализовано]"
+                            "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%) " +
+                            "не разрешена даже после байткод-эскалации]"
                     )
                     else -> StepOutcome(
                         success = false,
@@ -125,15 +129,24 @@ class KotlinCodingTask(
     }
 
     /**
-     * Находит "худший" вердикт среди функций, изменившихся между previousCode и code.
-     * Возвращает null, если сравнивать не с чем (первый шаг) или ничего не изменилось.
+     * Stage C → (если нужно) Stage B. Находит "худший" вердикт среди функций,
+     * изменившихся между previousCode и code через StructuralBoundary (stage C);
+     * если результат — NEEDS_CONFIRMATION, уточняет его через BytecodeShrinkEscalator
+     * (stage B). Возвращает null, если сравнивать не с чем (первый шаг) или ничего
+     * не изменилось.
      */
-    private fun evaluateStructural(state: KotlinCodeState): StructuralBoundary.ShrinkResult? {
+    private suspend fun resolveStructuralVerdict(state: KotlinCodeState): StructuralBoundary.ShrinkResult? {
         val previous = state.previousCode ?: return null
         val results = StructuralBoundary.evaluateShrink(previous, state.code)
-        return results
+        val worst = results
             .filter { it.verdict != StructuralBoundary.ShrinkVerdict.CLEAN }
-            .maxByOrNull { it.shrinkRatio }
+            .maxByOrNull { it.shrinkRatio } ?: return null
+
+        return if (worst.verdict == StructuralBoundary.ShrinkVerdict.NEEDS_CONFIRMATION) {
+            bytecodeEscalator.refine(worst)
+        } else {
+            worst
+        }
     }
 
     private val operate = StepOperate<KotlinCodeState> { state, outcome ->
