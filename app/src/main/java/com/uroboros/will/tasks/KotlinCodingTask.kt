@@ -7,6 +7,9 @@ import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.util.StructuralBoundary
 import com.uroboros.will.BytecodeShrinkEscalator
 import com.uroboros.will.CompileResult
+import com.uroboros.will.PendingQuerySource
+import com.uroboros.will.QueryDecision
+import com.uroboros.will.QueryHandler
 import com.uroboros.will.StepOperate
 import com.uroboros.will.StepOutcome
 import com.uroboros.will.StepTest
@@ -31,6 +34,12 @@ import kotlinx.coroutines.flow.collect
  * CompileResult.Success (фаза 4, 2026-08-17) — на CompileFailure success уже false
  * и так блокирует ложный успех, а сломанный промежуточный код чаще всего не
  * распознаётся структурным парсером вообще.
+ *
+ * Item 9, первый проход (2026-08-18): task description и pendingQuerySource
+ * подключены к ToteEngine — но реального пути от UI к submit() ещё нет (нужен
+ * отдельный шаг на стороне экрана/Activity), и queryHandler здесь — временная
+ * заглушка (пишет решение классификатора в debugLog для наблюдения), а не
+ * реальная реакция (ответ пользователю / пауза цикла).
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -59,14 +68,30 @@ class KotlinCodingTask(
     private val llmEngine: LlmEngine,
     private val mediator: TrustedMediator,
     private val watchdog: DeviceSafetyWatchdog,
-    private val bytecodeEscalator: BytecodeShrinkEscalator = BytecodeShrinkEscalator(termuxCompiler)
+    private val bytecodeEscalator: BytecodeShrinkEscalator = BytecodeShrinkEscalator(termuxCompiler),
+    private val pendingQuerySource: PendingQuerySource? = null
 ) {
 
     private val debugLog = mutableListOf<String>()
 
+    // Захардкоженное описание подзадачи для тестового сценария (см. run()) —
+    // когда цикл будет получать реальные задачи, это должно приходить извне,
+    // а не быть константой класса.
+    private val taskDescription =
+        "Исправить функцию sumPositive: она должна суммировать положительные числа списка."
+
     /** Детальный лог по каждой итерации TOTE-цикла — компиляция + вердикты C/B. */
     fun getDebugLog(): String =
         if (debugLog.isEmpty()) "Лог пуст (цикл ещё не запускался)" else debugLog.joinToString("\n\n---\n\n")
+
+    private val queryHandler = QueryHandler<KotlinCodeState> { query, decision, _, _ ->
+        val label = when (decision) {
+            QueryDecision.Light -> "LIGHT (ответить сразу, цикл не трогаем)"
+            QueryDecision.HeavyUrgent -> "HEAVY_URGENT (резкая пауза — пока не реализована)"
+            QueryDecision.HeavyDeferred -> "HEAVY_DEFERRED (мягкая пауза на шве — пока не реализована)"
+        }
+        debugLog.add("[item9] Запрос: \"$query\" -> $label")
+    }
 
     private val test = StepTest<KotlinCodeState> { state ->
         val iterationNum = debugLog.size + 1
@@ -275,8 +300,14 @@ class KotlinCodingTask(
             """.trimIndent(),
             lastError = null
         )
-        val engine = ToteEngine(test = test, operate = operate, watchdog = watchdog)
-        val result = engine.run(initialState)
+        val engine = ToteEngine(
+            test = test,
+            operate = operate,
+            watchdog = watchdog,
+            pendingQuerySource = pendingQuerySource,
+            queryHandler = queryHandler
+        )
+        val result = engine.run(initialState, taskDescription)
         saveVaccineLine(result)
         return result
     }
