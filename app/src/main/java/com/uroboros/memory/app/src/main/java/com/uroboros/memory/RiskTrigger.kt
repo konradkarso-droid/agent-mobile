@@ -98,6 +98,19 @@ object RiskTrigger {
         return jaccard(a, b) >= REPEATED_ERROR_JACCARD_THRESHOLD
     }
 
+    /**
+     * Общего назначения коэффициент текстовой схожести (0.0–1.0), без встроенного
+     * порога — вызывающий код сам решает, что считать "похоже". Переиспользует ту же
+     * стемминг+Jaccard инфраструктуру, что isRepeatedError/findContradiction.
+     *
+     * Item 9 (2026-08-18): используется классификатором light/heavy для сравнения
+     * входящего запроса пользователя с (текущей ошибкой + описанием подзадачи) на
+     * швах TOTE-цикла — сюда сознательно НЕ зашит собственный порог, чтобы
+     * RiskTrigger оставался общей утилитой, не завязанной на конкретный домен.
+     */
+    fun textSimilarity(a: String, b: String): Double =
+        jaccard(stemmedTokenize(a), stemmedTokenize(b))
+
     private fun hasUncertaintyMarker(text: String): Boolean {
         val words = tokenize(text)
         return UNCERTAINTY_MARKERS.any { marker ->
