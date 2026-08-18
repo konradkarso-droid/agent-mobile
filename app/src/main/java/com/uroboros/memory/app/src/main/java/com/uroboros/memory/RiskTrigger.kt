@@ -27,11 +27,16 @@ object RiskTrigger {
     // Ordered longest-first so the longest matching suffix is stripped.
     // Deliberately crude (no dictionary, no morphology) — this is cheap
     // friction toward the reviewPending checkpoint, not a linguistic tool.
+    // 2026-08-18: added "ия" alongside the existing "ию" — without it, the
+    // accusative ("-ию") and nominative ("-ия") forms of the same noun
+    // (e.g. "функцию"/"функция") stemmed to different roots, silently killing
+    // Jaccard overlap between them (found via item 9's QueryUrgencyClassifier
+    // using RiskTrigger.textSimilarity on task descriptions vs. queries).
     private val SUFFIXES = listOf(
         "иями",
         "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими",
         "ев", "ов", "ам", "ям", "ах", "ях", "ом", "ем", "ей",
-        "юю", "ая", "яя", "ое", "ее", "ых", "их", "ию", "ья", "ье", "ий", "ый",
+        "юю", "ая", "яя", "ое", "ее", "ых", "их", "ию", "ия", "ья", "ье", "ий", "ый",
         "ы", "и", "а", "я", "о", "е", "у", "ю", "й", "ь"
     )
 
