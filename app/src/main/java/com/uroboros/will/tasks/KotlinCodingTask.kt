@@ -19,12 +19,13 @@ import kotlinx.coroutines.flow.collect
  * Кодинг-инстанциация общего TOTE-цикла (item 7a) — первая конкретная реализация
  * StepTest/StepOperate поверх EnergyBudget+ToteEngine+TermuxKotlinCompiler+LlmEngine.
  *
- * Фаза 5 (2026-08-17): исправлена диагностическая слепота, найденная живым тестом —
- * раньше и "сравнивать не с чем" (нет previousCode), и "функция не распознана"
- * (сломанный синтаксис), и "сравнение прошло, вердикт честный CLEAN" логировались
- * ОДНОЙ И ТОЙ ЖЕ строкой "не выполнялась или сравнивать не с чем", что не давало
- * отличить "проверка не сработала" от "проверка сработала и всё чисто". Теперь
- * resolveStructuralVerdict() возвращает StructuralCheckOutcome с явной причиной.
+ * Фаза 6 (2026-08-18): подключён снимок последнего стабильного состояния (item 6b/8,
+ * `LastStableSnapshot` через `TrustedMediator`). Два решения, принятых явно, не по
+ * умолчанию: (1) снимок сохраняется ТОЛЬКО когда usefulProgress=true на ветке Success
+ * (не при SUSPICIOUS/NEEDS_CONFIRMATION) — снимок должен быть надёжной точкой, а не
+ * "успешным, но подозрительным" кодом; (2) при эвакуации снимок только читается и
+ * попадает в вакцина-строку для видимости — автоматического отката/продолжения с
+ * сохранённого места пока нет (это уже про item 9, не спроектирован).
  *
  * Структурная проверка (stage C→B) по-прежнему вызывается ТОЛЬКО на ветке
  * CompileResult.Success (фаза 4, 2026-08-17) — на CompileFailure success уже false
@@ -97,12 +98,18 @@ class KotlinCodingTask(
                             "'${structural.functionName}' (${(structural.shrinkRatio * 100).toInt()}%) " +
                             "не разрешена даже после байткод-эскалации]"
                     )
-                    else -> StepOutcome(
-                        success = true,
-                        usefulProgress = true,
-                        signature = "OK",
-                        detail = result.stdout
-                    )
+                    else -> {
+                        // Чистый, надёжный успех — единственный случай, когда снимок
+                        // последнего стабильного состояния имеет смысл перезаписывать
+                        // (item 6b/8, решение 2026-08-18: не при SUSPICIOUS/NEEDS_CONFIRMATION).
+                        mediator.saveStableSnapshot(state.code)
+                        StepOutcome(
+                            success = true,
+                            usefulProgress = true,
+                            signature = "OK",
+                            detail = result.stdout
+                        )
+                    }
                 }
             }
             is CompileResult.CompileFailure -> {
@@ -221,14 +228,26 @@ class KotlinCodingTask(
         return withoutFirstFence.substringBeforeLast("```").trim()
     }
 
-    /** "Вакцина-строка" — сохраняет извлечённый урок в Sticker-память. */
+    /**
+     * "Вакцина-строка" — сохраняет извлечённый урок в Sticker-память. При эвакуации
+     * дополнительно читает снимок последнего стабильного состояния (item 6b/8) и
+     * добавляет его в текст записи — ТОЛЬКО для видимости, не как автоматический
+     * откат (решение 2026-08-18: реального resume пока нет, это отдельный item 9).
+     */
     private suspend fun saveVaccineLine(result: ToteResult<KotlinCodeState>) {
         val text = when (result) {
             is ToteResult.Success ->
                 "[TOTE] Успех за ${result.iterations} итераций. Итоговый код:\n${result.finalState.code}"
-            is ToteResult.Evacuated ->
+            is ToteResult.Evacuated -> {
+                val snapshot = mediator.getStableSnapshot()
+                val snapshotNote = if (snapshot != null) {
+                    "\n\nПоследний известный стабильный код (не восстановлен автоматически):\n${snapshot.code}"
+                } else {
+                    "\n\n(снимка стабильного состояния ещё не было)"
+                }
                 "[TOTE] Эвакуация после ${result.iterations} итераций (${result.reason}). " +
-                    "Последняя ошибка:\n${result.lastOutcome?.detail ?: "(нет данных)"}"
+                    "Последняя ошибка:\n${result.lastOutcome?.detail ?: "(нет данных)"}$snapshotNote"
+            }
             is ToteResult.HardStopped ->
                 "[TOTE] Жёсткий стоп после ${result.iterations} итераций (лимит). " +
                     "Последняя ошибка:\n${result.lastOutcome?.detail ?: "(нет данных)"}"
