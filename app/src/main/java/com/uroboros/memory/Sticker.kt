@@ -6,6 +6,12 @@ import androidx.room.PrimaryKey
 enum class Layer { RED, ORANGE, YELLOW, GREEN, BLUE, PURPLE }
 enum class Importance { LOW, MEDIUM, HIGH }
 
+// Item 3 / Track A (info-source trust, designed 2026-08-20): два новых поля,
+// tag-only — никогда не участвуют в Prism decay/ranking математике.
+// Устанавливаются один раз при создании, затем не пересматриваются.
+enum class SourceKind { USER_STATED, AGENT_INFERRED, OCR_EXTRACTED }
+enum class ConfidenceLevel { OBSERVED, INFERRED, UNCERTAIN }
+
 @Entity(tableName = "stickers")
 data class Sticker(
     @PrimaryKey(autoGenerate = true)
@@ -18,5 +24,7 @@ data class Sticker(
     var layer: String = Layer.GREEN.name,
     var expiryTime: Long? = null,
     var importance: String = Importance.MEDIUM.name,
-    var reviewPending: Boolean = false
+    var reviewPending: Boolean = false,
+    val source: String = SourceKind.USER_STATED.name,
+    val confidence: String = ConfidenceLevel.OBSERVED.name
 )
