@@ -9,6 +9,12 @@ class HourglassMemory(private val dao: StickerDao) {
 
         // текстовый поиск дополняет отбор по слоям, а не заменяет его —
         // так старое поведение (LIKE-поиск) не теряется
+        val textMatchIds: Set<Long> = if (!query.isNullOrBlank()) {
+            dao.search(query, limit).map { it.id }.toSet()
+        } else {
+            emptySet()
+        }
+
         val combined = if (!query.isNullOrBlank()) {
             val textMatches = dao.search(query, limit)
             (layerPicks + textMatches).distinctBy { it.id }
@@ -16,8 +22,20 @@ class HourglassMemory(private val dao: StickerDao) {
             layerPicks
         }
 
+        // 2026-08-20: Prism.filter() не фильтрует по смыслу — отдаёт почти весь
+        // спектр слоёв безусловно (query там влияет только на BLUE/PURPLE через
+        // спецслова "старое"/"архив"). Раньше финальная сортировка шла только по
+        // createdAt, из-за чего реальные текстовые совпадения из dao.search()
+        // тонули среди нерелевantных, но более новых записей (найдено при
+        // подключении памяти к промпту buttonGenerate — модель получала не тот
+        // стикер). Теперь при непустом query записи, реально найденные
+        // dao.search(), сортируются первыми; при пустом query поведение не
+        // меняется (buttonShow без текста работает как раньше).
         val result = combined
-            .sortedByDescending { it.createdAt }
+            .sortedWith(
+                compareByDescending<Sticker> { it.id in textMatchIds }
+                    .thenByDescending { it.createdAt }
+            )
             .take(limit)
 
         result.forEach {
