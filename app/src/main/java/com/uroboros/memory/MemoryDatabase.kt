@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Sticker::class, ActionEvidence::class, LastStableSnapshot::class],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -38,6 +38,22 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Item 3 / Track A (2026-08-20): два новых tag-only поля на Sticker —
+        // source (откуда пришёл факт) и confidence (насколько он подтверждён).
+        // Существующие строки (созданные до этого поля) считаются проверенными:
+        // USER_STATED / OBSERVED — устаревание это отдельная ось (item 5/6),
+        // не имеет отношения к source/confidence.
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `stickers` ADD COLUMN `source` TEXT NOT NULL DEFAULT 'USER_STATED'"
+                )
+                db.execSQL(
+                    "ALTER TABLE `stickers` ADD COLUMN `confidence` TEXT NOT NULL DEFAULT 'OBSERVED'"
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: MemoryDatabase? = null
         fun getInstance(context: Context): MemoryDatabase {
@@ -46,8 +62,8 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6)
-                 .fallbackToDestructiveMigration() // подстраховка для версий < 5, не для 5→6
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+                 .fallbackToDestructiveMigration() // подстраховка для версий < 5, не для 5→6→7
                  .build().also { INSTANCE = it }
             }
         }
