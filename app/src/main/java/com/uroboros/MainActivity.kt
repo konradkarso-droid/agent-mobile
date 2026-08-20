@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.LlmEngine
+import com.uroboros.memory.SourceKind
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.will.ToteResult
@@ -24,6 +25,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var watchdog: DeviceSafetyWatchdog
     private lateinit var termuxCompiler: TermuxKotlinCompiler
     private lateinit var codingTask: KotlinCodingTask
+
+    // Item 3 / Track A (2026-08-20): debug-only отображение provenance стикера.
+    // Пока единственное место, где source вообще виден (не в промпте модели —
+    // там подмешивания стикеров сейчас нет вообще, см. заметку в backlog).
+    private fun sourceLabel(sourceName: String): String = when (sourceName) {
+        SourceKind.USER_STATED.name -> "[от пользователя]"
+        SourceKind.AGENT_INFERRED.name -> "[вывод агента]"
+        SourceKind.OCR_EXTRACTED.name -> "[из скриншота]"
+        else -> "[?]"
+    }
 
     private val pickModelLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
@@ -87,7 +98,7 @@ class MainActivity : AppCompatActivity() {
                         "Пока пусто. Всего записей в базе: $total"
                     } else {
                         val lines = results.joinToString("\n\n") { sticker ->
-                            "• ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
+                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
                         }
                         "Всего записей в базе: $total\n\n$lines"
                     }
