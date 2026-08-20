@@ -27,8 +27,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var codingTask: KotlinCodingTask
 
     // Item 3 / Track A (2026-08-20): debug-only отображение provenance стикера.
-    // Пока единственное место, где source вообще виден (не в промпте модели —
-    // там подмешивания стикеров сейчас нет вообще, см. заметку в backlog).
+    // Также переиспользуется в buttonGenerate для реального блока памяти в промпте
+    // (см. Sticker→prompt injection, 2026-08-20).
     private fun sourceLabel(sourceName: String): String = when (sourceName) {
         SourceKind.USER_STATED.name -> "[от пользователя]"
         SourceKind.AGENT_INFERRED.name -> "[вывод агента]"
@@ -142,14 +142,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.buttonGenerate.setOnClickListener {
-            val prompt = binding.editTextInput.text.toString()
-            if (prompt.isBlank()) {
+            val userText = binding.editTextInput.text.toString()
+            if (userText.isBlank()) {
                 Toast.makeText(this, "Введите запрос для генерации", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             binding.buttonGenerate.isEnabled = false
             binding.textResults.text = ""
             lifecycleScope.launch {
+                // Item 3 / Track A → prompt injection (2026-08-20): подмешиваем контекст
+                // из памяти в user-turn (не в system_prompt — сломало бы KV-кэш system-
+                // части, см. заметку в backlog). limit=5 — временный плейсхолдер, НЕ
+                // откалиброван; пересмотреть после 5b(c) (rolling context auto-trim) и
+                // реальных данных с целевого устройства.
+                val stickers = mediator.getContext(query = userText, limit = 5)
+                val prompt = if (stickers.isEmpty()) {
+                    userText
+                } else {
+                    val memoryBlock = stickers.joinToString("\n") { sticker ->
+                        "- ${sourceLabel(sticker.source)} ${sticker.content}"
+                    }
+                    "Контекст из памяти:\n$memoryBlock\n\nВопрос: $userText"
+                }
+
                 llmEngine.generateFlow(prompt).collect { event ->
                     when (event) {
                         is GenerationEvent.Token -> {
