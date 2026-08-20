@@ -36,6 +36,9 @@ class LlmEngine(
         if (ok) {
                 engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
                 engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
+                // BIBLE soft-wall: задаётся один раз при загрузке (static), не на каждый
+                // generateFlow-вызов — сохраняет KV-cache prefix reuse в native-движке.
+                engine.setSystemPrompt(BibleSoftWall.TEXT)
         }
         return ok
     }
@@ -57,6 +60,7 @@ class LlmEngine(
         if (ok) {
                 engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
                 engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
+                engine.setSystemPrompt(BibleSoftWall.TEXT)
         }
         return ok
     }
