@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.LlmEngine
+import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.TrustedMediator
@@ -199,7 +200,13 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             lifecycleScope.launch {
-                mediator.saveEvent(text)
+                // Дыра №4: провенанс задаётся явно. Это ручной ввод пользователя —
+                // единственное место в проекте, где USER_STATED действительно верен.
+                mediator.saveEvent(
+                    content = text,
+                    source = SourceKind.USER_STATED,
+                    confidence = ConfidenceLevel.OBSERVED
+                )
                 binding.editTextInput.text.clear()
                 Toast.makeText(this@MainActivity, "Сохранено", Toast.LENGTH_SHORT).show()
             }
