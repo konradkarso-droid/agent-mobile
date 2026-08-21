@@ -38,11 +38,17 @@ import kotlinx.coroutines.flow.collect
  * и так блокирует ложный успех, а сломанный промежуточный код чаще всего не
  * распознаётся структурным парсером вообще.
  *
- * Item 9, первый проход (2026-08-18): task description и pendingQuerySource
- * подключены к ToteEngine — но реального пути от UI к submit() ещё нет (нужен
- * отдельный шаг на стороне экрана/Activity), и queryHandler здесь — временная
- * заглушка (пишет решение классификатора в debugLog для наблюдения), а не
- * реальная реакция (ответ пользователю / пауза цикла).
+ * Item 9, второй проход (2026-08-21): pendingQuerySource + queryHandler теперь
+ * доведены до реального ответа пользователю, не только до классификации.
+ * queryHandler генерирует ответ через llmEngine.generateFlow(query) и отдаёт его
+ * наружу через опциональный onAnswer — UI-слой (MainActivity) сам решает, куда его
+ * показать. ВАЖНО: пауза/приоритет доставки по-прежнему не реализованы (решение
+ * 2026-08-20 из backlog: HeavyUrgent/HeavyDeferred не останавливают operate() —
+ * цикл продолжает идти в любом случае), поэтому ответ генерируется и доставляется
+ * одинаково для всех трёх решений классификатора — разница видна только в тексте
+ * label перед ответом. Реальный побочный эффект, который стоит иметь в виду:
+ * каждый заданный вопрос добавляет ещё один вызов LLM внутри текущей итерации,
+ * ДО operate() — на слабом устройстве это заметная лишняя нагрузка за итерацию.
  *
  * Item 5b(c) (2026-08-21): promptBudgetGate проверяет размер state.code ДО
  * вызова operate() — fail-closed (Evacuated), НЕ тихая обрезка через
@@ -80,7 +86,11 @@ class KotlinCodingTask(
     private val mediator: TrustedMediator,
     private val watchdog: DeviceSafetyWatchdog,
     private val bytecodeEscalator: BytecodeShrinkEscalator = BytecodeShrinkEscalator(termuxCompiler),
-    private val pendingQuerySource: PendingQuerySource? = null
+    private val pendingQuerySource: PendingQuerySource? = null,
+    // Item 9 (2026-08-21): вызывается с готовым текстом ответа после того, как
+    // queryHandler сгенерировал его через LLM. null по умолчанию — тот же паттерн,
+    // что pendingQuerySource: канал наружу опционален, класс не обязан знать про UI.
+    private val onAnswer: (suspend (String) -> Unit)? = null
 ) {
 
     private val debugLog = mutableListOf<String>()
@@ -95,13 +105,35 @@ class KotlinCodingTask(
     fun getDebugLog(): String =
         if (debugLog.isEmpty()) "Лог пуст (цикл ещё не запускался)" else debugLog.joinToString("\n\n---\n\n")
 
+    /**
+     * Item 9, второй проход: раньше только логировал решение классификатора.
+     * Теперь реально отвечает — генерирует текст через llmEngine и передаёт его в
+     * onAnswer, если он задан. label оставлен как есть, для наблюдаемости в логе.
+     */
     private val queryHandler = QueryHandler<KotlinCodeState> { query, decision, _, _ ->
         val label = when (decision) {
-            QueryDecision.Light -> "LIGHT (ответить сразу, цикл не трогаем)"
-            QueryDecision.HeavyUrgent -> "HEAVY_URGENT (резкая пауза — пока не реализована)"
-            QueryDecision.HeavyDeferred -> "HEAVY_DEFERRED (мягкая пауза на шве — пока не реализована)"
+            QueryDecision.Light -> "LIGHT (не связан с задачей)"
+            QueryDecision.HeavyUrgent -> "HEAVY_URGENT (связан с задачей, короткий)"
+            QueryDecision.HeavyDeferred -> "HEAVY_DEFERRED (связан с задачей, развёрнутый)"
         }
         debugLog.add("[item9] Запрос: \"$query\" -> $label")
+
+        val answerText = StringBuilder()
+        var generationError: String? = null
+        llmEngine.generateFlow(query, maxTokens = 150).collect { event ->
+            when (event) {
+                is GenerationEvent.Token -> answerText.append(event.text)
+                is GenerationEvent.Error -> generationError = event.message
+                else -> Unit
+            }
+        }
+        val finalAnswer = if (generationError != null) {
+            "[Ошибка генерации: $generationError]"
+        } else {
+            answerText.toString()
+        }
+        debugLog.add("[item9] Ответ ($label): $finalAnswer")
+        onAnswer?.invoke("[$label]\n$finalAnswer")
     }
 
     /**
