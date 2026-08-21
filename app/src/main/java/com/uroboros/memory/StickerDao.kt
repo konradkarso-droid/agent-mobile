@@ -96,4 +96,28 @@ interface StickerDao {
 
     @Query("SELECT COUNT(*) FROM stickers")
     suspend fun count(): Int
+
+    // --- Canary (2026-08-22): read-only метрики для снимка "до/после" первого
+    // реального запуска sweep. Взято из чужого опыта (canary-скрипт praxis):
+    // поведенческий дрейф ловится сравнением цифр, а не отсутствием краша.
+    //
+    // Все запросы ниже — только COUNT/MIN, без загрузки строк в память: снимок
+    // не должен сам создавать ту нагрузку, ради контроля которой он снимается.
+    // Ни один из них ничего не пишет. Схема БД не меняется, миграция не нужна.
+
+    /** Сколько строк реально просрочено на момент now — размер накопленного долга. */
+    @Query("SELECT COUNT(*) FROM stickers WHERE expiryTime IS NOT NULL AND expiryTime <= :now")
+    suspend fun countExpired(now: Long): Int
+
+    /** Сколько строк в конкретном слое — для распределения по спектру. */
+    @Query("SELECT COUNT(*) FROM stickers WHERE layer = :layer")
+    suspend fun countInLayer(layer: String): Int
+
+    /** Спорные записи. Sweep их не трогает: число обязано остаться прежним. */
+    @Query("SELECT COUNT(*) FROM stickers WHERE reviewPending = 1")
+    suspend fun countPendingReview(): Int
+
+    /** Самый старый истёкший срок — показывает, насколько давно копится долг. */
+    @Query("SELECT MIN(expiryTime) FROM stickers WHERE expiryTime IS NOT NULL AND expiryTime <= :now")
+    suspend fun oldestExpiredAt(now: Long): Long?
 }
