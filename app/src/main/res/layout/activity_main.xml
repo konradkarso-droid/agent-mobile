@@ -1,82 +1,24 @@
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp">
-
-    <EditText
-        android:id="@+id/editTextInput"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="Введите текст (для сохранения) или слово для поиска" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="12dp">
-
-        <Button
-            android:id="@+id/buttonSave"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Сохранить" />
-
-        <Button
-            android:id="@+id/buttonShow"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:text="Показать память" />
-
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="12dp">
-
-        <Button
-            android:id="@+id/buttonLoadModel"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Загрузить модель" />
-
-        <Button
-            android:id="@+id/buttonGenerate"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:text="Генерировать"
-            android:enabled="false" />
-
-    </LinearLayout>
-
-    <TextView
-        android:id="@+id/textModelStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:textSize="12sp"
-        android:text="Модель не загружена" />
-
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="16dp">
-
-        <TextView
-            android:id="@+id/textResults"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="14sp" />
-    </ScrollView>
-
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="24dp">
+<EditText android:id="@+id/editTextInput" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Введите текст (для сохранения) или слово для поиска"/>
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="12dp">
+<Button android:id="@+id/buttonSave" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Сохранить"/>
+<Button android:id="@+id/buttonShow" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="8dp" android:text="Показать память"/>
+</LinearLayout>
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="12dp">
+<Button android:id="@+id/buttonLoadModel" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Загрузить модель"/>
+<!--  Текст и цвет этой кнопки теперь меняются программно в MainActivity
+             (setToteRunningState()) в зависимости от того, идёт ли TOTE-цикл:
+             простой/долгий — генерация/запуск цикла, либо короткий — вопрос
+             агенту, пока цикл уже работает. Начальный текст ниже — просто
+             заглушка на случай, если код почему-то не выполнится до отрисовки.  -->
+<Button android:id="@+id/buttonGenerate" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="8dp" android:text="Генерировать" android:enabled="false"/>
+</LinearLayout>
+<TextView android:id="@+id/textModelStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textSize="12sp" android:text="Модель не загружена"/>
+<!--  Item 9: ответ агента на вопрос, заданный во время идущего TOTE-цикла.
+         Отдельная область — не смешивается с textResults (там прогресс цикла).  -->
+<TextView android:id="@+id/textAnswerLabel" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textSize="12sp" android:textStyle="bold" android:text="Ответ агента:" android:visibility="gone"/>
+<TextView android:id="@+id/textAnswer" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:textSize="14sp" android:visibility="gone"/>
+<ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="16dp">
+<TextView android:id="@+id/textResults" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="14sp"/>
+</ScrollView>
 </LinearLayout>
