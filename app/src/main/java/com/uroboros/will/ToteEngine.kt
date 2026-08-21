@@ -29,6 +29,15 @@ import com.uroboros.safety.SafetyZone
  * это сознательно отложено (нужно отдельно спроектировать, как безопасно
  * останавливать уже идущий suspend-вызов operate() и как встраивать это в
  * ToteResult). Этот проход даёт только обнаружение+классификацию+точку расширения.
+ *
+ * Item 5b(c) (2026-08-21): опциональный promptBudgetGate — общий (не только для
+ * кодинга) барьер на том же шве test()/operate(), ДО вызова operate(). Движок
+ * по-прежнему ничего не знает про промпты/токены/LLM — только получает вердикт
+ * Allow/Reject от вызывающей задачи. Решение (не мой домен): при превышении
+ * бюджета — fail-closed немедленной эвакуацией, БЕЗ попытки операции и БЕЗ
+ * ожидания stuckThreshold — тихая обрезка запрещена (hard-fail-is-signal-not-noise):
+ * если задача не помещается в бюджет промпта целиком, попытка правки вслепую
+ * (правка того, чего модель не видит) опаснее отказа.
  */
 
 data class StepOutcome(
@@ -55,6 +64,17 @@ fun interface QueryHandler<S> {
     suspend fun onQuery(query: String, decision: QueryDecision, state: S, outcome: StepOutcome)
 }
 
+/** Item 5b(c): вердикт бюджет-гейта — движок не интерпретирует reason, только ветвится по типу. */
+sealed class BudgetVerdict {
+    object Allow : BudgetVerdict()
+    data class Reject(val reason: String) : BudgetVerdict()
+}
+
+/** Item 5b(c): domain-specific проверка "поместится ли это в промпт" — движок общий, гейт — нет. */
+fun interface PromptBudgetGate<S> {
+    fun evaluate(state: S, outcome: StepOutcome): BudgetVerdict
+}
+
 sealed class ToteResult<out S> {
     data class Success<S>(val finalState: S, val iterations: Int) : ToteResult<S>()
     data class Evacuated<S>(
@@ -79,7 +99,8 @@ class ToteEngine<S>(
     private val maxIterations: Int = 20,
     private val stuckThreshold: Int = 5,
     private val pendingQuerySource: PendingQuerySource? = null,
-    private val queryHandler: QueryHandler<S>? = null
+    private val queryHandler: QueryHandler<S>? = null,
+    private val promptBudgetGate: PromptBudgetGate<S>? = null
 ) {
     suspend fun run(initialState: S, taskDescription: String = ""): ToteResult<S> {
         var state = initialState
@@ -129,6 +150,20 @@ class ToteEngine<S>(
                         return ToteResult.Evacuated(
                             state, iteration,
                             "физическая защита: устройство в критической зоне ($physicalZone)",
+                            lastOutcome
+                        )
+                    }
+
+                    // Item 5b(c): бюджет промпта — ДО operate(), не дожидаясь
+                    // stuckThreshold. Отказ мгновенный и однократный: если задача
+                    // не помещается в промпт, это ясно уже на этом шаге, гонять
+                    // до 5 повторов ради того же вывода — трата ресурсов
+                    // (Termux-вызовов/генераций), которых и так не хватает.
+                    val budgetVerdict = promptBudgetGate?.evaluate(state, outcome)
+                    if (budgetVerdict is BudgetVerdict.Reject) {
+                        return ToteResult.Evacuated(
+                            state, iteration,
+                            "бюджет промпта: ${budgetVerdict.reason}",
                             lastOutcome
                         )
                     }
