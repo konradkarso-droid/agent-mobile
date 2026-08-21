@@ -4,10 +4,13 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.util.PromptBudget
 import com.uroboros.util.StructuralBoundary
+import com.uroboros.will.BudgetVerdict
 import com.uroboros.will.BytecodeShrinkEscalator
 import com.uroboros.will.CompileResult
 import com.uroboros.will.PendingQuerySource
+import com.uroboros.will.PromptBudgetGate
 import com.uroboros.will.QueryDecision
 import com.uroboros.will.QueryHandler
 import com.uroboros.will.StepOperate
@@ -40,6 +43,14 @@ import kotlinx.coroutines.flow.collect
  * отдельный шаг на стороне экрана/Activity), и queryHandler здесь — временная
  * заглушка (пишет решение классификатора в debugLog для наблюдения), а не
  * реальная реакция (ответ пользователю / пауза цикла).
+ *
+ * Item 5b(c) (2026-08-21): promptBudgetGate проверяет размер state.code ДО
+ * вызова operate() — fail-closed (Evacuated), НЕ тихая обрезка через
+ * StructuralBoundary. Решение осознанное: если модель не видит весь код
+ * целиком, попытка правки вслепую опаснее отказа (hard-fail-is-signal-not-noise) —
+ * тот же класс риска, что уже ловили на getContext()-баге (модель отвечает
+ * не по тому, что реально в системе). Лимит из PromptBudget — плейсхолдер,
+ * не откалиброван.
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -91,6 +102,25 @@ class KotlinCodingTask(
             QueryDecision.HeavyDeferred -> "HEAVY_DEFERRED (мягкая пауза на шве — пока не реализована)"
         }
         debugLog.add("[item9] Запрос: \"$query\" -> $label")
+    }
+
+    /**
+     * Item 5b(c): единственная проверка — влезает ли state.code в бюджет промпта.
+     * Намеренно НЕ проверяет outcome.detail здесь — это отдельная забота
+     * (stderr уже капается в TermuxKotlinCompiler через DataSieve, MAX_OUTPUT_BYTES=8000),
+     * смешивать два независимых бюджета в одну проверку — то же нарушение
+     * separated-continuity, которого проект избегает везде.
+     */
+    private val promptBudgetGate = PromptBudgetGate<KotlinCodeState> { state, _ ->
+        if (PromptBudget.fits(state.code)) {
+            BudgetVerdict.Allow
+        } else {
+            BudgetVerdict.Reject(
+                "код (${PromptBudget.sizeBytes(state.code)} байт) не помещается в бюджет " +
+                    "промпта (${PromptBudget.DEFAULT_MAX_COMPONENT_BYTES} байт) — правка вслепую " +
+                    "невозможна, отказ вместо тихой обрезки"
+            )
+        }
     }
 
     private val test = StepTest<KotlinCodeState> { state ->
@@ -305,7 +335,8 @@ class KotlinCodingTask(
             operate = operate,
             watchdog = watchdog,
             pendingQuerySource = pendingQuerySource,
-            queryHandler = queryHandler
+            queryHandler = queryHandler,
+            promptBudgetGate = promptBudgetGate
         )
         val result = engine.run(initialState, taskDescription)
         saveVaccineLine(result)
