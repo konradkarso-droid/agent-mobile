@@ -4,11 +4,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.util.Base64
-import com.uroboros.memory.ActionGate
 import com.uroboros.memory.ActionProvenance
 import com.uroboros.memory.ActionRequest
 import com.uroboros.memory.ActionType
 import com.uroboros.memory.GateResult
+import com.uroboros.memory.GatedAction
 import com.uroboros.util.DataSieve
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
@@ -36,7 +36,11 @@ class TermuxKotlinCompiler(private val context: Context) {
     private var callsSinceCleanup = 0
 
     suspend fun compile(fragment: String): CompileResult {
-        val verdict = ActionGate.evaluate(
+        // Дыра №3 (аудит 2026-08-21): проход теперь через GatedAction, а не напрямую
+        // через ActionGate — сам вердикт тот же, но каждая проверка (ALLOW и DENY)
+        // попадает в action_evidence. Раньше след не писался нигде.
+        val verdict = GatedAction.evaluate(
+            context,
             ActionRequest(
                 type = ActionType.EXTERNAL_PROCESS,
                 requestedBy = "TermuxKotlinCompiler",
@@ -129,7 +133,8 @@ class TermuxKotlinCompiler(private val context: Context) {
      * текста. Используется BytecodeShrinkEscalator только для серой зоны stage C.
      */
     suspend fun measureBytecodeSize(fragment: String): BytecodeMeasurement {
-        val verdict = ActionGate.evaluate(
+        val verdict = GatedAction.evaluate(
+            context,
             ActionRequest(
                 type = ActionType.EXTERNAL_PROCESS,
                 requestedBy = "TermuxKotlinCompiler.measureBytecodeSize",
