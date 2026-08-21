@@ -2,6 +2,8 @@ package com.uroboros.will.tasks
 
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.llm.LlmEngine
+import com.uroboros.memory.ConfidenceLevel
+import com.uroboros.memory.SourceKind
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.util.PromptBudget
@@ -339,7 +341,18 @@ class KotlinCodingTask(
                 "[TOTE] Жёсткий стоп после ${result.iterations} итераций (лимит). " +
                     "Последняя ошибка:\n${result.lastOutcome?.detail ?: "(нет данных)"}"
         }
-        mediator.saveEvent(text)
+        // Дыра №4 (аудит 2026-08-21): вакцина-строка — вывод самого агента о
+        // собственной работе, а не факт, сообщённый пользователем. До этой правки
+        // она писалась как USER_STATED/OBSERVED, потому что saveEvent() не принимал
+        // провенанс вообще. Теперь помечена честно: AGENT_INFERRED/INFERRED.
+        // Tag намеренно оставлен "general" по умолчанию — смена тега изменила бы
+        // группировку hotPool в RiskTrigger, это отдельное решение, не побочный
+        // эффект правки провенанса.
+        mediator.saveEvent(
+            content = text,
+            source = SourceKind.AGENT_INFERRED,
+            confidence = ConfidenceLevel.INFERRED
+        )
     }
 
     suspend fun run(): ToteResult<KotlinCodeState> {
