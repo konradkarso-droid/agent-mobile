@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.LlmEngine
+import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
@@ -34,19 +35,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var codingTask: KotlinCodingTask
     private lateinit var pendingQuerySource: SimplePendingQuerySource
 
-    // Item 9 (2026-08-21): true пока идёт codingTask.run(). Единственный флажок,
-    // управляющий тем, что означает нажатие buttonGenerate прямо сейчас —
-    // см. setToteRunningState().
     private var isToteRunning = false
 
-    // Цвета кнопки buttonGenerate по состоянию — сознательно не розовый дефолт темы.
-    private val colorIdle = ColorStateList.valueOf(Color.parseColor("#1565C0"))   // синий — обычный режим
-    private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#EF6C00")) // оранжевый — режим "вопрос агенту"
+    // Единый визуальный язык для "сменных" кнопок (не розовый дефолт темы):
+    // синий = обычный/базовый режим, оранжевый = "особый" режим (вопрос / …).
+    private val colorIdle = ColorStateList.valueOf(Color.parseColor("#1565C0"))
+    private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#EF6C00"))
 
-    // Автозагрузка модели, вариант B (2026-08-21): запоминаем URI выбранной ПАПКИ
-    // (не отдельного файла — папка не теряет право доступа после takePersistableUriPermission,
-    // в отличие от одиночного файла из OpenDocument). При каждом запуске сканируем папку
-    // на .gguf-файлы заново — список файлов внутри может измениться.
     private val prefs by lazy { getSharedPreferences("uroboros_prefs", Context.MODE_PRIVATE) }
 
     private fun sourceLabel(sourceName: String): String = when (sourceName) {
@@ -66,16 +61,12 @@ class MainActivity : AppCompatActivity() {
         binding.buttonGenerate.backgroundTintList = if (running) colorToteRunning else colorIdle
     }
 
-    /** Сканирует сохранённую папку на файлы с расширением .gguf. Может бросить SecurityException,
-     * если право доступа к папке было утеряно — вызывающий код должен это обработать явно. */
     private fun scanModelFolder(folderUri: Uri): List<DocumentFile> {
         val tree = DocumentFile.fromTreeUri(this, folderUri)
             ?: throw IllegalStateException("папка недоступна")
         return tree.listFiles().filter { it.isFile && it.name?.endsWith(".gguf", ignoreCase = true) == true }
     }
 
-    /** Общий путь загрузки модели по URI — используется и автозагрузкой, и ручным выбором
-     * из диалога-списка. Запоминает последний выбор отдельно от папки. */
     private fun loadModelAndUpdateUi(uri: Uri, displayName: String) {
         binding.textModelStatus.text = "Загрузка модели \"$displayName\"..."
         binding.buttonLoadModel.isEnabled = false
@@ -92,9 +83,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Показывает диалог-список найденных моделей на выбор — используется и при
-     * неоднозначном автовыборе на старте, и по короткому нажатию "Загрузить модель"
-     * (переключение модели вручную, когда папка уже выбрана). */
     private fun showModelChooser(models: List<DocumentFile>) {
         val names = models.map { it.name ?: "(без имени)" }.toTypedArray()
         AlertDialog.Builder(this)
@@ -107,12 +95,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Автозагрузка при старте (2026-08-21, item: автозагрузка модели). Явные сообщения
-     * на каждый исход отказа (решение: пользователь не программист, тихий откат
-     * непонятен) — единственное, что молчит, это самый первый запуск без сохранённой
-     * папки вообще (это не ошибка, а норма).
-     */
     private fun tryAutoLoadOnStartup() {
         val folderUriString = prefs.getString(KEY_MODEL_FOLDER_URI, null)
         if (folderUriString == null) {
@@ -203,6 +185,13 @@ class MainActivity : AppCompatActivity() {
         setToteRunningState(false)
         tryAutoLoadOnStartup()
 
+        // Миграция на новое устройство (2026-08-21): buttonSave теперь двухрежимная,
+        // тот же визуальный язык, что у buttonGenerate (синий/оранжевый, подпись
+        // прямо на кнопке). Долгое нажатие раньше показывало debug-лог модели —
+        // убрано по согласованию (сохранность реальных данных важнее).
+        binding.buttonSave.text = "Сохранить\n(кор. — сохранить, дл. — экспорт памяти)"
+        binding.buttonSave.backgroundTintList = colorIdle
+
         binding.buttonSave.setOnClickListener {
             val text = binding.editTextInput.text.toString()
             if (text.isBlank()) {
@@ -217,12 +206,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.buttonSave.setOnLongClickListener {
-            Toast.makeText(this@MainActivity, "Долгое нажатие сработало", Toast.LENGTH_SHORT).show()
-            val log = llmEngine.getDebugLog()
-            binding.textResults.text = if (log.isBlank()) {
-                "Лог пуст"
-            } else {
-                log
+            binding.buttonSave.isEnabled = false
+            binding.textResults.text = "Экспортирую память (чекпоинт + копирование)..."
+            lifecycleScope.launch {
+                val exportedName = DatabaseExporter.exportToDownloads(applicationContext)
+                binding.buttonSave.isEnabled = true
+                binding.textResults.text = if (exportedName != null) {
+                    "Экспорт готов: $exportedName\n(лежит в папке Download — оттуда переносите на новое устройство или загружайте в GitHub вручную)"
+                } else {
+                    "Не удалось экспортировать память — попробуйте ещё раз"
+                }
             }
             true
         }
@@ -253,10 +246,6 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        // Автозагрузка модели (2026-08-21, вариант B): короткое нажатие теперь означает
-        // "выбрать/сменить папку с моделями" при первой настройке, а если папка уже
-        // выбрана — пересканировать и показать список для ручного переключения модели.
-        // Долгое нажатие — принудительно выбрать папку заново (сменить папку целиком).
         binding.buttonLoadModel.setOnClickListener {
             val folderUriString = prefs.getString(KEY_MODEL_FOLDER_URI, null)
             if (folderUriString == null) {
