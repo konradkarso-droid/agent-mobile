@@ -1,12 +1,16 @@
 package com.uroboros
 
+import android.content.Context
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
@@ -36,14 +40,15 @@ class MainActivity : AppCompatActivity() {
     private var isToteRunning = false
 
     // Цвета кнопки buttonGenerate по состоянию — сознательно не розовый дефолт темы.
-    // Не вынесено в colors.xml: этот файл не видели, чтобы не гадать на неполном
-    // контексте, а хардкод здесь — единственное место, где цвет вообще решается.
     private val colorIdle = ColorStateList.valueOf(Color.parseColor("#1565C0"))   // синий — обычный режим
     private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#EF6C00")) // оранжевый — режим "вопрос агенту"
 
-    // Item 3 / Track A (2026-08-20): debug-only отображение provenance стикера.
-    // Также переиспользуется в buttonGenerate для реального блока памяти в промпте
-    // (см. Sticker→prompt injection, 2026-08-20).
+    // Автозагрузка модели, вариант B (2026-08-21): запоминаем URI выбранной ПАПКИ
+    // (не отдельного файла — папка не теряет право доступа после takePersistableUriPermission,
+    // в отличие от одиночного файла из OpenDocument). При каждом запуске сканируем папку
+    // на .gguf-файлы заново — список файлов внутри может измениться.
+    private val prefs by lazy { getSharedPreferences("uroboros_prefs", Context.MODE_PRIVATE) }
+
     private fun sourceLabel(sourceName: String): String = when (sourceName) {
         SourceKind.USER_STATED.name -> "[от пользователя]"
         SourceKind.AGENT_INFERRED.name -> "[вывод агента]"
@@ -51,12 +56,6 @@ class MainActivity : AppCompatActivity() {
         else -> "[?]"
     }
 
-    /**
-     * Item 9: единственное место, где решается текст/цвет/поведение buttonGenerate.
-     * running=false — обычный режим (кор. — генерация, дл. — запуск TOTE-цикла);
-     * running=true — режим вопроса (кор. — отправить вопрос в идущий цикл,
-     * дл. — заблокировано, чтобы не запустить второй цикл поверх идущего).
-     */
     private fun setToteRunningState(running: Boolean) {
         isToteRunning = running
         binding.buttonGenerate.text = if (running) {
@@ -67,18 +66,113 @@ class MainActivity : AppCompatActivity() {
         binding.buttonGenerate.backgroundTintList = if (running) colorToteRunning else colorIdle
     }
 
-    private val pickModelLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    /** Сканирует сохранённую папку на файлы с расширением .gguf. Может бросить SecurityException,
+     * если право доступа к папке было утеряно — вызывающий код должен это обработать явно. */
+    private fun scanModelFolder(folderUri: Uri): List<DocumentFile> {
+        val tree = DocumentFile.fromTreeUri(this, folderUri)
+            ?: throw IllegalStateException("папка недоступна")
+        return tree.listFiles().filter { it.isFile && it.name?.endsWith(".gguf", ignoreCase = true) == true }
+    }
+
+    /** Общий путь загрузки модели по URI — используется и автозагрузкой, и ручным выбором
+     * из диалога-списка. Запоминает последний выбор отдельно от папки. */
+    private fun loadModelAndUpdateUi(uri: Uri, displayName: String) {
+        binding.textModelStatus.text = "Загрузка модели \"$displayName\"..."
+        binding.buttonLoadModel.isEnabled = false
+        lifecycleScope.launch {
+            val ok = llmEngine.loadModelFromUri(uri)
+            binding.buttonLoadModel.isEnabled = true
+            if (ok) {
+                prefs.edit().putString(KEY_LAST_MODEL_URI, uri.toString()).apply()
+                binding.textModelStatus.text = "Модель загружена: $displayName"
+                binding.buttonGenerate.isEnabled = true
+            } else {
+                binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""
+            }
+        }
+    }
+
+    /** Показывает диалог-список найденных моделей на выбор — используется и при
+     * неоднозначном автовыборе на старте, и по короткому нажатию "Загрузить модель"
+     * (переключение модели вручную, когда папка уже выбрана). */
+    private fun showModelChooser(models: List<DocumentFile>) {
+        val names = models.map { it.name ?: "(без имени)" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Выберите модель")
+            .setItems(names) { _, which ->
+                val chosen = models[which]
+                loadModelAndUpdateUi(chosen.uri, chosen.name ?: "(без имени)")
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /**
+     * Автозагрузка при старте (2026-08-21, item: автозагрузка модели). Явные сообщения
+     * на каждый исход отказа (решение: пользователь не программист, тихий откат
+     * непонятен) — единственное, что молчит, это самый первый запуск без сохранённой
+     * папки вообще (это не ошибка, а норма).
+     */
+    private fun tryAutoLoadOnStartup() {
+        val folderUriString = prefs.getString(KEY_MODEL_FOLDER_URI, null)
+        if (folderUriString == null) {
+            binding.textModelStatus.text = "Модель не загружена"
+            return
+        }
+        val folderUri = Uri.parse(folderUriString)
+
+        val models = try {
+            scanModelFolder(folderUri)
+        } catch (e: SecurityException) {
+            binding.textModelStatus.text =
+                "Не удалось получить доступ к сохранённой папке (права утеряны) — выберите папку заново"
+            return
+        } catch (e: Exception) {
+            binding.textModelStatus.text =
+                "Не удалось прочитать сохранённую папку (${e.javaClass.simpleName}) — выберите папку заново"
+            return
+        }
+
+        if (models.isEmpty()) {
+            binding.textModelStatus.text =
+                "В сохранённой папке не найдено файлов моделей (.gguf) — выберите другую папку или добавьте файл"
+            return
+        }
+
+        val lastUriString = prefs.getString(KEY_LAST_MODEL_URI, null)
+        val remembered = models.firstOrNull { it.uri.toString() == lastUriString }
+        when {
+            remembered != null -> loadModelAndUpdateUi(remembered.uri, remembered.name ?: "(без имени)")
+            models.size == 1 -> loadModelAndUpdateUi(models[0].uri, models[0].name ?: "(без имени)")
+            else -> {
+                binding.textModelStatus.text = "Найдено несколько моделей — выберите вручную"
+                showModelChooser(models)
+            }
+        }
+    }
+
+    private val pickFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         if (uri != null) {
-            binding.textModelStatus.text = "Загрузка модели..."
-            binding.buttonLoadModel.isEnabled = false
-            lifecycleScope.launch {
-                val ok = llmEngine.loadModelFromUri(uri)
-                binding.buttonLoadModel.isEnabled = true
-                if (ok) {
-                    binding.textModelStatus.text = "Модель загружена"
-                    binding.buttonGenerate.isEnabled = true
-                } else {
-                    binding.textModelStatus.text = "Ошибка загрузки модели"
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            prefs.edit().putString(KEY_MODEL_FOLDER_URI, uri.toString()).apply()
+
+            val models = try {
+                scanModelFolder(uri)
+            } catch (e: Exception) {
+                binding.textModelStatus.text = "Не удалось прочитать выбранную папку (${e.javaClass.simpleName})"
+                return@registerForActivityResult
+            }
+
+            when {
+                models.isEmpty() -> binding.textModelStatus.text =
+                    "В выбранной папке не найдено файлов моделей (.gguf)"
+                models.size == 1 -> loadModelAndUpdateUi(models[0].uri, models[0].name ?: "(без имени)")
+                else -> {
+                    binding.textModelStatus.text = "Найдено несколько моделей — выберите"
+                    showModelChooser(models)
                 }
             }
         }
@@ -107,6 +201,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         setToteRunningState(false)
+        tryAutoLoadOnStartup()
 
         binding.buttonSave.setOnClickListener {
             val text = binding.editTextInput.text.toString()
@@ -153,42 +248,41 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Item 8a диагностика (2026-08-17): детальный лог TOTE-цикла (компиляция +
-        // вердикты структурной проверки C/B по каждой итерации). Перенесено сюда с
-        // "Показать память" — просмотр/снятие reviewPending переехал на долгое
-        // нажатие "Загрузить модель" (см. ниже).
         binding.buttonShow.setOnLongClickListener {
             binding.textResults.text = codingTask.getDebugLog()
             true
         }
 
+        // Автозагрузка модели (2026-08-21, вариант B): короткое нажатие теперь означает
+        // "выбрать/сменить папку с моделями" при первой настройке, а если папка уже
+        // выбрана — пересканировать и показать список для ручного переключения модели.
+        // Долгое нажатие — принудительно выбрать папку заново (сменить папку целиком).
         binding.buttonLoadModel.setOnClickListener {
-            pickModelLauncher.launch(arrayOf("*/*"))
+            val folderUriString = prefs.getString(KEY_MODEL_FOLDER_URI, null)
+            if (folderUriString == null) {
+                pickFolderLauncher.launch(null)
+                return@setOnClickListener
+            }
+            val folderUri = Uri.parse(folderUriString)
+            val models = try {
+                scanModelFolder(folderUri)
+            } catch (e: Exception) {
+                Toast.makeText(this, "Папка недоступна (${e.javaClass.simpleName}) — выберите заново", Toast.LENGTH_LONG).show()
+                pickFolderLauncher.launch(null)
+                return@setOnClickListener
+            }
+            if (models.isEmpty()) {
+                Toast.makeText(this, "В папке нет файлов .gguf", Toast.LENGTH_SHORT).show()
+            } else {
+                showModelChooser(models)
+            }
         }
 
-        // Перенесено с "Показать память" (2026-08-17) — просмотр/снятие reviewPending
-        // по-прежнему нужно (единственный способ разморозить записи, помеченные
-        // RiskTrigger), просто освободили слот под лог TOTE-цикла выше.
         binding.buttonLoadModel.setOnLongClickListener {
-            lifecycleScope.launch {
-                val pending = mediator.getPendingReview()
-                if (pending.isEmpty()) {
-                    Toast.makeText(this@MainActivity, "Замороженных записей нет", Toast.LENGTH_SHORT).show()
-                } else {
-                    val preview = pending.joinToString("\n\n") { sticker ->
-                        "• ${sticker.content}\n  [${sticker.layer}]"
-                    }
-                    binding.textResults.text = "Разблокировано ${pending.size} записей:\n\n$preview"
-                    mediator.clearAllPendingReview()
-                    Toast.makeText(this@MainActivity, "Снят флаг у ${pending.size} записей", Toast.LENGTH_SHORT).show()
-                }
-            }
+            pickFolderLauncher.launch(null)
             true
         }
 
-        // Item 9 (2026-08-21): короткое нажатие теперь ветвится по isToteRunning —
-        // пока цикл идёт, это поле отправляет вопрос в канал pendingQuerySource
-        // вместо обычной генерации (см. setToteRunningState()).
         binding.buttonGenerate.setOnClickListener {
             val userText = binding.editTextInput.text.toString()
             if (userText.isBlank()) {
@@ -207,11 +301,6 @@ class MainActivity : AppCompatActivity() {
             binding.buttonGenerate.isEnabled = false
             binding.textResults.text = ""
             lifecycleScope.launch {
-                // Item 3 / Track A → prompt injection (2026-08-20): подмешиваем контекст
-                // из памяти в user-turn (не в system_prompt — сломало бы KV-кэш system-
-                // части, см. заметку в backlog). limit=5 — временный плейсхолдер, НЕ
-                // откалиброван; пересмотреть после 5b(c) (rolling context auto-trim) и
-                // реальных данных с целевого устройства.
                 val stickers = mediator.getContext(query = userText, limit = 5)
                 val prompt = if (stickers.isEmpty()) {
                     userText
@@ -242,10 +331,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Item 7a шаг 4б / Item 9 (2026-08-21): запуск реального TOTE-цикла.
-        // Заблокировано, пока isToteRunning=true — иначе можно было бы случайно
-        // запустить второй цикл поверх уже идущего (это и была скрытая гонка,
-        // которую заодно чинит переиспользование этой же кнопки под вопросы).
         binding.buttonGenerate.setOnLongClickListener {
             if (isToteRunning) {
                 Toast.makeText(this@MainActivity, "Цикл уже идёт", Toast.LENGTH_SHORT).show()
@@ -285,5 +370,10 @@ class MainActivity : AppCompatActivity() {
             }
             true
         }
+    }
+
+    companion object {
+        private const val KEY_MODEL_FOLDER_URI = "model_folder_uri"
+        private const val KEY_LAST_MODEL_URI = "last_model_uri"
     }
 }
