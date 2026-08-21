@@ -23,6 +23,33 @@ object Prism {
         Layer.RED, Layer.ORANGE, Layer.YELLOW, Layer.GREEN, Layer.BLUE, Layer.PURPLE
     )
 
+    /**
+     * Дыра №4, вторая половина (2026-08-21): какие слои вообще участвуют в выборке
+     * для данного запроса. Вынесено отдельной функцией, чтобы отбор по слоям делался
+     * в SQL (StickerDao.getRanked), а не полным сканом таблицы с последующей
+     * фильтрацией в Kotlin.
+     *
+     * Логика повторяет прежнюю filter() один в один: горячие слои всегда, BLUE и
+     * PURPLE — только по тем же ключевым словам. Пустой запрос = вся память
+     * (прежний путь брал getAll() без ограничения по слоям).
+     *
+     * split()/filter() ниже оставлены нетронутыми: они чистые функции, могут быть
+     * покрыты тестами и ещё пригодиться — просто больше не стоят в горячем пути.
+     */
+    fun layersFor(query: String?): List<String> {
+        if (query.isNullOrBlank()) return LAYERS_ORDER.map { it.name }
+
+        val layers = mutableListOf(Layer.RED, Layer.ORANGE, Layer.YELLOW, Layer.GREEN)
+        val q = query.lowercase()
+        if ("старое" in q || "прошлое" in q) {
+            layers += Layer.BLUE
+        }
+        if ("архив" in q || "забытое" in q) {
+            layers += Layer.PURPLE
+        }
+        return layers.map { it.name }
+    }
+
     fun split(stickers: List<Sticker>): Map<Layer, List<Sticker>> =
         LAYERS_ORDER.associateWith { layer -> stickers.filter { it.layer == layer.name } }
 
