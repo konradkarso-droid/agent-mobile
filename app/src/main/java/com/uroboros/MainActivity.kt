@@ -1,5 +1,7 @@
 package com.uroboros
 
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -12,6 +14,7 @@ import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.will.SimplePendingQuerySource
 import com.uroboros.will.ToteResult
 import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
@@ -25,6 +28,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var watchdog: DeviceSafetyWatchdog
     private lateinit var termuxCompiler: TermuxKotlinCompiler
     private lateinit var codingTask: KotlinCodingTask
+    private lateinit var pendingQuerySource: SimplePendingQuerySource
+
+    // Item 9 (2026-08-21): true пока идёт codingTask.run(). Единственный флажок,
+    // управляющий тем, что означает нажатие buttonGenerate прямо сейчас —
+    // см. setToteRunningState().
+    private var isToteRunning = false
+
+    // Цвета кнопки buttonGenerate по состоянию — сознательно не розовый дефолт темы.
+    // Не вынесено в colors.xml: этот файл не видели, чтобы не гадать на неполном
+    // контексте, а хардкод здесь — единственное место, где цвет вообще решается.
+    private val colorIdle = ColorStateList.valueOf(Color.parseColor("#1565C0"))   // синий — обычный режим
+    private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#EF6C00")) // оранжевый — режим "вопрос агенту"
 
     // Item 3 / Track A (2026-08-20): debug-only отображение provenance стикера.
     // Также переиспользуется в buttonGenerate для реального блока памяти в промпте
@@ -34,6 +49,22 @@ class MainActivity : AppCompatActivity() {
         SourceKind.AGENT_INFERRED.name -> "[вывод агента]"
         SourceKind.OCR_EXTRACTED.name -> "[из скриншота]"
         else -> "[?]"
+    }
+
+    /**
+     * Item 9: единственное место, где решается текст/цвет/поведение buttonGenerate.
+     * running=false — обычный режим (кор. — генерация, дл. — запуск TOTE-цикла);
+     * running=true — режим вопроса (кор. — отправить вопрос в идущий цикл,
+     * дл. — заблокировано, чтобы не запустить второй цикл поверх идущего).
+     */
+    private fun setToteRunningState(running: Boolean) {
+        isToteRunning = running
+        binding.buttonGenerate.text = if (running) {
+            "Спросить\n(кор. — вопрос агенту)"
+        } else {
+            "Генерировать\n(кор. — разово, дл. — цикл)"
+        }
+        binding.buttonGenerate.backgroundTintList = if (running) colorToteRunning else colorIdle
     }
 
     private val pickModelLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -61,7 +92,21 @@ class MainActivity : AppCompatActivity() {
         watchdog = DeviceSafetyWatchdog(applicationContext, lifecycleScope)
         llmEngine = LlmEngine(applicationContext, watchdog)
         termuxCompiler = TermuxKotlinCompiler(applicationContext)
-        codingTask = KotlinCodingTask(termuxCompiler, llmEngine, mediator, watchdog)
+        pendingQuerySource = SimplePendingQuerySource()
+        codingTask = KotlinCodingTask(
+            termuxCompiler = termuxCompiler,
+            llmEngine = llmEngine,
+            mediator = mediator,
+            watchdog = watchdog,
+            pendingQuerySource = pendingQuerySource,
+            onAnswer = { answer ->
+                binding.textAnswerLabel.visibility = android.view.View.VISIBLE
+                binding.textAnswer.visibility = android.view.View.VISIBLE
+                binding.textAnswer.text = answer
+            }
+        )
+
+        setToteRunningState(false)
 
         binding.buttonSave.setOnClickListener {
             val text = binding.editTextInput.text.toString()
@@ -141,12 +186,24 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
+        // Item 9 (2026-08-21): короткое нажатие теперь ветвится по isToteRunning —
+        // пока цикл идёт, это поле отправляет вопрос в канал pendingQuerySource
+        // вместо обычной генерации (см. setToteRunningState()).
         binding.buttonGenerate.setOnClickListener {
             val userText = binding.editTextInput.text.toString()
             if (userText.isBlank()) {
-                Toast.makeText(this, "Введите запрос для генерации", Toast.LENGTH_SHORT).show()
+                val hint = if (isToteRunning) "Введите вопрос" else "Введите запрос для генерации"
+                Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+
+            if (isToteRunning) {
+                pendingQuerySource.submit(userText)
+                binding.editTextInput.text.clear()
+                Toast.makeText(this, "Вопрос отправлен агенту", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
             binding.buttonGenerate.isEnabled = false
             binding.textResults.text = ""
             lifecycleScope.launch {
@@ -185,33 +242,45 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Item 7a шаг 4б: реальный TOTE-цикл (KotlinCodingTask) вместо временного
-        // прямого вызова TermuxKotlinCompiler. Задача пока захардкожена внутри
-        // KotlinCodingTask, не берётся из текстового поля.
+        // Item 7a шаг 4б / Item 9 (2026-08-21): запуск реального TOTE-цикла.
+        // Заблокировано, пока isToteRunning=true — иначе можно было бы случайно
+        // запустить второй цикл поверх уже идущего (это и была скрытая гонка,
+        // которую заодно чинит переиспользование этой же кнопки под вопросы).
         binding.buttonGenerate.setOnLongClickListener {
+            if (isToteRunning) {
+                Toast.makeText(this@MainActivity, "Цикл уже идёт", Toast.LENGTH_SHORT).show()
+                return@setOnLongClickListener true
+            }
             if (!llmEngine.isLoaded) {
                 Toast.makeText(this@MainActivity, "Сначала загрузите модель", Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
             }
+            setToteRunningState(true)
+            binding.textAnswerLabel.visibility = android.view.View.GONE
+            binding.textAnswer.visibility = android.view.View.GONE
             binding.textResults.text = "Запускаю TOTE-цикл (компиляция + LLM)..."
             lifecycleScope.launch {
-                when (val result = codingTask.run()) {
-                    is ToteResult.Success -> {
-                        binding.textResults.text =
-                            "УСПЕХ за ${result.iterations} итераций:\n\n${result.finalState.code}"
+                try {
+                    when (val result = codingTask.run()) {
+                        is ToteResult.Success -> {
+                            binding.textResults.text =
+                                "УСПЕХ за ${result.iterations} итераций:\n\n${result.finalState.code}"
+                        }
+                        is ToteResult.Evacuated -> {
+                            binding.textResults.text =
+                                "ЭВАКУАЦИЯ после ${result.iterations} итераций: ${result.reason}\n\n" +
+                                    "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
+                                    "Последний код:\n${result.lastState.code}"
+                        }
+                        is ToteResult.HardStopped -> {
+                            binding.textResults.text =
+                                "ЖЁСТКИЙ СТОП после ${result.iterations} итераций (достигнут лимит)\n\n" +
+                                    "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
+                                    "Последний код:\n${result.lastState.code}"
+                        }
                     }
-                    is ToteResult.Evacuated -> {
-                        binding.textResults.text =
-                            "ЭВАКУАЦИЯ после ${result.iterations} итераций: ${result.reason}\n\n" +
-                                "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
-                                "Последний код:\n${result.lastState.code}"
-                    }
-                    is ToteResult.HardStopped -> {
-                        binding.textResults.text =
-                            "ЖЁСТКИЙ СТОП после ${result.iterations} итераций (достигнут лимит)\n\n" +
-                                "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
-                                "Последний код:\n${result.lastState.code}"
-                    }
+                } finally {
+                    setToteRunningState(false)
                 }
             }
             true
