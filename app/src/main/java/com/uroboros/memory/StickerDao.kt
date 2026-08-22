@@ -120,4 +120,31 @@ interface StickerDao {
     /** Самый старый истёкший срок — показывает, насколько давно копится долг. */
     @Query("SELECT MIN(expiryTime) FROM stickers WHERE expiryTime IS NOT NULL AND expiryTime <= :now")
     suspend fun oldestExpiredAt(now: Long): Long?
+
+    // --- Canary, добавка 2026-08-22 (после первого снимка на устройстве).
+    //
+    // Первый реальный замер показал "Просрочено 0" при 14 записях. Это могло
+    // означать две разные вещи, и снимок их не различал:
+    //   (а) сроки у записей есть, но все ещё не наступили — sweep'у просто рано;
+    //   (б) сроков нет вовсе (expiryTime IS NULL) — sweep'у нечего разбирать
+    //       никогда, и ждать бессмысленно.
+    // Оба запроса ниже существуют ровно ради этого различения.
+
+    /**
+     * Ближайший ещё НЕ наступивший срок истечения, либо null если таких нет.
+     *
+     * Условие "> :now" обязательно: без него MIN вернул бы самый старый
+     * просроченный срок, то есть продублировал бы oldestExpiredAt и выдал бы
+     * прошлое за "ближайшее будущее". Сейчас просроченных нет и разницы не
+     * видно — тем важнее заложить правильно, пока это ничего не стоит.
+     */
+    @Query("SELECT MIN(expiryTime) FROM stickers WHERE expiryTime IS NOT NULL AND expiryTime > :now")
+    suspend fun nextExpiryAt(now: Long): Long?
+
+    /**
+     * Сколько строк вообще без срока. Это и есть диагноз случая (б): такие
+     * записи не попадут в sweep ни сегодня, ни через год.
+     */
+    @Query("SELECT COUNT(*) FROM stickers WHERE expiryTime IS NULL")
+    suspend fun countWithoutExpiry(): Int
 }
