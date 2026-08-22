@@ -47,6 +47,16 @@ class TrustedMediator(context: Context) {
     suspend fun memoryCanaryReport(): String = canary.format(canary.snapshot())
 
     /**
+     * Item 6, ремонт данных (2026-08-22). Разовый вызов: возвращает в спектр
+     * записи, застрявшие без expiryTime из-за прежнего храповика прогрева.
+     * Проброс без логики — решение о том, что и куда чинить, принимает
+     * HourglassMemory через Prism.classify, а не фасад.
+     *
+     * @return сколько записей было починено.
+     */
+    suspend fun repairStuckLayers(): Int = hourglass.repairStuckLayers()
+
+    /**
      * Сохраняет запись в память. source/confidence обязательны — см. KDoc класса.
      *
      * Ориентир для вызывающих:
