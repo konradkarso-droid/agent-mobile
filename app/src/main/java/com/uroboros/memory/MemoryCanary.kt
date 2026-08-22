@@ -46,11 +46,25 @@ data class MemorySnapshot(
      * Самый старый истёкший expiryTime, либо null если просроченных нет.
      * Показывает, насколько давно копится долг.
      */
-    val oldestExpiredAt: Long?
+    val oldestExpiredAt: Long?,
+    /**
+     * Ближайший ещё НЕ наступивший срок, либо null если таких нет.
+     * Отвечает на вопрос "когда долг появится сам, если просто ждать".
+     */
+    val nextExpiryAt: Long?,
+    /**
+     * Сколько строк вообще без срока (expiryTime IS NULL). Такие записи не
+     * попадут в sweep никогда — ожидание их не затронет.
+     */
+    val withoutExpiry: Int
 ) {
     /** Насколько давно истёк самый старый просроченный срок, в днях. */
     val oldestDebtDays: Long?
         get() = oldestExpiredAt?.let { (takenAt - it) / MS_IN_DAY }
+
+    /** Через сколько дней наступит ближайшее истечение. 0 = меньше суток. */
+    val daysUntilNextExpiry: Long?
+        get() = nextExpiryAt?.let { (it - takenAt) / MS_IN_DAY }
 
     companion object {
         const val MS_IN_DAY: Long = 24L * 60 * 60 * 1000
@@ -77,7 +91,9 @@ class MemoryCanary(private val dao: StickerDao) {
             expired = dao.countExpired(now),
             byLayer = byLayer,
             pendingReview = dao.countPendingReview(),
-            oldestExpiredAt = dao.oldestExpiredAt(now)
+            oldestExpiredAt = dao.oldestExpiredAt(now),
+            nextExpiryAt = dao.nextExpiryAt(now),
+            withoutExpiry = dao.countWithoutExpiry()
         )
     }
 
@@ -92,6 +108,17 @@ class MemoryCanary(private val dao: StickerDao) {
             if (debt == null) "Долг копится:       нет просроченных"
             else "Долг копится:       $debt дн."
         )
+        // Добавлено после первого замера на устройстве (14 записей, просрочено 0):
+        // без этих двух строк "просрочено 0" не отличить от "сроков нет вовсе".
+        val untilNext = s.daysUntilNextExpiry
+        appendLine(
+            when {
+                untilNext == null -> "След. истечение:    нет запланированных"
+                untilNext == 0L -> "След. истечение:    менее суток"
+                else -> "След. истечение:    через $untilNext дн."
+            }
+        )
+        appendLine("Без срока вообще:   ${s.withoutExpiry} из ${s.total}")
         appendLine("По слоям:")
         for ((layer, count) in s.byLayer) {
             appendLine("  ${layer.name.padEnd(8)} $count")
@@ -117,6 +144,12 @@ class MemoryCanary(private val dao: StickerDao) {
         appendLine("На проверке:    ${before.pendingReview} → ${after.pendingReview}$reviewMark")
 
         appendLine("Просрочено:     ${before.expired} → ${after.expired}${expiredComment(before, after)}")
+
+        // Без восклицательных знаков: рост "без срока" — это не нарушение.
+        // Запись, дошедшая до конца спектра, законно остаётся без следующего
+        // срока. Строка нужна, чтобы этот переход было видно, а не чтобы ловить.
+        appendLine("Без срока:      ${before.withoutExpiry} → ${after.withoutExpiry}")
+
         appendLine()
         appendLine("По слоям:")
         for (layer in Layer.values()) {
