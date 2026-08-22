@@ -51,6 +51,50 @@ class HourglassMemory(private val dao: StickerDao) {
         }
     }
 
+    /**
+     * Разовый ремонт данных (2026-08-22). Чинит записи, застрявшие ВНЕ спектра
+     * из-за прежнего храповика прогрева: они доехали до RED по обращениям,
+     * получили expiryTime = null и стали невидимы для migrateExpired навсегда.
+     *
+     * Потолок прогрева в Prism закрыл путь на будущее, но уже застрявшие строки
+     * правкой кода не расколдовываются — отсюда эта функция.
+     *
+     * Куда возвращать, решает Prism.classify — тот же код, что и при создании
+     * записи. Отдельного SQL-условия сознательно нет: оно повторяло бы правила
+     * классификации наизнанку и разошлось бы с ними при первом же изменении.
+     *
+     * Две категории пропускаются, и обе — законно без срока:
+     *  - PURPLE: конец спектра, холоднее некуда, следующего срока не бывает;
+     *  - настоящие принципы: classify вернул RED с null-интервалом, значит
+     *    признак явный (tag identity / слово "принцип"), и трогать их нельзя.
+     *
+     * Функция идемпотентна: повторный запуск на уже починенной базе не найдёт
+     * ни одной строки без срока, кроме законных, и вернёт 0.
+     *
+     * dao.getAll() здесь допустим в отличие от горячего пути: операция разовая,
+     * при старте, вне цикла чтения контекста.
+     *
+     * @return сколько записей возвращено в спектр.
+     */
+    suspend fun repairStuckLayers(): Int {
+        val now = System.currentTimeMillis()
+        var repaired = 0
+        for (sticker in dao.getAll()) {
+            if (sticker.expiryTime != null) continue
+            if (sticker.layer == Layer.PURPLE.name) continue
+
+            val (layer, interval) = Prism.classify(sticker)
+            if (interval == null) continue
+
+            dao.updateLayer(sticker.id, layer.name, now + interval)
+            repaired++
+        }
+        if (repaired > 0) {
+            Log.d("HourglassMemory", "repairStuckLayers: вернул в спектр $repaired записей")
+        }
+        return repaired
+    }
+
     suspend fun getContext(query: String?, limit: Int): List<Sticker> {
         migrateExpired()
 
