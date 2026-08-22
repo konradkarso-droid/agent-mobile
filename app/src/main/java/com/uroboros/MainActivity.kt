@@ -186,6 +186,38 @@ class MainActivity : AppCompatActivity() {
         setToteRunningState(false)
         tryAutoLoadOnStartup()
 
+        // Item 6, ремонт данных (2026-08-22). Разовый прогон при старте: возвращает
+        // в спектр записи, застрявшие в RED без expiryTime из-за прежнего храповика
+        // прогрева (потолок в Prism закрыл путь, но уже застрявшие строки правкой
+        // кода не чинятся).
+        //
+        // Почему однократно и с выводом на экран, а не тихо при каждом запуске:
+        // молчаливое самолечение маскировало бы новые баги того же класса — если
+        // записи снова начнут проваливаться из спектра, автопочинка подчистит следы,
+        // и канарейка ничего не покажет. Инструмент наблюдения и невидимый ремонтник
+        // в одной системе не уживаются. Сама функция идемпотентна, так что флаг
+        // нужен не для безопасности, а чтобы разовая операция осталась разовой.
+        //
+        // Флаг ставится ТОЛЬКО после успешного прогона: если ремонт упал, при
+        // следующем запуске он попробует снова, а не запишется в выполненные.
+        if (!prefs.getBoolean(KEY_LAYER_REPAIR_DONE, false)) {
+            lifecycleScope.launch {
+                try {
+                    val repaired = mediator.repairStuckLayers()
+                    prefs.edit().putBoolean(KEY_LAYER_REPAIR_DONE, true).apply()
+                    binding.textResults.text = if (repaired > 0) {
+                        "Ремонт слоёв: $repaired записей возвращено в спектр.\n" +
+                            "Нажмите \"Показать память\" — в снимке \"Без срока вообще\" должно уменьшиться."
+                    } else {
+                        "Ремонт слоёв: застрявших записей не найдено."
+                    }
+                } catch (e: Exception) {
+                    binding.textResults.text =
+                        "Ремонт слоёв не выполнен (${e.javaClass.simpleName}) — будет повторён при следующем запуске"
+                }
+            }
+        }
+
         // Миграция на новое устройство (2026-08-21): buttonSave теперь двухрежимная,
         // тот же визуальный язык, что у buttonGenerate (синий/оранжевый, подпись
         // прямо на кнопке). Долгое нажатие раньше показывало debug-лог модели —
@@ -375,5 +407,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val KEY_MODEL_FOLDER_URI = "model_folder_uri"
         private const val KEY_LAST_MODEL_URI = "last_model_uri"
+        private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
     }
 }
