@@ -232,15 +232,19 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 try {
                     val query = binding.editTextInput.text.toString().ifBlank { null }
+                    // Item 6, подшаг 1c (2026-08-22): снимок канарейки в шапке.
+                    // Только чтение. Прежний вызов totalStickers() убран: канарейка
+                    // уже печатает "Всего записей", а два независимых запроса к базе
+                    // могли бы показать два разных числа на одном экране.
+                    val canaryReport = mediator.memoryCanaryReport()
                     val results = mediator.getContext(query = query, limit = 20)
-                    val total = mediator.totalStickers()
                     binding.textResults.text = if (results.isEmpty()) {
-                        "Пока пусто. Всего записей в базе: $total"
+                        "$canaryReport\n\n(записей для показа нет)"
                     } else {
                         val lines = results.joinToString("\n\n") { sticker ->
                             "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
                         }
-                        "Всего записей в базе: $total\n\n$lines"
+                        "$canaryReport\n\n$lines"
                     }
                 } finally {
                     binding.buttonShow.isEnabled = true
