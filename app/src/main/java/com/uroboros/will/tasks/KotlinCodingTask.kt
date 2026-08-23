@@ -6,6 +6,7 @@ import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.util.ErrorSignature
 import com.uroboros.util.PromptBudget
 import com.uroboros.util.StructuralBoundary
 import com.uroboros.will.BudgetVerdict
@@ -59,6 +60,25 @@ import kotlinx.coroutines.flow.collect
  * тот же класс риска, что уже ловили на getContext()-баге (модель отвечает
  * не по тому, что реально в системе). Лимит из PromptBudget — плейсхолдер,
  * не откалиброван.
+ *
+ * Первый живой прогон на Mi 10T (2026-08-23) вскрыл два независимых бага, оба
+ * исправлены здесь:
+ *
+ * (1) maxTokens=100 в operate() обрывал генерацию посреди слова — модель физически
+ *     не успевала дописать функцию, и цикл чинил уже не исходную опечатку, а
+ *     собственный обрубок. Поднято до 512 (дефолт LlmEngine, который прежний
+ *     явный аргумент перекрывал). Значение НЕ откалибровано: это заведомо
+ *     достаточный потолок для тестовой функции, а не измеренная величина.
+ *
+ * (2) signature = сырой stderr никогда не совпадала сама с собой, потому что
+ *     kotlinc печатает в ней путь к временному файлу с новым UUID на каждый вызов.
+ *     RepeatDetector из-за этого не срабатывал ни разу: 19 одинаковых по смыслу
+ *     итераций прошли мимо stuckThreshold=5 до жёсткого потолка. Теперь подпись
+ *     считается через ErrorSignature.of() — см. тот файл, там же объяснено,
+ *     почему эта нормализация НЕ переиспользуется для текста, который видит
+ *     модель. Важно: detail остаётся сырым, модели по-прежнему уходит полный
+ *     вывод компилятора с позицией ошибки — меняется только то, по чему
+ *     сравниваются шаги.
  *
  * "Мост памяти" (item 7a продолжение): результат цикла сохраняется в Sticker-память
  * через TrustedMediator — "вакцина-строка". Важность записи (обратная эмерджентность
@@ -210,7 +230,11 @@ class KotlinCodingTask(
                 StepOutcome(
                     success = false,
                     usefulProgress = true,
-                    signature = result.stderr.ifBlank { result.stdout },
+                    // Правка 2026-08-23: подпись нормализуется, detail остаётся сырым.
+                    // Сырой stderr содержит путь к временному файлу с новым UUID на
+                    // каждый вызов kotlinc, поэтому как подпись он бесполезен —
+                    // RepeatDetector не мог узнать повтор ни разу.
+                    signature = ErrorSignature.of(result.stderr.ifBlank { result.stdout }),
                     detail = result.stderr
                 )
             }
@@ -280,7 +304,11 @@ class KotlinCodingTask(
         val prompt = buildPrompt(state, outcome)
         val generated = StringBuilder()
         var generationError: String? = null
-        llmEngine.generateFlow(prompt, maxTokens = 100).collect { event ->
+        // Правка 2026-08-23: было maxTokens=100 — генерация обрывалась посреди слова
+        // ("return tota"), и следующая итерация чинила уже собственный обрубок,
+        // а не исходную ошибку. 512 — потолок с запасом для тестовой функции,
+        // НЕ измеренная величина; калибровать позже по реальным прогонам.
+        llmEngine.generateFlow(prompt, maxTokens = 512).collect { event ->
             when (event) {
                 is GenerationEvent.Token -> generated.append(event.text)
                 is GenerationEvent.Error -> generationError = event.message
