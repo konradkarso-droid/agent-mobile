@@ -1,24 +1,210 @@
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="24dp">
-<EditText android:id="@+id/editTextInput" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Введите текст (для сохранения) или слово для поиска"/>
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="12dp">
-<Button android:id="@+id/buttonSave" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Сохранить"/>
-<Button android:id="@+id/buttonShow" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="8dp" android:text="Показать память"/>
-</LinearLayout>
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="12dp">
-<Button android:id="@+id/buttonLoadModel" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Загрузить модель"/>
-<!--  Текст и цвет этой кнопки теперь меняются программно в MainActivity
-             (setToteRunningState()) в зависимости от того, идёт ли TOTE-цикл:
-             простой/долгий — генерация/запуск цикла, либо короткий — вопрос
-             агенту, пока цикл уже работает. Начальный текст ниже — просто
-             заглушка на случай, если код почему-то не выполнится до отрисовки.  -->
-<Button android:id="@+id/buttonGenerate" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="8dp" android:text="Генерировать" android:enabled="false"/>
-</LinearLayout>
-<TextView android:id="@+id/textModelStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textSize="12sp" android:text="Модель не загружена"/>
-<!--  Item 9: ответ агента на вопрос, заданный во время идущего TOTE-цикла.
-         Отдельная область — не смешивается с textResults (там прогресс цикла).  -->
-<TextView android:id="@+id/textAnswerLabel" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:textSize="12sp" android:textStyle="bold" android:text="Ответ агента:" android:visibility="gone"/>
-<TextView android:id="@+id/textAnswer" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:textSize="14sp" android:visibility="gone"/>
-<ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="16dp">
-<TextView android:id="@+id/textResults" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="14sp"/>
-</ScrollView>
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#EAF3F6"
+    android:padding="16dp">
+
+    <!-- Верхняя строка: состояние модели слева, аварийный стоп в дальнем
+         верхнем правом углу. Правый верх — самая труднодостижимая точка для
+         большого пальца левой руки, поэтому случайно кнопка не нажимается,
+         а в настоящей аварии до неё тянутся осознанно. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/textModelStatus"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="12sp"
+            android:textColor="#3A6470"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="Модель не загружена"/>
+
+        <Button
+            android:id="@+id/buttonStop"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:minWidth="0dp"
+            android:minHeight="40dp"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#D6453E"
+            android:text="Стоп"/>
+
+    </LinearLayout>
+
+    <!-- Причина срабатывания стопа. Скрыт, пока стоп не взведён. Показывается
+         из MainActivity вместе с кнопкой сброса (следующий шаг). -->
+    <TextView
+        android:id="@+id/textStopBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:padding="12dp"
+        android:background="#FBE3E1"
+        android:textSize="13sp"
+        android:textColor="#A3231D"
+        android:visibility="gone"
+        android:text="Остановлено"/>
+
+    <EditText
+        android:id="@+id/editTextInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:padding="12dp"
+        android:background="#FFFFFF"
+        android:textSize="14sp"
+        android:textColor="#123540"
+        android:textColorHint="#7FA3AE"
+        android:inputType="textMultiLine"
+        android:maxLines="4"
+        android:hint="Запрос, текст для сохранения или вопрос агенту"/>
+
+    <!-- Item 9: ответ агента на вопрос, заданный во время идущего TOTE-цикла.
+         Отдельная область — не смешивается с textResults (там прогресс цикла).
+         Фиолетовая полоса слева: это содержимое другого рода, чем лог. -->
+    <TextView
+        android:id="@+id/textAnswerLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:paddingStart="10dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="10dp"
+        android:background="#FFFFFF"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:textColor="#5B4B9E"
+        android:visibility="gone"
+        android:text="Ответ агента"/>
+
+    <TextView
+        android:id="@+id/textAnswer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="10dp"
+        android:paddingBottom="8dp"
+        android:paddingEnd="10dp"
+        android:background="#FFFFFF"
+        android:textSize="13sp"
+        android:textColor="#123540"
+        android:visibility="gone"/>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="10dp"
+        android:padding="12dp"
+        android:background="#FFFFFF">
+
+        <TextView
+            android:id="@+id/textResults"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="13sp"
+            android:textColor="#123540"
+            android:fontFamily="monospace"/>
+
+    </ScrollView>
+
+    <!-- Сетка 2x2 вместо столбика: отдаёт высоту области результата.
+         Главное действие — в нижней ЛЕВОЙ ячейке: у левши ось большого
+         пальца в нижнем левом углу, это ближайшая точка дуги. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="12dp">
+
+        <!-- Текст и цвет этой кнопки меняются программно в MainActivity
+             (setToteRunningState()) в зависимости от того, идёт ли TOTE-цикл.
+             Текст ниже — заглушка на случай, если код не выполнится до
+             отрисовки. -->
+        <Button
+            android:id="@+id/buttonGenerate"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:minHeight="48dp"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#17697B"
+            android:enabled="false"
+            android:text="Генерировать"/>
+
+        <Button
+            android:id="@+id/buttonShow"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:minHeight="48dp"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
+            android:text="Показать"/>
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+
+        <Button
+            android:id="@+id/buttonSave"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:minHeight="48dp"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
+            android:text="Сохранить"/>
+
+        <Button
+            android:id="@+id/buttonLoadModel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:minHeight="48dp"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
+            android:text="Модель"/>
+
+    </LinearLayout>
+
+    <!-- Подсказки о жестах вынесены сюда одной строкой. Раньше они жили внутри
+         подписей самих кнопок и заставляли текст переноситься в два этажа. -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:textSize="11sp"
+        android:textColor="#7FA3AE"
+        android:text="Долгое нажатие: цикл · лог · экспорт памяти · выбор папки"/>
+
 </LinearLayout>
