@@ -21,6 +21,20 @@ import com.uroboros.safety.SafetyZone
  * (repeat-detection/energy damage/stuck-threshold), что и является прямой защитой
  * от reward-hacking на этой метрике.
  *
+ * Калибровка 2026-08-23 (первый живой прогон на Mi 10T, item 8a ось 3).
+ * Прогон встал по энергии на 6-й итерации, а не по застреванию. Разбор показал, что
+ * stuckThreshold=5 был НЕДОСТИЖИМ: плоский SEVERE=30 за каждый повтор сжигал бюджет
+ * за три совпадения, поэтому consecutiveSimilar физически не мог дорасти до 5.
+ * Что изменено:
+ *   - урон за повтор теперь нарастающий (EnergyBudget.applyRepeatDamage), а не плоский;
+ *   - stuckThreshold 5 -> 3: три одинаковых провала подряд — это уже честное залипание;
+ *   - maxIterations 20 -> 10: при maxTokens=512 каждая итерация это генерация плюс
+ *     запуск kotlinc, то есть минуты и нагрев; на 1.5B модели попытки сверх десятка
+ *     дают не сходимость, а блуждание — сходимость упирается в качество обратной
+ *     связи в промпте, а не в число попыток.
+ * Порядок проверок (сначала застревание, потом энергия) НЕ менялся — он и так был верным:
+ * жёсткий барьер обязан срабатывать раньше мягкой деградации.
+ *
  * Item 9 (2026-08-18, первый проход): опциональный pendingQuerySource опрашивается
  * на каждом шве между test() и operate() — том же естественном месте, что и снимок
  * item 6b/8. При наличии запроса QueryUrgencyClassifier классифицирует его и
@@ -96,8 +110,8 @@ class ToteEngine<S>(
     private val watchdog: DeviceSafetyWatchdog,
     private val energyBudget: EnergyBudget = EnergyBudget(),
     private val repeatDetector: RepeatDetector = RepeatDetector { a, b -> a == b },
-    private val maxIterations: Int = 20,
-    private val stuckThreshold: Int = 5,
+    private val maxIterations: Int = 10,
+    private val stuckThreshold: Int = 3,
     private val pendingQuerySource: PendingQuerySource? = null,
     private val queryHandler: QueryHandler<S>? = null,
     private val promptBudgetGate: PromptBudgetGate<S>? = null
@@ -123,12 +137,15 @@ class ToteEngine<S>(
             consecutiveSimilar = if (isRepeat) consecutiveSimilar + 1 else 0
             lastSignature = outcome.signature
 
-            val severity = when {
-                isRepeat -> ErrorSeverity.SEVERE
-                !outcome.usefulProgress -> ErrorSeverity.MEDIUM
-                else -> ErrorSeverity.LIGHT
+            // Повтор считается отдельно от разовой неудачи: его цена растёт с числом
+            // повторов подряд, а не бьёт плоской суммой с первого же совпадения.
+            if (isRepeat) {
+                energyBudget.applyRepeatDamage(consecutiveSimilar)
+            } else {
+                energyBudget.applyDamage(
+                    if (!outcome.usefulProgress) ErrorSeverity.MEDIUM else ErrorSeverity.LIGHT
+                )
             }
-            energyBudget.applyDamage(severity)
 
             if (consecutiveSimilar >= stuckThreshold) {
                 return ToteResult.Evacuated(
@@ -157,7 +174,7 @@ class ToteEngine<S>(
                     // Item 5b(c): бюджет промпта — ДО operate(), не дожидаясь
                     // stuckThreshold. Отказ мгновенный и однократный: если задача
                     // не помещается в промпт, это ясно уже на этом шаге, гонять
-                    // до 5 повторов ради того же вывода — трата ресурсов
+                    // до порога повторов ради того же вывода — трата ресурсов
                     // (Termux-вызовов/генераций), которых и так не хватает.
                     val budgetVerdict = promptBudgetGate?.evaluate(state, outcome)
                     if (budgetVerdict is BudgetVerdict.Reject) {
