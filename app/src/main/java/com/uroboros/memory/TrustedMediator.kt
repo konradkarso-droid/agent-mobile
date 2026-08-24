@@ -57,6 +57,15 @@ class TrustedMediator(context: Context) {
     suspend fun repairStuckLayers(): Int = hourglass.repairStuckLayers()
 
     /**
+     * Разовый ремонт провенанса (2026-08-24). Перемаркирует исторические
+     * вакцина-строки, помеченные как сказанное пользователем, в вывод агента.
+     * Проброс без логики — критерий и значения решает HourglassMemory.
+     *
+     * @return сколько записей перемаркировано.
+     */
+    suspend fun repairToteProvenance(): Int = hourglass.repairToteProvenance()
+
+    /**
      * Сохраняет запись в память. source/confidence обязательны — см. KDoc класса.
      *
      * Ориентир для вызывающих:
