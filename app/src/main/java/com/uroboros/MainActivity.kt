@@ -38,10 +38,12 @@ class MainActivity : AppCompatActivity() {
 
     private var isToteRunning = false
 
-    // Единый визуальный язык для "сменных" кнопок (не розовый дефолт темы):
-    // синий = обычный/базовый режим, оранжевый = "особый" режим (вопрос / …).
-    private val colorIdle = ColorStateList.valueOf(Color.parseColor("#1565C0"))
-    private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#EF6C00"))
+    // Палитра совпадает с activity_main.xml. Смысл цвета, а не украшение:
+    // бирюзовый = обычное главное действие, фиолетовый = канал речи агента
+    // (тем же цветом помечен блок "Ответ агента"). Красный нигде, кроме
+    // аварийного стопа, не используется.
+    private val colorIdle = ColorStateList.valueOf(Color.parseColor("#17697B"))
+    private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#5B4B9E"))
 
     private val prefs by lazy { getSharedPreferences("uroboros_prefs", Context.MODE_PRIVATE) }
 
@@ -54,11 +56,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun setToteRunningState(running: Boolean) {
         isToteRunning = running
-        binding.buttonGenerate.text = if (running) {
-            "Спросить\n(кор. — вопрос агенту)"
-        } else {
-            "Генерировать\n(кор. — разово, дл. — цикл)"
-        }
+        // Подписи короткие: подсказки о жестах вынесены одной строкой в
+        // разметку, поэтому переносить внутри кнопки больше нечего.
+        binding.buttonGenerate.text = if (running) "Спросить" else "Генерировать"
         binding.buttonGenerate.backgroundTintList = if (running) colorToteRunning else colorIdle
     }
 
@@ -184,6 +184,14 @@ class MainActivity : AppCompatActivity() {
         )
 
         setToteRunningState(false)
+
+        // Аварийный стоп есть в разметке, но обработчика у него пока нет.
+        // Выключаем явно: кнопка, которая выглядит рабочей и ничего не
+        // останавливает, хуже отсутствующей — она даёт ложное спокойствие.
+        // Серая кнопка честно читается с экрана как "ещё не сделано".
+        // Включить вместе с обработчиком (EmergencyStop.triggerManual).
+        binding.buttonStop.isEnabled = false
+
         tryAutoLoadOnStartup()
 
         // Item 6, ремонт данных (2026-08-22). Разовый прогон при старте: возвращает
@@ -218,12 +226,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Миграция на новое устройство (2026-08-21): buttonSave теперь двухрежимная,
-        // тот же визуальный язык, что у buttonGenerate (синий/оранжевый, подпись
-        // прямо на кнопке). Долгое нажатие раньше показывало debug-лог модели —
-        // убрано по согласованию (сохранность реальных данных важнее).
-        binding.buttonSave.text = "Сохранить\n(кор. — сохранить, дл. — экспорт памяти)"
-        binding.buttonSave.backgroundTintList = colorIdle
+        // Миграция на новое устройство (2026-08-21): buttonSave двухрежимная —
+        // короткое нажатие сохраняет, долгое экспортирует память. Долгое нажатие
+        // раньше показывало debug-лог модели — убрано по согласованию
+        // (сохранность реальных данных важнее).
+        //
+        // Подпись и цвет этой кнопки здесь больше НЕ задаются: они живут в
+        // разметке. Прежние две строки перекрывали её оттуда и возвращали
+        // двухэтажный текст поверх новой вёрстки.
 
         binding.buttonSave.setOnClickListener {
             val text = binding.editTextInput.text.toString()
