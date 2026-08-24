@@ -81,6 +81,31 @@ object ActionGate {
     )
 
     fun evaluate(request: ActionRequest): ActionVerdict {
+        // Правка 2026-08-24. Аварийный стоп проверяется ПЕРВЫМ — раньше allow-list,
+        // раньше подсчёта весов. Пока флаг взведён, ни одно действие не проходит,
+        // независимо от его типа и риска.
+        //
+        // Почему здесь, а не в GatedAction (вопреки комментарию в том файле):
+        // GatedAction после вердикта пишет запись в action_evidence. Выход раньше
+        // него означал бы, что отказ по аварийному стопу нигде не фиксируется —
+        // а это ровно то событие, след которого нужнее всего. Здесь отказ
+        // становится обычным вердиктом и попадает в журнал сам собой.
+        // Плюс ActionGate — чистый Kotlin без Android, его покрывает юнит-тест.
+        //
+        // ЧЕГО ЭТА ПРОВЕРКА ПОКА НЕ ДАЁТ: взвести стоп нечем — кнопки в интерфейсе
+        // нет, trigger() не вызывается нигде. Это половина проводки; вторая
+        // половина (кнопка + видимое состояние) идёт следующим шагом.
+        if (EmergencyStop.isActive()) {
+            return ActionVerdict(
+                result = GateResult.DENY,
+                riskWeight = Double.MAX_VALUE,
+                signalBreakdown = emptyMap(),
+                reason = "АВАРИЙНЫЙ СТОП взведён — все действия заблокированы. " +
+                    "Отклонено: ${request.type}, запросил ${request.requestedBy}. " +
+                    "Ничего не выполнится, пока стоп не снят вручную."
+            )
+        }
+
         if (request.type !in ALLOWED_TYPES) {
             return ActionVerdict(
                 result = GateResult.DENY,
@@ -116,11 +141,22 @@ object ActionGate {
         val finalResult =
             if (result == GateResult.IN_DOUBT && isHighStakes) GateResult.DENY else result
 
+        // Текст вердикта пишется так, чтобы его понял человек, а не только автор
+        // кода: голое "risk weight 8.0 => DENY" ничего не объясняет тому, кто
+        // увидит это в журнале или на экране.
+        val plainReason = if (finalResult == GateResult.DENY) {
+            "Отказано: риск $riskWeight из максимума ${DENY_THRESHOLD} допустимых. " +
+                "Что насчитало: ${signals.filterValues { it > 0.0 }.keys.joinToString(", ")}. " +
+                "Действие ${request.type}, запросил ${request.requestedBy}."
+        } else {
+            "risk weight $riskWeight (${if (isHighStakes) "high-stakes" else "low-stakes"}) => $finalResult"
+        }
+
         return ActionVerdict(
             result = finalResult,
             riskWeight = riskWeight,
             signalBreakdown = signals,
-            reason = "risk weight $riskWeight (${if (isHighStakes) "high-stakes" else "low-stakes"}) => $finalResult"
+            reason = plainReason
         )
     }
 }
