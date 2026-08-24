@@ -6,6 +6,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -17,13 +18,17 @@ import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
+import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.SourceKind
+import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.will.SimplePendingQuerySource
 import com.uroboros.will.ToteResult
 import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -37,6 +42,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pendingQuerySource: SimplePendingQuerySource
 
     private var isToteRunning = false
+
+    // Ссылка на корутину идущего TOTE-цикла. Нужна ровно для одного:
+    // аварийный стоп должен прервать уже начатую работу, а не только запретить
+    // будущую. Флаг EmergencyStop закрывает гейт — но цикл, который уже крутится,
+    // от закрытого гейта не останавливается: он продолжает генерировать текст и
+    // получать отказы, пока не кончится энергия. Это минуты работы после нажатия
+    // кнопки с надписью "Стоп". Поэтому слоя два: флаг (запрет) + cancel (обрыв).
+    private var toteJob: Job? = null
 
     // Палитра совпадает с activity_main.xml. Смысл цвета, а не украшение:
     // бирюзовый = обычное главное действие, фиолетовый = канал речи агента
@@ -60,6 +73,53 @@ class MainActivity : AppCompatActivity() {
         // разметку, поэтому переносить внутри кнопки больше нечего.
         binding.buttonGenerate.text = if (running) "Спросить" else "Генерировать"
         binding.buttonGenerate.backgroundTintList = if (running) colorToteRunning else colorIdle
+    }
+
+    /**
+     * Текст красной полосы. Пишется для человека, который не читает код: что
+     * встало, почему встало и что сделать дальше — в трёх строках.
+     */
+    private fun stopReasonText(cause: StopCause?): String = when (cause) {
+        is StopCause.ByUser -> cause.note
+        // Эта ветка сегодня недостижима: ActionGate проверяет флаг, но сам его
+        // нигде не взводит (и не должен — обычный отказ гейта не повод вешать
+        // глобальный незакрывающийся стоп). Ветка написана заранее, потому что
+        // when по sealed-типу всё равно требует её, а дописывать текст в спешке,
+        // когда автоматический взвод появится, — худший момент для этого.
+        is StopCause.ByGate ->
+            "Система сама заблокировала действие.\n${cause.verdict.reason}"
+        // Стоп без причины — это уже баг: причина ставится в том же вызове, что
+        // и флаг. Врать "всё в порядке" тут нельзя, поэтому говорим прямо.
+        null -> "Причина не записана — это ошибка в самой программе, сообщите о ней."
+    }
+
+    private fun renderStopState(active: Boolean) {
+        if (!active) {
+            binding.textStopBanner.visibility = View.GONE
+            return
+        }
+        binding.textStopBanner.visibility = View.VISIBLE
+        binding.textStopBanner.text =
+            "АВАРИЙНЫЙ СТОП\n\n" +
+                stopReasonText(EmergencyStop.lastCause()) +
+                "\n\nДействия агента заблокированы. Нажмите на эту полосу, чтобы снять стоп."
+    }
+
+    /**
+     * Снятие стопа — только через диалог, где причина показана ещё раз.
+     * Смысл не в лишнем касании, а в том, что флаг не самосбрасывается: человек
+     * должен увидеть, ПОЧЕМУ всё встало, прежде чем разрешить продолжить.
+     */
+    private fun showClearStopDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Снять аварийный стоп?")
+            .setMessage(
+                stopReasonText(EmergencyStop.lastCause()) +
+                    "\n\nПосле снятия агент снова сможет выполнять действия."
+            )
+            .setPositiveButton("Снять стоп") { _, _ -> EmergencyStop.clear() }
+            .setNegativeButton("Оставить стоп", null)
+            .show()
     }
 
     private fun scanModelFolder(folderUri: Uri): List<DocumentFile> {
@@ -177,20 +237,39 @@ class MainActivity : AppCompatActivity() {
             watchdog = watchdog,
             pendingQuerySource = pendingQuerySource,
             onAnswer = { answer ->
-                binding.textAnswerLabel.visibility = android.view.View.VISIBLE
-                binding.textAnswer.visibility = android.view.View.VISIBLE
+                binding.textAnswerLabel.visibility = View.VISIBLE
+                binding.textAnswer.visibility = View.VISIBLE
                 binding.textAnswer.text = answer
             }
         )
 
         setToteRunningState(false)
 
-        // Аварийный стоп есть в разметке, но обработчика у него пока нет.
-        // Выключаем явно: кнопка, которая выглядит рабочей и ничего не
-        // останавливает, хуже отсутствующей — она даёт ложное спокойствие.
-        // Серая кнопка честно читается с экрана как "ещё не сделано".
-        // Включить вместе с обработчиком (EmergencyStop.triggerManual).
-        binding.buttonStop.isEnabled = false
+        // ---- Аварийный стоп (2026-08-24) ----
+        //
+        // Кнопка теперь действительно работает, поэтому прежнее isEnabled = false
+        // убрано. Подтверждения перед остановкой НЕТ намеренно: диалог "вы
+        // уверены?" в аварийной ситуации стоит секунды и лишнее касание. Защита
+        // от случайного нажатия здесь другая, физическая — кнопка стоит в дальнем
+        // верхнем правом углу, самой труднодостижимой точке для большого пальца
+        // левой руки. Осознанно дотянуться можно, задеть — почти нет.
+        binding.buttonStop.setOnClickListener {
+            // Порядок важен: сначала запрет, потом обрыв. Если оборвать корутину
+            // первой, между обрывом и взводом флага остаётся окно, в котором
+            // что-то ещё успело бы пройти через гейт.
+            EmergencyStop.triggerManual("Остановлено вручную кнопкой на экране.")
+            toteJob?.cancel()
+            Toast.makeText(this, "Аварийный стоп взведён", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.textStopBanner.setOnClickListener { showClearStopDialog() }
+
+        // Состояние читается из потока, а не выставляется в обработчике кнопки.
+        // Разница принципиальная: так полоса появится и в том случае, если стоп
+        // взведёт что-то внутри системы, а не палец пользователя.
+        lifecycleScope.launch {
+            EmergencyStop.active.collect { active -> renderStopState(active) }
+        }
 
         tryAutoLoadOnStartup()
 
@@ -325,6 +404,10 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
+        // Короткое нажатие — обычный текстовый разговор. Аварийный стоп его НЕ
+        // глушит намеренно: этот путь не проходит через ActionGate и вообще
+        // ничего не делает с устройством, зато остаётся единственным способом
+        // что-то спросить у системы, пока она стоит.
         binding.buttonGenerate.setOnClickListener {
             val userText = binding.editTextInput.text.toString()
             if (userText.isBlank()) {
@@ -378,15 +461,27 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "Цикл уже идёт", Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
             }
+            // Запуск цикла под взведённым стопом запрещён. Формально гейт всё
+            // равно отказал бы каждой компиляции, но цикл успел бы намолотить
+            // итераций впустую и выйти по энергии — с экрана это выглядело бы
+            // как поломка, а не как работающий запрет.
+            if (EmergencyStop.isActive()) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Взведён аварийный стоп — снимите его в красной полосе вверху",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@setOnLongClickListener true
+            }
             if (!llmEngine.isLoaded) {
                 Toast.makeText(this@MainActivity, "Сначала загрузите модель", Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
             }
             setToteRunningState(true)
-            binding.textAnswerLabel.visibility = android.view.View.GONE
-            binding.textAnswer.visibility = android.view.View.GONE
+            binding.textAnswerLabel.visibility = View.GONE
+            binding.textAnswer.visibility = View.GONE
             binding.textResults.text = "Запускаю TOTE-цикл (компиляция + LLM)..."
-            lifecycleScope.launch {
+            toteJob = lifecycleScope.launch {
                 try {
                     when (val result = codingTask.run()) {
                         is ToteResult.Success -> {
@@ -406,8 +501,16 @@ class MainActivity : AppCompatActivity() {
                                     "Последний код:\n${result.lastState.code}"
                         }
                     }
+                } catch (e: CancellationException) {
+                    // Обрыв — это нормальный исход, а не сбой. Но экран не должен
+                    // остаться с текстом "Запускаю цикл...", как будто он висит.
+                    binding.textResults.text =
+                        "Цикл прерван аварийным стопом.\n\n" +
+                            "Начатая работа отменена. Причина — в красной полосе вверху экрана."
+                    throw e
                 } finally {
                     setToteRunningState(false)
+                    toteJob = null
                 }
             }
             true
