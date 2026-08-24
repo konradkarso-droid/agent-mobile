@@ -32,7 +32,7 @@ enum class SafetyZone {
 class DeviceSafetyWatchdog(
     private val context: Context,
     externalScope: CoroutineScope
-) {
+) : SafetyZoneSource {
     private val powerManager =
         context.getSystemService(Context.POWER_SERVICE) as PowerManager
 
@@ -79,7 +79,7 @@ class DeviceSafetyWatchdog(
     private fun stricterOf(a: SafetyZone, b: SafetyZone): SafetyZone =
         if (a.ordinal >= b.ordinal) a else b
 
-    val zone: StateFlow<SafetyZone> = combine(
+    override val zone: StateFlow<SafetyZone> = combine(
         thermalStatusFlow(),
         batteryTempFlow()
     ) { thermalStatus, batteryTemp ->
