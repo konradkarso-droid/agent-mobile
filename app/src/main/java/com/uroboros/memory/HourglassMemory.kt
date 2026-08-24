@@ -95,6 +95,42 @@ class HourglassMemory(private val dao: StickerDao) {
         return repaired
     }
 
+    /**
+     * Разовый ремонт провенанса (2026-08-24). Строки, порождённые самим агентом
+     * до правки "дыры №4", лежат в базе с source = USER_STATED: тогда saveEvent()
+     * провенанс не принимал вообще, и вывод агента о собственной работе
+     * записывался как сказанное пользователем.
+     *
+     * Правка кода прошлые строки не переписывает — они до сих пор попадают в
+     * getContext() и читаются моделью как показания человека. Наблюдалось живьём:
+     * на вопрос пользователя модель ответила "функцию sumPositive ВЫ запустили
+     * 6 раз", пересказав ему его же словами отчёт агента.
+     *
+     * Отбор идёт по СОДЕРЖИМОМУ, а не по дате: дата сработала бы только на этой
+     * конкретной базе и промахнулась бы на записях, перенесённых с другого
+     * устройства. Условие source = USER_STATED в самом запросе делает операцию
+     * идемпотентной — повторный вызов не найдёт ничего и вернёт 0.
+     *
+     * Это сознательное исключение из правила "провенанс ставится один раз при
+     * создании и не пересматривается" (Sticker.kt). Исключение разовое и
+     * ограничено историческими записями; ничего в текущем пути записи оно
+     * не меняет.
+     *
+     * @return сколько записей перемаркировано.
+     */
+    suspend fun repairToteProvenance(): Int {
+        val fixed = dao.reassignProvenanceByPrefix(
+            contentPrefix = HISTORICAL_TOTE_PREFIX,
+            oldSource = SourceKind.USER_STATED.name,
+            newSource = SourceKind.AGENT_INFERRED.name,
+            newConfidence = ConfidenceLevel.INFERRED.name
+        )
+        if (fixed > 0) {
+            Log.d("HourglassMemory", "repairToteProvenance: перемаркировано $fixed записей")
+        }
+        return fixed
+    }
+
     suspend fun getContext(query: String?, limit: Int): List<Sticker> {
         migrateExpired()
 
@@ -169,5 +205,18 @@ class HourglassMemory(private val dao: StickerDao) {
         }
 
         return newId
+    }
+
+    private companion object {
+        /**
+         * Префикс вакцина-строк в том виде, в каком их писала прежняя версия кода.
+         *
+         * Литерал здесь СОЗНАТЕЛЬНО продублирован, а не взят из KotlinCodingTask:
+         * ремонт работает с историческими строками, уже лежащими в базе, и не
+         * должен меняться вслед за тем, как задача формирует новые записи.
+         * Общая константа связала бы прошлое с будущим и при первой же правке
+         * формулировки молча перестала бы находить старьё.
+         */
+        const val HISTORICAL_TOTE_PREFIX = "[TOTE]"
     }
 }
