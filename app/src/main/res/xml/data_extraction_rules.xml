@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Правила извлечения данных приложения (Android 12+, targetSdk 31+).
+
+    Зачем: android:allowBackup="false" отключает облачный бэкап,
+    но НЕ отключает перенос данных при миграции устройство->устройство.
+    Это отдельный канал, и без этого файла память агента
+    (uroboros_memory.db, SharedPreferences) уедет на новый телефон
+    средствами системы — что противоречит принципу "без облака".
+
+    Здесь оба канала закрыты полностью: наружу не уходит ничего.
+    Перенос памяти между устройствами делается только вручную,
+    через DatabaseExporter (пункт 11 бэклога).
+-->
+<data-extraction-rules>
+
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+    </cloud-backup>
+
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+    </device-transfer>
+
+</data-extraction-rules>
