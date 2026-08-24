@@ -40,7 +40,17 @@ data class ActionRequest(
     val provenance: ActionProvenance,
     val crossesDeviceBoundary: Boolean,
     val isReversible: Boolean,
-    val affectedObjectCount: Int = 1
+    val affectedObjectCount: Int = 1,
+    /**
+     * Задача, в рамках которой запрашивается действие. Нужен ТОЛЬКО для сверки
+     * с TaskAuthorization: разрешение действует в границах одной задачи.
+     *
+     * null означает "действие вне задачи" — такому запросу никакое разрешение
+     * не подойдёт по определению. Умолчание null оставлено сознательно: старые
+     * точки вызова компилируются без правок и при этом не получают доступа
+     * к авторизации молча.
+     */
+    val taskSessionId: String? = null
 )
 
 /** Результат проверки. Никогда не создавай вручную — только через ActionGate.evaluate(). */
@@ -70,6 +80,28 @@ object ActionGate {
     private const val HIGH_STAKES_THRESHOLD = 4.0
     private const val DENY_THRESHOLD = 7.0
 
+    /**
+     * Потолок авторизации (2026-08-24). Выше него не действует НИКАКОЕ
+     * подтверждение человека: чтобы разрешить такое действие, нужно менять код,
+     * а не нажимать кнопку.
+     *
+     * Зачем отдельная граница, а не просто "подтверждение поднимает DENY_THRESHOLD":
+     * второе означало бы, что согласие взвешивается против риска, и достаточно
+     * набрать разрешений, чтобы пропустить что угодно — та самая нарезка салями,
+     * ради которой заведён журнал действий. Здесь согласие ничего не удешевляет:
+     * оно разрешает конкретное действие в конкретных границах, и только пока
+     * действие само по себе не перешло черту.
+     *
+     * Практический смысл: сегодня запуск сгенерированного кода весит 8.0 и
+     * подтверждением открывается. Стирание файлов или сетевой вызов наружу
+     * наберут больше и не откроются — при том, что диалог подтверждения для
+     * человека выглядел бы одинаково в обоих случаях.
+     *
+     * Значение черновое, как прочие пороги проекта. Калибруется, когда появятся
+     * реальные действия с весами выше нынешних.
+     */
+    private const val AUTHORIZATION_CEILING = 10.0
+
     // Allow-list: default-deny. Только перечисленные здесь типы вообще могут получить ALLOW.
     private val ALLOWED_TYPES = setOf(
         ActionType.SEND_MESSAGE,
@@ -80,7 +112,19 @@ object ActionGate {
         // FILE_DELETE намеренно НЕ в списке — добавить явно, когда реально понадобится
     )
 
-    fun evaluate(request: ActionRequest): ActionVerdict {
+    /**
+     * @param authorization разрешение человека на задачу, если оно есть. Передаётся
+     *   ЯВНО, а не берётся из глобального реестра: забытый параметр даёт честный
+     *   отказ, а не тихое разрешение, и в точке вызова видно, что действие идёт
+     *   с подтверждением. Умолчание null сохраняет старые вызовы рабочими.
+     * @param now время для проверки срока разрешения — параметром ради
+     *   детерминированного юнит-теста.
+     */
+    fun evaluate(
+        request: ActionRequest,
+        authorization: TaskAuthorization? = null,
+        now: Long = System.currentTimeMillis()
+    ): ActionVerdict {
         // Правка 2026-08-24. Аварийный стоп проверяется ПЕРВЫМ — раньше allow-list,
         // раньше подсчёта весов. Пока флаг взведён, ни одно действие не проходит,
         // независимо от его типа и риска.
@@ -133,7 +177,23 @@ object ActionGate {
         // вернуть IN_DOUBT вместо уверенного результата. Пока такой проверки нет,
         // gate детерминирован — IN_DOUBT технически недостижим этим кодом,
         // но вся обработка для него уже на месте, чтобы не переписывать потом.
-        val result = if (riskWeight >= DENY_THRESHOLD) GateResult.DENY else GateResult.ALLOW
+        // Подходит ли предъявленное разрешение. Совпасть должны все три части
+        // области — тип, запросивший компонент, задача — и срок не должен истечь.
+        // Запрос без taskSessionId не покрывается ничем: действие вне задачи
+        // не может опираться на разрешение, выданное задаче.
+        val authorized = authorization != null &&
+            request.taskSessionId != null &&
+            authorization.covers(request.type, request.requestedBy, request.taskSessionId, now)
+
+        // Порядок именно такой: сначала обычный порог, потом безусловный потолок,
+        // и только потом разрешение. Потолок стоит ВЫШЕ разрешения — иначе
+        // подтверждение открывало бы что угодно.
+        val result = when {
+            riskWeight < DENY_THRESHOLD -> GateResult.ALLOW
+            riskWeight >= AUTHORIZATION_CEILING -> GateResult.DENY
+            authorized -> GateResult.ALLOW
+            else -> GateResult.DENY
+        }
 
         // in_doubt обрабатывается по категории: high-stakes+in_doubt => жёсткий deny без очереди;
         // low-stakes+in_doubt => откладывается в reviewPending (это решает вызывающий код,
@@ -144,12 +204,41 @@ object ActionGate {
         // Текст вердикта пишется так, чтобы его понял человек, а не только автор
         // кода: голое "risk weight 8.0 => DENY" ничего не объясняет тому, кто
         // увидит это в журнале или на экране.
-        val plainReason = if (finalResult == GateResult.DENY) {
-            "Отказано: риск $riskWeight из максимума ${DENY_THRESHOLD} допустимых. " +
-                "Что насчитало: ${signals.filterValues { it > 0.0 }.keys.joinToString(", ")}. " +
-                "Действие ${request.type}, запросил ${request.requestedBy}."
-        } else {
-            "risk weight $riskWeight (${if (isHighStakes) "high-stakes" else "low-stakes"}) => $finalResult"
+        val whatCounted = signals.filterValues { it > 0.0 }.keys.joinToString(", ")
+
+        val plainReason = when {
+            // Выше потолка: объясняем, что дело не в отсутствии подтверждения,
+            // иначе человек будет искать кнопку, которой нет.
+            finalResult == GateResult.DENY && riskWeight >= AUTHORIZATION_CEILING ->
+                "Отказано безусловно: риск $riskWeight при потолке $AUTHORIZATION_CEILING. " +
+                    "Такие действия не открываются подтверждением — чтобы разрешить, " +
+                    "нужно менять код программы. " +
+                    "Что насчитало: $whatCounted. " +
+                    "Действие ${request.type}, запросил ${request.requestedBy}."
+
+            // Отказ из-за отсутствующего/неподходящего разрешения: называем,
+            // чего именно не хватает.
+            finalResult == GateResult.DENY ->
+                "Отказано: риск $riskWeight из максимума $DENY_THRESHOLD допустимых. " +
+                    "Что насчитало: $whatCounted. " +
+                    "Действие ${request.type}, запросил ${request.requestedBy}. " +
+                    if (authorization == null) {
+                        "Нужно подтверждение человека — его не было."
+                    } else {
+                        "Предъявленное ${authorization.describe()} сюда не подходит " +
+                            "(другая задача, другой запросивший, другой тип или истёк срок)."
+                    }
+
+            // Разрешено человеком: вес остаётся честным, в тексте видно и риск,
+            // и то, чьим разрешением он покрыт.
+            authorized && riskWeight >= DENY_THRESHOLD ->
+                "Разрешено подтверждением человека: риск $riskWeight выше обычного " +
+                    "порога $DENY_THRESHOLD, но ниже потолка $AUTHORIZATION_CEILING. " +
+                    "Действует ${authorization!!.describe()}. " +
+                    "Что насчитало: $whatCounted."
+
+            else ->
+                "risk weight $riskWeight (${if (isHighStakes) "high-stakes" else "low-stakes"}) => $finalResult"
         }
 
         return ActionVerdict(
