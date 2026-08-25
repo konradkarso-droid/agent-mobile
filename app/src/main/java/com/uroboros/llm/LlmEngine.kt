@@ -10,6 +10,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import java.io.File
+import java.security.MessageDigest
 
 class LlmEngine(
     private val context: Context,
@@ -17,6 +19,9 @@ class LlmEngine(
 ) {
 
     private val engine = GGMLEngine()
+
+    /** Папка кэша системного промпта для текущей модели, либо null — если создать не удалось. */
+    private var promptCacheDir: File? = null
 
     val isLoaded: Boolean get() = engine.isLoaded
 
@@ -35,7 +40,8 @@ class LlmEngine(
             cacheTypeV = params.cacheTypeV,
         )
         if (ok) {
-            configureAfterLoad()
+            val file = File(modelPath)
+            configureAfterLoad(sourceIdentity = file.name + ":" + file.length())
         }
         return ok
     }
@@ -56,7 +62,7 @@ class LlmEngine(
             cacheTypeV = params.cacheTypeV,
         )
         if (ok) {
-            configureAfterLoad()
+            configureAfterLoad(sourceIdentity = uri.toString())
         }
         return ok
     }
@@ -75,14 +81,95 @@ class LlmEngine(
      * задаётся ПОСЛЕ базовых параметров сэмплера и один раз на загрузку, а не
      * на каждый запрос, — иначе движок не сможет переиспользовать уже
      * обсчитанное начало запроса.
+     *
+     * @param sourceIdentity откуда взялась модель — имя и размер файла либо
+     *        строка выданного доступа. Участвует в имени папки кэша, см.
+     *        [applyPromptCache].
      */
-    private fun configureAfterLoad() {
+    private fun configureAfterLoad(sourceIdentity: String) {
+        applyPromptCache(sourceIdentity)
         engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
         engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
         // BIBLE soft-wall: задаётся один раз при загрузке (static), не на каждый
         // generateFlow-вызов — сохраняет KV-cache prefix reuse в native-движке.
         engine.setSystemPrompt(BibleSoftWall.TEXT)
         applyStreamingLatency()
+    }
+
+    /**
+     * Кэш обсчитанной системной стены на диске.
+     *
+     * Зачем. Системная стена — это больше тысячи токенов, и при каждом холодном
+     * запуске движок считал её заново, около полутора минут. Библиотека умеет
+     * сохранять уже посчитанное состояние на диск и поднимать его при следующем
+     * запуске; надо только указать ей папку. Сохранение и восстановление она
+     * делает сама, на пути генерации, — звать нам нечего.
+     *
+     * Почему папка своя на каждую модель. В имени файла кэша библиотека
+     * использует отпечаток ТОЛЬКО текста системной стены. Модели в ключе нет.
+     * Значит, поменяв модель и оставив стену прежней, мы получили бы совпадение
+     * имён и поднятое состояние от чужой модели. Ошибка была бы молчаливой —
+     * ни строки на экране, просто ответы не те. Поэтому модель разводится по
+     * папкам нами.
+     *
+     * Из чего складывается имя папки: метаданные загруженной модели (название,
+     * число параметров, размер, тип квантования) плюс имя и размер исходного
+     * файла. Метаданные берутся у уже загруженной модели, поэтому имя папки
+     * одинаково независимо от способа открытия. Имя файла нужно вдобавок к ним:
+     * две сборки одной и той же модели (например, обычная и с аблитерацией)
+     * вполне могут нести одинаковые метаданные, а различаются именно файлом.
+     *
+     * Папки прежних моделей удаляются здесь же. Иначе несколько экспериментов
+     * с квантованием оставили бы на телефоне по нескольку десятков мегабайт
+     * каждый, и никто бы об этом не узнал.
+     *
+     * Не `cacheDir`, а `filesDir` — намеренно. Содержимое `cacheDir` система
+     * вправе стереть при нехватке места; кэш то работал бы, то нет, без всякого
+     * следа. `filesDir` система сама не трогает.
+     */
+    private fun applyPromptCache(sourceIdentity: String) {
+        promptCacheDir = null
+
+        val fingerprint = shortHash((engine.getModelInfoJson() ?: "") + "|" + sourceIdentity)
+        val root = File(context.filesDir, PROMPT_CACHE_ROOT)
+        val dir = File(root, fingerprint)
+
+        if (!dir.isDirectory && !dir.mkdirs()) return
+
+        // Папки других моделей больше не нужны.
+        root.listFiles()?.forEach { old ->
+            if (old.isDirectory && old.name != fingerprint) old.deleteRecursively()
+        }
+
+        promptCacheDir = dir
+        engine.setPromptCacheDir(dir.absolutePath)
+    }
+
+    /**
+     * Что происходит с кэшем системной стены, человеческими словами.
+     *
+     * Нужно потому, что задающий метод библиотеки не возвращает ничего: он молча
+     * ничего не делает и при недоступной папке, и при пустой системной стене.
+     * Отличить «работает» от «молчит» можно двумя способами, оба здесь:
+     * файл кэша, появившийся на диске после первого ответа, и строка
+     * «Prompt cache dir set» в собственном логе движка.
+     */
+    fun getPromptCacheReport(): String {
+        val dir = promptCacheDir
+            ?: return "Кэш стены: ПАПКА НЕ СОЗДАНА — обсчёт будет каждый раз заново"
+
+        val files = dir.listFiles()?.filter { it.isFile } ?: emptyList()
+        val bytes = files.sumOf { it.length() }
+        val confirmed = runCatching { engine.getDebugLog().contains(PROMPT_CACHE_LOG_MARKER) }
+            .getOrDefault(false)
+
+        val state = when {
+            files.isEmpty() -> "пуст (заполнится после первого ответа)"
+            else -> "${files.size} ф., ${bytes / (1024 * 1024)} МБ"
+        }
+        val engineSays = if (confirmed) "движок папку принял" else "движок о папке не сообщил"
+
+        return "Кэш стены: $state · $engineSays · ${dir.name}"
     }
 
     /**
@@ -190,12 +277,29 @@ class LlmEngine(
 
     suspend fun unload() = engine.unload()
 
+    /** Короткий отпечаток строки — только для имени папки, не для безопасности. */
+    private fun shortHash(input: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(input.toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { "%02x".format(it) }
+
     private companion object {
         /** Профиль потоков движка: 0 — экономия, 1 — баланс, 2 — производительность. */
         const val THREAD_MODE_PERFORMANCE = 2
 
         /** Байт, накапливаемых движком перед выдачей порции токенов. */
         const val STREAMING_BATCH_BYTES = 64
+
+        /** Папка внутри filesDir, где лежат кэши по одной на модель. */
+        const val PROMPT_CACHE_ROOT = "prompt_cache"
+
+        /**
+         * Строка, которую движок печатает в свой лог, приняв папку кэша.
+         * Ищется по подстроке намеренно: полный текст строки содержит путь и
+         * может измениться, а этот кусок переживёт правку формата.
+         */
+        const val PROMPT_CACHE_LOG_MARKER = "Prompt cache dir set"
 
         /**
          * Штраф за повтор токена. Значение живёт здесь в единственном
