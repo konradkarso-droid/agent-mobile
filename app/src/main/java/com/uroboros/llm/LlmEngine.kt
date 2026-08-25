@@ -22,6 +22,7 @@ class LlmEngine(
 
     suspend fun loadModel(modelPath: String): Boolean {
         val params = GGMLEngine.getRecommendedParams(context)
+        applyThreadMode()
         val ok = engine.load(
             path = modelPath,
             contextSize = params.contextSize,
@@ -46,6 +47,7 @@ class LlmEngine(
 
     suspend fun loadModelFromUri(uri: Uri): Boolean {
         val params = GGMLEngine.getRecommendedParams(context)
+        applyThreadMode()
         val ok = engine.load(
             context = context,
             uri = uri,
@@ -85,6 +87,29 @@ class LlmEngine(
      */
     private fun applyStreamingLatency() {
         engine.setTokenBatchSize(STREAMING_BATCH_BYTES)
+    }
+
+    /**
+     * Профиль потоков движка.
+     *
+     * До этой правки не вызывался никогда, поэтому работало умолчание —
+     * "баланс", а оно на восьмиядерном процессоре отдавало генерации всего два
+     * потока (обсчёту запроса — четыре). Это было видно в логе загрузки как
+     * threads_gen=2, но принималось за свойство железа, пока строку не вывели
+     * на экран.
+     *
+     * Вызывается ПЕРЕД load() намеренно. Документация библиотеки разрешает
+     * менять профиль на ходу, так что технически момент неважен, — но если
+     * настройка успевает до загрузки, движок печатает фактическое число
+     * потоков в своей же строке лога. То есть результат правки виден числом,
+     * а не подтверждается нашим словом.
+     *
+     * Оговорка из документации, которая нас пока не касается: VLM-проектор
+     * запоминает число потоков при своей инициализации и на смену профиля не
+     * реагирует. Когда дойдём до картинок, его придётся перезагружать.
+     */
+    private fun applyThreadMode() {
+        engine.setThreadMode(THREAD_MODE_PERFORMANCE)
     }
 
     /**
@@ -150,6 +175,9 @@ class LlmEngine(
     suspend fun unload() = engine.unload()
 
     private companion object {
+        /** Профиль потоков движка: 0 — экономия, 1 — баланс, 2 — производительность. */
+        const val THREAD_MODE_PERFORMANCE = 2
+
         /** Байт, накапливаемых движком перед выдачей порции токенов. */
         const val STREAMING_BATCH_BYTES = 64
 
