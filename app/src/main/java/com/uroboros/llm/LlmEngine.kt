@@ -31,16 +31,11 @@ class LlmEngine(
             flashAttn = params.flashAttn,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
-                cacheTypeK = params.cacheTypeK,
-                cacheTypeV = params.cacheTypeV,
+            cacheTypeK = params.cacheTypeK,
+            cacheTypeV = params.cacheTypeV,
         )
         if (ok) {
-                engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
-                engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
-                // BIBLE soft-wall: задаётся один раз при загрузке (static), не на каждый
-                // generateFlow-вызов — сохраняет KV-cache prefix reuse в native-движке.
-                engine.setSystemPrompt(BibleSoftWall.TEXT)
-                applyStreamingLatency()
+            configureAfterLoad()
         }
         return ok
     }
@@ -57,16 +52,37 @@ class LlmEngine(
             flashAttn = params.flashAttn,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
-                cacheTypeK = params.cacheTypeK,
-                cacheTypeV = params.cacheTypeV,
+            cacheTypeK = params.cacheTypeK,
+            cacheTypeV = params.cacheTypeV,
         )
         if (ok) {
-                engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
-                engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
-                engine.setSystemPrompt(BibleSoftWall.TEXT)
-                applyStreamingLatency()
+            configureAfterLoad()
         }
         return ok
+    }
+
+    /**
+     * Единственное место, где настраивается уже загруженная модель.
+     *
+     * Раньше этот блок стоял дословно в обоих путях загрузки — по пути к файлу
+     * и по выданному системой доступу к папке. Расхождение между двумя копиями
+     * было бы поломкой того сорта, который не видно: один способ открыть модель
+     * работал бы настроенным, другой — нет, а на экране оба выглядят одинаково.
+     * Штраф за повтор токена уже пришлось выносить в константу по этой же
+     * причине; здесь та же мера, только целиком.
+     *
+     * Порядок вызовов сохранён ровно как был. Он не случаен: системная стена
+     * задаётся ПОСЛЕ базовых параметров сэмплера и один раз на загрузку, а не
+     * на каждый запрос, — иначе движок не сможет переиспользовать уже
+     * обсчитанное начало запроса.
+     */
+    private fun configureAfterLoad() {
+        engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
+        engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
+        // BIBLE soft-wall: задаётся один раз при загрузке (static), не на каждый
+        // generateFlow-вызов — сохраняет KV-cache prefix reuse в native-движке.
+        engine.setSystemPrompt(BibleSoftWall.TEXT)
+        applyStreamingLatency()
     }
 
     /**
