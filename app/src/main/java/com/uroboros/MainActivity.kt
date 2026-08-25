@@ -13,6 +13,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
+import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.LlmEngine
@@ -23,6 +24,7 @@ import com.uroboros.memory.SourceKind
 import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.safety.SafetyZone
 import com.uroboros.will.SimplePendingQuerySource
 import com.uroboros.will.ToteResult
 import com.uroboros.will.TermuxKotlinCompiler
@@ -30,7 +32,9 @@ import com.uroboros.will.tasks.KotlinCodingTask
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -50,6 +54,14 @@ class MainActivity : AppCompatActivity() {
     // получать отказы, пока не кончится энергия. Это минуты работы после нажатия
     // кнопки с надписью "Стоп". Поэтому слоя два: флаг (запрет) + cancel (обрыв).
     private var toteJob: Job? = null
+
+    // Панель метрик собирается из трёх независимых кусков, у каждого своя
+    // частота обновления: строка про железо меняется сама по себе из потоков,
+    // строка параметров движка — один раз за загрузку модели, строка чисел —
+    // после каждой генерации. Держать их отдельно и склеивать при отрисовке
+    // проще, чем гонять один текст и бояться затереть чужую половину.
+    private var engineParamsLine: String? = null
+    private var lastMetricsLine: String? = null
 
     // Палитра совпадает с activity_main.xml. Смысл цвета, а не украшение:
     // бирюзовый = обычное главное действие, фиолетовый = канал речи агента
@@ -73,6 +85,109 @@ class MainActivity : AppCompatActivity() {
         // разметку, поэтому переносить внутри кнопки больше нечего.
         binding.buttonGenerate.text = if (running) "Спросить" else "Генерировать"
         binding.buttonGenerate.backgroundTintList = if (running) colorToteRunning else colorIdle
+    }
+
+    // Числа форматируются через Locale.US намеренно: на экране рядом стоят
+    // значения из разных источников, и разделитель у них должен быть один.
+    private fun fmt1(value: Double): String = String.format(Locale.US, "%.1f", value)
+
+    private fun fmt0(value: Double): String = String.format(Locale.US, "%.0f", value)
+
+    private fun fmtSec(millis: Double): String = fmt1(millis / 1000.0)
+
+    /**
+     * Зона сторожа по-русски. На экран не должно попадать слово FATIGUE:
+     * человек, который читает этот экран, не обязан знать, как названа
+     * константа в коде.
+     */
+    private fun zoneLabel(zone: SafetyZone): String = when (zone) {
+        SafetyZone.COMFORT -> "норма"
+        SafetyZone.WARNING -> "нагрев"
+        SafetyZone.FATIGUE -> "утомление"
+        SafetyZone.CRITICAL -> "критическая"
+    }
+
+    private fun renderMetricsPanel() {
+        val zone = watchdog.zone.value
+        val power = watchdog.power.value
+
+        val charge = if (power.percentKnown) "${power.percent}%" else "?"
+        val plug = if (power.charging) " (заряжается)" else ""
+        val head = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · " +
+            "${fmt1(power.temperatureCelsius)}°C"
+
+        binding.textMetrics.text =
+            listOfNotNull(head, engineParamsLine, lastMetricsLine).joinToString("\n")
+    }
+
+    /**
+     * Вытаскивает из лога библиотеки строку с фактическими параметрами загрузки.
+     *
+     * Зачем вообще: контекст, число потоков и размер батча в нашем коде не
+     * задаются — LlmEngine берёт их из getRecommendedParams(), а та выбирает
+     * уровень по объёму памяти телефона. Прочитать код библиотеки и вывести
+     * ожидаемые значения можно, но это будет вывод, а не факт. Лог движка —
+     * единственное место, где написано, что получилось на самом деле.
+     *
+     * Ищем сначала по "ctx=" — это те данные, ради которых всё затевалось, и
+     * такой поиск переживёт переименование самой строки. Если не нашли, честно
+     * говорим об этом, а не показываем пустоту: молчащий экран невозможно
+     * отличить от сломанного.
+     */
+    private fun extractEngineParams(log: String): String {
+        val lines = log.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        lines.lastOrNull { it.contains("ctx=") }?.let { return "Движок: $it" }
+        lines.lastOrNull { it.contains("Loading model", ignoreCase = true) }
+            ?.let { return "Движок: $it" }
+        return "Движок: строка параметров в логе не найдена (нет ни ctx=, ни Loading model)"
+    }
+
+    /**
+     * Отчёт по одной генерации.
+     *
+     * Два секундомера здесь не дублируют друг друга. Движок меряет себя
+     * изнутри и НЕ видит задержек, которые добавляет наша же обёртка
+     * LlmEngine.generateFlow при утомлении. Поэтому расхождение между
+     * "Движок" и "Секундомер" — это ровно та часть, которую тратим мы сами.
+     */
+    private fun metricsReport(
+        metrics: DecodingMetrics?,
+        wallMs: Long,
+        firstTokenAtMs: Long?,
+        worstZone: SafetyZone
+    ): String {
+        val lines = mutableListOf<String>()
+
+        val ttft = firstTokenAtMs?.let { fmtSec(it.toDouble()) } ?: "—"
+        lines += "Секундомер: всего ${fmtSec(wallMs.toDouble())} с, до 1-го токена $ttft с"
+
+        if (metrics == null) {
+            lines += "Движок метрик не прислал"
+        } else {
+            lines += "Движок: ${fmt1(metrics.tokensPerSecond.toDouble())} ток/с, " +
+                "до 1-го токена ${fmtSec(metrics.timeToFirstTokenMs.toDouble())} с"
+            lines += "Токенов: запрос ${metrics.tokensEvaluated}, " +
+                "ответ ${metrics.tokensPredicted}"
+            lines += "Память: пик ${fmt0(metrics.peakMemoryMB.toDouble())} МБ " +
+                "(${fmt0(metrics.memoryUsagePercent.toDouble())}%)"
+
+            // Скорость по нашему секундомеру считается ПОСЛЕ первого токена:
+            // иначе в неё попадёт обсчёт запроса, и число будет несопоставимо
+            // с тем, что показал движок.
+            val decodeMs = wallMs - (firstTokenAtMs ?: 0L)
+            if (decodeMs > 0L && metrics.tokensPredicted > 0) {
+                val wallRate = metrics.tokensPredicted * 1000.0 / decodeMs
+                lines += "Секундомер без обсчёта запроса: ${fmt1(wallRate)} ток/с"
+            }
+        }
+
+        lines += "Худшая зона за прогон: ${zoneLabel(worstZone)}"
+        if (worstZone == SafetyZone.FATIGUE || worstZone == SafetyZone.CRITICAL) {
+            lines += "ВНИМАНИЕ: в этой зоне тормозим МЫ САМИ — по 100 мс на каждый " +
+                "токен, это потолок 10 ток/с независимо от модели."
+        }
+
+        return lines.joinToString("\n")
     }
 
     /**
@@ -138,6 +253,12 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit().putString(KEY_LAST_MODEL_URI, uri.toString()).apply()
                 binding.textModelStatus.text = "Модель загружена: $displayName"
                 binding.buttonGenerate.isEnabled = true
+                // Момент выбран не случайно: строка про ctx/threads/batch
+                // пишется библиотекой ровно при загрузке и за прогон не
+                // меняется. Читать её здесь — значит не заводить ради неё
+                // отдельный жест и не отнимать долгое нажатие у другой кнопки.
+                engineParamsLine = extractEngineParams(llmEngine.getDebugLog())
+                renderMetricsPanel()
             } else {
                 binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""
             }
@@ -269,6 +390,15 @@ class MainActivity : AppCompatActivity() {
         // взведёт что-то внутри системы, а не палец пользователя.
         lifecycleScope.launch {
             EmergencyStop.active.collect { active -> renderStopState(active) }
+        }
+
+        // Строка про железо обновляется из потоков, а не по нажатию. Разница
+        // важная: уход в утомление видно в тот момент, когда он произошёл, а
+        // не задним числом при следующем отчёте.
+        renderMetricsPanel()
+        lifecycleScope.launch {
+            combine(watchdog.zone, watchdog.power) { _, _ -> Unit }
+                .collect { renderMetricsPanel() }
         }
 
         tryAutoLoadOnStartup()
@@ -452,6 +582,9 @@ class MainActivity : AppCompatActivity() {
 
             binding.buttonGenerate.isEnabled = false
             binding.textResults.text = ""
+            lastMetricsLine = "Идёт генерация..."
+            renderMetricsPanel()
+
             lifecycleScope.launch {
                 val stickers = mediator.getContext(query = userText, limit = 5)
                 val prompt = if (stickers.isEmpty()) {
@@ -463,22 +596,60 @@ class MainActivity : AppCompatActivity() {
                     "Контекст из памяти:\n$memoryBlock\n\nВопрос: $userText"
                 }
 
-                llmEngine.generateFlow(prompt).collect { event ->
-                    when (event) {
-                        is GenerationEvent.Token -> {
-                            binding.textResults.append(event.text)
-                        }
-                        is GenerationEvent.Done -> {
-                            binding.buttonGenerate.isEnabled = true
-                        }
-                        is GenerationEvent.Error -> {
-                            binding.textResults.append("\n\n[Ошибка: ${event.message}]")
-                            binding.buttonGenerate.isEnabled = true
-                        }
-                        else -> {
-                            // Progress/Metrics/VLM-события игнорируем для текстового теста
+                val startMs = System.currentTimeMillis()
+                var firstTokenAtMs: Long? = null
+                var engineMetrics: DecodingMetrics? = null
+                // Мгновенная зона в конце прогона соврала бы: устройство может
+                // уйти в утомление на середине генерации и остыть к концу.
+                // Запоминаем худшее из виденного.
+                var worstZone: SafetyZone = watchdog.zone.value
+
+                try {
+                    llmEngine.generateFlow(prompt).collect { event ->
+                        val nowZone = watchdog.zone.value
+                        if (nowZone.ordinal > worstZone.ordinal) worstZone = nowZone
+
+                        when (event) {
+                            is GenerationEvent.Token -> {
+                                if (firstTokenAtMs == null) {
+                                    firstTokenAtMs = System.currentTimeMillis() - startMs
+                                }
+                                binding.textResults.append(event.text)
+                            }
+                            is GenerationEvent.Progress -> {
+                                // Это обсчёт запроса (prefill) — ровно та часть,
+                                // которую секундомером от нажатия до ответа
+                                // невозможно было отделить от генерации.
+                                lastMetricsLine =
+                                    "Обсчёт запроса: ${(event.progress * 100).toInt()}%"
+                                renderMetricsPanel()
+                            }
+                            is GenerationEvent.Metrics -> {
+                                engineMetrics = event.metrics
+                            }
+                            is GenerationEvent.Error -> {
+                                binding.textResults.append("\n\n[Ошибка: ${event.message}]")
+                            }
+                            else -> {
+                                // Done и VLM-события. Done намеренно НЕ
+                                // обрабатывается здесь: библиотека не обещает,
+                                // что метрики придут до него, поэтому отчёт
+                                // собирается после выхода из collect.
+                            }
                         }
                     }
+                } finally {
+                    // finally, а не ветка Done: раньше кнопка включалась только
+                    // если поток закончился ожидаемым событием, и любой другой
+                    // выход оставлял её навсегда серой.
+                    binding.buttonGenerate.isEnabled = true
+                    lastMetricsLine = metricsReport(
+                        metrics = engineMetrics,
+                        wallMs = System.currentTimeMillis() - startMs,
+                        firstTokenAtMs = firstTokenAtMs,
+                        worstZone = worstZone
+                    )
+                    renderMetricsPanel()
                 }
             }
         }
