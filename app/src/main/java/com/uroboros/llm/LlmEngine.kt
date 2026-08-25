@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.io.File
 import java.security.MessageDigest
+import org.json.JSONArray
+import org.json.JSONObject
 
 class LlmEngine(
     private val context: Context,
@@ -216,15 +218,27 @@ class LlmEngine(
     }
 
     /**
-     * Обёртка над generateFlow, которая физический watchdog реально исполняет:
+     * Обёртка над генерацией, которая физический watchdog реально исполняет:
      * FATIGUE — задержка между токенами; CRITICAL или истёкший хард-таймаут —
      * генерация останавливается до выхода из опасной зоны. Модель не участвует
      * в этом решении (Bible principle #1).
+     *
+     * Почему многоходовой вызов, а не одиночный. В нативном коде библиотеки
+     * сохранение и восстановление кэша системной стены на диске вызываются
+     * ТОЛЬКО внутри многоходовой ветки. Одиночная генерация до них не доходит
+     * вовсе — установленную папку она принимает, но не использует. Это было
+     * видно на замере: строка кэша осталась пустой после трёх холодных
+     * запусков, а обсчёт стены каждый раз стоил полторы минуты заново.
+     *
+     * Снаружи ничего не изменилось: подпись та же, вызывающие места не
+     * трогались. Разговор здесь по-прежнему одноходовый — одно сообщение
+     * пользователя. Многоходовость понадобится журналу разговора; здесь она
+     * появилась раньше срока, потому что дисковый кэш живёт только в ней.
      */
     fun generateFlow(prompt: String, maxTokens: Int = 512): Flow<GenerationEvent> = flow {
         watchdog.markInferenceStarted()
         try {
-            engine.generateFlow(prompt, maxTokens).collect { event ->
+            engine.generateMultiTurnFlow(singleUserMessage(prompt), maxTokens).collect { event ->
                 val zone = watchdog.zone.value
 
                 if (zone == SafetyZone.CRITICAL || watchdog.shouldForceCooldown()) {
@@ -248,6 +262,25 @@ class LlmEngine(
         engine.stopGeneration()
         watchdog.resetInferenceTimer()
     }
+
+    /**
+     * Одно сообщение пользователя в том виде, в каком его ждёт многоходовая
+     * ветка движка: массив из одного объекта с ролью и текстом.
+     *
+     * Собирается штатным сборщиком JSON, а не склейкой строк, намеренно: в
+     * запросе пользователя может быть кавычка, обратный слэш или перевод
+     * строки, и ручная склейка сломалась бы на первом же таком символе. Ошибка
+     * была бы не в момент правки, а когда-нибудь потом, на живом вопросе.
+     *
+     * Системная стена сюда НЕ добавляется: она задана отдельно при загрузке, и
+     * именно от неё движок считает отпечаток файла кэша. Продублировать её
+     * здесь значило бы посчитать её дважды и промахнуться мимо собственного
+     * кэша.
+     */
+    private fun singleUserMessage(text: String): String =
+        JSONArray()
+            .put(JSONObject().put("role", "user").put("content", text))
+            .toString()
 
     fun getDebugLog(): String = engine.getDebugLog()
 
