@@ -35,7 +35,7 @@ class LlmEngine(
         )
         if (ok) {
                 engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
-                engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
+                engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
                 // BIBLE soft-wall: задаётся один раз при загрузке (static), не на каждый
                 // generateFlow-вызов — сохраняет KV-cache prefix reuse в native-движке.
                 engine.setSystemPrompt(BibleSoftWall.TEXT)
@@ -60,7 +60,7 @@ class LlmEngine(
         )
         if (ok) {
                 engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
-                engine.updateSamplerParams("{\"repeat_penalty\":1.3,\"penaltyLastN\":64}")
+                engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
                 engine.setSystemPrompt(BibleSoftWall.TEXT)
                 applyStreamingLatency()
         }
@@ -152,5 +152,24 @@ class LlmEngine(
     private companion object {
         /** Байт, накапливаемых движком перед выдачей порции токенов. */
         const val STREAMING_BATCH_BYTES = 64
+
+        /**
+         * Штраф за повтор токена. Значение живёт здесь в единственном
+         * экземпляре намеренно: раньше та же строка стояла в двух путях
+         * загрузки, и правка одного из них молча разошлась бы со вторым.
+         *
+         * История значения. Было 1.3 — молоток против зацикливания из пункта
+         * 2. Молоток сработал, но платой оказалась рваная русская речь:
+         * штраф давит токены, встречавшиеся недавно, а в русском недавно
+         * встречавшееся — это падежные окончания, предлоги и служебные слова,
+         * то есть сам язык. Отсюда «исходного коллекции» вместо «исходной
+         * коллекции»: нужное окончание было только что использовано и попало
+         * под штраф.
+         *
+         * 1.05 — нижняя граница обычного рабочего диапазона, близко к тому,
+         * как модель обучалась говорить. Если зацикливание вернётся, поднимать
+         * следует до 1.1, а не обратно до 1.3.
+         */
+        const val SAMPLER_PARAMS_JSON = "{\"repeat_penalty\":1.05,\"penaltyLastN\":64}"
     }
 }
