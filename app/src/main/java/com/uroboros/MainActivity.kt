@@ -56,12 +56,14 @@ class MainActivity : AppCompatActivity() {
     // кнопки с надписью "Стоп". Поэтому слоя два: флаг (запрет) + cancel (обрыв).
     private var toteJob: Job? = null
 
-    // Панель метрик собирается из трёх независимых кусков, у каждого своя
+    // Панель метрик собирается из четырёх независимых кусков, у каждого своя
     // частота обновления: строка про железо меняется сама по себе из потоков,
-    // строка параметров движка — один раз за загрузку модели, строка чисел —
-    // после каждой генерации. Держать их отдельно и склеивать при отрисовке
-    // проще, чем гонять один текст и бояться затереть чужую половину.
+    // строка параметров движка — один раз за загрузку модели, строка кэша —
+    // при загрузке и после каждой генерации, строка чисел — после каждой
+    // генерации. Держать их отдельно и склеивать при отрисовке проще, чем
+    // гонять один текст и бояться затереть чужую половину.
     private var engineParamsLine: String? = null
+    private var promptCacheLine: String? = null
     private var lastMetricsLine: String? = null
 
     // Палитра совпадает с activity_main.xml. Смысл цвета, а не украшение:
@@ -118,7 +120,8 @@ class MainActivity : AppCompatActivity() {
             "${fmt1(power.temperatureCelsius)}°C"
 
         binding.textMetrics.text =
-            listOfNotNull(head, engineParamsLine, lastMetricsLine).joinToString("\n")
+            listOfNotNull(head, engineParamsLine, promptCacheLine, lastMetricsLine)
+                .joinToString("\n")
     }
 
     /**
@@ -304,6 +307,11 @@ class MainActivity : AppCompatActivity() {
                 // отдельный жест и не отнимать долгое нажатие у другой кнопки.
                 engineParamsLine = extractEngineParams(llmEngine.getDebugLog()) +
                     "\n" + threadModeLine()
+                // Кэш обсчитанной системной стены. Читается сразу после загрузки
+                // намеренно: на ВТОРОМ холодном запуске файл кэша уже лежит на
+                // диске, и его размер виден ещё до первого вопроса. То есть
+                // "кэш подхватился" видно раньше, чем это подтвердит секундомер.
+                promptCacheLine = llmEngine.getPromptCacheReport()
                 renderMetricsPanel()
             } else {
                 binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""
@@ -692,6 +700,12 @@ class MainActivity : AppCompatActivity() {
                     // Читается сразу после завершения: движок хранит разбивку
                     // ПОСЛЕДНЕЙ генерации, и следующий запуск её затрёт.
                     val breakdown = runCatching { llmEngine.getLastDecodeBreakdown() }.getOrNull()
+                    // Перечитываем после генерации: запись кэша делает сама
+                    // библиотека по ходу обсчёта, и на ПЕРВОМ холодном запуске
+                    // строка меняется с "пуст" на размер файла именно здесь.
+                    // Если она осталась пустой — кэш не пишется, и это надо
+                    // видеть сразу, а не через сутки по неизменившемуся времени.
+                    promptCacheLine = llmEngine.getPromptCacheReport()
                     lastMetricsLine = metricsReport(
                         metrics = engineMetrics,
                         breakdown = breakdown,
