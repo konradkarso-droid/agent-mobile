@@ -13,6 +13,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
+import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
@@ -143,6 +144,47 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Фактический режим потоков движка плюс состояние его собственного
+     * теплового регулятора.
+     *
+     * Важно, что показывается именно фактический, а не заданный: у библиотеки
+     * есть свой тепловой авто-режим, который может понизить режим сам. Если
+     * когда-нибудь мы зададим «производительность», а на экране останется
+     * «баланс» — значит нас понизили, и мерить мы будем не то, что задали.
+     */
+    private fun threadModeLine(): String {
+        val mode = llmEngine.getEffectiveThreadMode()
+        val modeName = when (mode) {
+            0 -> "экономия"
+            1 -> "баланс"
+            2 -> "производительность"
+            else -> "неизвестный"
+        }
+        val auto = if (llmEngine.isEngineAutoModeEnabled()) "вкл" else "выкл"
+        return "Режим потоков: $mode ($modeName) · авто-режим движка: $auto"
+    }
+
+    /**
+     * Разбивка времени генерации по стадиям, в долях от общего.
+     *
+     * Читается так: если почти всё лежит в «прямой проход», упор в память или
+     * в число потоков, и лечится это настройками движка. Если заметная доля
+     * ушла в сэмплер, детокенизацию или стоп-строки — тормозит не железо, а
+     * обвязка, и лечится это в другом месте.
+     */
+    private fun breakdownLine(b: GGMLEngine.DecodeBreakdown): String? {
+        if (b.totalUs <= 0L || b.tokens <= 0L) return null
+
+        val total = b.totalUs.toDouble()
+        fun share(part: Long): String = "${fmt0(part * 100.0 / total)}%"
+
+        val perTokenMs = total / 1000.0 / b.tokens
+        return "Разбивка: прямой проход ${share(b.decodeUs)}, " +
+            "сэмплер ${share(b.sampleUs)}, детокенизация ${share(b.detokUs)}, " +
+            "стоп-строки ${share(b.stopUs)} · ${fmt1(perTokenMs)} мс на токен"
+    }
+
+    /**
      * Отчёт по одной генерации.
      *
      * Два секундомера здесь не дублируют друг друга. Движок меряет себя
@@ -152,6 +194,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun metricsReport(
         metrics: DecodingMetrics?,
+        breakdown: GGMLEngine.DecodeBreakdown?,
         wallMs: Long,
         firstTokenAtMs: Long?,
         worstZone: SafetyZone
@@ -180,6 +223,8 @@ class MainActivity : AppCompatActivity() {
                 lines += "Секундомер без обсчёта запроса: ${fmt1(wallRate)} ток/с"
             }
         }
+
+        breakdown?.let { breakdownLine(it) }?.let { lines += it }
 
         lines += "Худшая зона за прогон: ${zoneLabel(worstZone)}"
         if (worstZone == SafetyZone.FATIGUE || worstZone == SafetyZone.CRITICAL) {
@@ -257,7 +302,8 @@ class MainActivity : AppCompatActivity() {
                 // пишется библиотекой ровно при загрузке и за прогон не
                 // меняется. Читать её здесь — значит не заводить ради неё
                 // отдельный жест и не отнимать долгое нажатие у другой кнопки.
-                engineParamsLine = extractEngineParams(llmEngine.getDebugLog())
+                engineParamsLine = extractEngineParams(llmEngine.getDebugLog()) +
+                    "\n" + threadModeLine()
                 renderMetricsPanel()
             } else {
                 binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""
@@ -643,8 +689,12 @@ class MainActivity : AppCompatActivity() {
                     // если поток закончился ожидаемым событием, и любой другой
                     // выход оставлял её навсегда серой.
                     binding.buttonGenerate.isEnabled = true
+                    // Читается сразу после завершения: движок хранит разбивку
+                    // ПОСЛЕДНЕЙ генерации, и следующий запуск её затрёт.
+                    val breakdown = runCatching { llmEngine.getLastDecodeBreakdown() }.getOrNull()
                     lastMetricsLine = metricsReport(
                         metrics = engineMetrics,
+                        breakdown = breakdown,
                         wallMs = System.currentTimeMillis() - startMs,
                         firstTokenAtMs = firstTokenAtMs,
                         worstZone = worstZone
