@@ -201,9 +201,16 @@ class MainActivity : AppCompatActivity() {
         wallMs: Long,
         firstTokenAtMs: Long?,
         worstZone: SafetyZone,
-        tokenLimit: Int
+        tokenLimit: Int,
+        promptShape: String
     ): String {
         val lines = mutableListOf<String>()
+
+        // Первой строкой: из ЧЕГО состоял запрос. Стоит перед секундомером
+        // потому, что все остальные числа читаются только вместе с ней —
+        // "до 1-го токена 19 с" ничего не значит, пока неизвестно, что
+        // обсчитывалось.
+        lines += promptShape
 
         val ttft = firstTokenAtMs?.let { fmtSec(it.toDouble()) } ?: "—"
         lines += "Секундомер: всего ${fmtSec(wallMs.toDouble())} с, до 1-го токена $ttft с"
@@ -662,6 +669,33 @@ class MainActivity : AppCompatActivity() {
                     "Контекст из памяти:\n$memoryBlock\n\nВопрос: $userText"
                 }
 
+                // Состав запроса, показанный человеку. Причина появления
+                // (26.08.2026): счётчик "Токенов: запрос" давал числа, которые не
+                // сходились ни с одной версией происходящего — 1075 утром и 485-495
+                // вечером на тех же вопросах, — и три догадки подряд оказались
+                // неверны. Догадки строились потому, что СОСТАВ запроса нигде не
+                // виден: подтянулась память или нет, сколько она весит, каков
+                // вопрос. Здесь это названо прямо, в знаках, которые можно
+                // сверить глазами с сохранёнными записями.
+                //
+                // Знаки, а не токены, намеренно: токенов отсюда не видно, они
+                // считаются внутри движка, а выдумывать их пересчёт значило бы
+                // добавить к непонятному счётчику второй такой же. Знаки —
+                // то, что мы знаем точно.
+                //
+                // Системной стены здесь нет и быть не может: она задаётся
+                // отдельно при загрузке модели (LlmEngine.configureAfterLoad) и
+                // в этот текст не входит. Если счётчик токенов окажется больше
+                // того, что здесь показано, разница — стена и то, что движок
+                // поднял из кэша.
+                val promptShape = if (stickers.isEmpty()) {
+                    "Запрос: памяти нет · вопрос ${userText.length} зн."
+                } else {
+                    "Запрос: стикеров ${stickers.size}, " +
+                        "память ${prompt.length - userText.length} зн. · " +
+                        "вопрос ${userText.length} зн."
+                }
+
                 val startMs = System.currentTimeMillis()
                 var firstTokenAtMs: Long? = null
                 var engineMetrics: DecodingMetrics? = null
@@ -724,7 +758,8 @@ class MainActivity : AppCompatActivity() {
                         wallMs = System.currentTimeMillis() - startMs,
                         firstTokenAtMs = firstTokenAtMs,
                         worstZone = worstZone,
-                        tokenLimit = ANSWER_TOKEN_LIMIT
+                        tokenLimit = ANSWER_TOKEN_LIMIT,
+                        promptShape = promptShape
                     )
                     renderMetricsPanel()
                 }
