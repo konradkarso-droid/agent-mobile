@@ -38,8 +38,8 @@ class LlmEngine(
             flashAttn = FLASH_ATTENTION,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
-            cacheTypeK = params.cacheTypeK,
-            cacheTypeV = params.cacheTypeV,
+            cacheTypeK = KV_CACHE_TYPE,
+            cacheTypeV = KV_CACHE_TYPE,
         )
         if (ok) {
             val file = File(modelPath)
@@ -48,8 +48,8 @@ class LlmEngine(
                 loadIdentity = loadIdentity(
                     contextSize = params.contextSize,
                     flashAttn = FLASH_ATTENTION,
-                    cacheTypeK = params.cacheTypeK,
-                    cacheTypeV = params.cacheTypeV,
+                    cacheTypeK = KV_CACHE_TYPE,
+                    cacheTypeV = KV_CACHE_TYPE,
                 ),
             )
         }
@@ -68,8 +68,8 @@ class LlmEngine(
             flashAttn = FLASH_ATTENTION,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
-            cacheTypeK = params.cacheTypeK,
-            cacheTypeV = params.cacheTypeV,
+            cacheTypeK = KV_CACHE_TYPE,
+            cacheTypeV = KV_CACHE_TYPE,
         )
         if (ok) {
             configureAfterLoad(
@@ -77,8 +77,8 @@ class LlmEngine(
                 loadIdentity = loadIdentity(
                     contextSize = params.contextSize,
                     flashAttn = FLASH_ATTENTION,
-                    cacheTypeK = params.cacheTypeK,
-                    cacheTypeV = params.cacheTypeV,
+                    cacheTypeK = KV_CACHE_TYPE,
+                    cacheTypeV = KV_CACHE_TYPE,
                 ),
             )
         }
@@ -462,6 +462,53 @@ class LlmEngine(
          * одной модели.
          */
         const val FLASH_ATTENTION = true
+
+        /**
+         * Ширина ячейки KV-кэша — того самого хранилища, где лежит уже
+         * обсчитанное начало запроса.
+         *
+         * ЭКСПЕРИМЕНТ, ПОСТАВЛЕН 26.08.2026. Проверяется ровно одна догадка:
+         * не сжатие ли ячеек делает обсчёт запроса таким медленным.
+         *
+         * Что мерили. Обсчёт запроса идёт со скоростью около 10 токенов в
+         * секунду — два независимых замера, 1075 токенов за 108.4 с и 632
+         * токена за 65.1 с, обе точки на одной прямой. Генерация при этом
+         * 5.4 токена в секунду. То есть обсчёт быстрее генерации всего в 1.8
+         * раза, а должен быть быстрее в десятки: генерация обязана прочитать
+         * все два гигабайта весов ради КАЖДОГО следующего токена, а обсчёт
+         * читает те же два гигабайта ОДИН РАЗ на всю пачку и пропускает через
+         * них сразу сотни токенов. Похоже, что пачки нет и запрос считается по
+         * одному токену.
+         *
+         * Почему подозрение падает сюда. `q8_0` — это сжатие ячеек вдвое.
+         * Читать и писать их можно только через распаковку, и на обсчёте, где
+         * ячеек трогается сразу много, эта работа способна съесть весь
+         * выигрыш пачки. `f16` — без сжатия, ячейки читаются как есть.
+         *
+         * Чем платим: KV-кэш становится вдвое шире, файл кэша стены вырастет
+         * примерно с 20 до 40 МБ, пик памяти поднимется. Запас есть: последний
+         * замер показал 2170 МБ из восьми гигабайт устройства.
+         *
+         * Побочно снимается риск, записанный в пояснении к [FLASH_ATTENTION]:
+         * документация библиотеки предупреждает о падениях этого режима именно
+         * в связке со СЖАТЫМ KV-кэшем. Связки больше нет.
+         *
+         * Значение задаётся строкой, а не типом библиотеки: наружу параметр
+         * выведен как `String` (`GGUFNativeLib.kt`), допустимые значения
+         * перечислены в пояснении к `GGMLEngine.load` — `f32`, `f16`, `q8_0`,
+         * `q4_0`, `q4_1`, `q5_0`, `q5_1`. Умолчание библиотеки — `q8_0`,
+         * то есть до этой правки мы просто соглашались с ним.
+         *
+         * ОТКАТ — одно слово обратно на `q8_0`. Кэш стены при этом уйдёт в
+         * свою прежнюю папку и пересобирать его не придётся: типы ключей и
+         * значений входят в отпечаток, см. [loadIdentity].
+         *
+         * Если выигрыша не окажется — не возвращать вслепую, а сперва
+         * записать отрицательный результат сюда же. Причина медленного
+         * обсчёта тогда лежит внутри нативной части, и это тупик того же
+         * сорта, что угадывание токенов.
+         */
+        const val KV_CACHE_TYPE = "f16"
 
         /** Байт, накапливаемых движком перед выдачей порции токенов. */
         const val STREAMING_BATCH_BYTES = 64
