@@ -200,7 +200,8 @@ class MainActivity : AppCompatActivity() {
         breakdown: GGMLEngine.DecodeBreakdown?,
         wallMs: Long,
         firstTokenAtMs: Long?,
-        worstZone: SafetyZone
+        worstZone: SafetyZone,
+        tokenLimit: Int
     ): String {
         val lines = mutableListOf<String>()
 
@@ -228,6 +229,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         breakdown?.let { breakdownLine(it) }?.let { lines += it }
+
+        // Ответ, упёршийся в потолок, обрывается на полуслове и внешне
+        // неотличим от законченного — человек читает огрызок как ответ. Здесь
+        // это называется прямо. Сравнение только на равенство: перебрать
+        // потолок движок не может, а меньшее значение означает, что модель
+        // закончила сама.
+        if (metrics != null && tokenLimit > 0 && metrics.tokensPredicted >= tokenLimit) {
+            lines += "ВНИМАНИЕ: ответ ОБРЕЗАН на потолке $tokenLimit токенов — " +
+                "последняя фраза оборвана, и продолжения не будет. Это наш " +
+                "предел длины, а не конец мысли модели."
+        }
 
         lines += "Худшая зона за прогон: ${zoneLabel(worstZone)}"
         if (worstZone == SafetyZone.FATIGUE || worstZone == SafetyZone.CRITICAL) {
@@ -659,7 +671,7 @@ class MainActivity : AppCompatActivity() {
                 var worstZone: SafetyZone = watchdog.zone.value
 
                 try {
-                    llmEngine.generateFlow(prompt).collect { event ->
+                    llmEngine.generateFlow(prompt, ANSWER_TOKEN_LIMIT).collect { event ->
                         val nowZone = watchdog.zone.value
                         if (nowZone.ordinal > worstZone.ordinal) worstZone = nowZone
 
@@ -711,7 +723,8 @@ class MainActivity : AppCompatActivity() {
                         breakdown = breakdown,
                         wallMs = System.currentTimeMillis() - startMs,
                         firstTokenAtMs = firstTokenAtMs,
-                        worstZone = worstZone
+                        worstZone = worstZone,
+                        tokenLimit = ANSWER_TOKEN_LIMIT
                     )
                     renderMetricsPanel()
                 }
@@ -784,5 +797,19 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_LAST_MODEL_URI = "last_model_uri"
         private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
         private const val KEY_PROVENANCE_REPAIR_DONE = "provenance_repair_done_2026_08_24"
+
+        /**
+         * Потолок длины ответа для обычного вопроса с экрана.
+         *
+         * Раньше здесь не стояло ничего и потолок брался из умолчания
+         * [LlmEngine.generateFlow]. Названо явно по двум причинам: чтобы смена
+         * умолчания в движке не поменяла нам поведение молча, и чтобы отчёт о
+         * генерации мог СРАВНИТЬ с этим числом длину ответа и сказать, что
+         * ответ обрезан.
+         *
+         * Наблюдалось живьём 26.08.2026: `Токенов: ответ 512`, текст кончается
+         * посреди фразы словом «Стоит», и на экране об этом ни строки.
+         */
+        private const val ANSWER_TOKEN_LIMIT = 512
     }
 }
