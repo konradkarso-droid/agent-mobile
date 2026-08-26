@@ -43,7 +43,15 @@ class LlmEngine(
         )
         if (ok) {
             val file = File(modelPath)
-            configureAfterLoad(sourceIdentity = file.name + ":" + file.length())
+            configureAfterLoad(
+                sourceIdentity = file.name + ":" + file.length(),
+                loadIdentity = loadIdentity(
+                    contextSize = params.contextSize,
+                    flashAttn = params.flashAttn,
+                    cacheTypeK = params.cacheTypeK,
+                    cacheTypeV = params.cacheTypeV,
+                ),
+            )
         }
         return ok
     }
@@ -64,7 +72,15 @@ class LlmEngine(
             cacheTypeV = params.cacheTypeV,
         )
         if (ok) {
-            configureAfterLoad(sourceIdentity = uri.toString())
+            configureAfterLoad(
+                sourceIdentity = uri.toString(),
+                loadIdentity = loadIdentity(
+                    contextSize = params.contextSize,
+                    flashAttn = params.flashAttn,
+                    cacheTypeK = params.cacheTypeK,
+                    cacheTypeV = params.cacheTypeV,
+                ),
+            )
         }
         return ok
     }
@@ -87,9 +103,11 @@ class LlmEngine(
      * @param sourceIdentity откуда взялась модель — имя и размер файла либо
      *        строка выданного доступа. Участвует в имени папки кэша, см.
      *        [applyPromptCache].
+     * @param loadIdentity параметры, с которыми модель фактически загружена,
+     *        см. [loadIdentity]. Тоже участвует в имени папки кэша.
      */
-    private fun configureAfterLoad(sourceIdentity: String) {
-        applyPromptCache(sourceIdentity)
+    private fun configureAfterLoad(sourceIdentity: String, loadIdentity: String) {
+        applyPromptCache(sourceIdentity, loadIdentity)
         engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
         engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
         // BIBLE soft-wall: задаётся один раз при загрузке (static), не на каждый
@@ -115,11 +133,12 @@ class LlmEngine(
      * папкам нами.
      *
      * Из чего складывается имя папки: метаданные загруженной модели (название,
-     * число параметров, размер, тип квантования) плюс имя и размер исходного
-     * файла. Метаданные берутся у уже загруженной модели, поэтому имя папки
-     * одинаково независимо от способа открытия. Имя файла нужно вдобавок к ним:
-     * две сборки одной и той же модели (например, обычная и с аблитерацией)
-     * вполне могут нести одинаковые метаданные, а различаются именно файлом.
+     * число параметров, размер, тип квантования), имя и размер исходного файла
+     * и параметры загрузки ([loadIdentity]). Метаданные берутся у уже
+     * загруженной модели, поэтому имя папки одинаково независимо от способа
+     * открытия. Имя файла нужно вдобавок к ним: две сборки одной и той же
+     * модели (например, обычная и с аблитерацией) вполне могут нести
+     * одинаковые метаданные, а различаются именно файлом.
      *
      * Папки прежних моделей удаляются здесь же. Иначе несколько экспериментов
      * с квантованием оставили бы на телефоне по нескольку десятков мегабайт
@@ -129,10 +148,12 @@ class LlmEngine(
      * вправе стереть при нехватке места; кэш то работал бы, то нет, без всякого
      * следа. `filesDir` система сама не трогает.
      */
-    private fun applyPromptCache(sourceIdentity: String) {
+    private fun applyPromptCache(sourceIdentity: String, loadIdentity: String) {
         promptCacheDir = null
 
-        val fingerprint = shortHash((engine.getModelInfoJson() ?: "") + "|" + sourceIdentity)
+        val fingerprint = shortHash(
+            (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
+        )
         val root = File(context.filesDir, PROMPT_CACHE_ROOT)
         val dir = File(root, fingerprint)
 
@@ -146,6 +167,52 @@ class LlmEngine(
         promptCacheDir = dir
         engine.setPromptCacheDir(dir.absolutePath)
     }
+
+    /**
+     * Параметры загрузки одной строкой — для имени папки кэша.
+     *
+     * Зачем. На диске лежит не текст, а обсчитанное состояние внимания модели
+     * по системной стене. Его раскладка зависит от того, с какими параметрами
+     * модель загружена: сколько места отведено под контекст, каким способом
+     * считается внимание, сколькими байтами записана каждая ячейка. Поменяй
+     * любой из них — и сохранённое, поднятое как есть, окажется разобрано не
+     * по тем границам.
+     *
+     * Чем это опасно именно здесь. Библиотека складывает имя файла кэша из
+     * отпечатка ОДНОГО ТОЛЬКО текста стены. Стена при смене параметров не
+     * меняется, значит имя совпадёт, значит прежний файл будет подхвачен
+     * молча. На экране не появится ни строки: либо ответы поедут, либо
+     * приложение упадёт, и ни то ни другое не покажет причину. Поэтому
+     * параметры разводятся по папкам нами — так же, как раньше пришлось
+     * разводить модели.
+     *
+     * Что берётся и почему только это:
+     * - размер контекста — задаёт объём самого хранимого состояния;
+     * - способ подсчёта внимания (`flashAttn`) — может менять его раскладку;
+     * - типы сжатия ключей и значений — задают ширину каждой ячейки.
+     *
+     * Что НЕ берётся намеренно: число потоков и размер пачки обсчёта. Они
+     * влияют на порядок сложения чисел, а не на форму результата, — поднятое
+     * состояние остаётся пригодным. Включи мы их в отпечаток, каждый замер
+     * скорости стирал бы двадцать мегабайт кэша и платил бы за них заново, без
+     * всякой пользы.
+     *
+     * Типы значений здесь не названы намеренно. Они принадлежат библиотеке,
+     * её исходников у нас перед глазами нет, а угаданное имя чужого типа —
+     * это поломка сборки, о которой узнаёшь через шестнадцать минут. Знать их
+     * и не требуется: строка собирается из значений как они есть, своим
+     * текстовым видом.
+     * Точное написание неважно — важно лишь, чтобы одинаковая загрузка давала
+     * одинаковую строку, а разная разную. Если библиотека когда-нибудь сменит
+     * написание, отпечаток сменится тоже и кэш пересоберётся: это безопасная
+     * сторона ошибки — лишняя работа, а не чужое состояние.
+     */
+    private fun loadIdentity(
+        contextSize: Any?,
+        flashAttn: Any?,
+        cacheTypeK: Any?,
+        cacheTypeV: Any?,
+    ): String = "ctx=$contextSize|fa=$flashAttn|k=$cacheTypeK|v=$cacheTypeV"
 
     /**
      * Что происходит с кэшем системной стены, человеческими словами.
