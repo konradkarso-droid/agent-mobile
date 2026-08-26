@@ -35,7 +35,7 @@ class LlmEngine(
             contextSize = params.contextSize,
             threads = params.threads,
             batchSize = params.batchSize,
-            flashAttn = params.flashAttn,
+            flashAttn = FLASH_ATTENTION,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
             cacheTypeK = params.cacheTypeK,
@@ -47,7 +47,7 @@ class LlmEngine(
                 sourceIdentity = file.name + ":" + file.length(),
                 loadIdentity = loadIdentity(
                     contextSize = params.contextSize,
-                    flashAttn = params.flashAttn,
+                    flashAttn = FLASH_ATTENTION,
                     cacheTypeK = params.cacheTypeK,
                     cacheTypeV = params.cacheTypeV,
                 ),
@@ -65,7 +65,7 @@ class LlmEngine(
             contextSize = params.contextSize,
             threads = params.threads,
             batchSize = params.batchSize,
-            flashAttn = params.flashAttn,
+            flashAttn = FLASH_ATTENTION,
             useMmap = params.useMmap,
             useMlock = params.useMlock,
             cacheTypeK = params.cacheTypeK,
@@ -76,7 +76,7 @@ class LlmEngine(
                 sourceIdentity = uri.toString(),
                 loadIdentity = loadIdentity(
                     contextSize = params.contextSize,
-                    flashAttn = params.flashAttn,
+                    flashAttn = FLASH_ATTENTION,
                     cacheTypeK = params.cacheTypeK,
                     cacheTypeV = params.cacheTypeV,
                 ),
@@ -185,6 +185,13 @@ class LlmEngine(
      * приложение упадёт, и ни то ни другое не покажет причину. Поэтому
      * параметры разводятся по папкам нами — так же, как раньше пришлось
      * разводить модели.
+     *
+     * Правило, которое легко нарушить незаметно: сюда передаётся то, что
+     * ФАКТИЧЕСКИ ушло в load(), а не то, что предложила библиотека. Стоит
+     * задать какой-нибудь параметр своей константой в load(), а сюда оставить
+     * `params.` — и отпечаток перестанет замечать собственную же правку. Кэш
+     * останется в прежней папке, то есть случится ровно та беда, ради которой
+     * всё это и написано. Поэтому в обоих местах стоит одно и то же значение.
      *
      * Что берётся и почему только это:
      * - размер контекста — задаёт объём самого хранимого состояния;
@@ -406,6 +413,38 @@ class LlmEngine(
     private companion object {
         /** Профиль потоков движка: 0 — экономия, 1 — баланс, 2 — производительность. */
         const val THREAD_MODE_PERFORMANCE = 2
+
+        /**
+         * Способ подсчёта внимания. ЭКСПЕРИМЕНТ. Откат — `false` здесь, больше
+         * ничего.
+         *
+         * Что это. Обычный подсчёт внимания раскладывает в памяти большую
+         * промежуточную таблицу «каждый токен против каждого» и потом читает её
+         * обратно. Чем длиннее запрос, тем крупнее таблица и тем больше времени
+         * уходит не на счёт, а на возню с памятью. Этот режим ту таблицу
+         * целиком не создаёт: считает по кускам и складывает на ходу.
+         * Арифметика та же, обращений к памяти меньше.
+         *
+         * Почему именно сейчас. Предыдущий замер показал, что упор у нас между
+         * тремя и четырьмя потоками: четвёртый поток не дал ничего. Похоже на
+         * упор в память, а этот режим бьёт ровно туда — он не добавляет
+         * вычислителей, он сокращает походы за данными.
+         *
+         * Чего ждать. На нашей длине честнее ждать немного: заметнее всего
+         * такой режим на длинных запросах, а у нас после кэша обсчитывается
+         * десяток-другой токенов вопроса. Зато он же должен облегчить работу с
+         * сохранённым состоянием во время генерации и снизить пик памяти. Если
+         * выигрыш будет — он вырастет вместе с журналом разговора, а не
+         * растворится, как четвёртый поток.
+         *
+         * Риск, названный прямо. Документация библиотеки предупреждает: на
+         * части ARM-устройств этот режим падает в связке со сжатым KV-кэшем, а
+         * у нас как раз `q8_0`. Падение возможно и ожидаемо. Данным ничего не
+         * грозит: память агента лежит в своей базе и к этому отношения не
+         * имеет, а кэш стены при смене этого параметра уходит в отдельную
+         * папку, старый остаётся нетронутым.
+         */
+        const val FLASH_ATTENTION = true
 
         /** Байт, накапливаемых движком перед выдачей порции токенов. */
         const val STREAMING_BATCH_BYTES = 64
