@@ -28,6 +28,16 @@ jobs:
     permissions:
       contents: write
 
+    # Правка 2026-08-26: включаем ускоритель повторной сборки C++.
+    # USE_CCACHE читает gguf_lib/build.gradle.kts и только при "1" подставляет
+    # ccache перед компилятором. Без этой переменной сборка идёт как раньше.
+    # CCACHE_DIR задан явно, а не оставлен на умолчание: у разных версий ccache
+    # умолчания разные (~/.ccache против ~/.cache/ccache), и кэш сохранялся бы
+    # не из той папки, откуда его потом восстанавливают. Молча и без ошибки.
+    env:
+      USE_CCACHE: '1'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
@@ -46,6 +56,27 @@ jobs:
       - name: Install required CMake version
         run: sdkmanager --install "cmake;3.31.4"
 
+      # Ускоритель сборки C++. Ставится из репозиториев системы, стороннее
+      # действие сознательно НЕ используется: в рабочий процесс с правом записи
+      # в репозиторий не стоит пускать чужой код ради экономии минут.
+      - name: Install ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          ccache --max-size=1G
+          ccache --zero-stats
+
+      # Ключ уникален на каждый прогон, поэтому кэш дописывается всегда, а
+      # restore-keys подтягивает самый свежий подходящий с прошлого раза. Это
+      # обычный приём: кэш прогона неизменяем, обновить его на месте нельзя.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-native-${{ github.run_id }}
+          restore-keys: |
+            ccache-native-
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -57,6 +88,17 @@ jobs:
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --parallel
+
+      # Читаемый глазами ответ на вопрос "ускоритель вообще сработал?".
+      # Смотреть строку с долей попаданий (cache hit rate). На первом прогоне
+      # после этой правки она нулевая — кэш в нём только наполняется. Начиная со
+      # второго должна быть высокой; если осталась нулевой, ccache к сборке не
+      # подключился, и экономии нет, сколько бы прогонов ни прошло.
+      # if: always() — статистика нужна и когда сборка упала, иначе диагноз
+      # пришлось бы гадать.
+      - name: Статистика ccache
+        if: always()
+        run: ccache --show-stats
 
       - name: Publish APK to rolling Release
         if: github.event_name != 'pull_request'
