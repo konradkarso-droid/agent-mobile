@@ -4,28 +4,75 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="#EAF3F6"
+    android:animateLayoutChanges="true"
     android:padding="16dp">
 
-    <!-- Верхняя строка: состояние модели слева, аварийный стоп в дальнем
-         верхнем правом углу. Правый верх — самая труднодостижимая точка для
-         большого пальца левой руки, поэтому случайно кнопка не нажимается,
-         а в настоящей аварии до неё тянутся осознанно. -->
+    <!-- Верхняя строка, слева направо: раскрыть подробности — запустить цикл —
+         аварийный стоп. Раскладка не декоративная, она разносит действия по
+         цене промаха.
+
+         Шторка стоит СЛЕВА: жать её будут часто, а цена ошибки нулевая, и
+         левый верх — ближняя точка дуги большого пальца левой руки.
+
+         Стоп остаётся в дальнем правом верхнем углу — самой труднодостижимой
+         точке той же дуги. Случайно не нажимается, осознанно дотянуться можно.
+         Рядом с ним намеренно не поставлено ничего, что жмут часто.
+
+         "Цикл" — посередине, между ними, и запускается ДОЛГИМ нажатием.
+         Общее правило, введённое 27.08.2026: длительность жеста соразмерна
+         цене действия. Короткое касание — дешёвое и обратимое, удержание —
+         дорогое. Цикл это двадцать минут работы и нагрева, поэтому удержание.
+         Защита физическая, а не диалогом "вы уверены?": палец сам чувствует,
+         что просят усилие. Условие применимости — жесты должны быть написаны
+         на экране (строка подсказок внизу), иначе правило превращается в
+         скрытую функцию. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical">
 
-        <TextView
-            android:id="@+id/textModelStatus"
-            android:layout_width="0dp"
+        <Button
+            android:id="@+id/buttonDetails"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:minHeight="40dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
             android:textSize="12sp"
-            android:textColor="#3A6470"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:text="Модель не загружена"/>
+            android:textAllCaps="false"
+            android:textColor="#7FA3AE"
+            android:backgroundTint="#EAF3F6"
+            android:text="Подробно ▾"/>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1"/>
+
+        <Button
+            android:id="@+id/buttonCycle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:minHeight="40dp"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
+            android:text="Цикл"/>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1"/>
 
         <Button
             android:id="@+id/buttonStop"
@@ -46,20 +93,67 @@
 
     </LinearLayout>
 
-    <!-- Метрики генерации и состояние железа (2026-08-25).
-         Зачем отдельная строка, а не дописать в textModelStatus: та строка
-         однострочная с многоточием, длинный текст в ней просто обрежется.
+    <!-- Строка модели. Съехала из верхней строки сюда, потому что там теперь
+         три кнопки. Осталась однострочной с многоточием: имена файлов моделей
+         длинные, а перенос в два этажа возвращал бы ту самую тесноту, ради
+         которой всё переставлялось. -->
+    <TextView
+        android:id="@+id/textModelStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textSize="12sp"
+        android:textColor="#3A6470"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:text="Модель не загружена"/>
 
-         Что здесь показывается и почему именно это. Секундомер в руке меряет
-         одно число «от нажатия до ответа», а внутри него три разные вещи:
-         подтягивание страниц модели с диска, обсчёт запроса и собственно
-         генерация. Разделить их на глаз нельзя — отсюда и брались оценки,
-         которые потом не подтверждались. Движок эти части считает раздельно,
-         надо просто их показать.
+    <!-- Физический контур: зона сторожа, заряд, температура. ВНЕ шторки
+         намеренно и навсегда. Это не диагностика, а единственное на экране,
+         что говорит о состоянии железа; если спрятать это под свёрнутый
+         блок, пропадёт ровно то, ради чего вся видимость и строилась.
 
-         Зона сторожа стоит здесь же не для красоты: при утомлении мы сами
-         добавляем задержку на каждый токен. Если тормозим себя мы, а не
-         железо, это должно быть видно на экране, а не выводиться из кода. -->
+         Зона стоит здесь не для красоты: при утомлении мы сами добавляем
+         задержку на каждый токен. Если тормозим себя мы, а не железо, это
+         должно быть видно на экране, а не выводиться из кода. -->
+    <TextView
+        android:id="@+id/textHardware"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textSize="11sp"
+        android:textColor="#3A6470"
+        android:fontFamily="monospace"
+        android:lineSpacingExtra="2dp"
+        android:text="Зона: —"/>
+
+    <!-- Ход текущей работы: "идёт генерация", проценты обсчёта запроса.
+         Тоже вне шторки, и по той же причине, что и строка железа: пока
+         обсчёт длинного запроса идёт три минуты, это единственное, что
+         отличает работающую программу от зависшей. Прячется, когда работы
+         нет, чтобы не занимать место пустой строкой. -->
+    <TextView
+        android:id="@+id/textProgress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textSize="11sp"
+        android:textColor="#17697B"
+        android:fontFamily="monospace"
+        android:visibility="gone"/>
+
+    <!-- Шторка. Здесь всё, что нужно при разборе, но мешает при обычной
+         работе: параметры движка, потоки, кэш стены, секундомер, память,
+         разбивка по стадиям. Раскрывается кнопкой "Подробно" слева вверху,
+         состояние запоминается между запусками.
+
+         Почему это вообще прячется. Раскрытая панель занимала десяток строк
+         и отъедала высоту у области ответа — той самой, ради которой экран
+         и существует. Раньше эти строки были всегда на виду, потому что
+         иначе поломки оставались молчаливыми; но молчание лечится не тем,
+         что человек постоянно смотрит на цифры, а тем, что важное вынесено
+         наружу отдельными строками (см. две выше) и что ошибки называются
+         словами в области результата. -->
     <TextView
         android:id="@+id/textMetrics"
         android:layout_width="match_parent"
@@ -69,7 +163,7 @@
         android:textColor="#3A6470"
         android:fontFamily="monospace"
         android:lineSpacingExtra="2dp"
-        android:text="Зона: —"/>
+        android:visibility="gone"/>
 
     <!-- Причина срабатывания стопа. Скрыт, пока стоп не взведён. Показывается
          из MainActivity вместе с кнопкой сброса (следующий шаг). -->
@@ -222,7 +316,11 @@
     </LinearLayout>
 
     <!-- Подсказки о жестах вынесены сюда одной строкой. Раньше они жили внутри
-         подписей самих кнопок и заставляли текст переноситься в два этажа. -->
+         подписей самих кнопок и заставляли текст переноситься в два этажа.
+
+         Эта строка обязательна, а не украшение: правило "дорогое действие —
+         долгим нажатием" работает только пока жесты написаны на экране. Убрать
+         её — значит превратить запуск цикла в скрытую функцию. -->
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -230,6 +328,6 @@
         android:gravity="center"
         android:textSize="11sp"
         android:textColor="#7FA3AE"
-        android:text="Долгое нажатие: цикл · лог · экспорт памяти · выбор папки"/>
+        android:text="Долгое нажатие: Цикл — запуск · Показать — лог · Сохранить — экспорт · Модель — папка"/>
 
 </LinearLayout>
