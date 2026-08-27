@@ -185,12 +185,68 @@ class MainActivity : AppCompatActivity() {
 
         val charge = if (power.percentKnown) "${power.percent}%" else "?"
         val plug = if (power.charging) " (заряжается)" else ""
-        val head = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · " +
+        binding.textHardware.text = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · " +
             "${fmt1(power.temperatureCelsius)}°C"
 
+        // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
+        // больше не входит: она обязана быть видна независимо от того,
+        // раскрыта шторка или нет.
         binding.textMetrics.text =
-            listOfNotNull(head, engineParamsLine, promptCacheLine, lastMetricsLine)
+            listOfNotNull(engineParamsLine, promptCacheLine, lastMetricsLine)
                 .joinToString("\n")
+    }
+
+    /**
+     * Ход текущей работы отдельной строкой вне шторки.
+     *
+     * Отделено от панели метрик намеренно. Обсчёт длинного запроса идёт
+     * минутами, и всё это время строка процентов — единственное, что отличает
+     * работающую программу от зависшей. Убери она под свёрнутую шторку, и
+     * человек остался бы перед неподвижным экраном.
+     *
+     * null прячет строку целиком: пустая строка занимала бы место и читалась
+     * бы как «что-то сломалось и не написало».
+     */
+    private fun showProgress(text: String?) {
+        if (text == null) {
+            binding.textProgress.visibility = View.GONE
+            binding.textProgress.text = ""
+        } else {
+            binding.textProgress.visibility = View.VISIBLE
+            binding.textProgress.text = text
+        }
+    }
+
+    /**
+     * Раскрыть или свернуть шторку с диагностикой.
+     *
+     * Состояние запоминается между запусками: тот, кто разбирается с
+     * поломкой, не должен раскрывать её заново после каждого перезапуска
+     * приложения, а перезапусков при работе с моделью много.
+     */
+    private fun setDetailsExpanded(expanded: Boolean) {
+        binding.textMetrics.visibility = if (expanded) View.VISIBLE else View.GONE
+        binding.buttonDetails.text = if (expanded) "Свернуть ▴" else "Подробно ▾"
+        prefs.edit().putBoolean(KEY_DETAILS_EXPANDED, expanded).apply()
+    }
+
+    /**
+     * Стереть числа прошлого прогона.
+     *
+     * Вызывается ПЕРВОЙ строкой каждого обработчика запуска, до всех проверок.
+     * Причина (хвост 20, 27.08.2026): если запуск не состоялся — пустое поле
+     * ввода, взведённый стоп, незагруженная модель, — на экране оставались
+     * числа предыдущего прогона и читались как относящиеся к нынешнему. Из
+     * трёх подряд замеров два были испорчены именно так.
+     *
+     * Строка кэша стены здесь НЕ трогается намеренно: она описывает состояние
+     * файла на диске, а не прогон, и обнулять её значило бы врать, что кэша
+     * нет. Строка параметров движка не трогается по той же причине.
+     */
+    private fun clearRunMetrics() {
+        lastMetricsLine = null
+        showProgress(null)
+        renderMetricsPanel()
     }
 
     /**
@@ -508,6 +564,16 @@ class MainActivity : AppCompatActivity() {
 
         setToteRunningState(false)
 
+        // ---- Шторка с диагностикой (2026-08-27) ----
+        //
+        // Свёрнута по умолчанию при самом первом запуске, дальше — как оставил
+        // человек. Место, освобождённое десятком строк метрик, уходит области
+        // ответа: она и есть то, ради чего экран существует.
+        setDetailsExpanded(prefs.getBoolean(KEY_DETAILS_EXPANDED, false))
+        binding.buttonDetails.setOnClickListener {
+            setDetailsExpanded(binding.textMetrics.visibility != View.VISIBLE)
+        }
+
         // ---- Аварийный стоп (2026-08-24) ----
         //
         // Кнопка теперь действительно работает, поэтому прежнее isEnabled = false
@@ -708,6 +774,11 @@ class MainActivity : AppCompatActivity() {
         // ничего не делает с устройством, зато остаётся единственным способом
         // что-то спросить у системы, пока она стоит.
         binding.buttonGenerate.setOnClickListener {
+            // Хвост 20: числа прошлого прогона стираются ДО всех проверок.
+            // Иначе несостоявшийся запуск оставляет их на экране, и они
+            // читаются как относящиеся к нынешнему.
+            clearRunMetrics()
+
             val userText = binding.editTextInput.text.toString()
             if (userText.isBlank()) {
                 val hint = if (isToteRunning) "Введите вопрос" else "Введите запрос для генерации"
@@ -724,8 +795,7 @@ class MainActivity : AppCompatActivity() {
 
             binding.buttonGenerate.isEnabled = false
             binding.textResults.text = ""
-            lastMetricsLine = "Идёт генерация..."
-            renderMetricsPanel()
+            showProgress("Идёт генерация...")
 
             lifecycleScope.launch {
                 val stickers = mediator.getContext(query = userText, limit = 5)
@@ -779,6 +849,10 @@ class MainActivity : AppCompatActivity() {
                 // уйти в утомление на середине генерации и остыть к концу.
                 // Запоминаем худшее из виденного.
                 var worstZone: SafetyZone = watchdog.zone.value
+                // Хвост 19: считаем выданные токены сами, а не спрашиваем
+                // движок. Метрики он присылает не всегда, а факт "на экране не
+                // появилось ни знака" надо назвать при любом исходе.
+                var tokensSeen = 0
 
                 try {
                     llmEngine.generateFlow(prompt, ANSWER_TOKEN_LIMIT).collect { event ->
@@ -789,16 +863,18 @@ class MainActivity : AppCompatActivity() {
                             is GenerationEvent.Token -> {
                                 if (firstTokenAtMs == null) {
                                     firstTokenAtMs = System.currentTimeMillis() - startMs
+                                    showProgress(null)
                                 }
+                                tokensSeen++
                                 binding.textResults.append(event.text)
                             }
                             is GenerationEvent.Progress -> {
                                 // Это обсчёт запроса (prefill) — ровно та часть,
                                 // которую секундомером от нажатия до ответа
                                 // невозможно было отделить от генерации.
-                                lastMetricsLine =
+                                showProgress(
                                     "Обсчёт запроса: ${(event.progress * 100).toInt()}%"
-                                renderMetricsPanel()
+                                )
                             }
                             is GenerationEvent.Metrics -> {
                                 engineMetrics = event.metrics
@@ -819,6 +895,30 @@ class MainActivity : AppCompatActivity() {
                     // если поток закончился ожидаемым событием, и любой другой
                     // выход оставлял её навсегда серой.
                     binding.buttonGenerate.isEnabled = true
+                    showProgress(null)
+
+                    // Хвост 19 (27.08.2026): движок отдаёт ноль токенов при
+                    // ТОЧНОМ, до последнего знака, повторе предыдущего запроса.
+                    // На экране при этом не появлялось ничего: пустая область
+                    // ответа и секундомер 0.0 с. Дважды принято за "кнопка не
+                    // работает", оба раза стоило перезапуска и потерянного
+                    // замера.
+                    //
+                    // Сказано ПОСЛЕ прогона, по факту, а не предсказано до
+                    // него сравнением с прошлым запросом. Причину пустого
+                    // ответа мы знаем по двум наблюдениям, а не из кода
+                    // библиотеки; предупреждать заранее значило бы выдавать
+                    // свою догадку за знание — ровно та ошибка, на которой мы
+                    // уже обожглись с кэшем. Факт "ноль токенов" мы видим
+                    // точно, обход проверен и надёжен, этого достаточно.
+                    if (tokensSeen == 0) {
+                        binding.textResults.text =
+                            "Модель не выдала ни одного знака.\n\n" +
+                                "Так бывает при ТОЧНОМ повторе предыдущего запроса, " +
+                                "совпадающем до последнего знака. Допишите любой знак " +
+                                "в САМЫЙ КОНЕЦ текста и нажмите снова — этого хватает, " +
+                                "и уже обсчитанное начало запроса при этом не теряется."
+                    }
                     // Читается сразу после завершения: движок хранит разбивку
                     // ПОСЛЕДНЕЙ генерации, и следующий запуск её затрёт.
                     val breakdown = runCatching { llmEngine.getLastDecodeBreakdown() }.getOrNull()
@@ -842,7 +942,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        binding.buttonGenerate.setOnLongClickListener {
+        // Запуск TOTE-цикла переехал сюда с долгого нажатия на "Генерировать"
+        // (2026-08-27). Причина: на той кнопке жест был невидим, а сама кнопка
+        // тем временем меняет смысл — во время цикла она становится "Спросить".
+        // Два разных дорогих действия на одной кнопке, оба скрытые.
+        //
+        // Жест остался ДОЛГИМ намеренно, см. пояснение в разметке: цикл это
+        // двадцать минут работы и нагрева, и удержание — физическая защита от
+        // случайного запуска, которая не стоит ни диалога, ни лишнего касания.
+        binding.buttonCycle.setOnLongClickListener {
+            // Хвост 20, как и на "Генерировать": числа прошлого прогона
+            // стираются до всех проверок, чтобы отказ запуска не оставил их
+            // читаться как нынешние.
+            clearRunMetrics()
+
             if (isToteRunning) {
                 Toast.makeText(this@MainActivity, "Цикл уже идёт", Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
@@ -908,6 +1021,7 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_LAST_MODEL_URI = "last_model_uri"
         private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
         private const val KEY_PROVENANCE_REPAIR_DONE = "provenance_repair_done_2026_08_24"
+        private const val KEY_DETAILS_EXPANDED = "details_expanded"
 
         /**
          * Потолок длины ответа для обычного вопроса с экрана.
