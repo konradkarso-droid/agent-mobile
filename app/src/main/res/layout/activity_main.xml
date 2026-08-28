@@ -223,12 +223,25 @@
         android:textColor="#123540"
         android:visibility="gone"/>
 
+    <!-- Прокрутка разговора. Имя понадобилось 28.08.2026, когда поле
+         результата перестало быть одним ответом и стало лентой: без имени
+         из кода нельзя ни доехать до низа при появлении ответа, ни прыгнуть
+         на нужный ход.
+
+         Полоска не гаснет (fadeScrollbars=false) намеренно. Она НЕ
+         нажимается — в обычном текстовом поле это рисунок, а не ручка, —
+         но отвечает на вопрос "где я в разговоре", который на длинной
+         ленте возникает постоянно. Точное перемещение делают кнопки хода
+         ниже: единица разговора это реплика, а не пиксель. -->
     <ScrollView
+        android:id="@+id/scrollResults"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:layout_marginTop="10dp"
         android:padding="12dp"
+        android:scrollbars="vertical"
+        android:fadeScrollbars="false"
         android:background="#FFFFFF">
 
         <TextView
@@ -240,6 +253,52 @@
             android:fontFamily="monospace"/>
 
     </ScrollView>
+
+    <!-- Кнопки хода. Прыгают на начало предыдущей или следующей реплики
+         человека, ставя её под верх экрана.
+
+         Зачем они, если есть взмах. Взмах листает пикселями, а разговор
+         состоит из реплик: на ленте в сорок ходов один миллиметр пальца
+         это несколько ответов, и попасть в нужное место нельзя в принципе,
+         чем длиннее лента, тем хуже. Кнопка промахнуться не может.
+
+         СЛЕВА, потому что телефон держат в левой руке и ось большого
+         пальца в нижнем левом углу. Узкие и невысокие: они отнимают
+         высоту у самого разговора, а нужны не всегда.
+
+         СКРЫТЫ, пока ходов мало (см. renderTurnNavVisibility в
+         MainActivity): на двух-трёх ходах прыгать некуда, а место они
+         съедят. Появляются сами, когда лента вырастет. -->
+    <LinearLayout
+        android:id="@+id/rowTurnNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="6dp"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/buttonTurnPrev"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:minWidth="0dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:textSize="12sp"
+            android:text="↑ ход"/>
+
+        <Button
+            android:id="@+id/buttonTurnNext"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="8dp"
+            android:minWidth="0dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:textSize="12sp"
+            android:text="↓ ход"/>
+
+    </LinearLayout>
 
     <!-- Сетка 2x2 вместо столбика: отдаёт высоту области результата.
          Главное действие — в нижней ЛЕВОЙ ячейке: у левши ось большого
