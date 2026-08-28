@@ -268,7 +268,13 @@
 
          СКРЫТЫ, пока ходов мало (см. renderTurnNavVisibility в
          MainActivity): на двух-трёх ходах прыгать некуда, а место они
-         съедят. Появляются сами, когда лента вырастет. -->
+         съедят. Появляются сами, когда лента вырастет.
+
+         Цвета взяты у второстепенных кнопок (Показать, Сохранить):
+         белый фон, тёмно-синий текст. Без них кнопки брали системный
+         лиловый — а лиловый в приложении уже занят и означает канал
+         речи агента (полоса у поля "Ответ агента"). Служебная кнопка
+         прокрутки в этом цвете говорила бы о себе неправду. -->
     <LinearLayout
         android:id="@+id/rowTurnNav"
         android:layout_width="match_parent"
@@ -285,6 +291,9 @@
             android:paddingStart="16dp"
             android:paddingEnd="16dp"
             android:textSize="12sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
             android:text="↑ ход"/>
 
         <Button
@@ -296,6 +305,9 @@
             android:paddingStart="16dp"
             android:paddingEnd="16dp"
             android:textSize="12sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
             android:text="↓ ход"/>
 
     </LinearLayout>
