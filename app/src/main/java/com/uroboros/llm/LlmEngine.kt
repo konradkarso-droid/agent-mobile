@@ -339,10 +339,43 @@ class LlmEngine(
      * пользователя. Многоходовость понадобится журналу разговора; здесь она
      * появилась раньше срока, потому что дисковый кэш живёт только в ней.
      */
-    fun generateFlow(prompt: String, maxTokens: Int = 512): Flow<GenerationEvent> = flow {
+    fun generateFlow(prompt: String, maxTokens: Int = 512): Flow<GenerationEvent> =
+        guardedFlow(singleUserMessage(prompt), maxTokens)
+
+    /**
+     * Тот же прогон, но запросом идёт вся лента разговора, а не одна
+     * реплика: пары «роль — текст» в том порядке, в каком их отдаёт
+     * [ConversationJournal.messagesFor].
+     *
+     * Отдельная функция, а не смена подписи у [generateFlow], намеренно.
+     * Старый путь зовёт не только экран — его же использует агентский
+     * цикл, и правка подписи молча утащила бы за собой места, которых
+     * сейчас никто не смотрит. Два входа, одна обёртка, ноль риска для
+     * работающего.
+     *
+     * Системной стены здесь нет: движок сам ставит её первым сообщением,
+     * если в массиве нет роли `system` (см. `gguf_lib.cpp` ~1700).
+     * Положить её сюда значило бы посчитать её дважды и промахнуться
+     * мимо собственного дискового кэша.
+     */
+    fun generateConversationFlow(
+        messages: List<Pair<String, String>>,
+        maxTokens: Int = 512,
+    ): Flow<GenerationEvent> = guardedFlow(conversationMessages(messages), maxTokens)
+
+    /**
+     * Обёртка над генерацией, общая для обоих входов.
+     *
+     * Стояла раньше прямо в теле [generateFlow]. Вынесена, когда входов
+     * стало два: скопированный блок сторожа разошёлся бы со временем
+     * молча — один путь остался бы под присмотром, другой нет, а на
+     * экране оба выглядят одинаково. Та же мера, что и с
+     * [configureAfterLoad], и по той же причине.
+     */
+    private fun guardedFlow(messagesJson: String, maxTokens: Int): Flow<GenerationEvent> = flow {
         watchdog.markInferenceStarted()
         try {
-            engine.generateMultiTurnFlow(singleUserMessage(prompt), maxTokens).collect { event ->
+            engine.generateMultiTurnFlow(messagesJson, maxTokens).collect { event ->
                 val zone = watchdog.zone.value
 
                 if (zone == SafetyZone.CRITICAL || watchdog.shouldForceCooldown()) {
@@ -385,6 +418,30 @@ class LlmEngine(
         JSONArray()
             .put(JSONObject().put("role", "user").put("content", text))
             .toString()
+
+    /**
+     * Лента разговора в том виде, в каком её ждёт многоходовая ветка
+     * движка: массив объектов с ролью и текстом, по порядку.
+     *
+     * Собирается тем же штатным сборщиком, что и [singleUserMessage], и
+     * по той же причине: в репликах бывают кавычки, обратные слэши и
+     * переводы строк, а ручная склейка сломалась бы на первом таком
+     * знаке — не в момент правки, а когда-нибудь потом, на живом
+     * вопросе.
+     *
+     * Роли не проверяются здесь намеренно: движок принимает `system`,
+     * `user` и `assistant`, а всё прочее молча переименовывает в
+     * `assistant` (`gguf_lib.cpp` ~1700). Проверять надо в том месте,
+     * где роль назначается, — тогда ошибку видно там, где её сделали, а
+     * не здесь, где её уже не отличить от правильной.
+     */
+    private fun conversationMessages(messages: List<Pair<String, String>>): String {
+        val array = JSONArray()
+        for ((role, content) in messages) {
+            array.put(JSONObject().put("role", role).put("content", content))
+        }
+        return array.toString()
+    }
 
     fun getDebugLog(): String = engine.getDebugLog()
 
