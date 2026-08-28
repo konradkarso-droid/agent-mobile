@@ -134,6 +134,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Смещения в тексте [renderJournal], с которых начинается каждая
+     * реплика человека. По ним прыгают кнопки хода.
+     *
+     * Считаются при отрисовке, а не ищутся поиском по готовому тексту:
+     * подпись «Вы: » может встретиться и внутри ответа модели — сегодня
+     * она уже цитировала разговор целиком, — и поиск наткнулся бы на
+     * цитату. Здесь же смещение известно точно, потому что мы сами
+     * собираем строку.
+     */
+    private val turnOffsets = mutableListOf<Int>()
+
+    /** На каком ходе стоит взгляд. -1 — ещё никуда не прыгали. */
+    private var navTurnIndex = -1
+
+    /**
      * Лента в том виде, в каком её читает человек.
      *
      * Показывается ВОПРОС, а не реплика целиком: записи памяти уходят в
@@ -148,16 +163,68 @@ class MainActivity : AppCompatActivity() {
      * отдельную реплику.
      */
     private fun renderJournal(pendingQuestion: String? = null): String {
-        val parts = ArrayList<String>(journal.turnCount * 2 + 1)
-        for (turn in journal.history()) {
-            parts += "Вы: ${turn.question}"
-            parts += "Агент: ${turn.agentContent}"
+        turnOffsets.clear()
+        val out = StringBuilder()
+        fun addTurn(question: String, answer: String?) {
+            if (out.isNotEmpty()) out.append("\n\n")
+            turnOffsets += out.length
+            out.append("Вы: ").append(question).append("\n\n")
+            out.append("Агент: ")
+            if (answer != null) out.append(answer)
         }
-        if (pendingQuestion != null) {
-            parts += "Вы: $pendingQuestion"
-            parts += "Агент: "
+        for (turn in journal.history()) addTurn(turn.question, turn.agentContent)
+        if (pendingQuestion != null) addTurn(pendingQuestion, null)
+        return out.toString()
+    }
+
+    /**
+     * Прыжок на начало реплики: её первая строка встаёт под верх экрана.
+     *
+     * `post` нужен потому, что сразу после смены текста разметка ещё не
+     * пересчитана и `layout` пуст — прыжок ушёл бы в никуда.
+     */
+    private fun scrollToTurn(index: Int) {
+        if (index !in turnOffsets.indices) return
+        navTurnIndex = index
+        binding.textResults.post {
+            val layout = binding.textResults.layout ?: return@post
+            val line = layout.getLineForOffset(turnOffsets[index])
+            binding.scrollResults.smoothScrollTo(0, binding.textResults.top + layout.getLineTop(line))
         }
-        return parts.joinToString("\n\n")
+    }
+
+    /**
+     * Кнопки хода показываются, только когда прыгать есть куда.
+     *
+     * Порог в три хода взят как наименьший, при котором кнопка делает
+     * что-то, чего не делает взмах. На меньшем разговоре они бы только
+     * отнимали высоту у самого разговора.
+     */
+    private fun renderTurnNavVisibility() {
+        binding.rowTurnNav.visibility =
+            if (journal.turnCount >= TURN_NAV_MIN_TURNS) View.VISIBLE else View.GONE
+    }
+
+    /**
+     * Доехать вниз, но только если человек и так внизу.
+     *
+     * Пока идёт ответ, поле должно ехать за текстом — иначе человек
+     * смотрит в неподвижный экран, а ответ растёт за его нижним краем.
+     * Но если он в этот момент отлистал вверх перечитать прошлый ход,
+     * дёргать экран нельзя: это отняло бы у него место, куда он смотрел.
+     * Поэтому едем только из положения «уже внизу».
+     *
+     * Запас в [AUTOSCROLL_BOTTOM_SLACK] пикселей нужен, потому что
+     * «внизу» на глаз и «внизу» до пикселя — разные вещи: строка
+     * дорисовалась, и человек уже формально не внизу, хотя не двигался.
+     */
+    private fun autoScrollIfAtBottom() {
+        val scroll = binding.scrollResults
+        val child = scroll.getChildAt(0) ?: return
+        val distanceToBottom = child.bottom - (scroll.height + scroll.scrollY)
+        if (distanceToBottom <= AUTOSCROLL_BOTTOM_SLACK) {
+            scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        }
     }
 
     /**
@@ -680,6 +747,20 @@ class MainActivity : AppCompatActivity() {
         // тем, что происходит.
         if (!journal.isEmpty) {
             binding.textResults.text = renderJournal()
+            binding.scrollResults.post { binding.scrollResults.fullScroll(View.FOCUS_DOWN) }
+        }
+        renderTurnNavVisibility()
+
+        // Прыжок на реплику, а не на пиксель. Счётчик navTurnIndex живёт
+        // между нажатиями, поэтому повторные касания идут по ходам подряд,
+        // а не возвращают в одно и то же место.
+        binding.buttonTurnPrev.setOnClickListener {
+            val from = if (navTurnIndex < 0) turnOffsets.size else navTurnIndex
+            scrollToTurn((from - 1).coerceAtLeast(0))
+        }
+        binding.buttonTurnNext.setOnClickListener {
+            val from = if (navTurnIndex < 0) -1 else navTurnIndex
+            scrollToTurn((from + 1).coerceAtMost(turnOffsets.size - 1))
         }
         lifecycleScope.launch {
             combine(watchdog.zone, watchdog.power) { _, _ -> Unit }
@@ -973,6 +1054,7 @@ class MainActivity : AppCompatActivity() {
                                 tokensSeen++
                                 answerText.append(event.text)
                                 binding.textResults.append(event.text)
+                                autoScrollIfAtBottom()
                             }
                             is GenerationEvent.Progress -> {
                                 // Это обсчёт запроса (prefill) — ровно та часть,
@@ -1047,6 +1129,10 @@ class MainActivity : AppCompatActivity() {
                         // 28.08 на тексте стены.
                         engineMetrics?.let { journal.notePromptTokens(it.tokensEvaluated) }
                     }
+                    // Ход закрыт: ходов стало больше, кнопки хода могли
+                    // впервые понадобиться. Смещения пересчитаются при
+                    // следующей отрисовке ленты.
+                    renderTurnNavVisibility()
                     // Читается сразу после завершения: движок хранит разбивку
                     // ПОСЛЕДНЕЙ генерации, и следующий запуск её затрёт.
                     val breakdown = runCatching { llmEngine.getLastDecodeBreakdown() }.getOrNull()
@@ -1164,5 +1250,21 @@ class MainActivity : AppCompatActivity() {
          * посреди фразы словом «Стоит», и на экране об этом ни строки.
          */
         private const val ANSWER_TOKEN_LIMIT = 512
+
+        /**
+         * С какого числа ходов показывать кнопки хода. Наименьшее, при
+         * котором кнопка делает что-то, чего не делает взмах: на двух
+         * ходах прыгать некуда, а высоту у разговора они отнимут.
+         */
+        private const val TURN_NAV_MIN_TURNS = 3
+
+        /**
+         * Запас в пикселях, внутри которого прокрутка считается стоящей
+         * внизу. Нужен потому, что «внизу» на глаз и «внизу» до пикселя
+         * — разные вещи: строка дорисовалась, и человек формально уже не
+         * внизу, хотя пальцем не двигал. Без запаса автопрокрутка
+         * замирала бы посреди ответа.
+         */
+        private const val AUTOSCROLL_BOTTOM_SLACK = 48
     }
 }
