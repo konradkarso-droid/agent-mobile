@@ -242,7 +242,16 @@ class MainActivity : AppCompatActivity() {
         if (journal.isEmpty) return "Лента: пуста"
         val used = journal.lastPromptTokens
         val pct = journal.fillPercent(CONTEXT_SIZE)
-        return "Лента: ходов ${journal.turnCount} · занято $used из ${CONTEXT_SIZE} ток. ($pct%)"
+        // Размер снимка состояния — разовое измерение, а не постоянная
+        // метрика: оно решает, идти в контрольные точки или в постоянное
+        // уведомление. Спрашивается у движка при каждой отрисовке, потому
+        // что растёт вместе с лентой, и интересна как раз эта зависимость.
+        // Защита на lateinit нужна: панель рисуется и до создания движка.
+        val state = if (::llmEngine.isInitialized) {
+            val mb = llmEngine.stateSizeBytes / (1024 * 1024)
+            if (mb > 0) " · снимок $mb МБ" else ""
+        } else ""
+        return "Лента: ходов ${journal.turnCount} · занято $used из $CONTEXT_SIZE ток. ($pct%)$state"
     }
 
     /**
