@@ -339,7 +339,6 @@ static struct {
     std::atomic<bool> cancel_flag{false};
     std::mutex        gen_mutex;
 
-    std::vector<llama_token> session_tokens;
     int                      n_past = 0;
     std::vector<llama_token> prev_prompt_tokens;
     int                      n_system_tokens = 0;
@@ -1132,7 +1131,6 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
     g_state.chat_templates.reset();
     g_chat_templates_tried = false;
     g_state.n_past = 0;
-    g_state.session_tokens.clear();
     g_state.prev_prompt_tokens.clear();
     g_state.n_system_tokens = 0;
 
@@ -1783,7 +1781,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     }
 
     // track system prompt token count on first full evaluation
-    if (g_state.n_past == 0 && !messages.empty() && messages[0].role == "system") {
+    if ((g_state.n_past == 0 || g_state.n_system_tokens == 0)
+            && !messages.empty() && messages[0].role == "system") {
         try {
             auto sys_msgs = std::vector<common_chat_msg>{messages[0]};
             auto sys_tmpl = apply_chat_template(sys_msgs, false);
@@ -2030,7 +2029,6 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeRelease(JNIEnv *, jobject) {
     g_state.chat_templates.reset();
     g_chat_templates_tried = false;
     g_state.n_past = 0;
-    g_state.session_tokens.clear();
     g_state.prev_prompt_tokens.clear();
     g_state.n_system_tokens = 0;
     g_state.system_prompt.clear();
@@ -2234,13 +2232,30 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetContextUsage(JNIEnv *, jobject) {
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeStateSaveToFile(
         JNIEnv * env, jobject, jstring jpath) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
     if (!g_state.ctx) return JNI_FALSE;
+
+    // Сохранять нечего.
+    if (g_state.n_past <= 0) {
+        LOGW("State save refused: nothing evaluated yet");
+        return JNI_FALSE;
+    }
+
+    // Список токенов обязан описывать ровно тот кэш, который пишется на диск.
+    // try_context_shift чистит prev_prompt_tokens, а n_past оставляет большим —
+    // такая точка поднялась бы молча и с неверным n_past. Лучше отказ.
+    if ((int)g_state.prev_prompt_tokens.size() != g_state.n_past) {
+        LOGE("State save refused: token list %zu != n_past %d",
+             g_state.prev_prompt_tokens.size(), g_state.n_past);
+        return JNI_FALSE;
+    }
 
     const char * path = env->GetStringUTFChars(jpath, nullptr);
     bool ok = llama_state_save_file(g_state.ctx, path,
-                                     g_state.session_tokens.data(),
-                                     g_state.session_tokens.size());
-    LOGI("State save to %s: %s", path, ok ? "success" : "failed");
+                                     g_state.prev_prompt_tokens.data(),
+                                     g_state.prev_prompt_tokens.size());
+    LOGI("State save to %s: %s (%d tokens)",
+         path, ok ? "success" : "failed", g_state.n_past);
     env->ReleaseStringUTFChars(jpath, path);
     return ok ? JNI_TRUE : JNI_FALSE;
 }
@@ -2248,24 +2263,35 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeStateSaveToFile(
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeStateLoadFromFile(
         JNIEnv * env, jobject, jstring jpath) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
     if (!g_state.ctx) return JNI_FALSE;
 
     const char * path = env->GetStringUTFChars(jpath, nullptr);
 
     size_t n_token_count = 0;
-    g_state.session_tokens.resize(llama_n_ctx(g_state.ctx));
+    std::vector<llama_token> loaded(llama_n_ctx(g_state.ctx));
 
     bool ok = llama_state_load_file(g_state.ctx, path,
-                                     g_state.session_tokens.data(),
-                                     g_state.session_tokens.size(),
+                                     loaded.data(),
+                                     loaded.size(),
                                      &n_token_count);
 
-    if (ok) {
-        g_state.session_tokens.resize(n_token_count);
-        g_state.n_past = n_token_count;
-        LOGI("State loaded from %s: %zu tokens", path, n_token_count);
+    if (ok && n_token_count > 0) {
+        loaded.resize(n_token_count);
+        // Восстанавливаем именно prev_prompt_tokens: по нему на следующем ходе
+        // считается совпадение префикса. Без этого совпадение выйдет нулевым,
+        // и ветка "нет пригодного префикса" сотрёт только что поднятое.
+        g_state.prev_prompt_tokens = loaded;
+        g_state.n_past = (int)n_token_count;
+        LOGI("State loaded from %s: %d tokens", path, g_state.n_past);
     } else {
-        g_state.session_tokens.clear();
+        // Неполный подъём оставляет кэш в неизвестном состоянии. Чистим, чтобы
+        // следующий ход честно пересчитал заново, а не генерировал поверх мусора.
+        llama_memory_t mem = llama_get_memory(g_state.ctx);
+        if (mem) llama_memory_clear(mem, true);
+        g_state.prev_prompt_tokens.clear();
+        g_state.n_past = 0;
+        ok = false;
         LOGE("Failed to load state from %s", path);
     }
 
