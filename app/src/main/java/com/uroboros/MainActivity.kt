@@ -18,6 +18,7 @@ import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
+import com.uroboros.llm.CONTEXT_SIZE
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
@@ -173,8 +174,8 @@ class MainActivity : AppCompatActivity() {
     private fun journalLine(): String {
         if (journal.isEmpty) return "Лента: пуста"
         val used = journal.lastPromptTokens
-        val pct = journal.fillPercent(LlmEngine.CONTEXT_SIZE)
-        return "Лента: ходов ${journal.turnCount} · занято $used из ${LlmEngine.CONTEXT_SIZE} ток. ($pct%)"
+        val pct = journal.fillPercent(CONTEXT_SIZE)
+        return "Лента: ходов ${journal.turnCount} · занято $used из ${CONTEXT_SIZE} ток. ($pct%)"
     }
 
     /**
@@ -196,7 +197,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Лента заполнена")
             .setMessage(
                 "В разговоре ${journal.turnCount} ходов, занято " +
-                    "${journal.lastPromptTokens} из ${LlmEngine.CONTEXT_SIZE} токенов. " +
+                    "${journal.lastPromptTokens} из ${CONTEXT_SIZE} токенов. " +
                     "Продолжать нельзя: движок начнёт молча выбрасывать середину разговора.\n\n" +
                     "Начать заново — значит стереть ленту целиком. Перенести её в память " +
                     "пока нечем, поэтому всё, что нужно сохранить, отметьте кнопкой " +
@@ -877,7 +878,7 @@ class MainActivity : AppCompatActivity() {
                 // Проверка края ДО отправки. Движок при переполнении молча
                 // выбрасывает половину ленты посреди генерации, поэтому
                 // упереться незаметно нельзя — останавливаемся явно.
-                if (journal.roomLeft(LlmEngine.CONTEXT_SIZE, ANSWER_TOKEN_LIMIT) <= 0) {
+                if (journal.roomLeft(CONTEXT_SIZE, ANSWER_TOKEN_LIMIT) <= 0) {
                     binding.buttonGenerate.isEnabled = true
                     showProgress(null)
                     showJournalFullDialog()
