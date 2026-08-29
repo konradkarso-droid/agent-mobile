@@ -6,6 +6,11 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -149,32 +154,118 @@ class MainActivity : AppCompatActivity() {
     private var navTurnIndex = -1
 
     /**
+     * Ходы, у которых блок записей развёрнут.
+     *
+     * Свёрнуто по умолчанию: подробности нужны, когда ответ удивил, а это
+     * не каждый ход. Развёрнутая по умолчанию лента стала бы вчетверо
+     * длиннее, и прыжки кнопками хода поехали бы вместе с ней.
+     *
+     * Живёт на активности, а не в журнале: это состояние экрана, а не
+     * разговора. После поворота всё свернётся обратно — потеря, которую
+     * не жалко, в отличие от самой ленты.
+     */
+    private val expandedTurns = mutableSetOf<Int>()
+
+    /**
+     * Цвет кликабельной части строки записей. Бирюзовый — цвет обычного
+     * действия в приложении; фиолетовый занят речью агента, красный —
+     * аварийным стопом.
+     */
+    private val colorRecordsLink = Color.parseColor("#17697B")
+
+    /**
      * Лента в том виде, в каком её читает человек.
      *
      * Показывается ВОПРОС, а не реплика целиком: записи памяти уходят в
-     * модель, но на экране они человеку не нужны — он их не писал, а
-     * читать разговор вперемешку с цитатами невозможно. Разделение
-     * держится тем, что оба текста лежат в одном ходе, см.
-     * [ConversationJournal.Turn].
+     * модель, но читать разговор вперемешку с цитатами, которых человек
+     * не писал, невозможно. Разделение держится тем, что оба текста лежат
+     * в одном ходе, см. [ConversationJournal.Turn].
+     *
+     * С 28.08.2026 записи всё же видны — но отдельной строкой и свёрнуто.
+     * Это не отмена прежнего решения, а другой читатель: в реплику они по
+     * прежнему не возвращаются, разговор остаётся разговором, а рядом
+     * стоит признак того, на чём ответ стоял. Повод — за час живого
+     * разговора настоящее воспоминание и выдумка четырежды оказались
+     * неотличимы на глаз.
      *
      * Подписи, а не цвет: поле результата — обычный текст, и раскрасить
      * в нём куски по-разному стоило бы отдельной работы со стилями. Цвет
      * речи агента в приложении уже занят и означает канал целиком, а не
      * отдельную реплику.
      */
-    private fun renderJournal(pendingQuestion: String? = null): String {
+    private fun renderJournal(pendingQuestion: String? = null): CharSequence {
         turnOffsets.clear()
-        val out = StringBuilder()
-        fun addTurn(question: String, answer: String?) {
+        val out = SpannableStringBuilder()
+
+        // Строка записей стоит МЕЖДУ вопросом и ответом — в том порядке, в
+        // каком всё и произошло: человек спросил, отбор подложил записи,
+        // модель ответила. Под ответом она читалась бы как его часть.
+        fun addRecordsBlock(index: Int, turn: ConversationJournal.Turn) {
+            if (turn.records.isEmpty()) {
+                // Говорится прямо, а не пропускается. Пустой отбор — это и
+                // есть главный признак того, что ответ ни на чём не стоял;
+                // молчание в этом месте читалось бы как "всё в порядке".
+                out.append("\n[записей нет]")
+                return
+            }
+            val fresh = turn.records.count { it.firstSeenTurn == index }
+            val expanded = index in expandedTurns
+            out.append("\n[записей ${turn.records.size}, новых $fresh] ")
+            val start = out.length
+            out.append(if (expanded) "скрыть" else "показать")
+            out.setSpan(
+                object : ClickableSpan() {
+                    override fun onClick(widget: View) = toggleTurnRecords(index)
+                    override fun updateDrawState(ds: TextPaint) {
+                        ds.color = colorRecordsLink
+                        ds.isUnderlineText = false
+                    }
+                },
+                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            if (!expanded) return
+            for (use in turn.records) {
+                // "с хода N" важнее, чем кажется: из-за отсева повторов
+                // запись, легшая на первом ходе, на шестом не подставляется
+                // заново — но модели она всё это время видна. Без пометки
+                // верный ответ выглядел бы выдумкой.
+                val origin =
+                    if (use.firstSeenTurn == index) "новая"
+                    else "с хода ${use.firstSeenTurn + 1}"
+                out.append("\n  • ").append(origin).append(": ").append(use.text)
+            }
+        }
+
+        fun addTurn(question: String, answer: String?, turn: ConversationJournal.Turn?, index: Int) {
             if (out.isNotEmpty()) out.append("\n\n")
             turnOffsets += out.length
-            out.append("Вы: ").append(question).append("\n\n")
-            out.append("Агент: ")
+            out.append("Вы: ").append(question)
+            if (turn != null) addRecordsBlock(index, turn)
+            out.append("\n\n").append("Агент: ")
             if (answer != null) out.append(answer)
         }
-        for (turn in journal.history()) addTurn(turn.question, turn.agentContent)
-        if (pendingQuestion != null) addTurn(pendingQuestion, null)
-        return out.toString()
+
+        journal.history().forEachIndexed { index, turn ->
+            addTurn(turn.question, turn.agentContent, turn, index)
+        }
+        // У начатого хода записей ещё нет: они помечаются уложенными только
+        // после того, как ответ получен.
+        if (pendingQuestion != null) addTurn(pendingQuestion, null, null, -1)
+        return out
+    }
+
+    /**
+     * Развернуть или свернуть записи одного хода.
+     *
+     * Во время генерации ничего не делает. Причина: токены дописываются
+     * прямо в поле по одному, и в нём в этот момент лежит текст, которого
+     * в ленте ещё нет. Перерисовка стёрла бы уже показанную часть ответа —
+     * молча, и человек решил бы, что генерация сорвалась.
+     */
+    private fun toggleTurnRecords(index: Int) {
+        if (!binding.buttonGenerate.isEnabled) return
+        if (!expandedTurns.remove(index)) expandedTurns += index
+        binding.textResults.text = renderJournal()
     }
 
     /**
@@ -281,6 +372,7 @@ class MainActivity : AppCompatActivity() {
             )
             .setPositiveButton("Стереть и начать заново") { _, _ ->
                 journal.clear()
+                expandedTurns.clear()
                 binding.textResults.text = ""
                 renderMetricsPanel()
             }
@@ -754,6 +846,13 @@ class MainActivity : AppCompatActivity() {
         // разговор потерян, хотя в модель по-прежнему уходит вся история.
         // Это хуже настоящей потери: расхождение между тем, что видно, и
         // тем, что происходит.
+        // Без этого кликабельная часть строки записей не отзовётся на
+        // касание вовсе. Поле ленты лежит внутри прокрутки и растёт по
+        // содержимому, поэтому собственная прокрутка у него пустая и с
+        // внешней не спорит; если всё же начнёт дёргаться при взмахе —
+        // виновата эта строка.
+        binding.textResults.movementMethod = LinkMovementMethod.getInstance()
+
         if (!journal.isEmpty) {
             binding.textResults.text = renderJournal()
             binding.scrollResults.post { binding.scrollResults.fullScroll(View.FOCUS_DOWN) }
@@ -1119,19 +1218,31 @@ class MainActivity : AppCompatActivity() {
                         // тот же запрос до последнего знака и тот же ноль.
                         // Дописать знак за человека нельзя — тогда в движок
                         // уйдёт не то, что он набрал.
-                        binding.textResults.text = renderJournal() +
-                            (if (journal.isEmpty) "" else "\n\n") +
-                            "Модель не выдала ни одного знака.\n\n" +
-                            "Так бывает при ТОЧНОМ повторе предыдущего запроса, " +
-                            "совпадающем до последнего знака. Допишите любой знак " +
-                            "в САМЫЙ КОНЕЦ текста и нажмите снова — этого хватает, " +
-                            "и уже обсчитанное начало запроса при этом не теряется."
+                        // Собирается через SpannableStringBuilder, а не
+                        // сложением строк: лента теперь несёт кликабельные
+                        // участки, и обычное сложение их бы потеряло.
+                        binding.textResults.text = SpannableStringBuilder(renderJournal()).apply {
+                            if (!journal.isEmpty) append("\n\n")
+                            append(
+                                "Модель не выдала ни одного знака.\n\n" +
+                                    "Так бывает при ТОЧНОМ повторе предыдущего запроса, " +
+                                    "совпадающем до последнего знака. Допишите любой знак " +
+                                    "в САМЫЙ КОНЕЦ текста и нажмите снова — этого хватает, " +
+                                    "и уже обсчитанное начало запроса при этом не теряется."
+                            )
+                        }
                     } else {
+                        // ВСЕ найденные отбором, а не только новые. Новизну
+                        // журнал считает сам по своему отображению: если
+                        // считать её в двух местах, экран однажды разойдётся
+                        // с тем, что ушло в модель. Уже лежавшие записи от
+                        // этого не задваиваются — их номер хода в журнале
+                        // остаётся прежним.
                         journal.appendTurn(
                             userContent = userContent,
                             agentContent = answerText.toString(),
                             question = userText,
-                            records = newRecords,
+                            records = allRecords,
                         )
                         // Размер запроса берём у движка, а не считаем сами:
                         // пересчёт знаков в токены завышает на треть, замерено
