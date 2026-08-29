@@ -329,6 +329,12 @@ class HourglassMemory(private val dao: StickerDao) {
      * стало реальным риском (грубая ступень находит много), поэтому кандидаты
      * набираются широко, а режет их уже взвешивание — сперва дёшево и грубо,
      * потом точно.
+     *
+     * РЕГИСТР. Префикс спрашивается в двух вариантах — как есть и с заглавной
+     * первой буквы: LIKE в SQLite сравнивает кириллицу побайтно, и слово,
+     * стоящее в записи с заглавной, иначе не находится вовсе. Промах при этом
+     * идёт в сторону потери записи, а не лишней в выборке. Замер и границы
+     * починки — в KDoc searchAnyCase (StickerDao.kt).
      */
     private suspend fun searchByWords(
         query: String,
@@ -348,8 +354,9 @@ class HourglassMemory(private val dao: StickerDao) {
             val foundForWord = HashSet<Long>()
             for (prefixLength in ladder(word)) {
                 val prefix = word.take(prefixLength)
+                val prefixCapitalized = prefix.replaceFirstChar { it.uppercaseChar() }
                 var foundHere = 0
-                for (sticker in dao.search(prefix, CANDIDATE_LIMIT)) {
+                for (sticker in dao.searchAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT)) {
                     if (sticker.layer == Layer.RED.name) continue
                     if (sticker.layer !in allowedLayers) continue
                     candidates[sticker.id] = sticker
