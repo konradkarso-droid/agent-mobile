@@ -1117,14 +1117,25 @@ class MainActivity : AppCompatActivity() {
                 // "память" включала старую рамку целиком. И с 28.08 рамки
                 // "Вопрос:" здесь больше нет: на вопрос, чья это речь, отвечает
                 // роль сообщения, а не текст.
+                // Пометка об ответе без опоры проверяется по САМОМУ тексту,
+                // уходящему в движок, а не по условию, из которого журнал её
+                // ставит. Строка отвечает на вопрос «что реально ушло»:
+                // повторение здесь того же условия сделало бы её согласной с
+                // журналом даже тогда, когда журнал ошибся.
+                val noteTail =
+                    if (userContent.startsWith(ConversationJournal.ANSWER_WITHOUT_SUPPORT)) {
+                        " · пометка: прошлый ответ без опоры"
+                    } else {
+                        ""
+                    }
                 val promptShape = if (newRecords.isEmpty()) {
                     val skipped = allRecords.size
                     val tail = if (skipped > 0) " ($skipped уже в ленте)" else ""
-                    "Запрос: новых записей нет$tail · вопрос ${userText.length} зн."
+                    "Запрос: новых записей нет$tail · вопрос ${userText.length} зн.$noteTail"
                 } else {
                     "Запрос: новых записей ${newRecords.size} из ${allRecords.size} на " +
                         "${userContent.length - userText.length} зн. · " +
-                        "вопрос ${userText.length} зн."
+                        "вопрос ${userText.length} зн.$noteTail"
                 }
 
                 val startMs = System.currentTimeMillis()
