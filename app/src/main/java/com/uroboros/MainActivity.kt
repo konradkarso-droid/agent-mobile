@@ -24,6 +24,7 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.CONTEXT_SIZE
+import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
@@ -68,6 +69,16 @@ class MainActivity : AppCompatActivity() {
      */
     private val journal = ConversationJournal.shared
 
+    /**
+     * Сохранение ленты на диск. Заводится лениво: база открывается при
+     * первом обращении, а не при каждом создании активности.
+     *
+     * Лента о хранилище не знает — связка живёт в [onCreate] через
+     * оповещения журнала. Так рядом с каждым `appendTurn` не нужно помнить
+     * о сохранении, а забытое место молчало бы до первого перезапуска.
+     */
+    private val journalStore by lazy { JournalStore(applicationContext) }
+
     // Ссылка на корутину идущего TOTE-цикла. Нужна ровно для одного:
     // аварийный стоп должен прервать уже начатую работу, а не только запретить
     // будущую. Флаг EmergencyStop закрывает гейт — но цикл, который уже крутится,
@@ -84,6 +95,16 @@ class MainActivity : AppCompatActivity() {
     // гонять один текст и бояться затереть чужую половину.
     private var engineParamsLine: String? = null
     private var promptCacheLine: String? = null
+
+    /**
+     * Что стало с сохранённым на диске разговором — строка для человека.
+     *
+     * Три состояния, а не два: поднят (сколько ходов), отказано (почему),
+     * не сохранился очередной ход. Без неё пустая лента после запуска
+     * выглядит одинаково и когда сохранять было нечего, и когда сохранение
+     * сломано. null прячет строку — на чистом запуске сообщать не о чем.
+     */
+    private var journalRestoreLine: String? = null
     private var lastMetricsLine: String? = null
 
     // Палитра совпадает с activity_main.xml. Смысл цвета, а не украшение:
@@ -426,7 +447,10 @@ class MainActivity : AppCompatActivity() {
         // отдельной переменной, как соседи: она целиком выводится из ленты,
         // и второе место, где она может разойтись с лентой, заводить незачем.
         binding.textMetrics.text =
-            listOfNotNull(engineParamsLine, promptCacheLine, journalLine(), lastMetricsLine)
+            listOfNotNull(
+                engineParamsLine, promptCacheLine, journalLine(),
+                journalRestoreLine, lastMetricsLine,
+            )
                 .joinToString("\n")
     }
 
@@ -691,10 +715,83 @@ class MainActivity : AppCompatActivity() {
                 // "кэш подхватился" видно раньше, чем это подтвердит секундомер.
                 promptCacheLine = llmEngine.getPromptCacheReport()
                 renderMetricsPanel()
+                // Только теперь: до загрузки модели отпечатка ещё нет, а
+                // без него сохранённой ленте не с чем сверяться.
+                maybeOfferRestore()
             } else {
                 binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""
             }
         }
+    }
+
+    /**
+     * Предлагает поднять сохранённый разговор — если его есть чем поднять.
+     *
+     * Порядок важен: сперва хранилище проверяет отпечаток загрузки, целость
+     * нумерации и сохранность записей, и только потом спрашивают человека.
+     * Наоборот было бы хуже — получить согласие и отказать после него.
+     *
+     * Ничего не делает при непустой ленте: подъём поверх живого разговора
+     * сбил бы нумерацию ходов.
+     */
+    private fun maybeOfferRestore() {
+        if (!journal.isEmpty) return
+        lifecycleScope.launch {
+            when (val result = journalStore.load(llmEngine.loadFingerprint)) {
+                is JournalStore.LoadResult.Empty -> Unit
+                is JournalStore.LoadResult.Refused -> {
+                    journalRestoreLine = "Разговор: ${result.reason}"
+                    renderMetricsPanel()
+                }
+                is JournalStore.LoadResult.Restored -> showRestoreDialog(result.turns)
+            }
+        }
+    }
+
+    /**
+     * Выбор человека: продолжить сохранённый разговор или стереть его.
+     *
+     * ЦЕНА ПОДЪЁМА НАЗВАНА В САМОМ ДИАЛОГЕ. Текст ленты с диска поднимается,
+     * а обсчитанное движком начало — нет: это контрольные точки, они не
+     * написаны. Значит первый ход после подъёма оплачивает пересчёт всего
+     * разговора. Молча отнять у человека минуту нельзя, поэтому и
+     * спрашиваем.
+     *
+     * ОТМЕНИТЬ НЕЛЬЗЯ, и это не строгость. Оставь человек выбор несделанным
+     * — лента в памяти пуста, следующий ход ляжет под нулевым номером
+     * поверх сохранённого, и на диске окажется смесь двух разговоров.
+     * Поэтому исхода ровно два, оба необратимые, и оба названы.
+     */
+    private fun showRestoreDialog(saved: List<ConversationJournal.Turn>) {
+        AlertDialog.Builder(this)
+            .setTitle("Сохранённый разговор")
+            .setMessage(
+                "На диске лежит разговор из ${saved.size} ходов.\n\n" +
+                    "Если продолжить, движку придётся пересчитать его целиком: первый " +
+                    "ответ придёт заметно дольше обычного, при длинном разговоре это " +
+                    "минуты. Дальше скорость обычная.\n\n" +
+                    "Начать заново — значит стереть сохранённое без возврата."
+            )
+            .setPositiveButton("Продолжить разговор") { _, _ ->
+                if (journal.restore(saved)) {
+                    journalRestoreLine = "Разговор поднят с диска: ходов ${saved.size}"
+                    binding.textResults.text = renderJournal()
+                    binding.scrollResults.post {
+                        binding.scrollResults.fullScroll(View.FOCUS_DOWN)
+                    }
+                    renderTurnNavVisibility()
+                } else {
+                    journalRestoreLine = "Разговор с диска не поднят: лента уже не пуста"
+                }
+                renderMetricsPanel()
+            }
+            .setNegativeButton("Начать заново") { _, _ ->
+                lifecycleScope.launch { journalStore.clear() }
+                journalRestoreLine = null
+                renderMetricsPanel()
+            }
+            .setCancelable(false)
+            .show()
     }
 
     private fun showModelChooser(models: List<DocumentFile>) {
@@ -873,6 +970,34 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             combine(watchdog.zone, watchdog.power) { _, _ -> Unit }
                 .collect { renderMetricsPanel() }
+        }
+
+        // Лента одна на процесс, активность пересоздаётся — поэтому
+        // оповещения переустанавливаются при каждом создании, и пишет на
+        // диск всегда живая активность, а не мёртвая.
+        //
+        // Запись уходит в отдельную корутину: функции хранилища
+        // блокирующие, а держать на них главный поток нельзя. Плата
+        // названа прямо: если приложение убьют ровно между закрытием хода
+        // и записью, ход останется только в памяти. Следующий запуск
+        // увидит дыру в нумерации и откажет в подъёме — то есть промах
+        // будет назван, а не проглочен.
+        journal.onTurnAppended = { index, turn ->
+            val fingerprint = if (::llmEngine.isInitialized) llmEngine.loadFingerprint else null
+            lifecycleScope.launch {
+                if (!journalStore.append(index, turn, fingerprint)) {
+                    journalRestoreLine = "Разговор: ход ${index + 1} на диск не записался"
+                    renderMetricsPanel()
+                }
+            }
+        }
+        // Стёртая лента не должна оставаться на диске: иначе следующий
+        // запуск предложит поднять разговор, который человек только что
+        // закрыл.
+        journal.onCleared = {
+            lifecycleScope.launch { journalStore.clear() }
+            journalRestoreLine = null
+            renderMetricsPanel()
         }
 
         tryAutoLoadOnStartup()
