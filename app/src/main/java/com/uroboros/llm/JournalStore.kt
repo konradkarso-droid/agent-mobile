@@ -1,0 +1,226 @@
+package com.uroboros.llm
+
+import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Сохранение и подъём ленты разговора.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНЫЙ КЛАСС. [ConversationJournal] — чистый Kotlin, без единого
+ * андроидного обращения: так он проверяется юнит-тестом и не тянет за собой
+ * ни базу, ни `Context`. Всё, что знает про Android, собрано здесь. Лента об
+ * этом классе не знает; связывает их тот, кто держит оба.
+ *
+ * ГДЕ ГРАНИЦА ОТВЕТСТВЕННОСТИ. Здесь решается, ЧТО лежит на диске и МОЖНО
+ * ЛИ этому верить. Здесь же не решается, что делать с отказом: [load]
+ * возвращает исход, а показывает его человеку и выбирает поведение
+ * вызывающий.
+ *
+ * ПОТОК. Функции DAO блокирующие (причина в [JournalTurnDao]), поэтому
+ * каждая функция здесь уходит в [Dispatchers.IO] сама. Вызывающему думать
+ * о потоке не надо — иначе об этом пришлось бы помнить в каждом месте
+ * вызова, а забытое место падало бы только на живом устройстве.
+ *
+ * ОТКАЗЫ НЕ БРОСАЮТСЯ НАРУЖУ. Лента — часть необязательная: без неё
+ * приложение работает, просто разговор не переживает выгрузку. Поэтому
+ * любая беда с базой превращается в [LoadResult.Refused] со словами, а не
+ * в падение. Молчать о пропаже при этом нельзя — на то и слова.
+ */
+class JournalStore(context: Context) {
+
+    private val dao = JournalDatabase.getInstance(context).journalTurnDao()
+
+    /**
+     * Исход подъёма. Три состояния, а не два: «поднято», «сохранённого нет»
+     * и «отказано, вот почему» — иначе пустой экран после запуска
+     * неотличим от сломанного сохранения.
+     */
+    sealed interface LoadResult {
+
+        /** Лента поднята целиком. */
+        data class Restored(val turns: List<ConversationJournal.Turn>) : LoadResult
+
+        /** Сохранённого разговора нет. Это не поломка. */
+        object Empty : LoadResult
+
+        /**
+         * Подъём отменён. [reason] — готовая фраза для показа человеку:
+         * система обязана давать признак, читаемый без знания
+         * программирования.
+         */
+        data class Refused(val reason: String) : LoadResult
+    }
+
+    /**
+     * Поднимает сохранённую ленту, если ей можно верить.
+     *
+     * @param currentFingerprint отпечаток текущей загрузки
+     *        ([LlmEngine.loadFingerprint]); `null`, пока модель не
+     *        загружена или папка кэша не создана.
+     *
+     * ПОДНИМАЕТСЯ ТОЛЬКО ЦЕЛИКОМ. Любое из проверяемых условий отменяет
+     * подъём полностью, без попытки взять уцелевшую часть. Причина не в
+     * строгости: половина ленты обещает движку совпадение с обсчитанным
+     * началом, которого у неё нет, и расплата за это — молчаливый пересчёт
+     * всего разговора, о котором ничто не сообщит.
+     *
+     * ПРИ ОТКАЗЕ ТАБЛИЦА НЕ СТИРАЕТСЯ. Часть причин временные: модель ещё
+     * не загрузилась, файл не прочитался. Стирание же необратимо, и им
+     * нельзя отвечать на состояние, которое может смениться само. Чистит
+     * ленту человек, закрывая разговор.
+     */
+    suspend fun load(currentFingerprint: String?): LoadResult = withContext(Dispatchers.IO) {
+        val rows = runCatching { dao.all() }.getOrElse {
+            return@withContext LoadResult.Refused(
+                "Сохранённый разговор не читается — начинаем с чистой ленты."
+            )
+        }
+
+        if (rows.isEmpty()) return@withContext LoadResult.Empty
+
+        val stored = rows.first().fingerprint
+
+        if (rows.any { it.fingerprint != stored }) {
+            return@withContext LoadResult.Refused(
+                "Сохранённый разговор собран из разных запусков — поднимать его нельзя."
+            )
+        }
+
+        if (stored.isBlank()) {
+            return@withContext LoadResult.Refused(
+                "Сохранённый разговор записан без привязки к модели — поднимать его нельзя."
+            )
+        }
+
+        if (currentFingerprint == null) {
+            return@withContext LoadResult.Refused(
+                "Модель ещё не загружена — сохранённый разговор пока не поднять."
+            )
+        }
+
+        if (stored != currentFingerprint) {
+            return@withContext LoadResult.Refused(
+                "Сохранённый разговор записан при другой модели или других параметрах."
+            )
+        }
+
+        // Дыра в нумерации означает, что часть ходов не дописалась. Такая
+        // лента уйдёт в движок с пропуском посередине — то есть без
+        // совпадения с обсчитанным началом, и молча.
+        if (rows.mapIndexed { i, row -> row.turnIndex == i }.any { !it }) {
+            return@withContext LoadResult.Refused(
+                "В сохранённом разговоре не хватает ходов — поднимать его нельзя."
+            )
+        }
+
+        val turns = ArrayList<ConversationJournal.Turn>(rows.size)
+        for (row in rows) {
+            val records = parseRecords(row.recordsJson)
+                ?: return@withContext LoadResult.Refused(
+                    "Сохранённый разговор повреждён — поднимать его нельзя."
+                )
+            turns += ConversationJournal.Turn(
+                userContent = row.userContent,
+                agentContent = row.agentContent,
+                question = row.question,
+                records = records,
+            )
+        }
+
+        LoadResult.Restored(turns)
+    }
+
+    /**
+     * Дописывает один ход.
+     *
+     * @param fingerprint отпечаток текущей загрузки; `null` кладётся пустой
+     *        строкой. Ход при этом сохраняется — он нужен для показа
+     *        человеку и для будущего замера, — но лента с пустым отпечатком
+     *        подъёму не подлежит: привязать её не к чему. Сохранение и
+     *        подъём здесь намеренно расходятся в условиях: пропустить ход
+     *        при записи невосстановимо, а лишний отказ при подъёме стоит
+     *        одного пересчёта.
+     *
+     * @return `false`, если запись не удалась. Вызывающий обязан сказать об
+     *         этом человеку: дальше лента на диске будет неполной, а значит
+     *         при следующем запуске подъём откажет по дыре в нумерации.
+     */
+    suspend fun append(
+        index: Int,
+        turn: ConversationJournal.Turn,
+        fingerprint: String?,
+    ): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            dao.insert(
+                JournalTurn(
+                    turnIndex = index,
+                    userContent = turn.userContent,
+                    agentContent = turn.agentContent,
+                    question = turn.question,
+                    recordsJson = renderRecords(turn.records),
+                    fingerprint = fingerprint ?: "",
+                )
+            )
+        }.isSuccess
+    }
+
+    /**
+     * Стирает сохранённый разговор.
+     *
+     * Вызывается только когда ленту закрывает человек. Молча, по счётчику
+     * или в ответ на отказ подъёма — нельзя: сегодня закрытие ленты это
+     * потеря разговора без следа, укладка в память не написана.
+     */
+    suspend fun clear(): Boolean = withContext(Dispatchers.IO) {
+        runCatching { dao.clearAll() }.isSuccess
+    }
+
+    /** Сколько ходов лежит на диске — для показа человеку, без чтения текста. */
+    suspend fun count(): Int = withContext(Dispatchers.IO) {
+        runCatching { dao.count() }.getOrDefault(0)
+    }
+
+    /**
+     * Записи хода в JSON. Сборка — на `JSONArray`, а не склейкой строк:
+     * экранирование кавычек и переносов тогда на библиотеке, а не на нас.
+     * Тем же приёмом собирается лента для движка.
+     */
+    private fun renderRecords(records: List<ConversationJournal.RecordUse>): String {
+        val array = JSONArray()
+        for (record in records) {
+            array.put(
+                JSONObject()
+                    .put(KEY_TEXT, record.text)
+                    .put(KEY_FIRST_SEEN, record.firstSeenTurn)
+            )
+        }
+        return array.toString()
+    }
+
+    /**
+     * Разбор записей хода. `null` означает порчу — и отменяет подъём всей
+     * ленты, а не одного хода. Ход, потерявший свои записи, выглядел бы
+     * безопорным, и верный ответ на нём прочитался бы как выдумка.
+     */
+    private fun parseRecords(json: String): List<ConversationJournal.RecordUse>? =
+        runCatching {
+            val array = JSONArray(json)
+            val out = ArrayList<ConversationJournal.RecordUse>(array.length())
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                out += ConversationJournal.RecordUse(
+                    text = item.getString(KEY_TEXT),
+                    firstSeenTurn = item.getInt(KEY_FIRST_SEEN),
+                )
+            }
+            out
+        }.getOrNull()
+
+    private companion object {
+        const val KEY_TEXT = "text"
+        const val KEY_FIRST_SEEN = "firstSeenTurn"
+    }
+}
