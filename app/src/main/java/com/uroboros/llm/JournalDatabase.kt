@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * База под ленту разговора — отдельный файл, не тот, в котором память.
@@ -58,7 +60,7 @@ abstract class JournalDatabase : RoomDatabase() {
          * При подъёме числа сюда же добавляется миграция: без неё база не
          * откроется (деструктивного отката здесь нет намеренно, см. выше).
          */
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         /**
          * Имя файла. Отличается от `uroboros_memory.db` не только словом:
@@ -66,6 +68,32 @@ abstract class JournalDatabase : RoomDatabase() {
          * можно средствами системы.
          */
         const val FILE_NAME = "uroboros_journal.db"
+
+        /**
+         * Версия 2: столбец `promptTokens` — размер запроса на ходе по
+         * отчёту движка.
+         *
+         * Понадобился, когда лента научилась подниматься с диска: числа
+         * взять стало неоткуда, движок отдаёт его только по итогам
+         * прогона. Без него проверка «влезет ли следующий ход» считала бы
+         * занятое место нулевым.
+         *
+         * Ноль существующим строкам — правда, а не заглушка: они легли,
+         * когда столбца не было, и что в них стояло, никому не известно.
+         * Ноль означает «не измерено» и так и показывается на экране.
+         *
+         * Миграция настоящая, а не пересоздание таблицы: деструктивного
+         * отката у этой базы нет намеренно, и заводить его ради одного
+         * столбца значило бы отменить это решение ради удобства.
+         */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `journal_turns` " +
+                        "ADD COLUMN `promptTokens` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
 
         @Volatile
         private var INSTANCE: JournalDatabase? = null
@@ -76,7 +104,8 @@ abstract class JournalDatabase : RoomDatabase() {
                     context.applicationContext,
                     JournalDatabase::class.java,
                     FILE_NAME
-                ).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2)
+                 .build().also { INSTANCE = it }
             }
         }
     }
