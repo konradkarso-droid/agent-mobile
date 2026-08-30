@@ -1119,15 +1119,14 @@ class MainActivity : AppCompatActivity() {
 
         binding.buttonSave.setOnLongClickListener {
             binding.buttonSave.isEnabled = false
-            binding.textResults.text = "Экспортирую память (чекпоинт + копирование)..."
+            binding.textResults.text = "Выгружаю базы (чекпоинт + копирование)..."
             lifecycleScope.launch {
-                val exportedName = DatabaseExporter.exportToDownloads(applicationContext)
+                // Отчёт по каждой базе отдельно: одна выгруженная база и все
+                // выгруженные базы обязаны выглядеть по-разному, иначе пропуск
+                // неотличим от успеха. Текст собирает DatabaseExporter.describe.
+                val outcomes = DatabaseExporter.exportAllToDownloads(applicationContext)
                 binding.buttonSave.isEnabled = true
-                binding.textResults.text = if (exportedName != null) {
-                    "Экспорт готов: $exportedName\n(лежит в папке Download — оттуда переносите на новое устройство или загружайте в GitHub вручную)"
-                } else {
-                    "Не удалось экспортировать память — попробуйте ещё раз"
-                }
+                binding.textResults.text = DatabaseExporter.describe(outcomes)
             }
             true
         }
