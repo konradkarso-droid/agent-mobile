@@ -306,15 +306,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Кнопки хода показываются, только когда прыгать есть куда.
+     * Видимость строки хода. У кнопок в ней условия РАЗНЫЕ, и в этом всё
+     * дело.
      *
-     * Порог в три хода взят как наименьший, при котором кнопка делает
-     * что-то, чего не делает взмах. На меньшем разговоре они бы только
-     * отнимали высоту у самого разговора.
+     * Прыжки показываются, только когда прыгать есть куда. Порог в
+     * [TURN_NAV_MIN_TURNS] хода взят как наименьший, при котором кнопка
+     * делает что-то, чего не делает взмах. На меньшем разговоре они бы
+     * только отнимали высоту у самого разговора.
+     *
+     * Отрезание показывается, как только в ленте есть хоть один ход:
+     * плохой ответ бывает и первым, и прятать от него единственное
+     * лекарство нельзя. Свести оба условия к одному значило бы спрятать
+     * отрезание ровно там, где оно нужнее всего.
+     *
+     * Сама строка видна, если видна хоть одна кнопка в ней.
      */
     private fun renderTurnNavVisibility() {
-        binding.rowTurnNav.visibility =
-            if (journal.turnCount >= TURN_NAV_MIN_TURNS) View.VISIBLE else View.GONE
+        val turns = journal.turnCount
+        val jumps = if (turns >= TURN_NAV_MIN_TURNS) View.VISIBLE else View.GONE
+        binding.buttonTurnPrev.visibility = jumps
+        binding.buttonTurnNext.visibility = jumps
+        binding.buttonDropTurn.visibility = if (turns >= 1) View.VISIBLE else View.GONE
+        binding.rowTurnNav.visibility = if (turns >= 1) View.VISIBLE else View.GONE
     }
 
     /**
@@ -818,6 +831,69 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * Спрашивает и убирает последний ход из ленты.
+     *
+     * ПОДТВЕРЖДЕНИЕ ОБЯЗАТЕЛЬНО. Механизм терминальный: ниже нет никого,
+     * кто отсеял бы лишнее, а отменить отрезание нечем. Поэтому диалог
+     * показывает начало ответа, который уйдёт, — человек должен видеть,
+     * тот ли это ход, а не помнить.
+     *
+     * ПОРЯДОК: СНАЧАЛА ДИСК, ПОТОМ ПАМЯТЬ. При отказе диска лента в памяти
+     * остаётся нетронутой, и оба хранилища по-прежнему говорят одно.
+     * Обратный порядок при том же отказе оставил бы на диске ход, которого
+     * в памяти уже нет, и следующий запуск поднял бы отрезанное обратно.
+     *
+     * ВО ВРЕМЯ ГЕНЕРАЦИИ НЕДОСТУПНО. В поле в этот момент лежит текст,
+     * которого в ленте ещё нет, а закрытие хода произойдёт после. Отрезать
+     * в этот момент значит отрезать не тот ход.
+     */
+    private fun showDropTurnDialog() {
+        if (!binding.buttonGenerate.isEnabled) return
+        val last = journal.history().lastOrNull() ?: return
+        val index = journal.turnCount - 1
+        val preview = last.agentContent.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+        val tail = if (last.agentContent.length > DROP_PREVIEW_CHARS) "…" else ""
+
+        AlertDialog.Builder(this)
+            .setTitle("Убрать последний ход?")
+            .setMessage(
+                "Уйдёт ход ${index + 1} — вопрос и ответ на него:\n\n" +
+                    "«$preview$tail»\n\n" +
+                    "Ход стирается и с экрана, и с диска, вернуть его нечем. " +
+                    "Записи памяти, сохранённые на этом ходе, остаются: лента и " +
+                    "память — разные слои."
+            )
+            .setPositiveButton("Убрать") { _, _ ->
+                lifecycleScope.launch {
+                    when (val result = journalStore.dropFrom(index)) {
+                        is JournalStore.DropResult.Refused -> {
+                            journalRestoreLine = "Разговор: ${result.reason}"
+                        }
+                        else -> {
+                            // Пустой исход (на диске хода уже нет) отрезание в
+                            // памяти НЕ отменяет: расхождение двух хранилищ
+                            // чинится тем, что лента становится короче, а не
+                            // тем, что лишний ход остаётся на экране.
+                            journal.dropLastTurn()
+                            navTurnIndex = -1
+                            journalRestoreLine =
+                                if (result is JournalStore.DropResult.Empty) {
+                                    "Разговор: ход убран с экрана, на диске его уже не было"
+                                } else {
+                                    "Разговор: ход ${index + 1} убран"
+                                }
+                            binding.textResults.text = renderJournal()
+                            renderTurnNavVisibility()
+                        }
+                    }
+                    renderMetricsPanel()
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
     private fun showModelChooser(models: List<DocumentFile>) {
         val names = models.map { it.name ?: "(без имени)" }.toTypedArray()
         AlertDialog.Builder(this)
@@ -991,6 +1067,7 @@ class MainActivity : AppCompatActivity() {
             val from = if (navTurnIndex < 0) -1 else navTurnIndex
             scrollToTurn((from + 1).coerceAtMost(turnOffsets.size - 1))
         }
+        binding.buttonDropTurn.setOnClickListener { showDropTurnDialog() }
         lifecycleScope.launch {
             combine(watchdog.zone, watchdog.power) { _, _ -> Unit }
                 .collect { renderMetricsPanel() }
@@ -1561,6 +1638,12 @@ class MainActivity : AppCompatActivity() {
          * ходах прыгать некуда, а высоту у разговора они отнимут.
          */
         private const val TURN_NAV_MIN_TURNS = 3
+
+        /**
+         * Сколько знаков ответа показывать в вопросе об отрезании. Хватает,
+         * чтобы узнать ход, и мало, чтобы диалог не превратился в чтение.
+         */
+        private const val DROP_PREVIEW_CHARS = 120
 
         /**
          * Запас в пикселях, внутри которого прокрутка считается стоящей
