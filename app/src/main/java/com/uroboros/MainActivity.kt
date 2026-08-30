@@ -353,7 +353,6 @@ class MainActivity : AppCompatActivity() {
     private fun journalLine(): String {
         if (journal.isEmpty) return "Лента: пуста"
         val used = journal.lastPromptTokens
-        val pct = journal.fillPercent(CONTEXT_SIZE)
         // Размер снимка состояния — разовое измерение, а не постоянная
         // метрика: оно решает, идти в контрольные точки или в постоянное
         // уведомление. Спрашивается у движка при каждой отрисовке, потому
@@ -363,7 +362,22 @@ class MainActivity : AppCompatActivity() {
             val mb = llmEngine.stateSizeBytes / (1024 * 1024)
             if (mb > 0) " · снимок $mb МБ" else ""
         } else ""
-        return "Лента: ходов ${journal.turnCount} · занято $used из $CONTEXT_SIZE ток. ($pct%)$state"
+        // Ноль при НЕПУСТОЙ ленте означает "не измерено", а не "пусто", и
+        // показывать его как измеренную величину нельзя: правило написано
+        // абзацем выше, а случай появился, когда лента научилась
+        // подниматься с диска. Ход, сохранённый до отчёта движка, и строки
+        // старее столбца дают тот же ноль.
+        //
+        // Молчание здесь дороже удобства: на этом же числе стоит проверка
+        // "влезет ли следующий ход". Ноль сказал бы, что места полно, ход
+        // ушёл бы в движок, и тот молча выбросил бы половину разговора.
+        // Признать незнание — единственный честный вид.
+        val fill = if (used > 0) {
+            "занято $used из $CONTEXT_SIZE ток. (${journal.fillPercent(CONTEXT_SIZE)}%)"
+        } else {
+            "занято: неизвестно до первого ответа"
+        }
+        return "Лента: ходов ${journal.turnCount} · $fill$state"
     }
 
     /**
@@ -743,7 +757,8 @@ class MainActivity : AppCompatActivity() {
                     journalRestoreLine = "Разговор: ${result.reason}"
                     renderMetricsPanel()
                 }
-                is JournalStore.LoadResult.Restored -> showRestoreDialog(result.turns)
+                is JournalStore.LoadResult.Restored ->
+                    showRestoreDialog(result.turns, result.promptTokens)
             }
         }
     }
@@ -762,7 +777,10 @@ class MainActivity : AppCompatActivity() {
      * поверх сохранённого, и на диске окажется смесь двух разговоров.
      * Поэтому исхода ровно два, оба необратимые, и оба названы.
      */
-    private fun showRestoreDialog(saved: List<ConversationJournal.Turn>) {
+    private fun showRestoreDialog(
+        saved: List<ConversationJournal.Turn>,
+        promptTokens: Int,
+    ) {
         AlertDialog.Builder(this)
             .setTitle("Сохранённый разговор")
             .setMessage(
@@ -774,6 +792,12 @@ class MainActivity : AppCompatActivity() {
             )
             .setPositiveButton("Продолжить разговор") { _, _ ->
                 if (journal.restore(saved)) {
+                    // Через существующий вход, а не новый: величина та же
+                    // самая, и второе место, где она задаётся, разошлось бы
+                    // с первым молча. Ноль вход отбрасывает сам — значит
+                    // "не измерено" остаётся "не измерено", а не становится
+                    // измеренным нулём.
+                    journal.notePromptTokens(promptTokens)
                     journalRestoreLine = "Разговор поднят с диска: ходов ${saved.size}"
                     binding.textResults.text = renderJournal()
                     binding.scrollResults.post {
@@ -984,8 +1008,12 @@ class MainActivity : AppCompatActivity() {
         // будет назван, а не проглочен.
         journal.onTurnAppended = { index, turn ->
             val fingerprint = if (::llmEngine.isInitialized) llmEngine.loadFingerprint else null
+            // Оба числа снимаются ЗДЕСЬ, а не внутри корутины: пока запись
+            // идёт на диск, мог бы пройти следующий ход, и в строку легло
+            // бы чужое значение.
+            val tokens = journal.lastPromptTokens
             lifecycleScope.launch {
-                if (!journalStore.append(index, turn, fingerprint)) {
+                if (!journalStore.append(index, turn, tokens, fingerprint)) {
                     journalRestoreLine = "Разговор: ход ${index + 1} на диск не записался"
                     renderMetricsPanel()
                 }
@@ -1374,16 +1402,22 @@ class MainActivity : AppCompatActivity() {
                         // с тем, что ушло в модель. Уже лежавшие записи от
                         // этого не задваиваются — их номер хода в журнале
                         // остаётся прежним.
+                        // Размер запроса берём у движка, а не считаем сами:
+                        // пересчёт знаков в токены завышает на треть, замерено
+                        // 28.08 на тексте стены.
+                        //
+                        // Стоит ДО закрытия хода намеренно: закрытие хода
+                        // уводит его на диск вместе с этим числом. Обнови
+                        // счётчик после — и в строку ушло бы значение
+                        // предыдущего хода, расхождение на один ход, которое
+                        // ничем себя не выдаёт.
+                        engineMetrics?.let { journal.notePromptTokens(it.tokensEvaluated) }
                         journal.appendTurn(
                             userContent = userContent,
                             agentContent = answerText.toString(),
                             question = userText,
                             records = allRecords,
                         )
-                        // Размер запроса берём у движка, а не считаем сами:
-                        // пересчёт знаков в токены завышает на треть, замерено
-                        // 28.08 на тексте стены.
-                        engineMetrics?.let { journal.notePromptTokens(it.tokensEvaluated) }
                         // Ход закрыт — перерисовываем ленту целиком.
                         //
                         // Во время генерации ход рисовался как начатый
