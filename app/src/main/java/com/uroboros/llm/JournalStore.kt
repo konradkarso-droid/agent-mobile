@@ -40,8 +40,19 @@ class JournalStore(context: Context) {
      */
     sealed interface LoadResult {
 
-        /** Лента поднята целиком. */
-        data class Restored(val turns: List<ConversationJournal.Turn>) : LoadResult
+        /**
+         * Лента поднята целиком.
+         *
+         * @property promptTokens размер последнего ушедшего запроса в
+         *   токенах — та же величина, что держит живая лента. Ноль
+         *   означает «не измерено»: ход сохранён до того, как движок
+         *   отчитался, либо лежит с версии, где столбца не было.
+         *   Показывать такой ноль как измеренную величину нельзя.
+         */
+        data class Restored(
+            val turns: List<ConversationJournal.Turn>,
+            val promptTokens: Int,
+        ) : LoadResult
 
         /** Сохранённого разговора нет. Это не поломка. */
         object Empty : LoadResult
@@ -130,12 +141,21 @@ class JournalStore(context: Context) {
             )
         }
 
-        LoadResult.Restored(turns)
+        // Число берётся у ПОСЛЕДНЕГО хода: это размер последнего ушедшего
+        // запроса, то есть ровно то, что означает счётчик живой ленты.
+        // Числа промежуточных ходов лежат в строках и пригодятся при
+        // разборе роста ленты, но счётчику отвечает только последнее.
+        LoadResult.Restored(turns, rows.last().promptTokens)
     }
 
     /**
      * Дописывает один ход.
      *
+     * @param promptTokens размер запроса на этом ходе по отчёту движка.
+     *        Вызывающий обязан снять его ДО закрытия хода: счётчик ленты
+     *        обновляется отдельным вызовом, и если сделать это после,
+     *        в строку уйдёт число предыдущего хода — расхождение на один
+     *        ход, которое ничем себя не выдаст.
      * @param fingerprint отпечаток текущей загрузки; `null` кладётся пустой
      *        строкой. Ход при этом сохраняется — он нужен для показа
      *        человеку и для будущего замера, — но лента с пустым отпечатком
@@ -151,6 +171,7 @@ class JournalStore(context: Context) {
     suspend fun append(
         index: Int,
         turn: ConversationJournal.Turn,
+        promptTokens: Int,
         fingerprint: String?,
     ): Boolean = withContext(Dispatchers.IO) {
         runCatching {
@@ -161,6 +182,7 @@ class JournalStore(context: Context) {
                     agentContent = turn.agentContent,
                     question = turn.question,
                     recordsJson = renderRecords(turn.records),
+                    promptTokens = promptTokens,
                     fingerprint = fingerprint ?: "",
                 )
             )
