@@ -818,13 +818,24 @@ class MainActivity : AppCompatActivity() {
         saved: List<ConversationJournal.Turn>,
         promptTokens: Int,
     ) {
+        // Спрашиваем ДО вопроса человеку, а поднимаем — после согласия.
+        // Проверка дешёвая: файл либо есть, либо нет. Обещать быстрый первый
+        // ответ и не суметь хуже, чем честно предупредить о пересчёте.
+        val costText = if (llmEngine.hasStateCheckpoint) {
+            "Рядом лежит сохранённое состояние движка. Если оно подойдёт к этому " +
+                "разговору, первый ответ придёт как обычно; если не подойдёт, движок " +
+                "пересчитает разговор целиком, и первый ответ будет заметно дольше. " +
+                "Что вышло — увидите строкой «Точка:» в шторке «Подробно»."
+        } else {
+            "Движку придётся пересчитать его целиком: первый ответ придёт заметно " +
+                "дольше обычного, при длинном разговоре это минуты. Дальше скорость " +
+                "обычная."
+        }
         AlertDialog.Builder(this)
             .setTitle("Сохранённый разговор")
             .setMessage(
                 "На диске лежит разговор из ${saved.size} ходов.\n\n" +
-                    "Если продолжить, движку придётся пересчитать его целиком: первый " +
-                    "ответ придёт заметно дольше обычного, при длинном разговоре это " +
-                    "минуты. Дальше скорость обычная.\n\n" +
+                    "Если продолжить, $costText\n\n" +
                     "Начать заново — значит стереть сохранённое без возврата."
             )
             .setPositiveButton("Продолжить разговор") { _, _ ->
@@ -841,13 +852,37 @@ class MainActivity : AppCompatActivity() {
                         binding.scrollResults.fullScroll(View.FOCUS_DOWN)
                     }
                     renderTurnNavVisibility()
+                    // ТОЧКА ПОДНИМАЕТСЯ ТОЛЬКО ЗДЕСЬ — следом за успешно
+                    // поднятой лентой и никогда сама по себе. Поднять её к
+                    // пустой ленте значило бы, что следующий короткий вопрос
+                    // окажется целиком внутри поднятого состояния: движку
+                    // нечего будет обсчитывать, и он вернёт ноль токенов.
+                    //
+                    // Отказ подъёма ничего не ломает: не поднялось — значит
+                    // работаем как раньше, с пересчётом. Поэтому исход не
+                    // проверяется ветвлением, а просто показывается.
+                    lifecycleScope.launch {
+                        llmEngine.restoreStateCheckpoint()
+                        checkpointActionLine = llmEngine.getStateCheckpointReport()
+                        checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
+                        renderMetricsPanel()
+                    }
                 } else {
                     journalRestoreLine = "Разговор с диска не поднят: лента уже не пуста"
                 }
                 renderMetricsPanel()
             }
             .setNegativeButton("Начать заново") { _, _ ->
-                lifecycleScope.launch { journalStore.clear() }
+                // Точка уходит вместе с лентой. Останься она — при следующем
+                // запуске она описывала бы разговор, которого больше нет, то
+                // есть обгоняла бы пустую ленту.
+                lifecycleScope.launch {
+                    journalStore.clear()
+                    llmEngine.clearStateCheckpoint()
+                    checkpointActionLine = llmEngine.getStateCheckpointReport()
+                    checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
+                    renderMetricsPanel()
+                }
                 journalRestoreLine = null
                 renderMetricsPanel()
             }
@@ -909,6 +944,15 @@ class MainActivity : AppCompatActivity() {
                                 }
                             binding.textResults.text = renderJournal()
                             renderTurnNavVisibility()
+                            // Лента стала короче — значит точка теперь знает
+                            // ход, которого в ленте нет, то есть обгоняет её.
+                            // Следующий запуск подал бы движку запрос, целиком
+                            // лежащий внутри поднятого состояния, и получил бы
+                            // ноль токенов на пустом месте. Стереть дешевле:
+                            // цена — один пересчёт.
+                            llmEngine.clearStateCheckpoint()
+                            checkpointActionLine = llmEngine.getStateCheckpointReport()
+                            checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
                         }
                     }
                     renderMetricsPanel()
