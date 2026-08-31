@@ -437,12 +437,40 @@ class LlmEngine(
      * Подпапка, а не файл рядом с кэшем: [getPromptCacheReport] считает
      * мегабайты файлов в папке, а точка тяжелее самого кэша и исказила бы этот
      * счёт.
+     *
+     * Папку здесь НЕ создаём: функция отвечает на вопрос, а не действует. Её
+     * зовёт и запись, и отчёт о состоянии диска, а отчёт, оставляющий после
+     * себя папку, — это прибор, меняющий то, что измеряет.
      */
     private fun checkpointFile(): File? {
         val dir = promptCacheDir ?: return null
-        val sub = File(dir, CHECKPOINT_SUBDIR)
-        if (!sub.isDirectory && !sub.mkdirs()) return null
-        return File(sub, CHECKPOINT_FILE_NAME)
+        return File(File(dir, CHECKPOINT_SUBDIR), CHECKPOINT_FILE_NAME)
+    }
+
+    /**
+     * Что лежит на диске — вторая строка о точке, независимая от первой.
+     *
+     * Зачем отдельно от [getStateCheckpointReport]. Та рассказывает о
+     * последней ПОПЫТКЕ и живёт в памяти процесса: после перезапуска она
+     * честно говорит «не пробовали». Но «не пробовали, потому что запустились
+     * только что» и «не пробовали ни разу в жизни» — на экране одно и то же,
+     * а разница между ними и есть всё, что мы хотим знать о записи при уходе
+     * в фон: успела она в прошлый раз или нет.
+     *
+     * Поэтому каналов два, и сливать их нельзя: один про действие, другой про
+     * диск. Возраст, а не время записи, потому что вопрос к точке всегда один
+     * — насколько она отстала от разговора.
+     *
+     * ОТСТАВАНИЕ НЕ ДЕЛАЕТ ТОЧКУ НЕВЕРНОЙ. Движок сверяет пришедший запрос с
+     * поднятым состоянием потокенно и досчитывает несовпавший хвост. Отставшая
+     * точка стоит пересчёта нескольких ходов, а не неправильного ответа.
+     */
+    fun getStateCheckpointDiskReport(): String {
+        val file = checkpointFile()
+            ?: return "Точка на диске: неизвестно — папка кэша не создана"
+        if (!file.isFile) return "Точка на диске: нет"
+        val age = System.currentTimeMillis() - file.lastModified()
+        return "Точка на диске: ${humanBytes(file.length())}, ${humanAge(age)}"
     }
 
     /**
@@ -489,6 +517,12 @@ class LlmEngine(
         }
 
         val temp = File(target.parentFile, target.name + CHECKPOINT_TEMP_SUFFIX)
+        val parent = target.parentFile
+        if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
+            checkpointReport = "Точка: ОТКАЗ — не удалось создать папку для точки"
+            return@withContext false
+        }
+
         val ok = runCatching { engine.stateSaveToFile(temp.absolutePath) }.getOrDefault(false)
 
         if (!ok) {
@@ -560,6 +594,21 @@ class LlmEngine(
     /** Размер файла словами, которые читаются с экрана без пересчёта в уме. */
     private fun humanBytes(bytes: Long): String =
         if (bytes >= 1024L * 1024L) "${bytes / (1024L * 1024L)} МБ" else "${bytes / 1024L} КБ"
+
+    /**
+     * Возраст файла словами. Единица укрупняется с ростом: точность в минутах
+     * нужна на свежей точке и не нужна на трёхдневной, а «4320 минут назад»
+     * читатель всё равно переводит в дни сам.
+     */
+    private fun humanAge(millis: Long): String {
+        val minutes = millis / 60_000L
+        return when {
+            minutes < 1L -> "только что"
+            minutes < 60L -> "$minutes мин назад"
+            minutes < 60L * 24L -> "${minutes / 60L} ч назад"
+            else -> "${minutes / (60L * 24L)} дн назад"
+        }
+    }
 
     /**
      * Токены выдаются наружу порциями: движок копит текст в буфере и вызывает
