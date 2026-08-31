@@ -2,6 +2,8 @@ package com.uroboros.llm
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -28,10 +30,45 @@ import org.json.JSONObject
  * приложение работает, просто разговор не переживает выгрузку. Поэтому
  * любая беда с базой превращается в [LoadResult.Refused] со словами, а не
  * в падение. Молчать о пропаже при этом нельзя — на то и слова.
+ *
+ * ОПЕРАЦИИ ВЫСТРОЕНЫ В ОДИН ПОРЯДОК. Все обращения к базе проходят через
+ * [gate], и каждое берёт его ПЕРВЫМ действием — до [Dispatchers.IO] и до
+ * любой другой приостановки. Порядок нужен потому, что дописывание хода и
+ * стирание ленты приходят сюда из независимых корутин: без общей очереди
+ * запоздавшее дописывание воскрешает уже закрытый разговор, а запоздавшее
+ * стирание уносит ход нового. Оба исхода тихие — на экране их не видно.
+ *
+ * Захват именно первым действием существен. Взятый после перехода в поток
+ * ввода-вывода, он упорядочил бы не вызовы, а их случайное прибытие в пул
+ * потоков: очередь была бы честной и бессмысленной.
  */
 class JournalStore(context: Context) {
 
     private val dao = JournalDatabase.getInstance(context).journalTurnDao()
+
+    /**
+     * Очередь обращений к базе ленты.
+     *
+     * Честная (FIFO): ожидающие получают доступ в порядке, в котором его
+     * попросили. Поэтому порядок операций задаётся тем, кто раньше вошёл
+     * сюда, — и только этим.
+     *
+     * ЧЕГО ЭТО НЕ ДАЁТ. Порядок входа сюда совпадает с порядком, в котором
+     * вызывающий начал операции, лишь пока между началом и вызовом нет
+     * приостановок. Вызывающий, успевший чего-то подождать перед обращением
+     * к ленте, встаёт в очередь позже — и получает не тот порядок, на
+     * который рассчитывал. Здесь этого не видно и проверить это отсюда
+     * нечем.
+     *
+     * СОСТАВНЫМ ОПЕРАЦИЯМ — ОДИН ЗАХВАТ. Действие вроде «перенести ленту в
+     * архив и очистить активную» пишется ОДНОЙ открытой функцией, которая
+     * берёт [gate] один раз и дальше обращается к DAO напрямую. Собирать
+     * такое действие вызовом соседних функций этого класса нельзя: захват
+     * не повторный, и второй заход по тому же пути не упадёт и не вернёт
+     * ошибку, а остановится навсегда — в том самом месте, которое отвечает
+     * за сохранность разговора.
+     */
+    private val gate = Mutex()
 
     /**
      * Исход подъёма. Три состояния, а не два: «поднято», «сохранённого нет»
@@ -104,69 +141,71 @@ class JournalStore(context: Context) {
      * нельзя отвечать на состояние, которое может смениться само. Чистит
      * ленту человек, закрывая разговор.
      */
-    suspend fun load(currentFingerprint: String?): LoadResult = withContext(Dispatchers.IO) {
-        val rows = runCatching { dao.all() }.getOrElse {
-            return@withContext LoadResult.Refused(
-                "Сохранённый разговор не читается — начинаем с чистой ленты."
-            )
-        }
-
-        if (rows.isEmpty()) return@withContext LoadResult.Empty
-
-        val stored = rows.first().fingerprint
-
-        if (rows.any { it.fingerprint != stored }) {
-            return@withContext LoadResult.Refused(
-                "Сохранённый разговор собран из разных запусков — поднимать его нельзя."
-            )
-        }
-
-        if (stored.isBlank()) {
-            return@withContext LoadResult.Refused(
-                "Сохранённый разговор записан без привязки к модели — поднимать его нельзя."
-            )
-        }
-
-        if (currentFingerprint == null) {
-            return@withContext LoadResult.Refused(
-                "Модель ещё не загружена — сохранённый разговор пока не поднять."
-            )
-        }
-
-        if (stored != currentFingerprint) {
-            return@withContext LoadResult.Refused(
-                "Сохранённый разговор записан при другой модели или других параметрах."
-            )
-        }
-
-        // Дыра в нумерации означает, что часть ходов не дописалась. Такая
-        // лента уйдёт в движок с пропуском посередине — то есть без
-        // совпадения с обсчитанным началом, и молча.
-        if (rows.mapIndexed { i, row -> row.turnIndex == i }.any { !it }) {
-            return@withContext LoadResult.Refused(
-                "В сохранённом разговоре не хватает ходов — поднимать его нельзя."
-            )
-        }
-
-        val turns = ArrayList<ConversationJournal.Turn>(rows.size)
-        for (row in rows) {
-            val records = parseRecords(row.recordsJson)
-                ?: return@withContext LoadResult.Refused(
-                    "Сохранённый разговор повреждён — поднимать его нельзя."
+    suspend fun load(currentFingerprint: String?): LoadResult = gate.withLock {
+        withContext(Dispatchers.IO) {
+            val rows = runCatching { dao.all() }.getOrElse {
+                return@withContext LoadResult.Refused(
+                    "Сохранённый разговор не читается — начинаем с чистой ленты."
                 )
-            turns += ConversationJournal.Turn(
-                userContent = row.userContent,
-                agentContent = row.agentContent,
-                question = row.question,
-                records = records,
-            )
-        }
+            }
 
-        // Число берётся у ПОСЛЕДНЕГО хода: это размер последнего ушедшего
-        // запроса, то есть ровно то, что означает счётчик живой ленты.
-        // Числа промежуточных ходов лежат в строках и пригодятся при
-        // разборе роста ленты, но счётчику отвечает только последнее.
-        LoadResult.Restored(turns, rows.last().promptTokens)
+            if (rows.isEmpty()) return@withContext LoadResult.Empty
+
+            val stored = rows.first().fingerprint
+
+            if (rows.any { it.fingerprint != stored }) {
+                return@withContext LoadResult.Refused(
+                    "Сохранённый разговор собран из разных запусков — поднимать его нельзя."
+                )
+            }
+
+            if (stored.isBlank()) {
+                return@withContext LoadResult.Refused(
+                    "Сохранённый разговор записан без привязки к модели — поднимать его нельзя."
+                )
+            }
+
+            if (currentFingerprint == null) {
+                return@withContext LoadResult.Refused(
+                    "Модель ещё не загружена — сохранённый разговор пока не поднять."
+                )
+            }
+
+            if (stored != currentFingerprint) {
+                return@withContext LoadResult.Refused(
+                    "Сохранённый разговор записан при другой модели или других параметрах."
+                )
+            }
+
+            // Дыра в нумерации означает, что часть ходов не дописалась. Такая
+            // лента уйдёт в движок с пропуском посередине — то есть без
+            // совпадения с обсчитанным началом, и молча.
+            if (rows.mapIndexed { i, row -> row.turnIndex == i }.any { !it }) {
+                return@withContext LoadResult.Refused(
+                    "В сохранённом разговоре не хватает ходов — поднимать его нельзя."
+                )
+            }
+
+            val turns = ArrayList<ConversationJournal.Turn>(rows.size)
+            for (row in rows) {
+                val records = parseRecords(row.recordsJson)
+                    ?: return@withContext LoadResult.Refused(
+                        "Сохранённый разговор повреждён — поднимать его нельзя."
+                    )
+                turns += ConversationJournal.Turn(
+                    userContent = row.userContent,
+                    agentContent = row.agentContent,
+                    question = row.question,
+                    records = records,
+                )
+            }
+
+            // Число берётся у ПОСЛЕДНЕГО хода: это размер последнего ушедшего
+            // запроса, то есть ровно то, что означает счётчик живой ленты.
+            // Числа промежуточных ходов лежат в строках и пригодятся при
+            // разборе роста ленты, но счётчику отвечает только последнее.
+            LoadResult.Restored(turns, rows.last().promptTokens)
+        }
     }
 
     /**
@@ -194,20 +233,22 @@ class JournalStore(context: Context) {
         turn: ConversationJournal.Turn,
         promptTokens: Int,
         fingerprint: String?,
-    ): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            dao.insert(
-                JournalTurn(
-                    turnIndex = index,
-                    userContent = turn.userContent,
-                    agentContent = turn.agentContent,
-                    question = turn.question,
-                    recordsJson = renderRecords(turn.records),
-                    promptTokens = promptTokens,
-                    fingerprint = fingerprint ?: "",
+    ): Boolean = gate.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                dao.insert(
+                    JournalTurn(
+                        turnIndex = index,
+                        userContent = turn.userContent,
+                        agentContent = turn.agentContent,
+                        question = turn.question,
+                        recordsJson = renderRecords(turn.records),
+                        promptTokens = promptTokens,
+                        fingerprint = fingerprint ?: "",
+                    )
                 )
-            )
-        }.isSuccess
+            }.isSuccess
+        }
     }
 
     /**
@@ -232,18 +273,20 @@ class JournalStore(context: Context) {
      *
      * @return сколько ходов стёрто, либо причина отказа словами.
      */
-    suspend fun dropFrom(fromIndex: Int): DropResult = withContext(Dispatchers.IO) {
-        if (fromIndex < 0) {
-            return@withContext DropResult.Refused(
-                "Отрезать нечего: указан номер хода до начала ленты."
-            )
+    suspend fun dropFrom(fromIndex: Int): DropResult = gate.withLock {
+        withContext(Dispatchers.IO) {
+            if (fromIndex < 0) {
+                return@withContext DropResult.Refused(
+                    "Отрезать нечего: указан номер хода до начала ленты."
+                )
+            }
+            val removed = runCatching { dao.deleteFrom(fromIndex) }.getOrElse {
+                return@withContext DropResult.Refused(
+                    "Сохранённый разговор не правится — ход остался на диске."
+                )
+            }
+            if (removed > 0) DropResult.Dropped(removed) else DropResult.Empty
         }
-        val removed = runCatching { dao.deleteFrom(fromIndex) }.getOrElse {
-            return@withContext DropResult.Refused(
-                "Сохранённый разговор не правится — ход остался на диске."
-            )
-        }
-        if (removed > 0) DropResult.Dropped(removed) else DropResult.Empty
     }
 
     /**
@@ -253,13 +296,28 @@ class JournalStore(context: Context) {
      * или в ответ на отказ подъёма — нельзя: сегодня закрытие ленты это
      * потеря разговора без следа, укладка в память не написана.
      */
-    suspend fun clear(): Boolean = withContext(Dispatchers.IO) {
-        runCatching { dao.clearAll() }.isSuccess
+    suspend fun clear(): Boolean = gate.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching { dao.clearAll() }.isSuccess
+        }
     }
 
-    /** Сколько ходов лежит на диске — для показа человеку, без чтения текста. */
-    suspend fun count(): Int = withContext(Dispatchers.IO) {
-        runCatching { dao.count() }.getOrDefault(0)
+    /**
+     * Сколько ходов лежит на диске — для показа человеку, без чтения текста.
+     *
+     * Чтение стоит в той же очереди, что и записи, хотя ничего не меняет:
+     * иначе счётчик успевал бы обогнать только что начатую запись и показать
+     * число, которое на диске не побывало. Ждать при этом почти нечего —
+     * операции здесь занимают миллисекунды.
+     *
+     * Отказ чтения возвращается нулём: отличить пустую таблицу от
+     * нечитаемой базы отсюда нельзя, и тот, кто это показывает, обязан знать
+     * про такое слияние.
+     */
+    suspend fun count(): Int = gate.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching { dao.count() }.getOrDefault(0)
+        }
     }
 
     /**
