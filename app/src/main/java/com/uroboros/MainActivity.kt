@@ -105,6 +105,31 @@ class MainActivity : AppCompatActivity() {
      * сломано. null прячет строку — на чистом запуске сообщать не о чем.
      */
     private var journalRestoreLine: String? = null
+
+    /**
+     * Сколько ходов разговора лежит на диске прямо сейчас.
+     *
+     * ПОЧЕМУ ОТДЕЛЬНО ОТ [journalLine]. Та строка описывает ленту в памяти
+     * процесса, эта — таблицу на диске. Величины разные и расходятся
+     * законно: лента пуста после запуска, пока разговор не поднят, а на
+     * диске он при этом есть. Слить их в одну значило бы, что «поднимать
+     * нечего» и «есть что поднять, но не подняли» выглядят одинаково.
+     *
+     * Тот же разрез, что у двух строк о контрольной точке ниже, и заведён
+     * он по той же причине.
+     *
+     * ЧЕГО ЭТА СТРОКА НЕ ГОВОРИТ. Только есть ли материал, но не
+     * поднимется ли он: на это отвечает [journalRestoreLine], и ответ у
+     * него бывает отрицательным при непустом диске. В частности, ход,
+     * записанный до загрузки модели, ложится с пустым отпечатком и делает
+     * подъём невозможным навсегда — здесь он считается наравне с
+     * остальными, потому что на диске он есть.
+     *
+     * null прячет строку — до первого чтения показывать нечего, а ноль
+     * означал бы «на диске пусто», то есть измеренную величину вместо
+     * незнания.
+     */
+    private var journalDiskLine: String? = null
     private var lastMetricsLine: String? = null
 
     /**
@@ -412,6 +437,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Перечитывает с диска число сохранённых ходов и обновляет панель.
+     *
+     * ЧИТАЕТСЯ ПО СОБЫТИЮ, А НЕ ПРИ КАЖДОЙ ОТРИСОВКЕ — в отличие от
+     * [journalLine], которая целиком выводится из ленты в памяти. Здесь
+     * обращение к базе, а панель перерисовывается на каждое изменение
+     * зоны сторожа, то есть постоянно.
+     *
+     * Отсюда обязанность: вызывать после КАЖДОГО действия, меняющего
+     * диск, — записи хода, стирания ленты, отрезания. Забытое место не
+     * упадёт и не промолчит, а покажет старое число, то есть соврёт. Это
+     * хуже отсутствия строки, и потому список мест назван здесь, а не
+     * оставлен на память.
+     *
+     * ЧЕГО НЕ УМЕЕТ: отличить пустую таблицу от нечитаемой базы.
+     * Хранилище гасит отказ чтения нулём, и здесь этот ноль неотличим от
+     * честного «сохранённого нет». Своей проверки не заведено сознательно
+     * — случай накрыт соседними строками: база, которая не открывается,
+     * даёт отказ подъёма словами при запуске и «ход на диск не записался»
+     * при первой же записи. Второй признак того же события расходился бы
+     * с первым.
+     */
+    private suspend fun refreshJournalDiskLine() {
+        val saved = journalStore.count()
+        journalDiskLine =
+            if (saved > 0) "Лента на диске: ходов $saved" else "Лента на диске: пусто"
+        renderMetricsPanel()
+    }
+
+    /**
      * Разговор упёрся в край.
      *
      * Почему диалог, а не молчаливая очистка. Укладки — переноса
@@ -494,7 +548,8 @@ class MainActivity : AppCompatActivity() {
         binding.textMetrics.text =
             listOfNotNull(
                 engineParamsLine, promptCacheLine, journalLine(),
-                journalRestoreLine, checkpointDiskLine, checkpointActionLine,
+                journalDiskLine, journalRestoreLine,
+                checkpointDiskLine, checkpointActionLine,
                 lastMetricsLine,
             )
                 .joinToString("\n")
@@ -881,7 +936,7 @@ class MainActivity : AppCompatActivity() {
                     llmEngine.clearStateCheckpoint()
                     checkpointActionLine = llmEngine.getStateCheckpointReport()
                     checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
-                    renderMetricsPanel()
+                    refreshJournalDiskLine()
                 }
                 journalRestoreLine = null
                 renderMetricsPanel()
@@ -955,7 +1010,10 @@ class MainActivity : AppCompatActivity() {
                             checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
                         }
                     }
-                    renderMetricsPanel()
+                    // И при отказе тоже: отказ говорит, что ход остался,
+                    // а не что диск не изменился — проверить дешевле, чем
+                    // предполагать.
+                    refreshJournalDiskLine()
                 }
             }
             .setNegativeButton("Отмена", null)
@@ -1162,16 +1220,29 @@ class MainActivity : AppCompatActivity() {
                     journalRestoreLine = "Разговор: ход ${index + 1} на диск не записался"
                     renderMetricsPanel()
                 }
+                // Перечитывается и после неудачи тоже: строка описывает
+                // диск, а не исход попытки. Показать после сбоя прежнее
+                // число значило бы утверждать, чего мы не проверяли.
+                refreshJournalDiskLine()
             }
         }
         // Стёртая лента не должна оставаться на диске: иначе следующий
         // запуск предложит поднять разговор, который человек только что
         // закрыл.
         journal.onCleared = {
-            lifecycleScope.launch { journalStore.clear() }
+            lifecycleScope.launch {
+                journalStore.clear()
+                refreshJournalDiskLine()
+            }
             journalRestoreLine = null
             renderMetricsPanel()
         }
+
+        // Первое чтение диска — здесь, а не после загрузки модели. Путь
+        // ленты от отпечатка не зависит (в отличие от пути контрольной
+        // точки), поэтому число известно всегда, и строка появится даже
+        // когда модель не загрузилась вовсе.
+        lifecycleScope.launch { refreshJournalDiskLine() }
 
         tryAutoLoadOnStartup()
 
