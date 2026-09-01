@@ -1286,6 +1286,22 @@ class MainActivity : AppCompatActivity() {
                         "Разговор закрыт, но на диске его уже не было"
                     is JournalStore.ArchiveResult.Refused -> result.reason
                 }
+                // Точка уходит вместе с лентой — то же, что делает «Начать
+                // заново» в диалоге восстановления, и по той же причине:
+                // иначе на диске остаётся снимок разговора, которого больше
+                // нет. Вреда от него нет (точка поднимается только вслед за
+                // поднятой лентой, а её уже не будет), но строка «Точка на
+                // диске» описывала бы пустоту, и десять мегабайт лежали бы
+                // мёртвыми. Два пути закрытия должны кончаться одинаково.
+                //
+                // Проверка на движок нужна: оповещение приходит от ленты,
+                // которая живёт дольше экрана, и модель может быть ещё не
+                // загружена.
+                if (::llmEngine.isInitialized) {
+                    llmEngine.clearStateCheckpoint()
+                    checkpointActionLine = llmEngine.getStateCheckpointReport()
+                    checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
+                }
                 // Перерисовку делает он же, последним действием.
                 refreshJournalDiskLine()
             }
