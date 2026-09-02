@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cmath>
 #include <chrono>
+#include <random>
 
 #include <unistd.h>
 #include <errno.h>
@@ -1361,14 +1362,36 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetSampling(
     g_state.sampling_params.mirostat = mirostat;
     g_state.sampling_params.mirostat_tau = mirostatTau;
     g_state.sampling_params.mirostat_eta = mirostatEta;
-    g_state.sampling_params.seed = (seed < 0) ? LLAMA_DEFAULT_SEED : (uint32_t)seed;
+    // Отрицательное зерно означает "выбирает система, воспроизводимости нет";
+    // неотрицательное — "ровно это число", то есть воспроизводимый прогон по
+    // явному требованию. Оба случая нужны и не сводятся в один: без второго
+    // нельзя поставить повторяемый опыт на модели, без первого генерация
+    // молча детерминирована.
+    //
+    // Раньше здесь стояло LLAMA_DEFAULT_SEED — КОНСТАНТА, а не признак
+    // "возьми случайное". Вместе с rebuild_sampler() перед каждой генерацией
+    // это давало одинаковое начальное состояние генератора на каждом ходе:
+    // близкие запросы отвечались дословно одинаковым текстом, и на экране это
+    // выглядело поломкой модели. Разворачивать признак в число надо здесь, а
+    // не у вызывающего: обещание "-1 значит случайное" дано этой функцией.
+    if (seed < 0) {
+        std::random_device rd;
+        g_state.sampling_params.seed = (uint32_t)rd();
+    } else {
+        g_state.sampling_params.seed = (uint32_t)seed;
+    }
 
     // simple param changes require rebuild because common_sampler doesn't support in-place updates
     mark_sampler_dirty();
     rebuild_sampler();
 
-    LOGI("Sampling set: temp=%.2f top_k=%d top_p=%.2f min_p=%.2f mirostat=%d seed=%d",
-         temperature, topK, topP, minP, mirostat, seed);
+    // Печатается ЗАПИСАННОЕ поле, а не аргумент. Прежняя строка выводила
+    // seed=-1 при том, что в поле лежала константа, — то есть подтверждала
+    // обещание вместо факта, и единственный прибор в этом месте показывал не
+    // ту величину.
+    LOGI("Sampling set: temp=%.2f top_k=%d top_p=%.2f min_p=%.2f mirostat=%d seed=%u (arg=%d)",
+         temperature, topK, topP, minP, mirostat,
+         g_state.sampling_params.seed, seed);
 }
 
 extern "C" JNIEXPORT void JNICALL
