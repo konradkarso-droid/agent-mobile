@@ -29,6 +29,7 @@ import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.EmergencyStop
+import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
@@ -1464,7 +1465,16 @@ class MainActivity : AppCompatActivity() {
                     // уже печатает "Всего записей", а два независимых запроса к базе
                     // могли бы показать два разных числа на одном экране.
                     val canaryReport = mediator.memoryCanaryReport()
-                    val results = mediator.getContext(query = query, limit = 20)
+                    // Просмотр, а не ответ: записи никому ни в чём не помогли,
+                    // их показали. Этой кнопкой пользуются как диагностическим
+                    // прибором, и засчитывать пользу за каждый осмотр памяти
+                    // значило бы портить то самое число, по которому потом
+                    // назначать пороги.
+                    val results = mediator.getContextFor(
+                        purpose = RetrievalPurpose.BROWSING,
+                        query = query,
+                        limit = 20
+                    )
                     binding.textResults.text = if (results.isEmpty()) {
                         "$canaryReport\n\n(записей для показа нет)"
                     } else {
@@ -1538,7 +1548,13 @@ class MainActivity : AppCompatActivity() {
             showProgress("Идёт генерация...")
 
             lifecycleScope.launch {
-                val stickers = mediator.getContext(query = userText, limit = 5)
+                // Записи уйдут в промпт и будут участвовать в ответе — это
+                // единственное обращение, за которое засчитывается польза.
+                val stickers = mediator.getContextFor(
+                    purpose = RetrievalPurpose.ANSWERING_USER,
+                    query = userText,
+                    limit = 5
+                )
                 val allRecords = stickers.map { sticker ->
                     "${provenancePhrase(sticker.source)}: «${sticker.content}»."
                 }
