@@ -88,6 +88,36 @@ class TrustedMediator(context: Context) {
         return hourglass.saveEvent(sticker)
     }
 
+    /**
+     * Достать записи под запрос. purpose обязателен и умолчания не имеет — по той же
+     * причине, что source/confidence у saveEvent: умолчание молча приписало бы
+     * обращению чужой смысл, только здесь на стороне чтения.
+     *
+     * Что от него зависит: засчитывается ли записям польза (item 3). Засчитывается
+     * лишь ANSWERING_USER, и лишь тем, кто нашёлся по словам вопроса. Смысл значений
+     * и почему ось именно "зачем", а не "кто спрашивает", — у RetrievalPurpose.
+     *
+     * Фасад решения не принимает: он не выбирает purpose за вызывающего и не
+     * подставляет его по догадке. Назвать цель может только тот, кто знает, ради чего
+     * спрашивает.
+     */
+    suspend fun getContextFor(
+        purpose: RetrievalPurpose,
+        query: String? = null,
+        limit: Int = 10
+    ): List<Sticker> {
+        return hourglass.getContextFor(purpose, query, limit)
+    }
+
+    /**
+     * Временный переходник на время перевода вызывающих: помечает обращение как
+     * просмотр, то есть пользу не засчитывает никому.
+     *
+     * УДАЛИТЬ вместе с таким же переходником в HourglassMemory, когда вызывающие
+     * перейдут на getContextFor. Удаление входит в работу, а не в уборку: поиском по
+     * репозиторию отсутствие вызовов не доказывается, а снятие метода заставляет
+     * компилятор перечислить всех, кого пропустили.
+     */
     suspend fun getContext(query: String? = null, limit: Int = 10): List<Sticker> {
         return hourglass.getContext(query, limit)
     }
