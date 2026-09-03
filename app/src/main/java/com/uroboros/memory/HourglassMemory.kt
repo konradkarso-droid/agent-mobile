@@ -27,6 +27,33 @@ internal fun importanceRank(raw: String): Int =
     runCatching { Importance.valueOf(raw).ordinal }.getOrDefault(Importance.LOW.ordinal)
 
 /**
+ * Зачем обратились к памяти. Указывается обязательно, значения по умолчанию нет —
+ * тот же приём и та же причина, что у source/confidence в TrustedMediator.saveEvent:
+ * умолчание молча приписало бы обращению чужой смысл.
+ *
+ * Ось здесь "зачем", а не "кто спрашивает", и это не оговорка. Пользователь стоит по
+ * обе её стороны: вопрос агенту и просмотр памяти оба идут от него, но пользу
+ * приносит только первый. Просмотр — это диагностика, и засчитывать её значило бы
+ * записывать в пользу каждый осмотр памяти хозяином.
+ */
+enum class RetrievalPurpose {
+    /** Записи уйдут в ответ на вопрос пользователя. Только это засчитывается. */
+    ANSWERING_USER,
+
+    /** Память просто показывают. Не засчитывается ничего. */
+    BROWSING,
+
+    /**
+     * Читает сам агент, для собственной работы. Сегодня таких вызовов в проекте нет
+     * ни одного: значение объявлено заранее, чтобы тот, кто первым приведёт агента к
+     * памяти, был вынужден назвать это явно, а не подставил ближайшее подходящее.
+     * Не засчитывается — иначе система накачивала бы важность собственных записей
+     * и через неё лепила свой будущий контекст.
+     */
+    AGENT_INTERNAL
+}
+
+/**
  * Дыра №4, вторая половина (аудит 2026-08-21). Что изменилось и почему:
  *
  * 1. migrateExpired() больше не сканирует всю таблицу — запрашивает только строки,
@@ -147,14 +174,44 @@ class HourglassMemory(private val dao: StickerDao) {
         return fixed
     }
 
-    suspend fun getContext(query: String?, limit: Int): List<Sticker> {
+    /**
+     * Временный переходник на время перевода вызывающих. Помечает обращение как
+     * просмотр, то есть не засчитывает пользу никому.
+     *
+     * УДАЛИТЬ, когда все вызывающие перейдут на getContextFor, и удаление входит в
+     * работу, а не в уборку: поиском по репозиторию отсутствие вызовов не
+     * доказывается, а снятие этого метода заставляет компилятор перечислить всех,
+     * кого пропустили. Пока он жив, непереведённый вызывающий молча не считает пользу.
+     */
+    suspend fun getContext(query: String?, limit: Int): List<Sticker> =
+        getContextFor(RetrievalPurpose.BROWSING, query, limit)
+
+    /**
+     * Достать записи под запрос.
+     *
+     * Польза засчитывается только при purpose = ANSWERING_USER и только тем записям,
+     * которые нашлись ПО СЛОВАМ вопроса. Принципы приезжают из getRanked по слою и ни
+     * с какими словами не совпадали, поэтому им не засчитывается ничего: иначе платой
+     * была бы не уместность, а сам факт попадания в выдачу, а попаданием распоряжается
+     * сортировка по важности — и получилась бы обратная связь, снятая с собственного
+     * выхода.
+     *
+     * Прогрев слоя и accessCount работают как раньше, для всех целей обращения. Это
+     * другая ось: она про давность, а не про пользу, и сливать их нельзя.
+     */
+    suspend fun getContextFor(
+        purpose: RetrievalPurpose,
+        query: String?,
+        limit: Int
+    ): List<Sticker> {
         migrateExpired()
 
         val layers = Prism.layersFor(query)
 
         if (query.isNullOrBlank()) {
             // Прежнее поведение сохранено: пустой запрос отдаёт срез памяти по рангу
-            // и НЕ считается обращением — ни счётчик, ни прогрев не трогаются.
+            // и НЕ считается обращением — ни accessCount, ни прогрев не трогаются.
+            // Польза тем более: слов не было, значит совпадать было нечему.
             return dao.getRanked(layers, limit)
         }
 
@@ -168,6 +225,12 @@ class HourglassMemory(private val dao: StickerDao) {
 
         val result = (principles + matches).distinctBy { it.id }.take(limit)
 
+        // Кому засчитывается польза: только совпавшим по словам и только когда
+        // записи идут в ответ. Запись, попавшая и в принципы, и в совпадения, польза
+        // получает — она действительно совпала, а порядок сборки списка тут ни при чём.
+        val matchedIds = matches.map { it.id }.toSet()
+        val countsAsUseful = purpose == RetrievalPurpose.ANSWERING_USER
+
         val now = System.currentTimeMillis()
         return result.map { sticker ->
             val timeSinceLastAccess = now - sticker.lastAccessedAt
@@ -180,6 +243,11 @@ class HourglassMemory(private val dao: StickerDao) {
 
             dao.touchAccess(sticker.id, now)
 
+            val useful = countsAsUseful && sticker.id in matchedIds
+            if (useful) {
+                dao.touchUserMatch(sticker.id)
+            }
+
             if (shouldWarm) {
                 val newExpiry = Prism.newInterval(warmer)?.let { now + it }
                 dao.updateLayer(sticker.id, warmer.name, newExpiry)
@@ -187,12 +255,14 @@ class HourglassMemory(private val dao: StickerDao) {
                     accessCount = sticker.accessCount + 1,
                     lastAccessedAt = now,
                     layer = warmer.name,
-                    expiryTime = newExpiry
+                    expiryTime = newExpiry,
+                    userMatchCount = sticker.userMatchCount + if (useful) 1 else 0
                 )
             } else {
                 sticker.copy(
                     accessCount = sticker.accessCount + 1,
-                    lastAccessedAt = now
+                    lastAccessedAt = now,
+                    userMatchCount = sticker.userMatchCount + if (useful) 1 else 0
                 )
             }
         }
