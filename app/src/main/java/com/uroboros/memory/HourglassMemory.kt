@@ -54,6 +54,34 @@ enum class RetrievalPurpose {
 }
 
 /**
+ * Кому из выданных записей засчитывается польза. Чистая функция: ни базы, ни
+ * Android — затем и вынесена, чтобы правило можно было закрепить тестом.
+ *
+ * Правил здесь два, и оба должны быть видны с одного взгляда. Засчитывается только
+ * при ANSWERING_USER, и только тем, кто нашёлся по словам вопроса: принципы приезжают
+ * из getRanked по слою, ни с какими словами не совпадали, и платить им было бы за
+ * попадание в выдачу, а попаданием распоряжается сортировка по важности — вышла бы
+ * обратная связь, снятая с собственного выхода.
+ *
+ * Запись, попавшая и в принципы, и в совпадения, отметку получает: она действительно
+ * совпала, а порядок сборки списка к этому отношения не имеет.
+ *
+ * Чего эта функция НЕ проверяет: она не знает, правда ли matched собран по словам
+ * вопроса и доходит ли отметка до базы. Тест закрепляет правило, а не проводку.
+ * Проводка проверена на устройстве двусторонней приёмкой: при вопросе агенту отметка
+ * появляется, при повторных нажатиях "Показать" с тем же запросом accessCount растёт,
+ * а отметок остаётся столько же. Юнит-тестом это здесь не покрыть — путь выборки
+ * пишет в android.util.Log, а подмены Android-вызовов в сборке нет намеренно.
+ */
+internal fun usefulnessMarks(
+    purpose: RetrievalPurpose,
+    returned: List<Long>,
+    matched: Set<Long>
+): Set<Long> =
+    if (purpose != RetrievalPurpose.ANSWERING_USER) emptySet()
+    else returned.filter { it in matched }.toSet()
+
+/**
  * Дыра №4, вторая половина (аудит 2026-08-21). Что изменилось и почему:
  *
  * 1. migrateExpired() больше не сканирует всю таблицу — запрашивает только строки,
@@ -213,11 +241,12 @@ class HourglassMemory(private val dao: StickerDao) {
 
         val result = (principles + matches).distinctBy { it.id }.take(limit)
 
-        // Кому засчитывается польза: только совпавшим по словам и только когда
-        // записи идут в ответ. Запись, попавшая и в принципы, и в совпадения, польза
-        // получает — она действительно совпала, а порядок сборки списка тут ни при чём.
-        val matchedIds = matches.map { it.id }.toSet()
-        val countsAsUseful = purpose == RetrievalPurpose.ANSWERING_USER
+        // Кому засчитывается польза — решает usefulnessMarks, там же и объяснение.
+        val toMark = usefulnessMarks(
+            purpose = purpose,
+            returned = result.map { it.id },
+            matched = matches.map { it.id }.toSet()
+        )
 
         val now = System.currentTimeMillis()
         return result.map { sticker ->
@@ -231,7 +260,7 @@ class HourglassMemory(private val dao: StickerDao) {
 
             dao.touchAccess(sticker.id, now)
 
-            val useful = countsAsUseful && sticker.id in matchedIds
+            val useful = sticker.id in toMark
             if (useful) {
                 dao.touchUserMatch(sticker.id)
             }
