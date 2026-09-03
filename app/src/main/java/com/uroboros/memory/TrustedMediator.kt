@@ -109,19 +109,6 @@ class TrustedMediator(context: Context) {
         return hourglass.getContextFor(purpose, query, limit)
     }
 
-    /**
-     * Временный переходник на время перевода вызывающих: помечает обращение как
-     * просмотр, то есть пользу не засчитывает никому.
-     *
-     * УДАЛИТЬ вместе с таким же переходником в HourglassMemory, когда вызывающие
-     * перейдут на getContextFor. Удаление входит в работу, а не в уборку: поиском по
-     * репозиторию отсутствие вызовов не доказывается, а снятие метода заставляет
-     * компилятор перечислить всех, кого пропустили.
-     */
-    suspend fun getContext(query: String? = null, limit: Int = 10): List<Sticker> {
-        return hourglass.getContext(query, limit)
-    }
-
     suspend fun totalStickers(): Int = dao.count()
     suspend fun getPendingReview(): List<Sticker> = dao.getPendingReview()
     suspend fun clearAllPendingReview(): Int = dao.clearAllReviewPending()
