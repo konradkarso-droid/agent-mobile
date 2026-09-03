@@ -3,6 +3,30 @@ package com.uroboros.memory
 import android.util.Log
 
 /**
+ * Строка важности → число для сортировки, по убыванию: LOW=0, MEDIUM=1, HIGH=2.
+ * Неизвестное значение не роняет выборку, а получает ранг LOW.
+ *
+ * Почему LOW, а не середина: значение колонки по умолчанию — MEDIUM, поэтому при
+ * запасном варианте MEDIUM честная средняя запись и нечитаемая попадают в одну
+ * корзину и больше ничем не различаются. LOW их разводит.
+ *
+ * Правило записано в проекте дважды, и свести копии в одно место нельзя: вторая
+ * живёт строкой SQL в @Query у StickerDao.getRanked, а SQL не может позвать
+ * функцию Kotlin. Равенство копий держится снаружи — ImportanceRankTest падает,
+ * если в Importance добавить значение, переставить объявления или разойтись
+ * запасным вариантом. Меняя одно место, меняйте второе.
+ *
+ * Чего механизм НЕ умеет: он молчит. Ни здесь, ни в SQL срабатывание запасного
+ * варианта ничем не отмечается, поэтому мусорное значение важности неотличимо от
+ * честного LOW. Сегодня это безвредно — importance не пишет никто, — но в день,
+ * когда путь к записи появится, отметку надо завести раньше самой записи.
+ *
+ * internal, а не private, только ради теста.
+ */
+internal fun importanceRank(raw: String): Int =
+    runCatching { Importance.valueOf(raw).ordinal }.getOrDefault(Importance.LOW.ordinal)
+
+/**
  * Дыра №4, вторая половина (аудит 2026-08-21). Что изменилось и почему:
  *
  * 1. migrateExpired() больше не сканирует всю таблицу — запрашивает только строки,
@@ -33,14 +57,6 @@ import android.util.Log
 class HourglassMemory(private val dao: StickerDao) {
 
     private val HOT_LAYERS = listOf(Layer.RED.name, Layer.ORANGE.name, Layer.YELLOW.name, Layer.GREEN.name)
-
-    /** Безопасный порядок важности: неизвестное значение не роняет выборку. */
-    private fun importanceRank(raw: String): Int =
-        runCatching { Importance.valueOf(raw).ordinal }.getOrDefault(Importance.MEDIUM.ordinal)
-
-    private fun rankOrder(): Comparator<Sticker> =
-        compareByDescending<Sticker> { importanceRank(it.importance) }
-            .thenByDescending { it.createdAt }
 
     suspend fun migrateExpired() {
         val now = System.currentTimeMillis()
