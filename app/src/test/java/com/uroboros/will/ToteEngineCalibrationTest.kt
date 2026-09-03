@@ -122,7 +122,47 @@ class ToteEngineCalibrationTest {
         val result = engineFor(alwaysDifferentFailure, budget).run(0)
 
         assertTrue("ожидался жёсткий стоп, получено: $result", result is ToteResult.HardStopped)
-        assertEquals(10, (result as ToteResult.HardStopped).iterations)
+        val stopped = result as ToteResult.HardStopped
+        assertEquals(10, stopped.iterations)
+        // Десять разных подписей при десяти итерациях — противоположность хождению
+        // по кругу. Пара с тестом чередования ниже: одна и та же строка на экране
+        // должна различать эти два случая.
+        assertEquals(10, stopped.distinctFailures)
+        assertEquals(100, budget.energy.value)
+    }
+
+    /**
+     * Чередование двух ошибок (A, B, A, B). Защита от залипания сравнивает подпись
+     * только с непосредственно предыдущей, поэтому повтором это не считается ни разу,
+     * и цикл честно доходит до потолка итераций. Поведение осознанное, барьера под
+     * него нет намеренно: живого чередования пока не наблюдалось, а детектор
+     * промахивался бы в сторону обрыва сходящегося прогона.
+     *
+     * Тест закрепляет две вещи сразу: что чередование доходит до жёсткого стопа, и
+     * что прибор его отличает — разных подписей две при десяти итерациях. Пока это
+     * число доезжает до экрана, хождение по кругу можно заметить глазами; если
+     * однажды оно перестанет считаться, здесь станет красно.
+     */
+    @Test
+    fun `alternating failures reach the ceiling and are visible as few distinct errors`() = runBlocking {
+        val budget = EnergyBudget()
+        var counter = 0
+        val alternating = StepTest<Int> {
+            counter++
+            StepOutcome(
+                success = false,
+                usefulProgress = true,
+                signature = if (counter % 2 == 0) "ошибка A" else "ошибка B",
+                detail = "неважно"
+            )
+        }
+
+        val result = engineFor(alternating, budget).run(0)
+
+        assertTrue("ожидался жёсткий стоп, получено: $result", result is ToteResult.HardStopped)
+        val stopped = result as ToteResult.HardStopped
+        assertEquals(10, stopped.iterations)
+        assertEquals(2, stopped.distinctFailures)
         assertEquals(100, budget.energy.value)
     }
 
