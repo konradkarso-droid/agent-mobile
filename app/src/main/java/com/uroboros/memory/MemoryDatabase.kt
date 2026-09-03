@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Sticker::class, ActionEvidence::class, LastStableSnapshot::class],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -54,6 +54,22 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Item 3 (обратная эмерджентность вместо ручной важности): счётчик того,
+        // сколько раз запись оказалась уместной по запросу ПОЛЬЗОВАТЕЛЯ. Смысл поля
+        // и границы его толкования — рядом с самим полем в Sticker.kt.
+        //
+        // Существующие строки получают 0, и это верное для них значение: их полезность
+        // никогда не измерялась. Ноль здесь читается как "не проверено", а не как
+        // "бесполезна", поэтому доливать историческим строкам что-то отличное от нуля
+        // было бы выдумыванием измерения, которого не было.
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `stickers` ADD COLUMN `userMatchCount` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -80,7 +96,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                  .build().also { INSTANCE = it }
             }
         }
