@@ -1,8 +1,14 @@
 package com.uroboros.memory
 
 /**
- * Canary (2026-08-22) — снимок состояния памяти ДО и ПОСЛЕ первого реального
- * запуска sweep'а.
+ * Canary — снимок состояния памяти и способ сравнить два снимка.
+ *
+ * Предмет класса — состояние памяти целиком, а сравнение "до и после" это один из
+ * способов его читать, а не назначение класса. Первым поводом был sweep, и compare()
+ * до сих пор написан под него, но snapshot() и format() несут и числа, к sweep
+ * отношения не имеющие — например счётчик пользы (item 3). Добавляя сюда очередное
+ * число, смотрите, в какую из двух половин оно ложится: в снимок ложится всё, в
+ * сравнение — только то, про что можно сказать, каким должно быть изменение.
  *
  * Зачем вообще: заимствовано из чужого опыта (canary-скрипт praxis-open-source).
  * Там перед миграцией, менявшей поведение, снимали baseline-цифры до и после и
@@ -56,7 +62,17 @@ data class MemorySnapshot(
      * Сколько строк вообще без срока (expiryTime IS NULL). Такие записи не
      * попадут в sweep никогда — ожидание их не затронет.
      */
-    val withoutExpiry: Int
+    val withoutExpiry: Int,
+    /**
+     * Item 3, счётчик пользы. Три числа держатся вместе и порознь мало что значат:
+     * общая сумма отвечает на вопрос "механизм хоть раз сработал", число записей
+     * со счётом показывает, размазан счёт по многим или собрался на одной, максимум
+     * даёт верхнюю границу разброса. Ноль в сумме читается как "ни разу", а не как
+     * "записи бесполезны".
+     */
+    val userMatchesTotal: Int,
+    val withUserMatches: Int,
+    val maxUserMatches: Int
 ) {
     /** Насколько давно истёк самый старый просроченный срок, в днях. */
     val oldestDebtDays: Long?
@@ -93,7 +109,10 @@ class MemoryCanary(private val dao: StickerDao) {
             pendingReview = dao.countPendingReview(),
             oldestExpiredAt = dao.oldestExpiredAt(now),
             nextExpiryAt = dao.nextExpiryAt(now),
-            withoutExpiry = dao.countWithoutExpiry()
+            withoutExpiry = dao.countWithoutExpiry(),
+            userMatchesTotal = dao.sumUserMatches(),
+            withUserMatches = dao.countWithUserMatches(),
+            maxUserMatches = dao.maxUserMatches()
         )
     }
 
@@ -108,8 +127,7 @@ class MemoryCanary(private val dao: StickerDao) {
             if (debt == null) "Долг копится:       нет просроченных"
             else "Долг копится:       $debt дн."
         )
-        // Добавлено после первого замера на устройстве (14 записей, просрочено 0):
-        // без этих двух строк "просрочено 0" не отличить от "сроков нет вовсе".
+        // Без этих двух строк "просрочено 0" не отличить от "сроков нет вовсе".
         val untilNext = s.daysUntilNextExpiry
         appendLine(
             when {
@@ -119,6 +137,10 @@ class MemoryCanary(private val dao: StickerDao) {
             }
         )
         appendLine("Без срока вообще:   ${s.withoutExpiry} из ${s.total}")
+        appendLine(
+            if (s.userMatchesTotal == 0) "Отметок пользы:     ни одной"
+            else "Отметок пользы:     ${s.userMatchesTotal} у ${s.withUserMatches} записей, макс. ${s.maxUserMatches}"
+        )
         appendLine("По слоям:")
         for ((layer, count) in s.byLayer) {
             appendLine("  ${layer.name.padEnd(8)} $count")
@@ -149,6 +171,13 @@ class MemoryCanary(private val dao: StickerDao) {
         // Запись, дошедшая до конца спектра, законно остаётся без следующего
         // срока. Строка нужна, чтобы этот переход было видно, а не чтобы ловить.
         appendLine("Без срока:      ${before.withoutExpiry} → ${after.withoutExpiry}")
+
+        // Отметки пользы — обычная строка изменения, БЕЗ восклицательных знаков,
+        // хотя sweep их и не трогает. Между двумя снимками пользователь мог задать
+        // вопрос, и тогда счётчик вырастет совершенно законно. Знак нарушения,
+        // способный сработать на правильном поведении, обесценивает все остальные
+        // знаки в этом отчёте.
+        appendLine("Отметок пользы: ${before.userMatchesTotal} → ${after.userMatchesTotal}")
 
         appendLine()
         appendLine("По слоям:")
