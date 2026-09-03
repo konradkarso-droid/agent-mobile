@@ -127,12 +127,16 @@ sealed class ToteResult<out S> {
         val lastState: S,
         val iterations: Int,
         val reason: String,
-        val lastOutcome: StepOutcome?
+        val lastOutcome: StepOutcome?,
+        /** Сколько РАЗНЫХ подписей ошибок встретилось за прогон. См. ToteEngine.run. */
+        val distinctFailures: Int
     ) : ToteResult<S>()
     data class HardStopped<S>(
         val lastState: S,
         val iterations: Int,
-        val lastOutcome: StepOutcome?
+        val lastOutcome: StepOutcome?,
+        /** Сколько РАЗНЫХ подписей ошибок встретилось за прогон. См. ToteEngine.run. */
+        val distinctFailures: Int
     ) : ToteResult<S>()
 }
 
@@ -155,6 +159,21 @@ class ToteEngine<S>(
         var consecutiveSimilar = 0
         var iteration = 0
 
+        // Прибор, а не барьер. Считает, сколько РАЗНЫХ подписей ошибок встретилось за
+        // прогон, и ни на что в цикле не влияет.
+        //
+        // Зачем: защита от залипания сравнивает подпись только с непосредственно
+        // предыдущей, поэтому чередование двух ошибок (A, B, A, B) повтором не
+        // считается ни разу и доводит цикл до maxIterations. Это осознанное поведение,
+        // закреплённое тестом, но на экране оно до сих пор было неотличимо от честного
+        // исчерпания попыток: обе картины давали "достигнут лимит". Малое число разных
+        // ошибок при большом числе итераций и означает хождение по кругу.
+        //
+        // Порога здесь намеренно нет. Сколько именно "мало" — назначать не из чего:
+        // живого чередования пока не наблюдалось ни разу, и придуманный сейчас порог
+        // был бы догадкой, выдающей себя за измерение. Сперва числа, потом правило.
+        val seenSignatures = HashSet<String>()
+
         while (iteration < maxIterations) {
             iteration++
             val outcome = test.invoke(state)
@@ -168,6 +187,7 @@ class ToteEngine<S>(
                 repeatDetector.isSameFailure(outcome.signature, lastSignature)
             consecutiveSimilar = if (isRepeat) consecutiveSimilar + 1 else 0
             lastSignature = outcome.signature
+            seenSignatures.add(outcome.signature)
 
             // Повтор и разовая неудача считаются по разным шкалам: цена повтора растёт
             // с числом повторов подряд. Почему эта шкала неотделима от порога
@@ -192,7 +212,8 @@ class ToteEngine<S>(
                 return ToteResult.Evacuated(
                     state, iteration,
                     "застряли: одна и та же неудача подряд ×${consecutiveSimilar + 1}",
-                    lastOutcome
+                    lastOutcome,
+                    seenSignatures.size
                 )
             }
 
@@ -200,7 +221,8 @@ class ToteEngine<S>(
                 WillZone.EVACUATION -> return ToteResult.Evacuated(
                     state, iteration,
                     "энергия исчерпана (${energyBudget.energy.value}%)",
-                    lastOutcome
+                    lastOutcome,
+                    seenSignatures.size
                 )
                 WillZone.REFLECTION, WillZone.STORM -> {
                     val physicalZone = watchdog.zone.value
@@ -208,7 +230,8 @@ class ToteEngine<S>(
                         return ToteResult.Evacuated(
                             state, iteration,
                             "физическая защита: устройство в критической зоне ($physicalZone)",
-                            lastOutcome
+                            lastOutcome,
+                            seenSignatures.size
                         )
                     }
 
@@ -222,7 +245,8 @@ class ToteEngine<S>(
                         return ToteResult.Evacuated(
                             state, iteration,
                             "бюджет промпта: ${budgetVerdict.reason}",
-                            lastOutcome
+                            lastOutcome,
+                            seenSignatures.size
                         )
                     }
 
@@ -245,6 +269,6 @@ class ToteEngine<S>(
                 }
             }
         }
-        return ToteResult.HardStopped(state, iteration, lastOutcome)
+        return ToteResult.HardStopped(state, iteration, lastOutcome, seenSignatures.size)
     }
 }
