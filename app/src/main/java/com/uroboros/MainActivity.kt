@@ -1901,13 +1901,15 @@ class MainActivity : AppCompatActivity() {
                         }
                         is ToteResult.Evacuated -> {
                             binding.textResults.text =
-                                "ЭВАКУАЦИЯ после ${result.iterations} итераций: ${result.reason}\n\n" +
+                                "ЭВАКУАЦИЯ после ${result.iterations} итераций: ${result.reason}\n" +
+                                    "Разных ошибок за прогон: ${result.distinctFailures}\n\n" +
                                     "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
                                     "Последний код:\n${result.lastState.code}"
                         }
                         is ToteResult.HardStopped -> {
                             binding.textResults.text =
-                                "ЖЁСТКИЙ СТОП после ${result.iterations} итераций (достигнут лимит)\n\n" +
+                                "ЖЁСТКИЙ СТОП после ${result.iterations} итераций (достигнут лимит)\n" +
+                                    "Разных ошибок за прогон: ${result.distinctFailures}\n\n" +
                                     "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
                                     "Последний код:\n${result.lastState.code}"
                         }
