@@ -165,12 +165,38 @@ internal data class CandidateScore(
  * Текст живёт здесь, а не на экране: так его проверяет обычный тест, без
  * устройства и без разметки.
  *
- * ЧЕГО ЭТИ ЧИСЛА НЕ СЧИТАЮТ. Все они считают записи, которые ПРИНЁС поиск.
- * Запись, до которой лестница префиксов не дотянулась, не попадает ни в
- * кандидатов, ни в отсеянных — она не появляется на экране никак и ни одним
+ * ЧЕГО ЭТИ ЧИСЛА НЕ СЧИТАЮТ. Все они, кроме hidden, считают записи, которые
+ * ПРИНЁС поиск. Запись, до которой лестница префиксов не дотянулась, не попадает
+ * ни в кандидатов, ни в отсеянных — она не появляется на экране никак и ни одним
  * числом не названа. Это как раз потеря в невосстановимую сторону, и заметить её
  * этими числами нельзя: они говорят, что случилось с найденным, а не о том, всё
  * ли найдено.
+ *
+ * ЧИСЛО СКРЫТЫХ (hidden) — единственное здесь, которое считает НЕ принесённое.
+ * Объяснение живёт тут одно на оба состояния, где это поле есть.
+ *
+ * Зачем оно. Все три запроса пути чтения начинаются с reviewPending = 0, то есть
+ * запись в карантине для отбора не существует вовсе — не "нашлась и отброшена".
+ * Без этого числа она выглядит на экране как отсутствующая в памяти, хотя лечится
+ * противоположным: там двигают пороги, здесь разбирают очередь. Ровно та пара,
+ * из-за которой этот тип и сделан запечатанным.
+ *
+ * Что оно значит: сколько записей В КАРАНТИНЕ содержат слова вопроса. Не "сколько
+ * ответов у вас отняли".
+ *
+ * Куда врёт, в обе стороны:
+ *  - ЗАВЫШАЕТ: считает попадание слова, а не уместность. Скрытая запись могла бы
+ *    всё равно отсеяться по узости или цене места — взвешивание к ней не
+ *    применяется, потому что до него она не доезжает;
+ *  - ЗАНИЖАЕТ: зеркальный запрос режется тем же CANDIDATE_LIMIT, что и видимый,
+ *    так что при числе скрытых больше лимита на одной ступени часть не
+ *    сосчитается. Сегодня недостижимо (записей в базе десятки), станет
+ *    достижимым раньше, чем об этом вспомнят.
+ *
+ * Печатается ВСЕГДА, в том числе нулём. По той же причине, по которой строка
+ * итога печатается и при удачном отборе: счётчик, молчащий при нуле, неотличим
+ * от неподключённого, а очередь карантина сейчас пуста — значит ноль и есть его
+ * единственное наблюдаемое показание.
  */
 internal sealed class SelectionSummary {
 
@@ -200,9 +226,17 @@ internal sealed class SelectionSummary {
                 "не считая общеупотребительных."
     }
 
-    /** Искали, но ни одна запись не нашлась ни на одной ступени. */
-    data class NothingFound(val words: Int) : SelectionSummary() {
-        override val text = "Отбор: слов $words · не нашлось ни одной записи."
+    /**
+     * Искали, но ни одна запись не нашлась ни на одной ступени.
+     *
+     * Именно здесь число скрытых важнее всего: "не нашлось ничего" и "не нашлось
+     * ничего, а двое лежат в карантине" — разные диагнозы с разным лечением.
+     * Что это число значит и куда врёт — в KDoc SelectionSummary.
+     */
+    data class NothingFound(val words: Int, val hidden: Int) : SelectionSummary() {
+        override val text =
+            "Отбор: слов $words · не нашлось ни одной записи · " +
+                "скрыто карантином $hidden."
     }
 
     /**
@@ -220,7 +254,9 @@ internal sealed class SelectionSummary {
         val shown: Int,
         val tooNarrow: Int,
         val tooExpensive: Int,
-        val tooBoth: Int
+        val tooBoth: Int,
+        /** Сколько записей карантина содержат слова вопроса. См. KDoc SelectionSummary. */
+        val hidden: Int
     ) : SelectionSummary() {
 
         val rejected: Int get() = tooNarrow + tooExpensive + tooBoth
@@ -239,7 +275,7 @@ internal sealed class SelectionSummary {
                         if (tooExpensive > 0) "дорого $tooExpensive" else null,
                         if (tooBoth > 0) "узко и дорого $tooBoth" else null
                     ).joinToString(", ")
-                return head + trim + why
+                return head + trim + why + " · скрыто карантином $hidden"
             }
     }
 }
@@ -778,6 +814,11 @@ class HourglassMemory(private val dao: StickerDao) {
         val candidates = LinkedHashMap<Long, Sticker>()
         val hits = HashMap<Long, MutableMap<String, Int>>()
 
+        // Записи карантина, попавшие под те же слова. Множество, а не счётчик:
+        // одна запись, найденная двумя словами или на двух ступенях, обязана
+        // считаться один раз.
+        val hidden = HashSet<Long>()
+
         for (word in words) {
             val foundForWord = HashSet<Long>()
             for (prefixLength in ladder(word)) {
@@ -792,14 +833,36 @@ class HourglassMemory(private val dao: StickerDao) {
                     foundForWord.add(sticker.id)
                     foundHere++
                 }
+                // Зеркальный запрос: те же префиксы, те же слои, но карантин.
+                // Стоит ДО проверки STOP_DESCENT намеренно — счёт скрытых не
+                // участвует в решении спускаться дальше или нет. Иначе запись в
+                // карантине меняла бы то, что находится для всех остальных, и
+                // карантин перестал бы быть просто вычитанием.
+                //
+                // Обратное направление есть и оно намеренное: спуск, остановленный
+                // видимыми находками, останавливает и счёт скрытых. Оба числа
+                // обязаны описывать ОДИН поиск, иначе их нельзя ставить рядом.
+                var hiddenHere = 0
+                for (row in dao.searchHiddenAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT)) {
+                    if (row.layer == Layer.RED.name) continue
+                    if (row.layer !in allowedLayers) continue
+                    hidden.add(row.id)
+                    hiddenHere++
+                }
+
                 trace += "слово «$word» · ступень $prefixLength («$prefix») · " +
-                    "найдено $foundHere · всего по слову ${foundForWord.size}" +
+                    "найдено $foundHere · скрыто $hiddenHere · " +
+                    "всего по слову ${foundForWord.size}" +
                     if (foundForWord.size >= STOP_DESCENT) " · спуск остановлен" else ""
                 if (foundForWord.size >= STOP_DESCENT) break
             }
         }
         if (candidates.isEmpty()) {
-            return SelectionResult(emptyList(), trace, SelectionSummary.NothingFound(words.size))
+            return SelectionResult(
+                emptyList(),
+                trace,
+                SelectionSummary.NothingFound(words.size, hidden.size)
+            )
         }
 
         val totalWords = words.size
@@ -852,7 +915,8 @@ class HourglassMemory(private val dao: StickerDao) {
                 shown = stickers.size,
                 tooNarrow = tooNarrow,
                 tooExpensive = tooExpensive,
-                tooBoth = tooBoth
+                tooBoth = tooBoth,
+                hidden = hidden.size
             )
         )
     }
