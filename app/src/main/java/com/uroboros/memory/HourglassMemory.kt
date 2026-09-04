@@ -254,7 +254,23 @@ internal sealed class SelectionSummary {
  */
 data class ContextResult(
     val stickers: List<Sticker>,
-    val summary: String
+    val summary: String,
+    /**
+     * Построчный разбор отбора: по строке на каждую ступень каждого слова и по
+     * строке на каждого взвешенного кандидата. Нужен при калибровке порогов —
+     * обычно уезжает в лог, на экран не выводится.
+     *
+     * Отдельное поле, а не хвост к summary. Слить их в один текст значило бы
+     * либо вывалить на экран несколько десятков служебных строк, либо, при
+     * обрезке, потерять сам разбор — то есть ровно то, ради чего он собирается.
+     *
+     * Границы. Это отчёт ОДНОЙ ТОЛЬКО лестницы: в нём нет ни канала принципов,
+     * ни того, что поиск не нашёл. Пустой список означает "поиск не запускался",
+     * а не "ничего не происходило". Содержимого записей строки не несут — только
+     * идентификаторы, счёт слов и длины; это важно, потому что список пересекает
+     * границу слоя памяти и дальше им распоряжается вызывающий.
+     */
+    val trace: List<String>
 )
 
 /**
@@ -342,6 +358,22 @@ internal fun scoreCandidate(
  * неё не влияет, а транзакция потребовала бы протащить сам объект базы через
  * HourglassMemory и TrustedMediator — расширение поверхности правки ради
  * несущественного выигрыша.
+ */
+ * ЧИСТОТА ПУТИ ЧТЕНИЯ ОТ ANDROID (04.09.2026). Правило записано в KDoc
+ * MemoryCanary, пункт 2: класс уровня памяти не зовёт android.util.Log, а
+ * возвращает готовый текст, который показывает вызывающий слой. Иначе класс
+ * невозможно запустить в обычном JVM-тесте — Log там бросает исключение, и
+ * UnitTestEnvironmentTest удерживает это свойство намеренно.
+ *
+ * Путь чтения (getContextWithSummary и всё, что он зовёт) правилу теперь
+ * следует: разбор отбора уезжает полем trace, а печатает его экран.
+ *
+ * ЧЕГО ЭТО НЕ ЗАКРЫВАЕТ, сознательно: repairStuckLayers, repairToteProvenance и
+ * saveEvent по-прежнему пишут в Log сами. Они вне пути чтения, тестам не мешают
+ * и потому оставлены как есть — но это тот же класс, и при попытке покрыть их
+ * тестом первым делом упрётесь в это. Заплатка, а не решение, и выбор сделан
+ * осознанно: чинить их вместе с путём чтения значило бы тронуть ещё три метода
+ * ради теста, которого пока никто не пишет.
  */
 class HourglassMemory(private val dao: StickerDao) {
 
@@ -485,7 +517,8 @@ class HourglassMemory(private val dao: StickerDao) {
             // Польза тем более: слов не было, значит совпадать было нечему.
             return ContextResult(
                 stickers = dao.getRanked(layers, limit),
-                summary = SelectionSummary.NoQuery.text
+                summary = SelectionSummary.NoQuery.text,
+                trace = emptyList()
             )
         }
 
@@ -499,12 +532,6 @@ class HourglassMemory(private val dao: StickerDao) {
             if (roomLeft == 0) SelectionResult(emptyList(), emptyList(), SelectionSummary.NoRoom)
             else searchByWords(query, roomLeft, layers)
         val matches = selection.stickers
-
-        // Отбор объяснение только собирает — выводит его этот слой. Так граница
-        // между проверяемой частью и Android проходит здесь, а не внутри правила.
-        // Содержимое записей в эти строки не попадает: в логах устройства ему не
-        // место, а на экране оно и так видно.
-        selection.trace.forEach { Log.d("MemorySelect", it) }
 
         val result = (principles + matches).distinctBy { it.id }.take(limit)
 
@@ -551,7 +578,11 @@ class HourglassMemory(private val dao: StickerDao) {
             }
         }
 
-        return ContextResult(stickers = touched, summary = selection.summary.text)
+        return ContextResult(
+            stickers = touched,
+            summary = selection.summary.text,
+            trace = selection.trace
+        )
     }
 
     /** Запись-кандидат вместе с мерами, по которым решается её судьба. */
