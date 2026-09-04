@@ -186,4 +186,88 @@ class SelectionRuleTest {
         assertEquals(a.charsPerMatch, b.charsPerMatch, 1e-9)
         assertEquals(a.verdict, b.verdict)
     }
+
+    // --- Итог отбора: то, что читает человек ---
+
+    /**
+     * Пять состояний — пять разных текстов.
+     *
+     * Это и есть довод в пользу запечатанного типа: при счёте одними числами
+     * "искать было не по чему" и "искали, не нашли" дали бы одинаковые нули, а
+     * лечатся они противоположным. Тест ловит слияние любых двух состояний в
+     * одну формулировку.
+     */
+    @Test
+    fun `пять состояний отбора называются по-разному`() {
+        val texts = listOf(
+            SelectionSummary.NoQuery.text,
+            SelectionSummary.NoRoom.text,
+            SelectionSummary.NoSearchableWords.text,
+            SelectionSummary.NothingFound(words = 4).text,
+            SelectionSummary.Weighed(
+                words = 4, candidates = 12, passed = 3, shown = 3,
+                tooNarrow = 7, tooExpensive = 2, tooBoth = 0
+            ).text
+        )
+        assertEquals(5, texts.toSet().size)
+        assertTrue(texts.none { it.isBlank() })
+    }
+
+    /**
+     * Потеря по лимиту названа отдельно от отсева порогом.
+     *
+     * Из трёх способов не дойти до экрана этот единственный, о котором иначе
+     * нельзя было бы узнать: со стороны обрезанная лимитом запись выглядит точно
+     * так же, как отсеянная, а лечится противоположным — лимитом, а не порогом.
+     */
+    @Test
+    fun `обрезка лимитом названа отдельно от отсева`() {
+        val summary = SelectionSummary.Weighed(
+            words = 4, candidates = 12, passed = 5, shown = 3,
+            tooNarrow = 6, tooExpensive = 1, tooBoth = 0
+        )
+        assertEquals(2, summary.trimmed)
+        assertTrue(summary.text.contains("лимит отрезал 2"))
+        assertTrue(summary.text.contains("прошло 5"))
+        assertTrue(summary.text.contains("показано 3"))
+    }
+
+    /** Когда лимит ничего не отрезал, про него не говорится вовсе. */
+    @Test
+    fun `без обрезки про лимит не упоминается`() {
+        val summary = SelectionSummary.Weighed(
+            words = 3, candidates = 4, passed = 2, shown = 2,
+            tooNarrow = 2, tooExpensive = 0, tooBoth = 0
+        )
+        assertEquals(0, summary.trimmed)
+        assertFalse(summary.text.contains("лимит"))
+    }
+
+    /** Причины отсева перечисляются поимённо, а не сводятся к общему числу. */
+    @Test
+    fun `причины отсева названы поимённо`() {
+        val summary = SelectionSummary.Weighed(
+            words = 4, candidates = 10, passed = 1, shown = 1,
+            tooNarrow = 5, tooExpensive = 3, tooBoth = 1
+        )
+        assertEquals(9, summary.rejected)
+        assertTrue(summary.text.contains("отсеяно 9"))
+        assertTrue(summary.text.contains("узко 5"))
+        assertTrue(summary.text.contains("дорого 3"))
+        assertTrue(summary.text.contains("узко и дорого 1"))
+    }
+
+    /**
+     * Когда не отсеяли никого, это говорится прямо, а не молчанием: строка
+     * должна отвечать на вопрос об отсеве при любом исходе.
+     */
+    @Test
+    fun `нулевой отсев назван прямо`() {
+        val summary = SelectionSummary.Weighed(
+            words = 2, candidates = 3, passed = 3, shown = 3,
+            tooNarrow = 0, tooExpensive = 0, tooBoth = 0
+        )
+        assertEquals(0, summary.rejected)
+        assertTrue(summary.text.contains("отсеяно 0"))
+    }
 }
