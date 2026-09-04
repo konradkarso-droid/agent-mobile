@@ -109,6 +109,24 @@ class TrustedMediator(context: Context) {
         return hourglass.getContextFor(purpose, query, limit)
     }
 
+    /**
+     * То же самое плюс готовая строка о том, чем закончился отбор: сколько слов
+     * искали, сколько записей нашлось, сколько прошло, сколько отсеяно и почему.
+     *
+     * Проброс без логики — состояния отбора и их формулировки решает
+     * HourglassMemory, фасад не пересказывает их своими словами. Наружу идёт
+     * готовый текст, а не сам тип: за пределами памяти он нужен только чтобы его
+     * показать, и ветвиться по нему в UI было бы решением об отборе, принятым
+     * мимо того, кто отбирает. Та же форма, что у memoryCanaryReport().
+     */
+    suspend fun getContextWithSummary(
+        purpose: RetrievalPurpose,
+        query: String? = null,
+        limit: Int = 10
+    ): ContextResult {
+        return hourglass.getContextWithSummary(purpose, query, limit)
+    }
+
     suspend fun totalStickers(): Int = dao.count()
     suspend fun getPendingReview(): List<Sticker> = dao.getPendingReview()
     suspend fun clearAllPendingReview(): Int = dao.clearAllReviewPending()
