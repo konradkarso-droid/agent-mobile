@@ -9,7 +9,7 @@ package com.uroboros.memory
  * его результат не зависит от содержимого устройства.
  *
  * НЕПОДГОТОВЛЕННЫЙ МЕТОД БРОСАЕТ ИСКЛЮЧЕНИЕ, а не возвращает ноль или пустой
- * список. Методов в интерфейсе 27, а любой путь чтения трогает шесть-семь;
+ * список. Методов в интерфейсе 28, а любой путь чтения трогает шесть-восемь;
  * молчаливое умолчание у остальных двадцати означало бы зелёный тест на пустом
  * месте — проверяемый код позвал бы что-то незамеченное и получил бы правдоподобный
  * ответ ни о чём. Падение с именем метода вдобавок отвечает на вопрос, что путь
@@ -27,6 +27,14 @@ package com.uroboros.memory
  *    ЗАПРАШИВАЕТ оба варианта регистра. Что он их НАХОДИТ — свойство SQL, и
  *    проверяется оно либо на устройстве, либо тестом с базой в памяти. Тест,
  *    заявляющий здесь второе, будет зелёным при сломанном запросе.
+ *
+ *    То же и вдвойне про searchHiddenAnyCase. Он обязан искать теми же двумя
+ *    условиями LIKE, что и searchAnyCase, иначе видимое и скрытое сосчитаются
+ *    по разным множествам. Здесь оба ответа приходят от разных лямбд теста,
+ *    так что расхождение самих запросов эта подделка не увидит НИКОГДА —
+ *    равенство держится только соседством в StickerDao.kt. Доказуемо здесь
+ *    лишь то, что вызывающий спрашивает оба, на тех же ступенях и теми же
+ *    префиксами.
  *
  * 2. Она не сортирует и не режет лимитом. Настоящие getRanked и searchAnyCase
  *    делают ORDER BY и LIMIT на стороне базы; здесь лямбда возвращает что дали,
@@ -47,6 +55,15 @@ class FakeStickerDao : StickerDao {
     /** Ответ на searchAnyCase(query, queryCapitalized, limit). */
     var onSearchAnyCase: ((query: String, queryCapitalized: String, limit: Int) -> List<Sticker>)? = null
 
+    /**
+     * Ответ на searchHiddenAnyCase(query, queryCapitalized, limit) — записи в
+     * карантине. Лямбда СВОЯ, а не общая с onSearchAnyCase: тест обязан иметь
+     * возможность задать разные ответы видимому и скрытому поиску, иначе
+     * случай "нашлось ноль, а трое скрыты" — ради которого счётчик и заведён —
+     * выразить было бы нечем.
+     */
+    var onSearchHiddenAnyCase: ((query: String, queryCapitalized: String, limit: Int) -> List<HiddenRow>)? = null
+
     /** Ответ на getExpired(now) — путь чтения зовёт его первым, через migrateExpired. */
     var onGetExpired: ((now: Long) -> List<Sticker>)? = null
 
@@ -58,6 +75,14 @@ class FakeStickerDao : StickerDao {
 
     /** Обращения к searchAnyCase по порядку — по ним и читается лестница. */
     val searchCalls = mutableListOf<SearchCall>()
+
+    /**
+     * Обращения к searchHiddenAnyCase. Отдельный список, а не общий с
+     * searchCalls: слитые в один, они не дали бы проверить главное — что
+     * скрытое спрашивается на ТЕХ ЖЕ ступенях, что и видимое, и что счётчик
+     * скрытых не двигает спуск по лестнице.
+     */
+    val hiddenSearchCalls = mutableListOf<SearchCall>()
     val rankedCalls = mutableListOf<RankedCall>()
     val layerUpdates = mutableListOf<LayerUpdate>()
     val touchedAccess = mutableListOf<Long>()
@@ -75,6 +100,16 @@ class FakeStickerDao : StickerDao {
     ): List<Sticker> {
         searchCalls += SearchCall(query, queryCapitalized, limit)
         val answer = onSearchAnyCase ?: unprepared("searchAnyCase")
+        return answer(query, queryCapitalized, limit)
+    }
+
+    override suspend fun searchHiddenAnyCase(
+        query: String,
+        queryCapitalized: String,
+        limit: Int
+    ): List<HiddenRow> {
+        hiddenSearchCalls += SearchCall(query, queryCapitalized, limit)
+        val answer = onSearchHiddenAnyCase ?: unprepared("searchHiddenAnyCase")
         return answer(query, queryCapitalized, limit)
     }
 
