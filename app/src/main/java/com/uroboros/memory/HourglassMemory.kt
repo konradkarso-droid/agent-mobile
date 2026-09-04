@@ -153,6 +153,111 @@ internal data class CandidateScore(
 }
 
 /**
+ * В каком состоянии закончился отбор под запрос — и текст, которым это состояние
+ * называется человеку.
+ *
+ * Зачем запечатанный тип, а не набор чисел. Состояний пять, и часть из них при
+ * счёте нулями неразличима: "искать было не по чему" и "искали, не нашли ни
+ * одного" дали бы одинаковые нули, хотя лечатся противоположным — первое требует
+ * задать вопрос словами, второе двинуть пороги. Тот же довод, по которому
+ * StopCause сделан одной ссылкой вместо двух обнуляемых полей.
+ *
+ * Текст живёт здесь, а не на экране: так его проверяет обычный тест, без
+ * устройства и без разметки.
+ *
+ * ЧЕГО ЭТИ ЧИСЛА НЕ СЧИТАЮТ. Все они считают записи, которые ПРИНЁС поиск.
+ * Запись, до которой лестница префиксов не дотянулась, не попадает ни в
+ * кандидатов, ни в отсеянных — она не появляется на экране никак и ни одним
+ * числом не названа. Это как раз потеря в невосстановимую сторону, и заметить её
+ * этими числами нельзя: они говорят, что случилось с найденным, а не о том, всё
+ * ли найдено.
+ */
+internal sealed class SelectionSummary {
+
+    /** Одна строка для экрана. */
+    abstract val text: String
+
+    /** Вопроса не было: отдан срез памяти по рангу, поиск не запускался. */
+    object NoQuery : SelectionSummary() {
+        override val text =
+            "Отбор не выполнялся: вопроса не было — показан срез памяти по рангу."
+    }
+
+    /**
+     * Место в выдаче целиком заняли принципы, на поиск не осталось ни одного
+     * места. Отдельное состояние, а не "ничего не нашли": лечится оно лимитом
+     * выдачи, а не порогами отбора, и спутать эти два лечения дорого.
+     */
+    object NoRoom : SelectionSummary() {
+        override val text =
+            "Отбор не выполнялся: всю выдачу заняли принципы — увеличьте лимит."
+    }
+
+    /** В вопросе не осталось слов, по которым можно искать. */
+    object NoSearchableWords : SelectionSummary() {
+        override val text =
+            "Отбор не выполнялся: в вопросе нет слов длиннее трёх букв, " +
+                "не считая общеупотребительных."
+    }
+
+    /** Искали, но ни одна запись не нашлась ни на одной ступени. */
+    data class NothingFound(val words: Int) : SelectionSummary() {
+        override val text = "Отбор: слов $words · не нашлось ни одной записи."
+    }
+
+    /**
+     * Кандидаты нашлись и были взвешены.
+     *
+     * passed и shown разделены намеренно. Прошедшие отбор режутся ещё и лимитом
+     * выдачи, и запись, потерянная лимитом, со стороны выглядит точно так же,
+     * как отсеянная порогом, — а лечится противоположным. Из трёх способов не
+     * дойти до экрана этот единственный, о котором иначе нельзя было бы узнать.
+     */
+    data class Weighed(
+        val words: Int,
+        val candidates: Int,
+        val passed: Int,
+        val shown: Int,
+        val tooNarrow: Int,
+        val tooExpensive: Int,
+        val tooBoth: Int
+    ) : SelectionSummary() {
+
+        val rejected: Int get() = tooNarrow + tooExpensive + tooBoth
+        val trimmed: Int get() = passed - shown
+
+        override val text: String
+            get() {
+                val head =
+                    "Отбор: слов $words · кандидатов $candidates · " +
+                        "прошло $passed · показано $shown"
+                val trim = if (trimmed > 0) " (лимит отрезал $trimmed)" else ""
+                val why =
+                    if (rejected == 0) " · отсеяно 0"
+                    else " · отсеяно $rejected: " + listOfNotNull(
+                        if (tooNarrow > 0) "узко $tooNarrow" else null,
+                        if (tooExpensive > 0) "дорого $tooExpensive" else null,
+                        if (tooBoth > 0) "узко и дорого $tooBoth" else null
+                    ).joinToString(", ")
+                return head + trim + why
+            }
+    }
+}
+
+/**
+ * Записи под запрос вместе с готовой строкой о том, как отбор к ним пришёл.
+ *
+ * Строка, а не сам SelectionSummary: за пределами памяти состояние отбора нужно
+ * только чтобы его показать, а отдавать наружу тип, по которому кто-то начнёт
+ * ветвиться, значило бы вынести решение об отборе за пределы того, кто отбирает.
+ * Так же устроена канарейка — memoryCanaryReport() тоже отдаёт готовый текст.
+ */
+data class ContextResult(
+    val stickers: List<Sticker>,
+    val summary: String
+)
+
+/**
  * Правило, по которому кандидат проходит отбор или отсеивается. Чистая функция:
  * ни базы, ни Android — затем и вынесена, чтобы правило можно было закрепить
  * тестом. Тот же приём, что и у usefulnessMarks выше.
@@ -343,12 +448,33 @@ class HourglassMemory(private val dao: StickerDao) {
      *
      * Прогрев слоя и accessCount работают как раньше, для всех целей обращения. Это
      * другая ось: она про давность, а не про пользу, и сливать их нельзя.
+     *
+     * Прежний контракт сохранён: этот вызов отдаёт только записи. Кому нужно ещё и
+     * состояние отбора — зовёт getContextWithSummary. Тело у них общее, второго
+     * экземпляра логики не заводится.
      */
     suspend fun getContextFor(
         purpose: RetrievalPurpose,
         query: String?,
         limit: Int
-    ): List<Sticker> {
+    ): List<Sticker> = getContextWithSummary(purpose, query, limit).stickers
+
+    /**
+     * То же самое плюс готовая строка о том, чем закончился отбор.
+     *
+     * Отдельный вход, а не смена типа у getContextFor: прежний контракт остаётся
+     * у всех, кто состоянием отбора не интересуется, и правка не расползается по
+     * вызывающим ради того, что нужно одному экрану.
+     *
+     * Строка отдаётся всегда, в том числе когда всё нашлось. Показывать её только
+     * при пустой выдаче значило бы завести прибор, молчащий ровно тогда, когда всё
+     * хорошо, — и его собственная поломка выглядела бы нормальной работой.
+     */
+    suspend fun getContextWithSummary(
+        purpose: RetrievalPurpose,
+        query: String?,
+        limit: Int
+    ): ContextResult {
         migrateExpired()
 
         val layers = Prism.layersFor(query)
@@ -357,7 +483,10 @@ class HourglassMemory(private val dao: StickerDao) {
             // Прежнее поведение сохранено: пустой запрос отдаёт срез памяти по рангу
             // и НЕ считается обращением — ни accessCount, ни прогрев не трогаются.
             // Польза тем более: слов не было, значит совпадать было нечему.
-            return dao.getRanked(layers, limit)
+            return ContextResult(
+                stickers = dao.getRanked(layers, limit),
+                summary = SelectionSummary.NoQuery.text
+            )
         }
 
         // Два канала, намеренно НЕ сливаемые в один рейтинг (разделённая
@@ -367,7 +496,7 @@ class HourglassMemory(private val dao: StickerDao) {
 
         val roomLeft = (limit - principles.size).coerceAtLeast(0)
         val selection =
-            if (roomLeft == 0) SelectionResult(emptyList(), emptyList())
+            if (roomLeft == 0) SelectionResult(emptyList(), emptyList(), SelectionSummary.NoRoom)
             else searchByWords(query, roomLeft, layers)
         val matches = selection.stickers
 
@@ -387,7 +516,7 @@ class HourglassMemory(private val dao: StickerDao) {
         )
 
         val now = System.currentTimeMillis()
-        return result.map { sticker ->
+        val touched = result.map { sticker ->
             val timeSinceLastAccess = now - sticker.lastAccessedAt
             val isFirstAccess = sticker.accessCount == 0
 
@@ -421,6 +550,8 @@ class HourglassMemory(private val dao: StickerDao) {
                 )
             }
         }
+
+        return ContextResult(stickers = touched, summary = selection.summary.text)
     }
 
     /** Запись-кандидат вместе с мерами, по которым решается её судьба. */
@@ -449,7 +580,8 @@ class HourglassMemory(private val dao: StickerDao) {
      */
     private data class SelectionResult(
         val stickers: List<Sticker>,
-        val trace: List<String>
+        val trace: List<String>,
+        val summary: SelectionSummary
     )
 
     /**
@@ -605,7 +737,9 @@ class HourglassMemory(private val dao: StickerDao) {
         val trace = mutableListOf<String>()
 
         val words = meaningfulWords(query)
-        if (words.isEmpty()) return SelectionResult(emptyList(), trace)
+        if (words.isEmpty()) {
+            return SelectionResult(emptyList(), trace, SelectionSummary.NoSearchableWords)
+        }
 
         // Для каждой записи помним, КАКИЕ слова её нашли и НА КАКОЙ ступени.
         // Ступень запоминается первая (самая длинная) — качество совпадения не
@@ -633,10 +767,15 @@ class HourglassMemory(private val dao: StickerDao) {
                 if (foundForWord.size >= STOP_DESCENT) break
             }
         }
-        if (candidates.isEmpty()) return SelectionResult(emptyList(), trace)
+        if (candidates.isEmpty()) {
+            return SelectionResult(emptyList(), trace, SelectionSummary.NothingFound(words.size))
+        }
 
         val totalWords = words.size
         val passed = mutableListOf<Scored>()
+        var tooNarrow = 0
+        var tooExpensive = 0
+        var tooBoth = 0
 
         for (sticker in candidates.values) {
             val matched = hits[sticker.id].orEmpty()
@@ -648,7 +787,14 @@ class HourglassMemory(private val dao: StickerDao) {
                 "${"%.1f".format(score.charsPerMatch)} · ${sticker.content.length} зн. · " +
                 score.verdict
 
-            if (!score.passed) continue
+            if (!score.passed) {
+                when {
+                    score.tooNarrow && score.tooExpensive -> tooBoth++
+                    score.tooNarrow -> tooNarrow++
+                    else -> tooExpensive++
+                }
+                continue
+            }
             passed += Scored(sticker, score)
         }
 
@@ -663,7 +809,21 @@ class HourglassMemory(private val dao: StickerDao) {
             .take(limit)
             .map { it.sticker }
 
-        return SelectionResult(stickers, trace)
+        return SelectionResult(
+            stickers = stickers,
+            trace = trace,
+            summary = SelectionSummary.Weighed(
+                words = totalWords,
+                candidates = candidates.size,
+                // Прошедшие считаются ДО обрезки лимитом: иначе потеря по лимиту
+                // была бы неотличима от отсева порогом.
+                passed = passed.size,
+                shown = stickers.size,
+                tooNarrow = tooNarrow,
+                tooExpensive = tooExpensive,
+                tooBoth = tooBoth
+            )
+        )
     }
 
     /**
