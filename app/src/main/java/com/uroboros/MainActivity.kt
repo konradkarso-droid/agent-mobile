@@ -1470,18 +1470,30 @@ class MainActivity : AppCompatActivity() {
                     // прибором, и засчитывать пользу за каждый осмотр памяти
                     // значило бы портить то самое число, по которому потом
                     // назначать пороги.
-                    val results = mediator.getContextFor(
+                    val shown = mediator.getContextWithSummary(
                         purpose = RetrievalPurpose.BROWSING,
                         query = query,
                         limit = 20
                     )
-                    binding.textResults.text = if (results.isEmpty()) {
-                        "$canaryReport\n\n(записей для показа нет)"
+                    // Итог отбора печатается ВСЕГДА, а не только когда показывать
+                    // нечего. Прибор, молчащий при благополучном исходе, своей
+                    // поломкой выглядел бы как нормальная работа.
+                    //
+                    // Он отвечает на вопрос, которого прежняя фраза "(записей для
+                    // показа нет)" не различала вовсе: искать было не по чему,
+                    // искали и не нашли, или нашли и всё отсеяли. Лечится это
+                    // тремя разными способами.
+                    //
+                    // Чего в этих числах НЕТ: записи, до которой поиск не
+                    // дотянулся. Она не попадает ни в кандидатов, ни в отсеянных
+                    // (см. KDoc SelectionSummary).
+                    binding.textResults.text = if (shown.stickers.isEmpty()) {
+                        "$canaryReport\n\n${shown.summary}\n\n(записей для показа нет)"
                     } else {
-                        val lines = results.joinToString("\n\n") { sticker ->
+                        val lines = shown.stickers.joinToString("\n\n") { sticker ->
                             "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
                         }
-                        "$canaryReport\n\n$lines"
+                        "$canaryReport\n\n${shown.summary}\n\n$lines"
                     }
                 } finally {
                     binding.buttonShow.isEnabled = true
