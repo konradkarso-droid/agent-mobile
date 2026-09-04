@@ -2,6 +2,7 @@ package com.uroboros.memory
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -203,10 +204,10 @@ class SelectionRuleTest {
             SelectionSummary.NoQuery.text,
             SelectionSummary.NoRoom.text,
             SelectionSummary.NoSearchableWords.text,
-            SelectionSummary.NothingFound(words = 4).text,
+            SelectionSummary.NothingFound(words = 4, hidden = 0).text,
             SelectionSummary.Weighed(
                 words = 4, candidates = 12, passed = 3, shown = 3,
-                tooNarrow = 7, tooExpensive = 2, tooBoth = 0
+                tooNarrow = 7, tooExpensive = 2, tooBoth = 0, hidden = 0
             ).text
         )
         assertEquals(5, texts.toSet().size)
@@ -224,7 +225,7 @@ class SelectionRuleTest {
     fun `обрезка лимитом названа отдельно от отсева`() {
         val summary = SelectionSummary.Weighed(
             words = 4, candidates = 12, passed = 5, shown = 3,
-            tooNarrow = 6, tooExpensive = 1, tooBoth = 0
+            tooNarrow = 6, tooExpensive = 1, tooBoth = 0, hidden = 0
         )
         assertEquals(2, summary.trimmed)
         assertTrue(summary.text.contains("лимит отрезал 2"))
@@ -237,7 +238,7 @@ class SelectionRuleTest {
     fun `без обрезки про лимит не упоминается`() {
         val summary = SelectionSummary.Weighed(
             words = 3, candidates = 4, passed = 2, shown = 2,
-            tooNarrow = 2, tooExpensive = 0, tooBoth = 0
+            tooNarrow = 2, tooExpensive = 0, tooBoth = 0, hidden = 0
         )
         assertEquals(0, summary.trimmed)
         assertFalse(summary.text.contains("лимит"))
@@ -248,7 +249,7 @@ class SelectionRuleTest {
     fun `причины отсева названы поимённо`() {
         val summary = SelectionSummary.Weighed(
             words = 4, candidates = 10, passed = 1, shown = 1,
-            tooNarrow = 5, tooExpensive = 3, tooBoth = 1
+            tooNarrow = 5, tooExpensive = 3, tooBoth = 1, hidden = 0
         )
         assertEquals(9, summary.rejected)
         assertTrue(summary.text.contains("отсеяно 9"))
@@ -265,9 +266,69 @@ class SelectionRuleTest {
     fun `нулевой отсев назван прямо`() {
         val summary = SelectionSummary.Weighed(
             words = 2, candidates = 3, passed = 3, shown = 3,
-            tooNarrow = 0, tooExpensive = 0, tooBoth = 0
+            tooNarrow = 0, tooExpensive = 0, tooBoth = 0, hidden = 0
         )
         assertEquals(0, summary.rejected)
         assertTrue(summary.text.contains("отсеяно 0"))
+    }
+
+    // --- Карантин: записи, до отбора не доехавшие ---
+
+    /**
+     * Скрытые названы и тогда, когда не нашлось ничего. Это главный случай, ради
+     * которого счётчик заведён: все три запроса пути чтения начинаются с
+     * reviewPending = 0, поэтому запись в карантине выглядит на экране как
+     * отсутствующая в памяти. Лечится это противоположным — не порогами, а
+     * разбором очереди.
+     */
+    @Test
+    fun `скрытые названы даже когда не нашлось ничего`() {
+        val summary = SelectionSummary.NothingFound(words = 3, hidden = 2)
+        assertTrue(summary.text.contains("не нашлось ни одной записи"))
+        assertTrue(summary.text.contains("скрыто карантином 2"))
+    }
+
+    /**
+     * Пустой отбор с карантином и без него — разные строки. Тест ловит ровно то
+     * слияние, против которого счётчик и сделан: два разных положения дел не
+     * должны выглядеть на экране одинаково.
+     */
+    @Test
+    fun `пустой отбор с карантином и без него называется по-разному`() {
+        assertNotEquals(
+            SelectionSummary.NothingFound(words = 3, hidden = 0).text,
+            SelectionSummary.NothingFound(words = 3, hidden = 2).text
+        )
+    }
+
+    /** Непустой карантин виден и во взвешенном итоге, не только в пустом. */
+    @Test
+    fun `скрытые названы во взвешенном итоге`() {
+        val summary = SelectionSummary.Weighed(
+            words = 4, candidates = 6, passed = 2, shown = 2,
+            tooNarrow = 4, tooExpensive = 0, tooBoth = 0, hidden = 3
+        )
+        assertTrue(summary.text.contains("скрыто карантином 3"))
+    }
+
+    /**
+     * Ноль скрытых говорится прямо, в обоих состояниях, где поле есть.
+     *
+     * Проверка на молчание, и сейчас она важнее прочих: очередь карантина пуста,
+     * значит ноль — единственное показание, которое счётчик вообще выдаёт на
+     * живой базе. Молчал бы он при нуле — был бы неотличим от неподключённого.
+     */
+    @Test
+    fun `нулевой карантин назван прямо в обоих состояниях`() {
+        assertTrue(
+            SelectionSummary.NothingFound(words = 3, hidden = 0)
+                .text.contains("скрыто карантином 0")
+        )
+        assertTrue(
+            SelectionSummary.Weighed(
+                words = 2, candidates = 3, passed = 3, shown = 3,
+                tooNarrow = 0, tooExpensive = 0, tooBoth = 0, hidden = 0
+            ).text.contains("скрыто карантином 0")
+        )
     }
 }
