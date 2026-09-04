@@ -11,6 +11,7 @@ import android.text.Spanned
 import android.text.TextPaint
 import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
+import android.util.Log
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -1475,6 +1476,12 @@ class MainActivity : AppCompatActivity() {
                         query = query,
                         limit = 20
                     )
+                    // Построчный разбор отбора печатает ЭТОТ слой, а не память:
+                    // класс уровня памяти не зовёт android.util.Log, иначе его не
+                    // запустить в юнит-тесте (см. KDoc MemoryCanary, п. 2).
+                    // На экран разбор не идёт — там его несколько десятков строк,
+                    // и он нужен только при калибровке порогов.
+                    shown.trace.forEach { Log.d("MemorySelect", it) }
                     // Итог отбора печатается ВСЕГДА, а не только когда показывать
                     // нечего. Прибор, молчащий при благополучном исходе, своей
                     // поломкой выглядел бы как нормальная работа.
