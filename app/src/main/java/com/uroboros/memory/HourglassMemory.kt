@@ -70,8 +70,9 @@ enum class RetrievalPurpose {
  * вопроса и доходит ли отметка до базы. Тест закрепляет правило, а не проводку.
  * Проводка проверена на устройстве двусторонней приёмкой: при вопросе агенту отметка
  * появляется, при повторных нажатиях "Показать" с тем же запросом accessCount растёт,
- * а отметок остаётся столько же. Юнит-тестом это здесь не покрыть — путь выборки
- * пишет в android.util.Log, а подмены Android-вызовов в сборке нет намеренно.
+ * а отметок остаётся столько же. Юнит-тестом проводка не покрыта и сейчас, но
+ * причина другая, чем была: путь выборки больше не пишет в android.util.Log —
+ * он ходит в базу, а подставного DAO в сборке пока нет.
  */
 internal fun usefulnessMarks(
     purpose: RetrievalPurpose,
@@ -80,6 +81,134 @@ internal fun usefulnessMarks(
 ): Set<Long> =
     if (purpose != RetrievalPurpose.ANSWERING_USER) emptySet()
     else returned.filter { it in matched }.toSet()
+
+// Два порога ниже стояли в private companion object класса и вынесены сюда
+// вместе с правилом, которое их читает: число и единственное место, где оно
+// применяется, должны лежать рядом, иначе правка одного не видна из другого.
+// Плата за вынос — видимость: теперь их видит весь модуль. Звать их больше
+// неоткуда, и появление второго места, где они понадобились, — повод
+// пересмотреть отбор, а не переиспользовать число.
+
+/**
+ * Проверка 1. Какую долю значимых слов вопроса запись обязана покрыть.
+ *
+ * Половина: одно слово из четырёх — случайность, два из четырёх — уже разговор
+ * об одном и том же. Ровно половина ПРОХОДИТ, и это часть правила, а не деталь
+ * записи: сравнение в scoreCandidate строгое намеренно.
+ *
+ * Область. Доля считается от числа значимых слов вопроса, а знаменатель задаёт
+ * список STOP_WORDS: добавленное туда слово меняет смысл этого порога, не меняя
+ * самого числа. Перепроверяется строкой вердикта по кандидату (см. trace в
+ * SelectionResult).
+ */
+internal const val MIN_COVERAGE = 0.5
+
+/**
+ * Проверка 2. Сколько знаков объёма записи допустимо на один знак совпадения.
+ *
+ * Замеры на живой базе 29.08.2026: фраза пользователя, честно относящаяся к
+ * вопросу, — 1.4-9.5; лог прогона TOTE, зацепившийся случайным обрубком внутри
+ * комментария, — 67. Порог поставлен между ними с запасом в обе стороны, а не
+ * впритык к наблюдённому. Ровно пороговое значение проходит.
+ *
+ * Область: база из 13 записей, вопросы в 3-6 значимых слов, записи до сотен
+ * знаков. На длинных вопросах и на записях в тысячи знаков не проверялся.
+ * Перепроверяется той же строкой вердикта.
+ */
+internal const val MAX_CHARS_PER_MATCH = 20.0
+
+/**
+ * Меры кандидата вместе с вердиктом по нему.
+ *
+ * Одна величина, а не две. Вердикт получается из мер прямо здесь, и разнести их
+ * по разным местам значило бы позволить им разойтись: строка на экране начала бы
+ * говорить одно, а отбор делать другое, и увидеть это было бы неоткуда.
+ */
+internal data class CandidateScore(
+    /** Сколько РАЗНЫХ слов вопроса нашли эту запись. */
+    val matchedWords: Int,
+    /** Доля слов вопроса, покрытых записью: 0.0 … 1.0. */
+    val coverage: Double,
+    /**
+     * Насколько точны совпадения: 1.0 — все слова нашлись целиком, меньше —
+     * находились укороченными. Отдельная величина, НЕ смешанная с долей и
+     * ценой: точное совпадение не должно выкупаться количеством размытых.
+     */
+    val precision: Double,
+    /** Сколько знаков объёма записи приходится на один знак совпадения. */
+    val charsPerMatch: Double,
+    val tooNarrow: Boolean,
+    val tooExpensive: Boolean
+) {
+    val passed: Boolean get() = !tooNarrow && !tooExpensive
+
+    /** Причина словами. Признака ровно два, других причин отсева нет. */
+    val verdict: String
+        get() = when {
+            tooNarrow && tooExpensive -> "отсев: узко и дорого"
+            tooNarrow -> "отсев: узко"
+            tooExpensive -> "отсев: дорого"
+            else -> "взято"
+        }
+}
+
+/**
+ * Правило, по которому кандидат проходит отбор или отсеивается. Чистая функция:
+ * ни базы, ни Android — затем и вынесена, чтобы правило можно было закрепить
+ * тестом. Тот же приём, что и у usefulnessMarks выше.
+ *
+ * Оба сравнения строгие в сторону прохождения: `coverage < MIN_COVERAGE` и
+ * `charsPerMatch > MAX_CHARS_PER_MATCH`, то есть ровно пороговое значение
+ * проходит. Замена любого из двух знаков на нестрогий меняет правило, и это
+ * закреплено тестом на граничные значения.
+ *
+ * Пустой matched даёт гарантированный отсев по обоим признакам сразу. В отборе
+ * такого кандидата не бывает — в candidates попадают только найденные записи, —
+ * но правило обязано быть определено на своём входе целиком, а не полагаться на
+ * то, что вызывающий проверил раньше.
+ *
+ * Чего эта функция НЕ проверяет. Она не знает, откуда взялся matched: правда ли
+ * его ключи — слова вопроса, правда ли значения — ступени лестницы. Не знает и
+ * того, дошёл ли кандидат до неё вообще: запись, потерянную поиском, здесь не
+ * увидеть, а это как раз промах в невосстановимую сторону. Тест закрепляет
+ * правило, а не отбор целиком.
+ *
+ * @param matched слово вопроса → ступень (длина префикса), на которой оно нашлось
+ * @param totalWords сколько значимых слов было в вопросе; нулём не бывает —
+ *        при пустом списке слов поиск заканчивается раньше
+ * @param contentLength длина содержимого записи в знаках
+ */
+internal fun scoreCandidate(
+    matched: Map<String, Int>,
+    totalWords: Int,
+    contentLength: Int
+): CandidateScore {
+    val coverage = matched.size.toDouble() / totalWords
+    // Считаются РЕАЛЬНО совпавшие знаки, а не длина исходных слов: совпадение
+    // четырьмя буквами и должно стоить меньше, чем целым словом в десять, —
+    // иначе размытая ступень покупала бы место даром.
+    val matchedChars = matched.values.sum()
+    val precision =
+        if (matched.isEmpty()) 0.0
+        else matched.entries
+            .sumOf { (word, prefixLength) -> prefixLength.toDouble() / word.length }
+            .div(matched.size)
+    // Знаменатель нулём быть не может: слова короче MIN_WORD_LENGTH сюда не
+    // доходят. Ветка оставлена на случай будущей правки отсева — без неё
+    // деление дало бы бесконечность, то есть запись прошла бы как самая дешёвая.
+    val charsPerMatch =
+        if (matchedChars == 0) Double.MAX_VALUE
+        else contentLength.toDouble() / matchedChars
+
+    return CandidateScore(
+        matchedWords = matched.size,
+        coverage = coverage,
+        precision = precision,
+        charsPerMatch = charsPerMatch,
+        tooNarrow = coverage < MIN_COVERAGE,
+        tooExpensive = charsPerMatch > MAX_CHARS_PER_MATCH
+    )
+}
 
 /**
  * Дыра №4, вторая половина (аудит 2026-08-21). Что изменилось и почему:
@@ -237,7 +366,16 @@ class HourglassMemory(private val dao: StickerDao) {
         val principles = dao.getRanked(listOf(Layer.RED.name), PRINCIPLE_LIMIT)
 
         val roomLeft = (limit - principles.size).coerceAtLeast(0)
-        val matches = if (roomLeft == 0) emptyList() else searchByWords(query, roomLeft, layers)
+        val selection =
+            if (roomLeft == 0) SelectionResult(emptyList(), emptyList())
+            else searchByWords(query, roomLeft, layers)
+        val matches = selection.stickers
+
+        // Отбор объяснение только собирает — выводит его этот слой. Так граница
+        // между проверяемой частью и Android проходит здесь, а не внутри правила.
+        // Содержимое записей в эти строки не попадает: в логах устройства ему не
+        // место, а на экране оно и так видно.
+        selection.trace.forEach { Log.d("MemorySelect", it) }
 
         val result = (principles + matches).distinctBy { it.id }.take(limit)
 
@@ -288,18 +426,30 @@ class HourglassMemory(private val dao: StickerDao) {
     /** Запись-кандидат вместе с мерами, по которым решается её судьба. */
     private data class Scored(
         val sticker: Sticker,
-        /** Сколько РАЗНЫХ слов вопроса нашли эту запись. */
-        val matchedWords: Int,
-        /** Доля слов вопроса, покрытых записью: 0.0 … 1.0. */
-        val coverage: Double,
-        /**
-         * Насколько точны совпадения: 1.0 — все слова нашлись целиком, меньше —
-         * находились укороченными. Отдельная величина, НЕ смешанная с долей и
-         * ценой: точное совпадение не должно выкупаться количеством размытых.
-         */
-        val precision: Double,
-        /** Сколько знаков объёма записи приходится на один знак совпадения. */
-        val charsPerMatch: Double
+        val score: CandidateScore
+    )
+
+    /**
+     * Отобранные записи вместе с объяснением, как отбор к ним пришёл.
+     *
+     * Объяснение возвращается ЗНАЧЕНИЕМ, а не пишется в лог изнутри отбора. Так
+     * же устроен ToteEngine: он не логирует ничего, а отдаёт диагностику полями
+     * результата. Причина одна — функция, вызывающая android.util.Log, в
+     * JVM-тесте падает, и проверить её нельзя.
+     *
+     * Побочная выгода важнее самой проверяемости: строки отбора перестали быть
+     * доступны только через logcat. Куда их девать, решает вызывающий; сегодня
+     * getContextFor пишет их в лог, но их же можно вывести на экран, а без этого
+     * пустая выдача выглядит одинаково и когда в памяти нечего найти, и когда
+     * отбор всё отсеял.
+     *
+     * Чего этот тип НЕ гарантирует: что вызывающий на trace посмотрит. Выбросить
+     * объяснение можно — но это видимое поле результата, а не умолчание в
+     * конструкторе, так что молча это не произойдёт.
+     */
+    private data class SelectionResult(
+        val stickers: List<Sticker>,
+        val trace: List<String>
     )
 
     /**
@@ -375,8 +525,12 @@ class HourglassMemory(private val dao: StickerDao) {
      * если вопрос из шести слов, а годная запись покрывает два, она вылетит. На
      * маленькой базе это правильный размен (пустой ответ лучше чуши), но с
      * ростом памяти порог придётся смягчать. Двигать оба числа дёшево, и
-     * значения обеих мер пишутся в лог по каждому кандидату — чтобы решение об
-     * отсеве можно было проверить глазами, а не принимать на веру.
+     * значения обеих мер идут в объяснение по каждому кандидату — чтобы решение
+     * об отсеве можно было проверить глазами, а не принимать на веру.
+     *
+     * Само правило отсева живёт не здесь, а в scoreCandidate: эта функция чистая
+     * и закреплена тестом, включая ровно пороговые значения. Здесь остались
+     * лестница и сортировка — то, что без базы не проверить.
      *
      * ---
      *
@@ -443,9 +597,15 @@ class HourglassMemory(private val dao: StickerDao) {
         query: String,
         limit: Int,
         allowedLayers: List<String>
-    ): List<Sticker> {
+    ): SelectionResult {
+        // Объяснение копится строками и уезжает вызывающему вместе с результатом.
+        // Пустой список записей при непустом trace — это "искали и не нашли";
+        // пустые оба — "искать было нечего". Раньше эти два случая на выходе
+        // выглядели одинаково.
+        val trace = mutableListOf<String>()
+
         val words = meaningfulWords(query)
-        if (words.isEmpty()) return emptyList()
+        if (words.isEmpty()) return SelectionResult(emptyList(), trace)
 
         // Для каждой записи помним, КАКИЕ слова её нашли и НА КАКОЙ ступени.
         // Ступень запоминается первая (самая длинная) — качество совпадения не
@@ -467,69 +627,43 @@ class HourglassMemory(private val dao: StickerDao) {
                     foundForWord.add(sticker.id)
                     foundHere++
                 }
-                Log.d(
-                    "MemorySelect",
-                    "слово «$word» · ступень $prefixLength («$prefix») · " +
-                        "найдено $foundHere · всего по слову ${foundForWord.size}" +
-                        if (foundForWord.size >= STOP_DESCENT) " · спуск остановлен" else ""
-                )
+                trace += "слово «$word» · ступень $prefixLength («$prefix») · " +
+                    "найдено $foundHere · всего по слову ${foundForWord.size}" +
+                    if (foundForWord.size >= STOP_DESCENT) " · спуск остановлен" else ""
                 if (foundForWord.size >= STOP_DESCENT) break
             }
         }
-        if (candidates.isEmpty()) return emptyList()
+        if (candidates.isEmpty()) return SelectionResult(emptyList(), trace)
 
         val totalWords = words.size
         val passed = mutableListOf<Scored>()
 
         for (sticker in candidates.values) {
             val matched = hits[sticker.id].orEmpty()
-            if (matched.isEmpty()) continue
+            val score = scoreCandidate(matched, totalWords, sticker.content.length)
 
-            val coverage = matched.size.toDouble() / totalWords
-            // Считаются РЕАЛЬНО совпавшие знаки, а не длина исходных слов:
-            // совпадение четырьмя буквами и должно стоить меньше, чем целым
-            // словом в десять, — иначе размытая ступень покупала бы место даром.
-            val matchedChars = matched.values.sum()
-            val precision = matched.entries
-                .sumOf { (word, prefixLength) -> prefixLength.toDouble() / word.length }
-                .div(matched.size)
-            // Знаменатель нулём быть не может: слова короче MIN_WORD_LENGTH сюда
-            // не доходят. Проверка оставлена на случай будущей правки отсева.
-            val charsPerMatch =
-                if (matchedChars == 0) Double.MAX_VALUE
-                else sticker.content.length.toDouble() / matchedChars
+            trace += "id=${sticker.id} слов ${score.matchedWords}/$totalWords " +
+                "(${(score.coverage * 100).toInt()}%) · точность " +
+                "${(score.precision * 100).toInt()}% · цена места " +
+                "${"%.1f".format(score.charsPerMatch)} · ${sticker.content.length} зн. · " +
+                score.verdict
 
-            val tooNarrow = coverage < MIN_COVERAGE
-            val tooExpensive = charsPerMatch > MAX_CHARS_PER_MATCH
-
-            val verdict = when {
-                tooNarrow && tooExpensive -> "отсев: узко и дорого"
-                tooNarrow -> "отсев: узко"
-                tooExpensive -> "отсев: дорого"
-                else -> "взято"
-            }
-            Log.d(
-                "MemorySelect",
-                "id=${sticker.id} слов ${matched.size}/$totalWords " +
-                    "(${(coverage * 100).toInt()}%) · точность " +
-                    "${(precision * 100).toInt()}% · цена места " +
-                    "${"%.1f".format(charsPerMatch)} · ${sticker.content.length} зн. · $verdict"
-            )
-
-            if (tooNarrow || tooExpensive) continue
-            passed += Scored(sticker, matched.size, coverage, precision, charsPerMatch)
+            if (!score.passed) continue
+            passed += Scored(sticker, score)
         }
 
-        return passed
+        val stickers = passed
             .sortedWith(
-                compareByDescending<Scored> { it.matchedWords }
-                    .thenByDescending { it.precision }
-                    .thenBy { it.charsPerMatch }
+                compareByDescending<Scored> { it.score.matchedWords }
+                    .thenByDescending { it.score.precision }
+                    .thenBy { it.score.charsPerMatch }
                     .thenByDescending { importanceRank(it.sticker.importance) }
                     .thenByDescending { it.sticker.createdAt }
             )
             .take(limit)
             .map { it.sticker }
+
+        return SelectionResult(stickers, trace)
     }
 
     /**
@@ -649,7 +783,8 @@ class HourglassMemory(private val dao: StickerDao) {
          *
          * Число пока НЕ выведено из замеров, в отличие от порогов ниже, — оно
          * держится в уме как разумное и проверяется наблюдением: каждая ступень
-         * пишет в лог, сколько нашла и где спуск остановился. Смотрим на
+         * пишет в объяснение отбора, сколько нашла и где спуск остановился (см.
+         * trace в SelectionResult). Смотрим на
          * нескольких вопросах, на какой ступени поиск реально замирает, и
          * ставим число по факту.
          */
@@ -673,24 +808,8 @@ class HourglassMemory(private val dao: StickerDao) {
         /** Потолок числа слов, по которым идёт поиск. */
         const val MAX_SEARCH_WORDS = 6
 
-        /**
-         * Проверка 1. Какую долю значимых слов вопроса запись обязана покрыть.
-         *
-         * Половина: одно слово из четырёх — случайность, два из четырёх — уже
-         * разговор об одном и том же. Ровно половина проходит.
-         */
-        const val MIN_COVERAGE = 0.5
-
-        /**
-         * Проверка 2. Сколько знаков объёма записи допустимо на один знак
-         * совпадения.
-         *
-         * Замеры на живой базе 29.08.2026: фраза пользователя, честно
-         * относящаяся к вопросу, — 1.4-9.5; лог прогона TOTE, зацепившийся
-         * случайным обрубком внутри комментария, — 67. Порог поставлен между
-         * ними с запасом в обе стороны, а не впритык к наблюдённому.
-         */
-        const val MAX_CHARS_PER_MATCH = 20.0
+        // MIN_COVERAGE и MAX_CHARS_PER_MATCH переехали на верхний уровень файла,
+        // к scoreCandidate — единственному месту, которое их читает.
 
         /**
          * Слова, которые есть почти в любом вопросе. Длинные, поэтому предыдущий
