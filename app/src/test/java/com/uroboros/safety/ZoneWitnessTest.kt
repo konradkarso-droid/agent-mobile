@@ -95,6 +95,82 @@ class ZoneWitnessTest {
     }
 
     /**
+     * ГРАНИЦА. Сообщение от источника может прийти без части показаний:
+     * температуры в нём просто нет. Событие при этом настоящее, счётчик растёт
+     * честно, а оценивать ногу нечем.
+     *
+     * Подстановка COMFORT на это место была бы худшей из возможных: нога,
+     * которая не читается вовсе, выглядела бы исправной и спокойной, а
+     * растущий счётчик событий подтверждал бы её здоровье. Ровно эта ложь
+     * жила в сторожевом коде до 09.2026 — нечитаемая температура превращалась
+     * там в 0.0 °C, то есть в «холодно».
+     */
+    @Test
+    fun `сообщение без температуры не делает ногу нормой`() {
+        val witness = ZoneWitness(startedAtMs = 0L)
+
+        witness.recordPower(temperatureZone = null, chargeZone = SafetyZone.COMFORT, atMs = 1_000L)
+
+        val snapshot = witness.snapshot(nowMs = 2_000L)
+        // Источник жив: событие пришло и посчитано.
+        assertEquals(1, snapshot.powerEvents)
+        assertEquals(java.lang.Long.valueOf(1_000L), snapshot.powerLastAtMs)
+        // А нога — нет. Именно null, а не COMFORT.
+        assertNull(snapshot.worstBatteryTemperature)
+        assertEquals(SafetyZone.COMFORT, snapshot.worstCharge)
+
+        val text = witness.format(snapshot, ::label)
+        assertTrue(text.contains("Батарея: событий 1, последнее 1 с назад · оценок не было"))
+    }
+
+    /**
+     * ГРАНИЦА. Не наступившая оценка не участвует в выборе худшего — ни в
+     * какую сторону. Если бы null однажды начал затирать запомненное, прибор
+     * терял бы память о жаре ровно тогда, когда показания станут ненадёжными,
+     * то есть в самый неподходящий момент.
+     */
+    @Test
+    fun `непрочитанная нога не стирает уже виденное худшее`() {
+        val witness = ZoneWitness(startedAtMs = 0L)
+
+        witness.recordPower(SafetyZone.FATIGUE, SafetyZone.COMFORT, atMs = 1_000L)
+        witness.recordPower(temperatureZone = null, chargeZone = SafetyZone.COMFORT, atMs = 2_000L)
+
+        val snapshot = witness.snapshot(nowMs = 3_000L)
+        assertEquals(SafetyZone.FATIGUE, snapshot.worstBatteryTemperature)
+        assertEquals(2, snapshot.powerEvents)
+    }
+
+    /**
+     * ГРАНИЦА, и она закрепляет утверждение из пояснения к снимку: у пустого
+     * поля худшего есть ДВЕ причины, и различает их счётчик событий того же
+     * источника.
+     *
+     * Здесь показан второй случай — источник жив, а прочитать из его сообщения
+     * нечего. От первого случая (источника не слышно вовсе) он отличается
+     * только числом событий, поэтому читать поле худшего в отрыве от счётчика
+     * нельзя, а отчёт печатает их всегда вместе.
+     */
+    @Test
+    fun `живой источник без единого показания отличим от молчащего`() {
+        val witness = ZoneWitness(startedAtMs = 0L)
+
+        witness.recordPower(temperatureZone = null, chargeZone = null, atMs = 1_000L)
+
+        val snapshot = witness.snapshot(nowMs = 2_000L)
+        assertEquals(1, snapshot.powerEvents)
+        assertNull(snapshot.worstBatteryTemperature)
+        assertNull(snapshot.worstCharge)
+        // Наблюдать было нечего — и прибор не достраивает это до «нормы».
+        assertNull(snapshot.worstOverall)
+
+        val text = witness.format(snapshot, ::label)
+        // Источник молчащим НЕ назван: события от него шли.
+        assertTrue(text.contains("Батарея: событий 1"))
+        assertTrue(!text.contains("Батарея: событий нет"))
+    }
+
+    /**
      * ГРАНИЦА. Заряд и температура приезжают одним сообщением, поэтому событие
      * от батареи ровно одно. Если счётчик однажды начнут увеличивать на каждую
      * ногу, подписка станет выглядеть вдвое более живой, чем она есть, — а это
