@@ -594,8 +594,14 @@ class MainActivity : AppCompatActivity() {
 
         val charge = if (power.percentKnown) "${power.percent}%" else "?"
         val plug = if (power.charging) " (заряжается)" else ""
-        binding.textHardware.text = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · " +
-            "${fmt1(power.temperatureCelsius)}°C"
+        // Температура печатается по тому же правилу, что и заряд строкой выше:
+        // «?» вместо числа, когда показания в сообщении не было. Ноль на этом
+        // месте читался бы как настоящие 0.0 °C и был бы неотличим от
+        // холодного телефона — то есть врал бы в благополучную сторону ровно
+        // там, где смотрят на перегрев. Что именно молчит, разбирается по
+        // строке наблюдения за зоной внутри шторки.
+        val temp = if (power.temperatureKnown) "${fmt1(power.temperatureCelsius)}°C" else "?"
+        binding.textHardware.text = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · $temp"
 
         // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
         // больше не входит: она обязана быть видна независимо от того,
