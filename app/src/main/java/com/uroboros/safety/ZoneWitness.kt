@@ -214,6 +214,9 @@ class ZoneWitness(private val startedAtMs: Long) {
 
         lines += sourceLine(
             title = "Тепловой статус",
+            // Подписи нет: у этого источника ровно одна нога, и подписывать
+            // оценку нечем — она может быть только его собственной.
+            legTitle = "",
             events = snapshot.thermalEvents,
             lastAtMs = snapshot.thermalLastAtMs,
             worst = snapshot.worstThermalStatus,
@@ -223,6 +226,12 @@ class ZoneWitness(private val startedAtMs: Long) {
         )
         lines += sourceLine(
             title = "Батарея",
+            // А здесь подпись обязательна: в одной строке стоят показания
+            // двух разных предметов — счётчик принадлежит источнику
+            // (сообщение о батарее), оценка — одной из двух его ног. Без
+            // подписи «Батарея … худшее» читается как оценка всей батареи,
+            // хотя заряд оценивается отдельно и строкой ниже.
+            legTitle = "температура: ",
             events = snapshot.powerEvents,
             lastAtMs = snapshot.powerLastAtMs,
             worst = snapshot.worstBatteryTemperature,
@@ -248,6 +257,7 @@ class ZoneWitness(private val startedAtMs: Long) {
 
     private fun sourceLine(
         title: String,
+        legTitle: String,
         events: Int,
         lastAtMs: Long?,
         worst: SafetyZone?,
@@ -269,7 +279,7 @@ class ZoneWitness(private val startedAtMs: Long) {
         // Число стоит после слова намеренно: «событий 1» и «событий 7»
         // одинаково грамотны, а «1 событие / 7 событий» требуют разных
         // окончаний, и правильная сегодня строка стала бы неграмотной завтра.
-        return "  $title: событий $events, последнее $ago назад · $worstText"
+        return "  $title: событий $events, последнее $ago назад · $legTitle$worstText"
     }
 
     /**
