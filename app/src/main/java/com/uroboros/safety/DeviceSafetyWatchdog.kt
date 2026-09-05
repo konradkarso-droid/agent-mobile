@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 
 /**
@@ -22,11 +23,11 @@ import kotlinx.coroutines.flow.stateIn
  * что сейчас думает модель — ни одна функция здесь не принимает энергию
  * или confidence как параметр.
  *
- * Питание (2026-08-25). Раньше отсюда читалась ТОЛЬКО температура батареи,
- * поэтому агент был защищён от перегрева, но не от того, что телефон просто
- * выключится посреди получасового цикла. Теперь из того же самого
- * широковещательного сообщения ACTION_BATTERY_CHANGED читаются ещё уровень
- * заряда и факт подключения к зарядке — новых разрешений и подписок не нужно.
+ * Питание. Раньше отсюда читалась ТОЛЬКО температура батареи, поэтому агент
+ * был защищён от перегрева, но не от того, что телефон просто выключится
+ * посреди получасового цикла. Теперь из того же самого широковещательного
+ * сообщения ACTION_BATTERY_CHANGED читаются ещё уровень заряда и факт
+ * подключения к зарядке — новых разрешений и подписок не нужно.
  *
  * ВАЖНО про семантику зон: WARNING/FATIGUE — это лекарства ОТ ЖАРЫ (меньше
  * потоков, задержки между токенами). К севшей батарее они неприменимы и даже
@@ -35,6 +36,20 @@ import kotlinx.coroutines.flow.stateIn
  * одном крайнем случае — CRITICAL, где нужное действие совпадает: полный стоп.
  * Всё остальное решается отдельным свойством [canStartLongRun], которое
  * спрашивают ОДИН РАЗ перед запуском длинной работы, а не на каждом токене.
+ *
+ * НАБЛЮДАЕМОСТЬ ([ZoneWitness]). Зона почти всегда COMFORT, и с экрана
+ * невозможно отличить «устройству не жарко» от «источник данных молчит».
+ * Поэтому события каждого источника считаются по дороге — см. [witness] и
+ * пояснение к порядку объявления полей ниже. Сам счёт ни на что не влияет:
+ * зона вычисляется ровно так же, как вычислялась бы без него.
+ *
+ * ЧЕГО ЭТОТ КЛАСС НЕ ОБЕЩАЕТ. Он живёт столько же, сколько область, которую
+ * ему передали при создании. Сегодня это область экрана: подписки встают при
+ * создании и снимаются через awaitClose, когда область отменяют. Сворачивание
+ * приложения наблюдение не прерывает — область отменяется при уничтожении
+ * активности, а не при уходе в фон. Но пересоздание активности (например
+ * поворот экрана, если он не объявлен в манифесте как обрабатываемый вручную)
+ * заводит новый сторож с чистым счётом.
  */
 enum class SafetyZone {
     COMFORT,   // < 40°C — полная мощность
@@ -69,6 +84,21 @@ class DeviceSafetyWatchdog(
 ) : SafetyZoneSource {
     private val powerManager =
         context.getSystemService(Context.POWER_SERVICE) as PowerManager
+
+    /**
+     * Прибор наблюдения. Объявлен ДО потоков намеренно, и это не вопрос вкуса.
+     *
+     * Поля класса в Kotlin инициализируются сверху вниз, а [SharingStarted.Eagerly]
+     * начинает собирать поток прямо во время создания объекта. То есть первое
+     * событие может прийти раньше, чем закончится конструктор. Стой прибор ниже
+     * потоков — сбор обратился бы к ещё не созданному полю. Падение случилось бы
+     * не всегда, а только когда система успела прислать сообщение достаточно
+     * быстро, то есть на чужом телефоне и не при отладке.
+     *
+     * Сюда только пишут; наружу отдаётся неизменяемый снимок ([zoneObservation]),
+     * а не сам прибор, чтобы записывать в него могли только эти два потока.
+     */
+    private val witness = ZoneWitness(startedAtMs = System.currentTimeMillis())
 
     private fun thermalStatusFlow(): Flow<Int> = callbackFlow {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -118,12 +148,26 @@ class DeviceSafetyWatchdog(
     /**
      * Текущее состояние питания. Начальное значение — «заряд неизвестен»:
      * система пришлёт настоящее почти сразу после подписки.
+     *
+     * Счёт событий стоит ДО stateIn намеренно. StateFlow схлопывает одинаковые
+     * подряд значения, поэтому на нём считались бы не сообщения от системы, а
+     * изменения показаний: телефон с ровной температурой выглядел бы как
+     * телефон с мёртвой подпиской — ровно та ошибка, против которой прибор и
+     * поставлен.
      */
-    val power: StateFlow<PowerState> = powerStateFlow().stateIn(
-        scope = externalScope,
-        started = SharingStarted.Eagerly,
-        initialValue = PowerState(0.0, PowerState.UNKNOWN_PERCENT, charging = false)
-    )
+    val power: StateFlow<PowerState> = powerStateFlow()
+        .onEach { state ->
+            witness.recordPower(
+                temperatureZone = zoneFromBatteryTemp(state.temperatureCelsius),
+                chargeZone = zoneFromCharge(state),
+                atMs = System.currentTimeMillis(),
+            )
+        }
+        .stateIn(
+            scope = externalScope,
+            started = SharingStarted.Eagerly,
+            initialValue = PowerState(0.0, PowerState.UNKNOWN_PERCENT, charging = false)
+        )
 
     private fun zoneFromThermalStatus(status: Int): SafetyZone = when (status) {
         PowerManager.THERMAL_STATUS_NONE -> SafetyZone.COMFORT
@@ -159,8 +203,22 @@ class DeviceSafetyWatchdog(
     private fun stricterOf(a: SafetyZone, b: SafetyZone): SafetyZone =
         if (a.ordinal >= b.ordinal) a else b
 
+    /**
+     * Итоговая зона — строжайшая из трёх независимых оценок.
+     *
+     * Счёт событий теплового статуса стоит ДО combine по той же причине, что и
+     * у питания: наружу combine отдаёт уже сведённый результат, и по нему
+     * невозможно узнать, какая из трёх оценок его дала. А это и есть главный
+     * вопрос при разборе: половина механизма может молчать, а зона выглядеть
+     * исправной.
+     */
     override val zone: StateFlow<SafetyZone> = combine(
-        thermalStatusFlow(),
+        thermalStatusFlow().onEach { status ->
+            witness.recordThermalStatus(
+                zone = zoneFromThermalStatus(status),
+                atMs = System.currentTimeMillis(),
+            )
+        },
         power
     ) { thermalStatus, powerState ->
         val thermal = stricterOf(
@@ -173,6 +231,27 @@ class DeviceSafetyWatchdog(
         started = SharingStarted.Eagerly,
         initialValue = SafetyZone.COMFORT
     )
+
+    /**
+     * Снимок наблюдения: сколько событий пришло от каждого источника, когда
+     * пришло последнее, до чего доходила каждая из трёх оценок.
+     *
+     * Отвечает на вопрос, на который не отвечает [zone]: считается ли она
+     * вообще. Границы прибора описаны в [ZoneWitness] — читать их обязательно
+     * перед тем, как делать выводы из показаний.
+     */
+    fun zoneObservation(): ZoneWitnessSnapshot =
+        witness.snapshot(System.currentTimeMillis())
+
+    /**
+     * То же наблюдение готовой строкой для экрана.
+     *
+     * @param label как называть зону по-русски. Приходит снаружи: название для
+     *              человека уже живёт на экране, и вторая копия здесь разошлась
+     *              бы с первой молча.
+     */
+    fun formatZoneObservation(label: (SafetyZone) -> String): String =
+        witness.format(zoneObservation(), label)
 
     /**
      * Можно ли НАЧИНАТЬ длинную работу (TOTE-цикл): порог здесь выше, чем порог
