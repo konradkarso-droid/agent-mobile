@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
+import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -122,6 +123,18 @@ class DeviceSafetyWatchdog(
      */
     private val witness = ZoneWitness(startedAtMs = System.currentTimeMillis())
 
+    /**
+     * Последний ДОСТАВЛЕННЫЙ подпиской тепловой статус, как он пришёл — сырым
+     * числом. Нужен только опросу ([probeLine]): сравнивать «что доставили» не
+     * с чем иначе, потому что прибор хранит худшее за сеанс, а [zone] отдаёт
+     * уже сведённое из трёх оценок.
+     *
+     * Каналов, таким образом, три, и сливать их нельзя: худшее за срок,
+     * итоговое сейчас и последнее доставленное по каждому источнику отвечают
+     * на разные вопросы.
+     */
+    @Volatile private var lastThermalStatus: Int? = null
+
     private fun thermalStatusFlow(): Flow<Int> = callbackFlow {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val listener = PowerManager.OnThermalStatusChangedListener { status ->
@@ -137,46 +150,50 @@ class DeviceSafetyWatchdog(
     }
 
     /**
-     * Одно сообщение ACTION_BATTERY_CHANGED несёт и температуру, и заряд, и
-     * подключение к питанию — поэтому поток один, а не три.
+     * Разбор сообщения о батарее. Вынесен из приёмника, потому что читают его
+     * ДВА пути: подписка и опрос ([probePowerState]). Две копии разбора со
+     * временем разошлись бы молча, и тогда опрос сравнивал бы доставленное не
+     * с тем же самым, а со своим прочтением тех же байтов — то есть врал бы
+     * ровно в той роли, ради которой заведён.
      *
      * Отсутствие показания здесь НЕ достраивается до правдоподобного числа:
      * пришло сообщение без температуры — так и записываем. Достройка в этом
      * месте необратима, потому что дальше по дороге уже не видно, было ли
      * число прочитано или придумано.
      */
+    private fun readPowerState(intent: Intent): PowerState {
+        val tenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)
+        val temperatureKnown = tenths >= 0
+        val celsius = if (temperatureKnown) tenths / 10.0 else 0.0
+
+        // Шкала не всегда 100: считаем процент честно, через scale.
+        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        val percent = if (level >= 0 && scale > 0) {
+            (level * 100) / scale
+        } else {
+            PowerState.UNKNOWN_PERCENT
+        }
+
+        val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+
+        return PowerState(
+            temperatureCelsius = celsius,
+            percent = percent,
+            charging = plugged != 0,
+            temperatureKnown = temperatureKnown,
+        )
+    }
+
+    /**
+     * Одно сообщение ACTION_BATTERY_CHANGED несёт и температуру, и заряд, и
+     * подключение к питанию — поэтому поток один, а не три.
+     */
     private fun powerStateFlow(): Flow<PowerState> = callbackFlow {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 if (intent == null) return
-
-                val tenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)
-                val temperatureKnown = tenths >= 0
-                val celsius = if (temperatureKnown) tenths / 10.0 else 0.0
-
-                // Шкала не всегда 100: считаем процент честно, через scale.
-                val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-                val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-                val percent = if (level >= 0 && scale > 0) {
-                    (level * 100) / scale
-                } else {
-                    PowerState.UNKNOWN_PERCENT
-                }
-
-                val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
-                val charging = plugged != 0
-
-                // Аргументы именованные: у класса четыре поля, два из них
-                // соседствуют по смыслу, и перепутать их местами позиционной
-                // записью стоило бы молчаливой подмены показания.
-                trySend(
-                    PowerState(
-                        temperatureCelsius = celsius,
-                        percent = percent,
-                        charging = charging,
-                        temperatureKnown = temperatureKnown,
-                    )
-                )
+                trySend(readPowerState(intent))
             }
         }
         context.registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -305,6 +322,7 @@ class DeviceSafetyWatchdog(
      */
     override val zone: StateFlow<SafetyZone> = combine(
         thermalStatusFlow().onEach { status ->
+            lastThermalStatus = status
             witness.recordThermalStatus(
                 zone = zoneFromThermalStatus(status),
                 atMs = System.currentTimeMillis(),
@@ -342,7 +360,103 @@ class DeviceSafetyWatchdog(
      *              бы с первой молча.
      */
     fun formatZoneObservation(label: (SafetyZone) -> String): String =
-        witness.format(zoneObservation(), label)
+        witness.format(zoneObservation(), label) + "\n" + probeLine(label)
+
+    /**
+     * ОПРОС — третий канал показаний, независимый от подписки и от прибора.
+     *
+     * Зачем он есть. Прибор считает то, что до него ДОШЛО, и по этому счёту
+     * умеет сказать только «событий не было вовсе». Срок молчания диагнозом не
+     * служит: оба источника присылают событие по изменению, поэтому долгая
+     * тишина на покоящемся устройстве нормальна (замер записан в
+     * [ZoneWitness]). Значит подписку, умершую ПОСРЕДИ сеанса, по потоку
+     * событий поймать нельзя вовсе — а это и есть опасный случай: телефон
+     * греется, новых сообщений нет, зона стоит на прежнем значении, и
+     * предохранитель молчит ровно в тот прогон, ради которого поставлен.
+     *
+     * Опрос спрашивает источники напрямую в момент отрисовки и печатает рядом
+     * доставленное и опрошенное. Расхождение и есть проверка доставки.
+     *
+     * ПОРОГА РАСХОЖДЕНИЯ ЗДЕСЬ НЕТ НАМЕРЕННО. Какая разница в градусах уже
+     * означает поломку, а какая — обычное запаздывание, не измерено ни разу;
+     * назначить это число «на глаз» значило бы повторить ошибку, из-за которой
+     * срок молчания и приняли за симптом. Печатаются оба показания, сравнивает
+     * человек.
+     *
+     * ЧЕГО ОПРОС НЕ УМЕЕТ: при действительно неизменных показаниях мёртвая
+     * подписка и живая выглядят одинаково и здесь — сравнивать нечего, когда
+     * ничего не менялось. Он различает их только тогда, когда что-то реально
+     * сдвинулось, то есть под нагрузкой. Для покоя такого прибора у нас нет.
+     *
+     * Ни на зону, ни на прибор опрос НЕ влияет: он ничего не записывает и
+     * никуда не подмешивается. Иначе исчезла бы та самая разница между «что
+     * доставили» и «что там сейчас», ради которой он и заведён.
+     */
+    private fun probeLine(label: (SafetyZone) -> String): String {
+        val lines = mutableListOf("Опрос источников сейчас:")
+
+        val polledThermal = probeThermalStatus()
+        val deliveredThermal = lastThermalStatus
+        lines += "  Тепловой статус: " + when {
+            polledThermal == null -> "опросить нечем на этой версии Android"
+            deliveredThermal == null ->
+                "по подписке не приходило, опрос «${label(zoneFromThermalStatus(polledThermal))}»"
+            else ->
+                "по подписке «${label(zoneFromThermalStatus(deliveredThermal))}», " +
+                    "опрос «${label(zoneFromThermalStatus(polledThermal))}»"
+        }
+
+        val polledPower = probePowerState()
+        lines += "  Батарея: " + if (polledPower == null) {
+            "опрос не дал сообщения"
+        } else {
+            "по подписке ${describePower(power.value)}, опрос ${describePower(polledPower)}"
+        }
+
+        return lines.joinToString("\n")
+    }
+
+    /** Текущий тепловой статус напрямую, минуя подписку. */
+    private fun probeThermalStatus(): Int? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                powerManager.currentThermalStatus
+            } catch (t: Throwable) {
+                null
+            }
+        } else {
+            null
+        }
+
+    /**
+     * Текущее состояние питания напрямую, минуя подписку.
+     *
+     * Сообщение о батарее в Android залипающее: система хранит последнее и
+     * отдаёт его при регистрации. Регистрация с пустым приёмником как раз и
+     * означает «отдай последнее, подписывать меня не надо». Что оно приходит
+     * при регистрации, видно на замерах — первое событие батареи появляется в
+     * первые же секунды, когда меняться ещё нечему.
+     *
+     * Показания разбираются той же [readPowerState], что и в подписке.
+     */
+    private fun probePowerState(): PowerState? = try {
+        context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?.let { readPowerState(it) }
+    } catch (t: Throwable) {
+        // Прибор наблюдения не имеет права уронить экран, на котором он живёт.
+        null
+    }
+
+    /** Показания питания одной строкой. Неизвестное печатается «?», а не нулём. */
+    private fun describePower(state: PowerState): String {
+        val temp = if (state.temperatureKnown) {
+            String.format(Locale.US, "%.1f", state.temperatureCelsius) + " °C"
+        } else {
+            "? °C"
+        }
+        val charge = if (state.percentKnown) "${state.percent}%" else "?"
+        return "$temp / $charge"
+    }
 
     /**
      * Можно ли НАЧИНАТЬ длинную работу (TOTE-цикл): порог здесь выше, чем порог
