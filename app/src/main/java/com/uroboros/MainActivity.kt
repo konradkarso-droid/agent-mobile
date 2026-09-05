@@ -611,6 +611,11 @@ class MainActivity : AppCompatActivity() {
                 journalDiskLine, journalRestoreLine,
                 checkpointDiskLine, checkpointActionLine,
                 lastMetricsLine,
+                // Наблюдение за зоной стоит последним: смотрят на него не при
+                // каждом ответе, а когда показания железа выглядят странно.
+                // Печатается ВСЕГДА, включая случай "событий не было": прибор,
+                // молчащий при нуле, неотличим от неподключённого.
+                watchdog.formatZoneObservation(::zoneLabel),
             )
                 .joinToString("\n")
     }
