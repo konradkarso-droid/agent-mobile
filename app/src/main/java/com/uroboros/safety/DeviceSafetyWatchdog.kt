@@ -43,6 +43,12 @@ import kotlinx.coroutines.flow.stateIn
  * пояснение к порядку объявления полей ниже. Сам счёт ни на что не влияет:
  * зона вычисляется ровно так же, как вычислялась бы без него.
  *
+ * НЕПРОЧИТАННАЯ НОГА — ТРЕТЬЕ ЗНАЧЕНИЕ, А НЕ COMFORT. Сообщение о батарее
+ * может прийти без температуры или без уровня заряда. Оценки этих ног тогда
+ * не существует, и наружу это идёт как `null` — до самого прибора, без
+ * подмены по дороге. Подмена нужна ровно в одном месте, где зона обязана быть
+ * одной буквой, и живёт она в [comfortIfUnread] вместе с ценой.
+ *
  * ЧЕГО ЭТОТ КЛАСС НЕ ОБЕЩАЕТ. Он живёт столько же, сколько область, которую
  * ему передали при создании. Сегодня это область экрана: подписки встают при
  * создании и снимаются через awaitClose, когда область отменяют. Сворачивание
@@ -61,15 +67,31 @@ enum class SafetyZone {
 /**
  * Состояние питания устройства — сырые факты, без интерпретации.
  *
- * @param temperatureCelsius температура батареи.
+ * @param temperatureCelsius температура батареи. Значение осмысленно ТОЛЬКО
+ *                при [temperatureKnown] `true`; иначе поле не значит ничего и
+ *                читать его нельзя. Ноль оставлен там намеренно: он не
+ *                выплывает на экран так, как выплыл бы часовой вроде -1, а
+ *                истину несёт булево рядом.
  * @param percent уровень заряда 0..100, либо [UNKNOWN_PERCENT], если сообщение
  *                от системы ещё не пришло или пришло без данных.
  * @param charging подключено ли внешнее питание (сеть, USB или беспроводная).
+ * @param temperatureKnown было ли в сообщении показание температуры. Отдельное
+ *                поле, а не часовое значение: 0.0 °C — законное показание, и
+ *                метка «нет данных» не должна совпадать ни с одним из них.
+ *
+ * Порядок полей значим, и новое стоит ПОСЛЕДНИМ намеренно. У data class
+ * порядок конструктора есть порядок компонентов при разборе на части
+ * (`val (t, p, c) = state`): вставка поля в середину молча поменяла бы смысл
+ * второго компонента у любого такого разбора, а найти его поиском нельзя —
+ * имени поля в разборе нет. Добавление в конец такой подмены не допускает
+ * ни при каком разборе. То же правило действует и для следующего, кто будет
+ * сюда что-то дописывать.
  */
 data class PowerState(
     val temperatureCelsius: Double,
     val percent: Int,
     val charging: Boolean,
+    val temperatureKnown: Boolean,
 ) {
     val percentKnown: Boolean get() = percent != UNKNOWN_PERCENT
 
@@ -117,6 +139,11 @@ class DeviceSafetyWatchdog(
     /**
      * Одно сообщение ACTION_BATTERY_CHANGED несёт и температуру, и заряд, и
      * подключение к питанию — поэтому поток один, а не три.
+     *
+     * Отсутствие показания здесь НЕ достраивается до правдоподобного числа:
+     * пришло сообщение без температуры — так и записываем. Достройка в этом
+     * месте необратима, потому что дальше по дороге уже не видно, было ли
+     * число прочитано или придумано.
      */
     private fun powerStateFlow(): Flow<PowerState> = callbackFlow {
         val receiver = object : BroadcastReceiver() {
@@ -124,7 +151,8 @@ class DeviceSafetyWatchdog(
                 if (intent == null) return
 
                 val tenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)
-                val celsius = if (tenths >= 0) tenths / 10.0 else 0.0
+                val temperatureKnown = tenths >= 0
+                val celsius = if (temperatureKnown) tenths / 10.0 else 0.0
 
                 // Шкала не всегда 100: считаем процент честно, через scale.
                 val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
@@ -138,7 +166,17 @@ class DeviceSafetyWatchdog(
                 val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
                 val charging = plugged != 0
 
-                trySend(PowerState(celsius, percent, charging))
+                // Аргументы именованные: у класса четыре поля, два из них
+                // соседствуют по смыслу, и перепутать их местами позиционной
+                // записью стоило бы молчаливой подмены показания.
+                trySend(
+                    PowerState(
+                        temperatureCelsius = celsius,
+                        percent = percent,
+                        charging = charging,
+                        temperatureKnown = temperatureKnown,
+                    )
+                )
             }
         }
         context.registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -146,8 +184,9 @@ class DeviceSafetyWatchdog(
     }
 
     /**
-     * Текущее состояние питания. Начальное значение — «заряд неизвестен»:
-     * система пришлёт настоящее почти сразу после подписки.
+     * Текущее состояние питания. Начальное значение — «ничего ещё не известно»:
+     * ни температуры, ни заряда. Система пришлёт настоящее почти сразу после
+     * подписки.
      *
      * Счёт событий стоит ДО stateIn намеренно. StateFlow схлопывает одинаковые
      * подряд значения, поэтому на нём считались бы не сообщения от системы, а
@@ -158,7 +197,7 @@ class DeviceSafetyWatchdog(
     val power: StateFlow<PowerState> = powerStateFlow()
         .onEach { state ->
             witness.recordPower(
-                temperatureZone = zoneFromBatteryTemp(state.temperatureCelsius),
+                temperatureZone = zoneFromBatteryTemp(state),
                 chargeZone = zoneFromCharge(state),
                 atMs = System.currentTimeMillis(),
             )
@@ -166,7 +205,12 @@ class DeviceSafetyWatchdog(
         .stateIn(
             scope = externalScope,
             started = SharingStarted.Eagerly,
-            initialValue = PowerState(0.0, PowerState.UNKNOWN_PERCENT, charging = false)
+            initialValue = PowerState(
+                temperatureCelsius = 0.0,
+                percent = PowerState.UNKNOWN_PERCENT,
+                charging = false,
+                temperatureKnown = false,
+            )
         )
 
     private fun zoneFromThermalStatus(status: Int): SafetyZone = when (status) {
@@ -177,28 +221,65 @@ class DeviceSafetyWatchdog(
         else -> SafetyZone.CRITICAL
     }
 
-    private fun zoneFromBatteryTemp(celsius: Double): SafetyZone = when {
-        celsius < 40.0 -> SafetyZone.COMFORT
-        celsius < 45.0 -> SafetyZone.WARNING
-        celsius < 50.0 -> SafetyZone.FATIGUE
+    /**
+     * Оценка по температуре батареи, либо null, если температуры в сообщении
+     * не было.
+     *
+     * Пороги 40/45/50 — не заглушки: это справочные величины для литиевых
+     * батарей (до 40 безопасно, 41-44 рабочий потолок, выше 45 деградация).
+     * Область, за которой они ничего не значат, названа честно: сверху они не
+     * проверены ни разу. За всё время наблюдений на устройстве температура не
+     * поднималась выше 39 с небольшим, то есть первый порог не переступался, а
+     * второй и третий не наблюдались вовсе. Перепроверяются они не рассуждением,
+     * а прогоном под нагрузкой с записью показаний.
+     */
+    private fun zoneFromBatteryTemp(state: PowerState): SafetyZone? = when {
+        !state.temperatureKnown -> null
+        state.temperatureCelsius < 40.0 -> SafetyZone.COMFORT
+        state.temperatureCelsius < 45.0 -> SafetyZone.WARNING
+        state.temperatureCelsius < 50.0 -> SafetyZone.FATIGUE
         else -> SafetyZone.CRITICAL
     }
 
     /**
+     * Оценка по заряду, либо null, если уровень неизвестен.
+     *
      * Заряд даёт ровно два исхода, без промежуточных: либо всё равно (COMFORT),
      * либо стоп (CRITICAL). Промежуточных «притормозить» здесь быть не может —
      * см. пояснение к [SafetyZone].
      *
-     * Неизвестный заряд не останавливает работу: настоящее значение придёт
-     * через долю секунды после подписки, а тормозить из-за отсутствия данных
-     * значит не запускаться в первую секунду после старта приложения.
+     * Подключённое питание — полноценная оценка, а не пропуск: пока телефон на
+     * зарядке, уровень не является поводом останавливаться, каким бы он ни был.
      */
-    private fun zoneFromCharge(state: PowerState): SafetyZone = when {
+    private fun zoneFromCharge(state: PowerState): SafetyZone? = when {
         state.charging -> SafetyZone.COMFORT
-        !state.percentKnown -> SafetyZone.COMFORT
+        !state.percentKnown -> null
         state.percent < STOP_RUNNING_BELOW_PERCENT -> SafetyZone.CRITICAL
         else -> SafetyZone.COMFORT
     }
+
+    /**
+     * Чем заменяется непрочитанная нога там, где зона обязана быть одной
+     * буквой. Единственное место подмены во всём классе — держать её в одном
+     * месте важнее краткости записи.
+     *
+     * Почему COMFORT, а не остановка. Ноги независимы, и пока одна молчит,
+     * остальные считаются: системный тепловой статус — отдельный источник,
+     * откалиброванный производителем под это железо, и на устройстве он
+     * измерен живым. Останавливаться из-за отсутствия данных значит не
+     * запускаться в первую секунду после старта приложения, когда ни одного
+     * сообщения ещё не пришло.
+     *
+     * ЧЕГО ЭТА ПОДМЕНА НЕ ПОКРЫВАЕТ, и это важнее довода за неё. Довод выше
+     * говорит о коротком промежутке до первого сообщения. Нога может оказаться
+     * непрочитанной ПОСТОЯННО — на другом устройстве, где в сообщении о батарее
+     * нужного показания нет вовсе. Тогда работа продолжится, как если бы всё
+     * было в порядке, и единственным признаком останется строка прибора
+     * ([formatZoneObservation]): события у источника идут, а оценок по ноге
+     * нет. Кода, который это заметил бы сам, здесь нет намеренно — решение о
+     * работе на половине показаний принимает человек, а не предохранитель.
+     */
+    private fun comfortIfUnread(zone: SafetyZone?): SafetyZone = zone ?: SafetyZone.COMFORT
 
     private fun stricterOf(a: SafetyZone, b: SafetyZone): SafetyZone =
         if (a.ordinal >= b.ordinal) a else b
@@ -211,6 +292,16 @@ class DeviceSafetyWatchdog(
      * невозможно узнать, какая из трёх оценок его дала. А это и есть главный
      * вопрос при разборе: половина механизма может молчать, а зона выглядеть
      * исправной.
+     *
+     * Начальное значение COMFORT — подстановка того же рода, что и в
+     * [comfortIfUnread], и она СОЗНАТЕЛЬНО ОСТАВЛЕНА. Сделать зону обнуляемой
+     * значит переписать [SafetyZoneSource] и всех её потребителей ради
+     * поведения, которое и так объявлено: неизвестность работу не
+     * останавливает. Область вранья: от подписки до первого события. На
+     * устройстве замерено, что событий приходит сразу два — своё стартовое и
+     * ответ системы вдогонку, — а любому запуску предшествует загрузка модели
+     * около полутора минут. Видно это состояние по прибору: при нуле событий он
+     * говорит, что источник молчит, а не что всё спокойно.
      */
     override val zone: StateFlow<SafetyZone> = combine(
         thermalStatusFlow().onEach { status ->
@@ -223,9 +314,9 @@ class DeviceSafetyWatchdog(
     ) { thermalStatus, powerState ->
         val thermal = stricterOf(
             zoneFromThermalStatus(thermalStatus),
-            zoneFromBatteryTemp(powerState.temperatureCelsius)
+            comfortIfUnread(zoneFromBatteryTemp(powerState))
         )
-        stricterOf(thermal, zoneFromCharge(powerState))
+        stricterOf(thermal, comfortIfUnread(zoneFromCharge(powerState)))
     }.stateIn(
         scope = externalScope,
         started = SharingStarted.Eagerly,
@@ -262,6 +353,12 @@ class DeviceSafetyWatchdog(
      * Свойство само себя не применяет: его должен спросить тот, кто запускает
      * цикл. Жара сюда включена тоже — начинать в CRITICAL нельзя ни по какой
      * причине.
+     *
+     * Неизвестный заряд запуск РАЗРЕШАЕТ, по тому же доводу, что и в
+     * [comfortIfUnread], и с той же непокрытой частью: на устройстве, где
+     * уровень не читается никогда, этот барьер не сработает ни разу и молчание
+     * его будет неотличимо от разрешения. Смотреть в таком случае надо на
+     * строку прибора, а не на поведение кнопки.
      */
     val canStartLongRun: Boolean
         get() {
