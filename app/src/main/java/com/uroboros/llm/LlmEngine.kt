@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
@@ -324,6 +325,38 @@ class LlmEngine(
     private val barrierDelayed = AtomicInteger(0)
 
     /**
+     * Сколько событий барьер отбросил ПОСЛЕ того, как потребовал остановки.
+     *
+     * СЧИТАЕТСЯ РАДИ РАЗЛИЧЕНИЯ ДВУХ РАЗНЫХ ЯВЛЕНИЙ, а не ради величины. Между
+     * требованием остановиться и концом потока проходит время; наблюдалось
+     * шестнадцать секунд при потолке в пять минут. Причин у этого две, и они
+     * дают противоположные выводы о железе:
+     *
+     * 1. Генерация не прекратилась. Остановка — просьба нативной стороне, и
+     *    пока она не выполнена, устройство считает. Тогда предохранитель,
+     *    сработавший по физическому основанию, ещё какое-то время греет
+     *    телефон, и это дыра в защитном контуре.
+     * 2. Генерация прекратилась сразу, а разбирался накопленный буфер. Поток
+     *    отдаёт события через канал с буфером, и если тот, кто их собирает,
+     *    медленнее того, кто их шлёт, очередь копится. Тогда греться было
+     *    нечему, а время ушло на разбор уже сосчитанного.
+     *
+     * Много отброшенных — второе. Почти ноль при заметном времени — первое.
+     */
+    private val barrierDroppedAfterStop = AtomicInteger(0)
+
+    /**
+     * Сколько миллисекунд прошло от требования остановки до конца потока.
+     *
+     * Ноль значит, что барьер не срабатывал: без срабатывания измерять нечего.
+     * Верхней границы у величины нет — она меряет чужое поведение, а не наше.
+     */
+    private val barrierStopToEndMs = AtomicLong(0L)
+
+    /** Момент требования остановки. Ноль — не требовали. */
+    private val barrierStopAtMs = AtomicLong(0L)
+
+    /**
      * Что барьер сделал за последний прогон, строкой для экрана.
      *
      * Потерянное время СЧИТАЕТСЯ УМНОЖЕНИЕМ, а не замеряется: настоящая
@@ -343,12 +376,24 @@ class LlmEngine(
             return "Барьер: событий не проходило."
         }
         val passed = "Барьер: пропущено $text кусков текста и $other служебных"
-        if (delayed == 0) {
-            return "$passed, задержек не было."
+        val delayTail = if (delayed == 0) {
+            ", задержек не было."
+        } else {
+            val addedSec = delayed * FATIGUE_DELAY_MS / 1000.0
+            ", задержано $delayed (около ${String.format("%.1f", addedSec)} с сверху)."
         }
-        val addedSec = delayed * FATIGUE_DELAY_MS / 1000.0
-        return "$passed, задержано $delayed " +
-            "(около ${String.format("%.1f", addedSec)} с сверху)."
+        val stopMs = barrierStopToEndMs.get()
+        if (stopMs == 0L) {
+            return passed + delayTail
+        }
+        // Строка про остановку показывается ТОЛЬКО когда барьер срабатывал.
+        // Иначе её ноль читался бы как «остановились мгновенно», хотя означал
+        // бы «не останавливались вовсе» — разные вещи, а на экране одно.
+        val dropped = barrierDroppedAfterStop.get()
+        val stopSec = String.format("%.1f", stopMs / 1000.0)
+        return passed + delayTail +
+            " После требования остановки прошло $stopSec с, " +
+            "отброшено ещё $dropped событий."
     }
 
     suspend fun loadModel(modelPath: String): Boolean {
@@ -968,6 +1013,9 @@ class LlmEngine(
         barrierPassedText.set(0)
         barrierPassedOther.set(0)
         barrierDelayed.set(0)
+        barrierDroppedAfterStop.set(0)
+        barrierStopToEndMs.set(0L)
+        barrierStopAtMs.set(0L)
         try {
             engine.generateMultiTurnFlow(messagesJson, maxTokens).collect { event ->
                 val zone = watchdog.zone.value
@@ -980,6 +1028,11 @@ class LlmEngine(
                             GenerationEnd.WATCHDOG_TIMEOUT
                         }
                     )
+                    // Момент ставится один раз, первым срабатыванием: ветка
+                    // повторяется на каждом следующем событии, и без этого
+                    // условия отсчёт начинался бы заново с последнего.
+                    barrierStopAtMs.compareAndSet(0L, System.currentTimeMillis())
+                    barrierDroppedAfterStop.incrementAndGet()
                     engine.stopGeneration()
                     // Таймер здесь НЕ сбрасывается, и это главное в этой ветке.
                     //
@@ -1044,6 +1097,10 @@ class LlmEngine(
             // Сработает только если ни одна ветка выше не успела — первая
             // названная причина побеждает.
             recordGenerationEnd(GenerationEnd.UNEXPLAINED)
+            val stopAt = barrierStopAtMs.get()
+            if (stopAt != 0L) {
+                barrierStopToEndMs.set(System.currentTimeMillis() - stopAt)
+            }
             watchdog.resetInferenceTimer()
         }
     }
