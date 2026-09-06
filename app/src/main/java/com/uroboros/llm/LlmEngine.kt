@@ -6,6 +6,7 @@ import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -90,6 +92,64 @@ import org.json.JSONObject
  */
 const val CONTEXT_SIZE = 8192
 
+/**
+ * Чем кончился прогон генерации.
+ *
+ * Заведено потому, что физический барьер внутри [LlmEngine] обрывает
+ * генерацию молча: обработчик события пропускает выдачу наружу, поток просто
+ * кончается, и оборванный защитой ответ на экране неотличим от законченного.
+ * Значение ничего не решает и ни на что не влияет — это показание прибора,
+ * и читать его полагается человеку.
+ *
+ * Чего здесь нет намеренно. Во-первых, объёма сказанного до обрыва: причина
+ * завершения отвечает на вопрос «почему кончилось», а не «сколько успели».
+ * Во-вторых, задержек при утомлении: они случаются десятками за один прогон
+ * и прогон не заканчивают. Слить их сюда значило бы потерять различие между
+ * «барьер притормаживал» и «барьер остановил», а это и есть то, ради чего
+ * прибор строится.
+ */
+enum class GenerationEnd {
+
+    /**
+     * С загрузки не было ни одного прогона. Отдельно от [UNEXPLAINED]
+     * намеренно: «ещё не звали» и «звали, и кончилось непонятно чем» — разные
+     * ответы, и на экране они должны выглядеть по-разному.
+     */
+    NOT_STARTED,
+
+    /** Прогон идёт прямо сейчас. */
+    RUNNING,
+
+    /** Движок прислал терминальное событие «готово». */
+    COMPLETED,
+
+    /** Оборвано сторожем: устройство в опасной зоне. */
+    WATCHDOG_CRITICAL,
+
+    /** Оборвано сторожем: исчерпан потолок непрерывной работы. */
+    WATCHDOG_TIMEOUT,
+
+    /** Движок сообщил об ошибке. */
+    ENGINE_ERROR,
+
+    /** Отменена корутина, в которой шёл прогон. */
+    CANCELLED,
+
+    /** Позвали [LlmEngine.stopGeneration]. */
+    STOPPED_BY_CALLER,
+
+    /**
+     * Поток кончился, а причины никто не назвал.
+     *
+     * Это неполадка самого прибора, а не устройства: раз прогон начался и
+     * кончился, какая-то причина была, и её не записали. Значение существует
+     * затем, чтобы такой случай не сливался с [NOT_STARTED] — иначе молчание
+     * от того, что ловить нечего, и молчание от поломки выглядели бы
+     * одинаково.
+     */
+    UNEXPLAINED,
+}
+
 
 class LlmEngine(
     private val context: Context,
@@ -156,6 +216,63 @@ class LlmEngine(
     val loadFingerprint: String? get() = promptCacheDir?.name
 
     val isLoaded: Boolean get() = engine.isLoaded
+
+    /**
+     * Причина, по которой кончился последний прогон генерации.
+     *
+     * ОБЛАСТЬ, ЗА КОТОРОЙ ЭТО ЗНАЧЕНИЕ ВРЁТ. Поле одно на весь движок, а
+     * движок в приложении один, поэтому одновременные прогоны затёрли бы
+     * причину друг друга молча. Сегодня их и не бывает: все места сбора
+     * потока идут последовательно — экран не запускает генерацию, пока идёт
+     * цикл, а ответ на реплику внутри цикла считается на шве между шагами, в
+     * той же корутине. Это устройство вызывающих, а не свойство движка:
+     * разрешив генерацию из двух мест сразу, надо будет заводить причину на
+     * прогон, а не на движок. Само поле такой параллельности не заметит.
+     *
+     * Чем перепроверить: найти все места сбора потоков [generateFlow] и
+     * [generateConversationFlow] и убедиться, что ни одно не запускается из
+     * своей корутины параллельно другому.
+     */
+    private val generationEnd = AtomicReference(GenerationEnd.NOT_STARTED)
+
+    /** Причина завершения последнего прогона. Для показа есть [getGenerationEndReport]. */
+    val lastGenerationEnd: GenerationEnd get() = generationEnd.get()
+
+    /**
+     * Та же причина строкой для экрана — читаемой без знания программирования.
+     *
+     * Собирается на момент вызова, ничего не хранит и не сбрасывает.
+     */
+    fun getGenerationEndReport(): String = when (generationEnd.get()) {
+        GenerationEnd.NOT_STARTED -> "Ответ: генерации ещё не было."
+        GenerationEnd.RUNNING -> "Ответ: генерация идёт."
+        GenerationEnd.COMPLETED -> "Ответ: закончен движком."
+        GenerationEnd.WATCHDOG_CRITICAL ->
+            "Ответ ОБОРВАН защитой: устройство в опасной зоне."
+        GenerationEnd.WATCHDOG_TIMEOUT ->
+            "Ответ ОБОРВАН защитой: исчерпан потолок непрерывной работы."
+        GenerationEnd.ENGINE_ERROR -> "Ответ прерван ошибкой движка."
+        GenerationEnd.CANCELLED -> "Ответ отменён: работу остановили снаружи."
+        GenerationEnd.STOPPED_BY_CALLER -> "Ответ остановлен вызывающим."
+        GenerationEnd.UNEXPLAINED ->
+            "Ответ оборван, причина не названа. Это неполадка прибора, а не устройства."
+    }
+
+    /**
+     * Записывает причину, если прогон ещё считается идущим.
+     *
+     * ПЕРВАЯ НАЗВАННАЯ ПРИЧИНА ПОБЕЖДАЕТ. Барьер зовётся на каждом событии, а
+     * событий после обрыва приходит ещё сколько-то, и без этого условия
+     * причиной оказалась бы последняя, а не та, из-за которой всё кончилось.
+     * По той же причине завершающая запись в `finally` не затирает уже
+     * названного.
+     *
+     * Чего не умеет: причина одна, а совпасть их может две (опасная зона и
+     * истёкший потолок разом). Записывается та, что проверена раньше.
+     */
+    private fun recordGenerationEnd(reason: GenerationEnd) {
+        generationEnd.compareAndSet(GenerationEnd.RUNNING, reason)
+    }
 
     suspend fun loadModel(modelPath: String): Boolean {
         val params = GGMLEngine.getRecommendedParams(context)
@@ -766,11 +883,23 @@ class LlmEngine(
      */
     private fun guardedFlow(messagesJson: String, maxTokens: Int): Flow<GenerationEvent> = flow {
         watchdog.markInferenceStarted()
+        // Причина сбрасывается ЗДЕСЬ, в начале прогона, а не в конце прошлого.
+        // Иначе на экране осталась бы причина прошлого прогона, и читалась бы
+        // она как причина нынешнего — подстановка в благополучную сторону
+        // ровно того рода, от которого прибор и заводится.
+        generationEnd.set(GenerationEnd.RUNNING)
         try {
             engine.generateMultiTurnFlow(messagesJson, maxTokens).collect { event ->
                 val zone = watchdog.zone.value
 
                 if (zone == SafetyZone.CRITICAL || watchdog.shouldForceCooldown()) {
+                    recordGenerationEnd(
+                        if (zone == SafetyZone.CRITICAL) {
+                            GenerationEnd.WATCHDOG_CRITICAL
+                        } else {
+                            GenerationEnd.WATCHDOG_TIMEOUT
+                        }
+                    )
                     engine.stopGeneration()
                     // Таймер здесь НЕ сбрасывается, и это главное в этой ветке.
                     //
@@ -790,13 +919,24 @@ class LlmEngine(
                     // второе состояние ради экономии на пути, который и так
                     // заканчивается.
                     //
-                    // ЧЕГО ЭТА ВЕТКА НЕ УМЕЕТ: она молчит. return@collect
-                    // пропускает emit, наружу не уходит ничего, и оборванный
-                    // защитой ответ на экране неотличим от законченного. После
-                    // этой правки отбрасывается не одно событие, а все
-                    // оставшиеся, — барьер стал настоящим, и молчание вместе с
-                    // ним стало полным.
+                    // ЧЕГО ЭТА ВЕТКА НЕ УМЕЕТ: в поток она по-прежнему молчит.
+                    // return@collect пропускает emit, наружу не уходит ничего,
+                    // и отбрасывается не одно событие, а весь остаток — барьер
+                    // настоящий, и молчание его полное. Различить обрыв и
+                    // законченный ответ можно только по причине завершения
+                    // (см. [getGenerationEndReport]), а не по самому потоку.
+                    // Тот, кто собирает поток и причину не читает, обрыва
+                    // по-прежнему не заметит.
                     return@collect
+                }
+
+                // Терминальные события движка. Записываются ДО emit: собирающий
+                // может оборвать сбор прямо на них, и тогда запись после emit
+                // не случилась бы.
+                when (event) {
+                    is GenerationEvent.Error -> recordGenerationEnd(GenerationEnd.ENGINE_ERROR)
+                    GenerationEvent.Done -> recordGenerationEnd(GenerationEnd.COMPLETED)
+                    else -> Unit
                 }
 
                 if (zone == SafetyZone.FATIGUE) {
@@ -805,12 +945,31 @@ class LlmEngine(
 
                 emit(event)
             }
+        } catch (cancel: CancellationException) {
+            // Отмена корутины снаружи. Ловится отдельно и БРОСАЕТСЯ ДАЛЬШЕ:
+            // проглотить её значило бы сделать вид, что прогон закончился сам.
+            recordGenerationEnd(GenerationEnd.CANCELLED)
+            throw cancel
         } finally {
+            // Последняя черта: прогон кончился, а причины никто не назвал.
+            // Сработает только если ни одна ветка выше не успела — первая
+            // названная причина побеждает.
+            recordGenerationEnd(GenerationEnd.UNEXPLAINED)
             watchdog.resetInferenceTimer()
         }
     }
 
+    /**
+     * Остановка генерации вызывающим.
+     *
+     * ЭТОТ ПУТЬ В ПРИЛОЖЕНИИ СЕГОДНЯ НЕ ЗОВЁТ НИКТО: кнопка аварийного стопа
+     * отменяет корутину, в которой идёт работа, а не зовёт это. Значит
+     * [GenerationEnd.STOPPED_BY_CALLER] на экране может не появиться никогда,
+     * и его отсутствие — не признак исправности. Появилось — значит кто-то
+     * подключил этот путь.
+     */
     fun stopGeneration() {
+        recordGenerationEnd(GenerationEnd.STOPPED_BY_CALLER)
         engine.stopGeneration()
         watchdog.resetInferenceTimer()
     }
