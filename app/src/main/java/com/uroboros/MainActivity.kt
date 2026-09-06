@@ -32,6 +32,7 @@ import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.SourceKind
+import com.uroboros.memory.Sticker
 import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
@@ -338,6 +339,159 @@ class MainActivity : AppCompatActivity() {
         if (!binding.buttonGenerate.isEnabled) return
         if (!expandedTurns.remove(index)) expandedTurns += index
         binding.textResults.text = renderJournal()
+    }
+
+    /**
+     * Очередь карантина в том виде, в каком её разбирает человек.
+     *
+     * ОТДЕЛЬНЫЙ ЭКРАН, А НЕ ЧАСТЬ ПОКАЗА ПАМЯТИ, и слить их нельзя. Все три
+     * запроса пути чтения начинаются с `reviewPending = 0`: для отбора спорной
+     * записи не существует. Показать её в том же списке значило бы сделать
+     * невидимым главное — что запись СКРЫТА, а не просто лежит последней.
+     *
+     * ЧЕГО ЭТОТ РАЗБОР НЕ УМЕЕТ, и это важнее того, что умеет. Он не
+     * показывает, С ЧЕМ запись спорила. Причина постановки бита вычисляется в
+     * RiskTrigger.evaluate и никуда не сохраняется: id противника и список
+     * причин уходят в лог и пропадают. Человек решает по одной половине спора,
+     * и знать об этом он должен, поэтому сказано прямо на экране, а не только
+     * здесь. Хранение причины сознательно не заводилось: очередь до сих пор
+     * пополнялась единицами записей, и городить под это колонку в схеме — та
+     * же трата, что и её отсутствие под наблюдавшуюся надобность.
+     *
+     * Пустая очередь и сломанный показ обязаны выглядеть по-разному: пустая
+     * говорит о себе словами. Молчащий прибор неотличим от прибора, которого
+     * нет.
+     *
+     * Потолок [PENDING_REVIEW_LIMIT] — объявленная граница, а не догадка о
+     * поведении: длинный список на телефоне не разбирается, а перерисовка
+     * после каждого приёма стоит тем дороже, чем он длиннее. Остаток назван
+     * числом, иначе обрезка была бы неотличима от конца очереди.
+     */
+    private fun renderPendingReview(pending: List<Sticker>): CharSequence {
+        val out = SpannableStringBuilder("ОЧЕРЕДЬ НА ПРОВЕРКЕ")
+        if (pending.isEmpty()) {
+            out.append("\n\nВ очереди пусто: спорных записей нет.")
+            return out
+        }
+        out.append("\n\nСнятие проверки — это ПРИЁМ записи: она перестанет быть ")
+        out.append("скрытой и снова сможет уйти в ответ агента. Вернуть её в ")
+        out.append("очередь нечем, кроме как сохранить спорное утверждение заново.")
+        out.append("\n\nС чем именно запись спорила, здесь не видно: причина ")
+        out.append("постановки нигде не сохраняется.")
+        val shown = pending.take(PENDING_REVIEW_LIMIT)
+        for (sticker in shown) {
+            out.append("\n\n• ").append(sourceLabel(sticker.source)).append(" ")
+            out.append(sticker.content)
+            out.append("\n  [").append(sticker.layer).append("] ")
+            val start = out.length
+            out.append("принять")
+            out.setSpan(
+                object : ClickableSpan() {
+                    override fun onClick(widget: View) = showAcceptRecordDialog(sticker)
+                    override fun updateDrawState(ds: TextPaint) {
+                        ds.color = colorRecordsLink
+                        ds.isUnderlineText = false
+                    }
+                },
+                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        if (pending.size > shown.size) {
+            out.append("\n\nПоказаны первые ${shown.size} из ${pending.size}. ")
+            out.append("Остальные появятся здесь, когда эти будут разобраны.")
+        }
+        return out
+    }
+
+    /**
+     * Открыть очередь. Список читается из базы каждый раз, а не держится в
+     * поле активности: единственный источник правды — таблица, и показанный
+     * список не должен переживать чужую правку той же строки.
+     */
+    private fun openPendingReview() {
+        lifecycleScope.launch {
+            binding.textResults.text = renderPendingReview(mediator.getPendingReview())
+        }
+    }
+
+    /**
+     * Подтверждение приёма. Одного касания здесь мало намеренно.
+     *
+     * Механизм терминальный: ниже никого нет, кто отсеял бы лишнее — судьи
+     * памяти не существует. Значит промах в сторону "принять спорное"
+     * невосстановим, а промах в сторону "не принять" стоит ровно того, что
+     * запись останется в очереди до следующего раза. Настройка
+     * несимметричная, и случайный тап по списку не должен ничего решать.
+     *
+     * Оптового снятия на экране нет и не будет: clearAllPendingReview() на
+     * фасаде существует с прежних времён и отсюда не зовётся — кнопка "принять
+     * всё" промахивается ровно в невосстановимую сторону.
+     *
+     * Длина обрезки взята общая с диалогом отрезания хода: величина
+     * косметическая, разойтись ей незачем.
+     */
+    private fun showAcceptRecordDialog(sticker: Sticker) {
+        val preview = sticker.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+        val tail = if (sticker.content.length > DROP_PREVIEW_CHARS) "…" else ""
+
+        AlertDialog.Builder(this)
+            .setTitle("Принять запись?")
+            .setMessage(
+                "«$preview$tail»\n\n" +
+                    "Запись перестанет быть скрытой и снова сможет попасть в " +
+                    "ответ агента. Вернуть её в очередь нечем — только сохранить " +
+                    "спорное утверждение заново."
+            )
+            .setPositiveButton("Принять") { _, _ ->
+                lifecycleScope.launch {
+                    mediator.clearReviewPending(sticker.id)
+                    // Список перечитывается, а не правится на месте: после
+                    // записи в базу на экране должно стоять то, что в базе,
+                    // а не то, что мы рассчитывали туда положить.
+                    val pending = mediator.getPendingReview()
+                    binding.textResults.text = renderPendingReview(pending)
+                    // Число остатка называется вслух: без него приём и
+                    // несработавший приём выглядят одинаково.
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Принято · в очереди осталось ${pending.size}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /**
+     * Ссылка на разбор очереди, дописываемая в конец показа памяти.
+     *
+     * Своего жеста у разбора нет намеренно. Все короткие нажатия заняты, а
+     * единственное свободное долгое — на кнопке генерации, откуда опасное
+     * действие когда-то убрали сознательно; возвращать туда скрытый жест
+     * значит отменять то решение.
+     *
+     * Числа в ссылке нет: "На проверке: N" уже печатает канарейка, и второй
+     * независимый запрос к базе показал бы на одном экране два числа, которые
+     * законно расходятся во времени. Тот же довод, по которому отсюда убрали
+     * totalStickers().
+     */
+    private fun withPendingReviewLink(body: CharSequence): CharSequence {
+        val out = SpannableStringBuilder(body)
+        out.append("\n\n")
+        val start = out.length
+        out.append("Разобрать очередь на проверке")
+        out.setSpan(
+            object : ClickableSpan() {
+                override fun onClick(widget: View) = openPendingReview()
+                override fun updateDrawState(ds: TextPaint) {
+                    ds.color = colorRecordsLink
+                    ds.isUnderlineText = false
+                }
+            },
+            start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        return out
     }
 
     /**
@@ -1525,7 +1679,7 @@ class MainActivity : AppCompatActivity() {
                     // Чего в этих числах НЕТ: записи, до которой поиск не
                     // дотянулся. Она не попадает ни в кандидатов, ни в отсеянных
                     // (см. KDoc SelectionSummary).
-                    binding.textResults.text = if (shown.stickers.isEmpty()) {
+                    val body = if (shown.stickers.isEmpty()) {
                         "$canaryReport\n\n${shown.summary}\n\n(записей для показа нет)"
                     } else {
                         val lines = shown.stickers.joinToString("\n\n") { sticker ->
@@ -1533,6 +1687,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         "$canaryReport\n\n${shown.summary}\n\n$lines"
                     }
+                    binding.textResults.text = withPendingReviewLink(body)
                 } finally {
                     binding.buttonShow.isEnabled = true
                 }
@@ -2063,6 +2218,16 @@ class MainActivity : AppCompatActivity() {
          * чтобы узнать ход, и мало, чтобы диалог не превратился в чтение.
          */
         private const val DROP_PREVIEW_CHARS = 120
+
+        /**
+         * Сколько записей очереди показывается за раз.
+         *
+         * Граница объявлена заранее, в неё пока ничто не упиралось: в очереди
+         * за всё время побывала одна запись. Двадцать — столько же, сколько у
+         * показа памяти рядом; разойтись этим двум числам незачем, а лишний
+         * повод их сверять ни к чему.
+         */
+        private const val PENDING_REVIEW_LIMIT = 20
 
         /**
          * Запас в пикселях, внутри которого прокрутка считается стоящей
