@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
@@ -108,6 +109,15 @@ const val CONTEXT_SIZE = 8192
  * «барьер притормаживал» и «барьер остановил», а это и есть то, ради чего
  * прибор строится.
  */
+/**
+ * Насколько придерживается выдача, пока устройство в зоне утомления.
+ *
+ * Пауза на каждое событие, а не на токен: событий приходит больше, чем
+ * токенов. Названа числом в одном месте, потому что от неё же считается
+ * потерянное время в отчёте — два литерала со временем разошлись бы.
+ */
+private const val FATIGUE_DELAY_MS = 100L
+
 enum class GenerationEnd {
 
     /**
@@ -272,6 +282,46 @@ class LlmEngine(
      */
     private fun recordGenerationEnd(reason: GenerationEnd) {
         generationEnd.compareAndSet(GenerationEnd.RUNNING, reason)
+    }
+
+    /**
+     * Сколько событий барьер пропустил наружу за последний прогон.
+     *
+     * СЧИТАЕТСЯ РАДИ ТОГО, ЧТОБЫ НОЛЬ В СОСЕДНЕМ СЧЁТЧИКЕ ЧТО-ТО ЗНАЧИЛ.
+     * Задержек при утомлении может не быть потому, что устройство не
+     * утомлялось, и потому, что счётчик сломан, — на экране это выглядело бы
+     * одинаково. Ненулевое число здесь отличает одно от другого: раз события
+     * считались, то и задержки считались бы.
+     */
+    private val barrierPassed = AtomicInteger(0)
+
+    /** Сколько из них задержано, потому что устройство в зоне утомления. */
+    private val barrierDelayed = AtomicInteger(0)
+
+    /**
+     * Что барьер сделал за последний прогон, строкой для экрана.
+     *
+     * Потерянное время СЧИТАЕТСЯ УМНОЖЕНИЕМ, а не замеряется: настоящая
+     * задержка чуть больше, потому что к назначенной паузе добавляется
+     * возврат управления. Величина нужна для порядка, а не для точности.
+     *
+     * Зачем она вообще. Задержка щадит железо, но время идёт, а потолок
+     * непрерывной работы считается по времени — то есть в утомлении барьер
+     * САМ ПРИБЛИЖАЕТ обрыв по потолку. Два механизма связаны, и по одним
+     * только зонам эта связь с экрана не видна.
+     */
+    fun getBarrierReport(): String {
+        val passed = barrierPassed.get()
+        val delayed = barrierDelayed.get()
+        if (passed == 0 && delayed == 0) {
+            return "Барьер: событий не проходило."
+        }
+        if (delayed == 0) {
+            return "Барьер: пропущено $passed событий, задержек не было."
+        }
+        val addedSec = delayed * FATIGUE_DELAY_MS / 1000.0
+        return "Барьер: пропущено $passed событий, задержано $delayed " +
+            "(около ${String.format("%.1f", addedSec)} с сверху)."
     }
 
     suspend fun loadModel(modelPath: String): Boolean {
@@ -888,6 +938,8 @@ class LlmEngine(
         // она как причина нынешнего — подстановка в благополучную сторону
         // ровно того рода, от которого прибор и заводится.
         generationEnd.set(GenerationEnd.RUNNING)
+        barrierPassed.set(0)
+        barrierDelayed.set(0)
         try {
             engine.generateMultiTurnFlow(messagesJson, maxTokens).collect { event ->
                 val zone = watchdog.zone.value
@@ -940,9 +992,14 @@ class LlmEngine(
                 }
 
                 if (zone == SafetyZone.FATIGUE) {
-                    delay(100)
+                    barrierDelayed.incrementAndGet()
+                    delay(FATIGUE_DELAY_MS)
                 }
 
+                // Считается ДО emit: собирающий вправе оборвать сбор прямо на
+                // этом событии, и тогда счёт после emit не случился бы, а
+                // событие барьер всё-таки пропустил.
+                barrierPassed.incrementAndGet()
                 emit(event)
             }
         } catch (cancel: CancellationException) {
