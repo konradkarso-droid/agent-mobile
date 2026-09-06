@@ -25,6 +25,7 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.CONTEXT_SIZE
+import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.ConfidenceLevel
@@ -923,6 +924,7 @@ class MainActivity : AppCompatActivity() {
         wallMs: Long,
         firstTokenAtMs: Long?,
         worstZone: SafetyZone,
+        generationEnd: GenerationEnd,
         tokenLimit: Int,
         promptShape: String
     ): String {
@@ -970,6 +972,13 @@ class MainActivity : AppCompatActivity() {
                 "предел длины, а не конец мысли модели."
         }
 
+        // Чем кончился прогон. Стоит рядом с предупреждением о потолке
+        // намеренно: обе строки об одном — целый ответ на экране или огрызок.
+        // Разница в том, что потолок мы ставим сами и знаем заранее, а обрыв
+        // защитой случается по состоянию устройства, и до этой строки на
+        // экране он не отличался от законченного ответа никак.
+        lines += llmEngineEndLine(generationEnd)
+
         lines += "Худшая зона за прогон: ${zoneLabel(worstZone)}"
         if (worstZone == SafetyZone.FATIGUE || worstZone == SafetyZone.CRITICAL) {
             lines += "ВНИМАНИЕ: в этой зоне тормозим МЫ САМИ — по 100 мс на каждый " +
@@ -977,6 +986,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         return lines.joinToString("\n")
+    }
+
+    /**
+     * Строка о том, чем кончился прогон.
+     *
+     * Текст берётся у движка ([LlmEngine.getGenerationEndReport]), а не
+     * собирается здесь заново: два места, называющие одно и то же своими
+     * словами, со временем разойдутся, и по экрану будет не понять, какое
+     * из них врёт. Здесь решается только одно — надо ли кричать.
+     *
+     * Кричим на всём, кроме нормального завершения, включая неназванную
+     * причину: прибор, который сам не знает, что случилось, должен быть
+     * заметен, а не спрятан среди обычных чисел.
+     */
+    private fun llmEngineEndLine(end: GenerationEnd): String {
+        val report = llmEngine.getGenerationEndReport()
+        return if (end == GenerationEnd.COMPLETED) report else "ВНИМАНИЕ: $report"
     }
 
     /**
@@ -1924,6 +1950,12 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 } finally {
+                    // Причина читается ПЕРВОЙ строкой хвоста: движок хранит её
+                    // до начала следующего прогона, и всё, что ниже, вправе на
+                    // неё опираться. Своё завершение поток уже записал — его
+                    // finally отрабатывает раньше, чем сбор здесь закончится.
+                    val generationEnd = llmEngine.lastGenerationEnd
+
                     // finally, а не ветка Done: раньше кнопка включалась только
                     // если поток закончился ожидаемым событием, и любой другой
                     // выход оставлял её навсегда серой.
@@ -1974,7 +2006,20 @@ class MainActivity : AppCompatActivity() {
                         // отдаёт это число лишь по итогам прогона, а прогона
                         // не было. Названная оценка попала бы на экран
                         // наравне с замером.
-                        val explanation = if (sameAsPrevious) {
+                        // ПОРЯДОК ВЕТОК ЗДЕСЬ РЕШАЕТ. Обе догадки ниже — про
+                        // запрос: повтор или переполнение окна. Но ноль знаков
+                        // бывает и оттого, что прогон оборвали, и тогда с
+                        // запросом всё в порядке, а человека посылают лечить
+                        // здоровое. Поэтому названная причина завершения
+                        // перебивает обе догадки, и неназванная тоже: сказать
+                        // "не знаю, чем кончилось" честнее, чем уверенно
+                        // указать не на то.
+                        val explanation = if (generationEnd != GenerationEnd.COMPLETED) {
+                            llmEngine.getGenerationEndReport() + "\n\n" +
+                                "Ход прервался, не начавшись, поэтому о самом запросе " +
+                                "по этому нулю судить нельзя — ни о повторе, ни о " +
+                                "переполнении окна."
+                        } else if (sameAsPrevious) {
                             // Следствие названо прямо, потому что оно неприятное:
                             // лента не выросла, значит повтор того же вопроса даст
                             // тот же запрос до последнего знака и тот же ноль.
@@ -2064,6 +2109,7 @@ class MainActivity : AppCompatActivity() {
                         wallMs = System.currentTimeMillis() - startMs,
                         firstTokenAtMs = firstTokenAtMs,
                         worstZone = worstZone,
+                        generationEnd = generationEnd,
                         tokenLimit = ANSWER_TOKEN_LIMIT,
                         promptShape = promptShape
                     )
