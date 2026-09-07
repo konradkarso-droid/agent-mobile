@@ -117,6 +117,19 @@ class KotlinCodingTask(
 
     private val debugLog = mutableListOf<String>()
 
+    // Номер итерации TOTE-цикла для журнала. Считается здесь, а не берётся из
+    // размера debugLog: в тот же журнал пишет queryHandler (две записи на каждый
+    // заданный вопрос), и номер, выведенный из числа записей, после первого же
+    // вопроса шёл бы с опережением до конца прогона.
+    //
+    // Чего этот счётчик НЕ умеет: он считает вызовы test, а не итерации цикла.
+    // Совпадают они потому, что ToteEngine зовёт test ровно один раз за круг —
+    // это его нынешнее устройство, а не обещание. Если проверок за круг станет
+    // две, здешние номера разойдутся с iterations в ToteResult, и разойдутся
+    // молча. Держать их одним числом можно только передачей номера из движка
+    // в StepTest.
+    private var iterationCounter = 0
+
     // Захардкоженное описание подзадачи для тестового сценария (см. run()) —
     // когда цикл будет получать реальные задачи, это должно приходить извне,
     // а не быть константой класса.
@@ -178,7 +191,7 @@ class KotlinCodingTask(
     }
 
     private val test = StepTest<KotlinCodeState> { state ->
-        val iterationNum = debugLog.size + 1
+        val iterationNum = ++iterationCounter
         when (val result = termuxCompiler.compile(state.code)) {
             is CompileResult.Success -> {
                 val outcome = resolveStructuralVerdict(state)
@@ -424,6 +437,7 @@ class KotlinCodingTask(
 
     suspend fun run(): ToteResult<KotlinCodeState> {
         debugLog.clear()
+        iterationCounter = 0
         // Захардкоженная задача для теста цикла с реальной структурной проверкой
         // (не реальный ввод пользователя) — функция с полноценным телом и логической
         // опечаткой (tota вместо total), чтобы компиляция упала, но было что сравнивать
