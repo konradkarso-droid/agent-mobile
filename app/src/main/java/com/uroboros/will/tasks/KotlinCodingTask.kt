@@ -469,7 +469,7 @@ class KotlinCodingTask(
      * значат одно — "выше рабочей не поднималась". Разбирать их порознь значило
      * бы завести второе место, где зонам даются имена.
      */
-    private fun runInterferenceSummary(): String {
+    fun getInterferenceSummary(): String {
         val zone = when (worstZoneInRun) {
             SafetyZone.CRITICAL -> "Худшая зона за прогон: ОПАСНАЯ."
             SafetyZone.FATIGUE -> "Худшая зона за прогон: утомление."
@@ -630,7 +630,7 @@ class KotlinCodingTask(
         val result = try {
             engine.run(initialState, taskDescription)
         } finally {
-            debugLog.add(runInterferenceSummary())
+            debugLog.add(getInterferenceSummary())
         }
         // Вакцина-строка сюда НЕ переносится сознательно. Прерванный человеком
         // прогон — не неудача агента, и запись "не решена" была бы той же
