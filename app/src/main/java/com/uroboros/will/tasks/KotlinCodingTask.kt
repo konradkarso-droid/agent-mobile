@@ -7,6 +7,7 @@ import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.safety.SafetyZone
 import com.uroboros.util.ErrorSignature
 import com.uroboros.util.PromptBudget
 import com.uroboros.util.StructuralBoundary
@@ -143,6 +144,24 @@ class KotlinCodingTask(
     private var ceilingHitsInRun = 0
     private var barrierStopsInRun = 0
 
+    // Худшая зона, которую устройство прошло за прогон.
+    //
+    // Мгновенная зона в конце соврала бы: прогон идёт минутами, устройство
+    // успевает нагреться на середине и остыть к концу. Начальное значение —
+    // нынешняя зона, а не самая спокойная: назначать спокойную значило бы
+    // утверждать, что прогон начался в покое, не спросив.
+    private var worstZoneInRun: SafetyZone = watchdog.zone.value
+
+    /**
+     * Отметить нынешнюю зону. Зовётся НА КАЖДОМ событии потока, а не раз за
+     * генерацию: между событиями проходят секунды, и зона, поднявшаяся и
+     * опавшая внутри этого промежутка, иначе не была бы замечена вовсе.
+     */
+    private fun noteZone() {
+        val now = watchdog.zone.value
+        if (now.ordinal > worstZoneInRun.ordinal) worstZoneInRun = now
+    }
+
     // Захардкоженное описание подзадачи для тестового сценария (см. run()) —
     // когда цикл будет получать реальные задачи, это должно приходить извне,
     // а не быть константой класса.
@@ -169,15 +188,22 @@ class KotlinCodingTask(
         val answerText = StringBuilder()
         var generationError: String? = null
         var tokensPredicted = 0
-        llmEngine.generateFlow(query, maxTokens = QUERY_TOKEN_LIMIT).collect { event ->
-            when (event) {
-                is GenerationEvent.Token -> answerText.append(event.text)
-                is GenerationEvent.Error -> generationError = event.message
-                is GenerationEvent.Metrics -> tokensPredicted = event.metrics.tokensPredicted
-                else -> Unit
+        // finally, а не строка следом за collect: оборванный сбор улетает
+        // исключением дальше, и запись не случилась бы именно у той генерации,
+        // ради которой прибор и заводился, — у прерванной.
+        try {
+            llmEngine.generateFlow(query, maxTokens = QUERY_TOKEN_LIMIT).collect { event ->
+                noteZone()
+                when (event) {
+                    is GenerationEvent.Token -> answerText.append(event.text)
+                    is GenerationEvent.Error -> generationError = event.message
+                    is GenerationEvent.Metrics -> tokensPredicted = event.metrics.tokensPredicted
+                    else -> Unit
+                }
             }
+        } finally {
+            recordGeneration("ответ на вопрос", tokensPredicted, QUERY_TOKEN_LIMIT)
         }
-        recordGeneration("ответ на вопрос", tokensPredicted, QUERY_TOKEN_LIMIT)
         val finalAnswer = if (generationError != null) {
             "[Ошибка генерации: $generationError]"
         } else {
@@ -334,18 +360,23 @@ class KotlinCodingTask(
         val generated = StringBuilder()
         var generationError: String? = null
         var tokensPredicted = 0
-        llmEngine.generateFlow(prompt, maxTokens = OPERATE_TOKEN_LIMIT).collect { event ->
-            when (event) {
-                is GenerationEvent.Token -> generated.append(event.text)
-                is GenerationEvent.Error -> generationError = event.message
-                // Метрики нужны ради одного числа — сколько токенов выдано.
-                // Без него обрезку на потолке отличить не от чего: обрезанный
-                // ответ кончается так же молча, как законченный.
-                is GenerationEvent.Metrics -> tokensPredicted = event.metrics.tokensPredicted
-                else -> Unit
+        // Про finally — см. тот же приём в queryHandler выше.
+        try {
+            llmEngine.generateFlow(prompt, maxTokens = OPERATE_TOKEN_LIMIT).collect { event ->
+                noteZone()
+                when (event) {
+                    is GenerationEvent.Token -> generated.append(event.text)
+                    is GenerationEvent.Error -> generationError = event.message
+                    // Метрики нужны ради одного числа — сколько токенов выдано.
+                    // Без него обрезку на потолке отличить не от чего: обрезанный
+                    // ответ кончается так же молча, как законченный.
+                    is GenerationEvent.Metrics -> tokensPredicted = event.metrics.tokensPredicted
+                    else -> Unit
+                }
             }
+        } finally {
+            recordGeneration("правка кода", tokensPredicted, OPERATE_TOKEN_LIMIT)
         }
-        recordGeneration("правка кода", tokensPredicted, OPERATE_TOKEN_LIMIT)
         if (generationError != null) {
             // Генерация упала — возвращаем состояние как есть, но с пометкой ошибки,
             // чтобы следующий Test честно провалился на том же коде, а не на пустом.
@@ -427,11 +458,27 @@ class KotlinCodingTask(
         debugLog.add(lines.joinToString("\n"))
     }
 
-    /** Итог по вмешательствам за прогон. Числа — из полей выше, см. их объяснение. */
-    private fun runInterferenceSummary(): String =
-        "Генераций за прогон: $generationsInRun. " +
+    /**
+     * Итог по вмешательствам за прогон. Числа — из полей выше, см. их объяснение.
+     *
+     * Зона стоит рядом с числом обрывов не для полноты: без неё ноль обрывов не
+     * читается. Барьер молчал потому, что было прохладно, или потому, что
+     * сломан, — на экране это выглядело бы одинаково.
+     *
+     * Названы только две зоны из четырёх, и это сознательно: остальные здесь
+     * значат одно — "выше рабочей не поднималась". Разбирать их порознь значило
+     * бы завести второе место, где зонам даются имена.
+     */
+    private fun runInterferenceSummary(): String {
+        val zone = when (worstZoneInRun) {
+            SafetyZone.CRITICAL -> "Худшая зона за прогон: ОПАСНАЯ."
+            SafetyZone.FATIGUE -> "Худшая зона за прогон: утомление."
+            else -> "Худшая зона за прогон: выше рабочей не поднималась."
+        }
+        return "Генераций за прогон: $generationsInRun. " +
             "Обрезано потолком токенов: $ceilingHitsInRun. " +
-            "Оборвано барьером: $barrierStopsInRun."
+            "Оборвано барьером: $barrierStopsInRun. " + zone
+    }
 
     /**
      * "Вакцина-строка" — запись о прогоне в Sticker-память.
@@ -544,6 +591,7 @@ class KotlinCodingTask(
         generationsInRun = 0
         ceilingHitsInRun = 0
         barrierStopsInRun = 0
+        worstZoneInRun = watchdog.zone.value
         // Захардкоженная задача для теста цикла с реальной структурной проверкой
         // (не реальный ввод пользователя) — функция с полноценным телом и логической
         // опечаткой (tota вместо total), чтобы компиляция упала, но было что сравнивать
