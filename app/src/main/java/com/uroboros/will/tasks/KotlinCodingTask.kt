@@ -1,6 +1,7 @@
 package com.uroboros.will.tasks
 
 import com.dark.gguf_lib.models.GenerationEvent
+import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.SourceKind
@@ -130,6 +131,18 @@ class KotlinCodingTask(
     // в StepTest.
     private var iterationCounter = 0
 
+    // Вмешательства за прогон целиком. Копятся здесь, потому что приборы движка
+    // живут ОДНУ генерацию: и причина завершения, и все счётчики барьера
+    // обнуляются в начале следующей. Прочитанные в конце прогона, они описали бы
+    // последнюю итерацию, а читались бы как итог всего прогона.
+    //
+    // Число генераций считается рядом с остальными ради того, чтобы их ноль
+    // что-то значил: ноль обрывов при нуле генераций и ноль обрывов при десяти —
+    // разные сообщения, а без этого числа выглядят одинаково.
+    private var generationsInRun = 0
+    private var ceilingHitsInRun = 0
+    private var barrierStopsInRun = 0
+
     // Захардкоженное описание подзадачи для тестового сценария (см. run()) —
     // когда цикл будет получать реальные задачи, это должно приходить извне,
     // а не быть константой класса.
@@ -155,13 +168,16 @@ class KotlinCodingTask(
 
         val answerText = StringBuilder()
         var generationError: String? = null
-        llmEngine.generateFlow(query, maxTokens = 150).collect { event ->
+        var tokensPredicted = 0
+        llmEngine.generateFlow(query, maxTokens = QUERY_TOKEN_LIMIT).collect { event ->
             when (event) {
                 is GenerationEvent.Token -> answerText.append(event.text)
                 is GenerationEvent.Error -> generationError = event.message
+                is GenerationEvent.Metrics -> tokensPredicted = event.metrics.tokensPredicted
                 else -> Unit
             }
         }
+        recordGeneration("ответ на вопрос", tokensPredicted, QUERY_TOKEN_LIMIT)
         val finalAnswer = if (generationError != null) {
             "[Ошибка генерации: $generationError]"
         } else {
@@ -317,17 +333,19 @@ class KotlinCodingTask(
         val prompt = buildPrompt(state, outcome)
         val generated = StringBuilder()
         var generationError: String? = null
-        // Правка 2026-08-23: было maxTokens=100 — генерация обрывалась посреди слова
-        // ("return tota"), и следующая итерация чинила уже собственный обрубок,
-        // а не исходную ошибку. 512 — потолок с запасом для тестовой функции,
-        // НЕ измеренная величина; калибровать позже по реальным прогонам.
-        llmEngine.generateFlow(prompt, maxTokens = 512).collect { event ->
+        var tokensPredicted = 0
+        llmEngine.generateFlow(prompt, maxTokens = OPERATE_TOKEN_LIMIT).collect { event ->
             when (event) {
                 is GenerationEvent.Token -> generated.append(event.text)
                 is GenerationEvent.Error -> generationError = event.message
+                // Метрики нужны ради одного числа — сколько токенов выдано.
+                // Без него обрезку на потолке отличить не от чего: обрезанный
+                // ответ кончается так же молча, как законченный.
+                is GenerationEvent.Metrics -> tokensPredicted = event.metrics.tokensPredicted
                 else -> Unit
             }
         }
+        recordGeneration("правка кода", tokensPredicted, OPERATE_TOKEN_LIMIT)
         if (generationError != null) {
             // Генерация упала — возвращаем состояние как есть, но с пометкой ошибки,
             // чтобы следующий Test честно провалился на том же коде, а не на пустом.
@@ -357,6 +375,52 @@ class KotlinCodingTask(
         val withoutFirstFence = trimmed.substringAfter("\n", trimmed)
         return withoutFirstFence.substringBeforeLast("```").trim()
     }
+
+    /**
+     * Запись о том, чем кончилась одна генерация.
+     *
+     * ЗОВЁТСЯ СРАЗУ ПОСЛЕ collect, и это не стилистика: оба отчёта движка
+     * относятся к одной генерации и обнуляются в начале следующей.
+     *
+     * Слово "Ответ" в строке причины приходит из движка и означает здесь
+     * сгенерированный код. Переписывать текст под цикл нельзя: два места,
+     * называющие одно и то же своими словами, со временем расходятся, и по
+     * экрану не понять, какое врёт (см. LlmEngine.getGenerationEndReport).
+     *
+     * ЧЕГО НЕ УМЕЕТ. Видно только то, что называет движок: отказ Termux или
+     * гейта сюда не попадает. И числа выданных токенов нет вовсе, когда
+     * генерацию оборвал барьер, — оборвав, он молчит в поток целиком, включая
+     * событие с метриками. Ноль здесь значит "не сообщили", а не "ноль
+     * токенов"; различает эти два случая причина завершения, стоящая рядом.
+     *
+     * Поэтому обрывов считается ДВА РАЗНЫХ ВИДА, и сливать их нельзя. Наш
+     * потолок токенов виден по метрикам и означает, что модели не хватило
+     * длины. Обрыв барьером виден только по причине и означает, что не дало
+     * устройство. Одно лечится числом, другое — остыванием.
+     */
+    private fun recordGeneration(label: String, tokensPredicted: Int, tokenLimit: Int) {
+        generationsInRun++
+        val end = llmEngine.lastGenerationEnd
+        if (end == GenerationEnd.WATCHDOG_CRITICAL || end == GenerationEnd.WATCHDOG_TIMEOUT) {
+            barrierStopsInRun++
+        }
+        val lines = mutableListOf("$label: ${llmEngine.getGenerationEndReport()}")
+        lines += llmEngine.getBarrierReport()
+        // Сравнение только на равенство и больше: перебрать потолок движок не
+        // может, а меньшее значение означает, что модель закончила сама.
+        if (tokenLimit > 0 && tokensPredicted >= tokenLimit) {
+            ceilingHitsInRun++
+            lines += "ВНИМАНИЕ: генерация обрезана на потолке $tokenLimit токенов — " +
+                "модели не хватило длины, это наш предел, а не конец её мысли."
+        }
+        debugLog.add(lines.joinToString("\n"))
+    }
+
+    /** Итог по вмешательствам за прогон. Числа — из полей выше, см. их объяснение. */
+    private fun runInterferenceSummary(): String =
+        "Генераций за прогон: $generationsInRun. " +
+            "Обрезано потолком токенов: $ceilingHitsInRun. " +
+            "Оборвано барьером: $barrierStopsInRun."
 
     /**
      * "Вакцина-строка" — запись о прогоне в Sticker-память.
@@ -438,6 +502,9 @@ class KotlinCodingTask(
     suspend fun run(): ToteResult<KotlinCodeState> {
         debugLog.clear()
         iterationCounter = 0
+        generationsInRun = 0
+        ceilingHitsInRun = 0
+        barrierStopsInRun = 0
         // Захардкоженная задача для теста цикла с реальной структурной проверкой
         // (не реальный ввод пользователя) — функция с полноценным телом и логической
         // опечаткой (tota вместо total), чтобы компиляция упала, но было что сравнивать
@@ -465,7 +532,29 @@ class KotlinCodingTask(
             promptBudgetGate = promptBudgetGate
         )
         val result = engine.run(initialState, taskDescription)
+        debugLog.add(runInterferenceSummary())
         saveVaccineLine(result)
         return result
+    }
+
+    private companion object {
+        /**
+         * Потолок длины на правку кода. Заведомо достаточная величина для
+         * тестовой функции, НЕ измеренная: раньше здесь стояло 100, и генерация
+         * обрывалась посреди слова ("return tota"), отчего следующая итерация
+         * чинила собственный обрубок вместо исходной ошибки.
+         *
+         * Названо константой потому, что число нужно в двух местах — в вызове и
+         * в сравнении, которое отличает обрезку от законченной мысли. Два
+         * литерала разошлись бы молча, и сравнение стало бы врать.
+         */
+        const val OPERATE_TOKEN_LIMIT = 512
+
+        /**
+         * Потолок длины на ответ пользователю во время прогона. Той же природы —
+         * назначен, не измерен, и заметно меньше: ответ на реплику идёт лишним
+         * вызовом модели внутри итерации, то есть прямо в счёт времени задачи.
+         */
+        const val QUERY_TOKEN_LIMIT = 150
     }
 }
