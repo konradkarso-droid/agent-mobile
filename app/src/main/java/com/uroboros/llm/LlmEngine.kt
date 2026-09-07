@@ -357,6 +357,31 @@ class LlmEngine(
     private val barrierStopAtMs = AtomicLong(0L)
 
     /**
+     * Наибольший промежуток между двумя проверками барьера за прогон, мс.
+     *
+     * МЕРЯЕТ ЗАЗОР В ЗАЩИТНОМ КОНТУРЕ, А НЕ СКОРОСТЬ. Барьер сверяет зону и
+     * потолок только когда приходит событие потока. Событие с текстом — это
+     * кусок строки, а не токен, и его размер задаёт не наш код: он плавает от
+     * задачи и от сборки библиотеки. Значит частота проверок — чужая величина,
+     * а вот промежуток между ними наш и измерим.
+     *
+     * Именно это число, а не размер куска, говорит, на сколько может опоздать
+     * решение об остановке при настоящем перегреве.
+     *
+     * ОБЛАСТЬ. Верно для той модели, той формы задачи и той сборки движка, на
+     * которых замерено: обновление библиотеки меняет буферизацию, а вместе с
+     * ней и это число, ничего никому не сообщая. Держаться надо порядка
+     * величины — секунды или десятки секунд, — а не точного значения.
+     *
+     * Ноль значит, что проверок было меньше двух: промежутка не из чего
+     * составить.
+     */
+    private val barrierMaxGapMs = AtomicLong(0L)
+
+    /** Момент последней проверки. Ноль — проверок ещё не было. */
+    private val barrierLastCheckAtMs = AtomicLong(0L)
+
+    /**
      * Что барьер сделал за последний прогон, строкой для экрана.
      *
      * Потерянное время СЧИТАЕТСЯ УМНОЖЕНИЕМ, а не замеряется: настоящая
@@ -382,16 +407,25 @@ class LlmEngine(
             val addedSec = delayed * FATIGUE_DELAY_MS / 1000.0
             ", задержано $delayed (около ${String.format("%.1f", addedSec)} с сверху)."
         }
+        // Наибольшая пауза между проверками. Показывается всегда, когда события
+        // были: это единственная строка, говорящая, НАСКОЛЬКО может опоздать
+        // остановка. Меньше двух проверок — промежутка нет, и так и сказано.
+        val maxGap = barrierMaxGapMs.get()
+        val gapTail = if (maxGap == 0L) {
+            " Проверок было меньше двух, промежуток не измерен."
+        } else {
+            " Наибольшая пауза между проверками: ${String.format("%.1f", maxGap / 1000.0)} с."
+        }
         val stopMs = barrierStopToEndMs.get()
         if (stopMs == 0L) {
-            return passed + delayTail
+            return passed + delayTail + gapTail
         }
         // Строка про остановку показывается ТОЛЬКО когда барьер срабатывал.
         // Иначе её ноль читался бы как «остановились мгновенно», хотя означал
         // бы «не останавливались вовсе» — разные вещи, а на экране одно.
         val dropped = barrierDroppedAfterStop.get()
         val stopSec = String.format("%.1f", stopMs / 1000.0)
-        return passed + delayTail +
+        return passed + delayTail + gapTail +
             " После требования остановки прошло $stopSec с, " +
             "отброшено ещё $dropped событий."
     }
@@ -1016,8 +1050,20 @@ class LlmEngine(
         barrierDroppedAfterStop.set(0)
         barrierStopToEndMs.set(0L)
         barrierStopAtMs.set(0L)
+        barrierMaxGapMs.set(0L)
+        barrierLastCheckAtMs.set(0L)
         try {
             engine.generateMultiTurnFlow(messagesJson, maxTokens).collect { event ->
+                // Промежуток считается ПЕРВЫМ делом и на КАЖДОМ событии, включая
+                // те, что ветка обрыва ниже отбросит: проверка на них всё равно
+                // состоялась, а меряется здесь именно частота проверок.
+                val checkAtMs = System.currentTimeMillis()
+                val previousCheckMs = barrierLastCheckAtMs.getAndSet(checkAtMs)
+                if (previousCheckMs != 0L) {
+                    val gap = checkAtMs - previousCheckMs
+                    if (gap > barrierMaxGapMs.get()) barrierMaxGapMs.set(gap)
+                }
+
                 val zone = watchdog.zone.value
 
                 if (zone == SafetyZone.CRITICAL || watchdog.shouldForceCooldown()) {
