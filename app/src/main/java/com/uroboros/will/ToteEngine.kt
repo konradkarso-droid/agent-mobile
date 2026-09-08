@@ -67,14 +67,20 @@ import com.uroboros.safety.SafetyZone
  * нарастающий урон не начисляется, и из трёх барьеров остаётся один, maxIterations.
  * Ограничение известное; чем его закрывать, не решено.
  *
- * Item 9: опциональный pendingQuerySource опрашивается на шве между test() и
- * operate() — том же естественном месте, что и снимок item 6b/8. При наличии запроса
- * QueryUrgencyClassifier классифицирует его, результат уходит в queryHandler.
- * Границ у этого механизма две. Первая: цикл НЕ прерывает operate() и не меняет
- * своё поведение по решению классификатора — есть только обнаружение, классификация
- * и точка расширения. Вторая: шов пропускается целиком на той итерации, где test()
- * вернул успех, — вопрос, заданный во время последней (успешной) итерации, до
- * классификатора не дойдёт вовсе.
+ * Item 9: опциональный pendingQuerySource опрашивается сразу после test() и ещё раз
+ * при исчерпании итераций. При наличии запроса QueryUrgencyClassifier классифицирует
+ * его, результат уходит в queryHandler. Весь опрос — в одном месте, serveQuery().
+ *
+ * Границы механизма:
+ *
+ *  - цикл НЕ прерывает operate() и не меняет своё поведение по решению
+ *    классификатора — есть только обнаружение, классификация и точка расширения.
+ *    Вопрос, заданный во время operate(), ждёт конца текущего шага: на кодинге это
+ *    минуты;
+ *  - в критической физической зоне вопрос не забирается из ячейки вовсе — см.
+ *    serveQuery();
+ *  - ёмкость канала — один вопрос, и это граница источника, а не цикла (см.
+ *    SimplePendingQuerySource).
  *
  * Item 5b(c): опциональный promptBudgetGate — общий (не только для кодинга) барьер
  * на том же шве, ДО вызова operate(). Движок по-прежнему ничего не знает про
@@ -152,6 +158,39 @@ class ToteEngine<S>(
     private val queryHandler: QueryHandler<S>? = null,
     private val promptBudgetGate: PromptBudgetGate<S>? = null
 ) {
+    /**
+     * Item 9: опрос шва — забрать вопрос, если он есть, классифицировать и отдать
+     * обработчику.
+     *
+     * ОДНО МЕСТО НА ВЕСЬ ЦИКЛ. Зовётся после test() на каждой итерации и ещё раз
+     * при исчерпании итераций. Копия этого блока во второй точке разошлась бы с
+     * первой молча, а на экране обе выглядели бы одинаково.
+     *
+     * В КРИТИЧЕСКОЙ ЗОНЕ ВОПРОС НЕ ЗАБИРАЕТСЯ ИЗ ЯЧЕЙКИ. Ответ — это ещё одна
+     * генерация, а §0 ставит физическую безопасность выше полезности. Но и
+     * выбросить вопрос нельзя: оставленный в ячейке, он остаётся необработанным,
+     * следующая попытка задать вопрос получит честный отказ, и человек увидит,
+     * что прежний ещё жив. Забранный и не отвеченный пропал бы молча.
+     *
+     * Проверка стоит ЗДЕСЬ, а не на месте вызова, потому что вызовов два, а
+     * решение одно.
+     *
+     * Не забираем вопрос и тогда, когда обрабатывать его некому (queryHandler не
+     * задан) или классифицировать не с чем (test ещё ни разу не отработал):
+     * забрать в этих случаях значило бы стереть вопрос, ничего с ним не сделав.
+     */
+    private suspend fun serveQuery(state: S, outcome: StepOutcome?, taskDescription: String) {
+        if (pendingQuerySource == null || queryHandler == null || outcome == null) return
+        if (watchdog.zone.value == SafetyZone.CRITICAL) return
+        val query = pendingQuerySource.poll() ?: return
+        val decision = QueryUrgencyClassifier.classify(
+            query = query,
+            currentError = outcome.detail,
+            taskDescription = taskDescription
+        )
+        queryHandler.onQuery(query, decision, state, outcome)
+    }
+
     suspend fun run(initialState: S, taskDescription: String = ""): ToteResult<S> {
         var state = initialState
         var lastSignature: String? = null
@@ -178,6 +217,21 @@ class ToteEngine<S>(
             iteration++
             val outcome = test.invoke(state)
             lastOutcome = outcome
+
+            // Item 9: шов опрашивается ЗДЕСЬ, сразу после test() и ДО всех веток
+            // выхода. Раньше он стоял ниже, перед operate(), и пропускался на
+            // любом выходе — при успехе, застревании, исчерпанной энергии,
+            // критической зоне и отказе бюджета. Чаще всего это был успех:
+            // вопрос, заданный под конец работы, не доходил до классификатора
+            // именно тогда, когда всё получилось.
+            //
+            // Ветки выхода, стоящие ниже, второго опроса не требуют: между этим
+            // местом и любой из них нет ни одной длительной операции, только
+            // счёт и сравнения. Единственный выход, до которого отсюда не
+            // дотянуться, — исчерпание итераций: там между последним operate()
+            // и возвратом опроса не было бы вовсе, поэтому он стоит отдельно,
+            // после цикла.
+            serveQuery(state, outcome, taskDescription)
 
             if (outcome.success && outcome.usefulProgress) {
                 return ToteResult.Success(state, iteration)
@@ -250,25 +304,14 @@ class ToteEngine<S>(
                         )
                     }
 
-                    // Item 9: шов между test() и operate() — точка проверки внешнего
-                    // запроса. Только обнаружение и классификация; прерывания цикла
-                    // здесь нет, границы механизма — в комментарии класса.
-                    if (pendingQuerySource != null) {
-                        val query = pendingQuerySource.poll()
-                        if (query != null) {
-                            val decision = QueryUrgencyClassifier.classify(
-                                query = query,
-                                currentError = outcome.detail,
-                                taskDescription = taskDescription
-                            )
-                            queryHandler?.onQuery(query, decision, state, outcome)
-                        }
-                    }
-
                     state = operate.invoke(state, outcome)
                 }
             }
         }
+        // Последний опрос: сюда цикл приходит после operate() последней итерации,
+        // и вопрос, заданный во время неё, иначе не был бы забран никогда — новой
+        // итерации, на шве которой его подобрали бы, уже не будет.
+        serveQuery(state, lastOutcome, taskDescription)
         return ToteResult.HardStopped(state, iteration, lastOutcome, seenSignatures.size)
     }
 }
