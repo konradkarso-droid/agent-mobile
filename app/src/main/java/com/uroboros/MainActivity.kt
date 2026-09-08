@@ -1791,9 +1791,25 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (isToteRunning) {
-                pendingQuerySource.submit(userText)
-                binding.editTextInput.text.clear()
-                Toast.makeText(this, "Вопрос отправлен агенту", Toast.LENGTH_SHORT).show()
+                // Ёмкость канала к циклу — ОДИН вопрос (см.
+                // SimplePendingQuerySource). Раньше второй вопрос молча затирал
+                // первый: на экране оба выглядели отправленными, а до агента
+                // доходил только последний.
+                //
+                // Отказ показывается человеку, и текст в поле при отказе НЕ
+                // стирается. Стереть значило бы заставить набирать заново то,
+                // что мы отказались принять.
+                val accepted = pendingQuerySource.submit(userText)
+                if (accepted) {
+                    binding.editTextInput.text.clear()
+                    Toast.makeText(this, "Вопрос отправлен агенту", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Предыдущий вопрос ещё не обработан — дождитесь ответа",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
                 return@setOnClickListener
             }
 
