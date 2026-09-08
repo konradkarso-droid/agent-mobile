@@ -404,12 +404,13 @@ internal fun scoreCandidate(
  * Путь чтения (getContextWithSummary и всё, что он зовёт) правилу теперь
  * следует: разбор отбора уезжает полем trace, а печатает его экран.
  *
- * ЧЕГО ЭТО НЕ ЗАКРЫВАЕТ, сознательно: repairStuckLayers, repairToteProvenance и
- * saveEvent по-прежнему пишут в Log сами. Они вне пути чтения, тестам не мешают
- * и потому оставлены как есть — но это тот же класс, и при попытке покрыть их
- * тестом первым делом упрётесь в это. Заплатка, а не решение, и выбор сделан
- * осознанно: чинить их вместе с путём чтения значило бы тронуть ещё три метода
- * ради теста, которого пока никто не пишет.
+ * saveEvent правилу следует по той же причине: его ветку прячущего сбоя
+ * закрепляет тест, а тест не запустился бы ни на одной строке с Log.
+ *
+ * ЧЕГО ЭТО НЕ ЗАКРЫВАЕТ, сознательно: repairStuckLayers и repairToteProvenance
+ * по-прежнему пишут в Log сами. Они вне пути чтения, тестами не покрыты и потому
+ * оставлены как есть — но это тот же класс, и при попытке покрыть их тестом
+ * первым делом упрётесь в это. Заплатка, а не решение.
  */
 class HourglassMemory(private val dao: StickerDao) {
 
@@ -996,7 +997,8 @@ class HourglassMemory(private val dao: StickerDao) {
      *  - отсюда следствие, которое надо знать заранее: систематическая
      *    поломка сравнения выглядит как всплеск споров. Очередь растёт, человек
      *    её разбирает, а механизм при этом мёртв. Прибора, отличающего эти два
-     *    случая, нет; при подозрении смотреть Log.e по метке "RiskTrigger";
+     *    случая, нет, и следа сбоя нигде, кроме самой очереди, не остаётся:
+     *    класс живёт в слое без Android и не логирует (см. шапку класса);
      *  - при систематическом падении новые записи перестают попадать в выдачу
      *    до разбора вручную. Это сознательная цена: скрытая запись цела,
      *    непроверенная в горячей памяти — нет (ARCHITECTURE.md §0).
@@ -1014,14 +1016,10 @@ class HourglassMemory(private val dao: StickerDao) {
         // при этом остаётся и просто не срабатывает.
         sticker.reviewPending = sticker.reviewPending || try {
             val hotPool = dao.getByTagInLayers(sticker.tag, HOT_LAYERS)
-            val decision = RiskTrigger.evaluate(sticker, hotPool)
-            Log.d(
-                "RiskTrigger",
-                "tag=${sticker.tag} shouldReview=${decision.shouldReview} reasons=${decision.reasons}"
-            )
-            decision.shouldReview
+            RiskTrigger.evaluate(sticker, hotPool).shouldReview
         } catch (e: Exception) {
-            Log.e("RiskTrigger", "evaluation failed, record hidden until reviewed", e)
+            // Само исключение никуда не пишется: класс живёт в слое без Android.
+            // Наружу сбой выходит битом — запись встаёт в очередь на проверку.
             true
         }
 
