@@ -971,32 +971,61 @@ class HourglassMemory(private val dao: StickerDao) {
             .distinct()
             .take(MAX_SEARCH_WORDS)
 
+    /**
+     * Сохранить запись, пройдя проверку на противоречие.
+     *
+     * ПОРЯДОК: сравнение идёт ДО вставки, и его исход входит в саму вставку.
+     * Прежде запись вставлялась, а бит дописывался вторым запросом — между
+     * ними существовало окно, в котором запись уже лежала в базе без бита и
+     * была видна всем трём запросам пути чтения (они начинаются с
+     * `reviewPending = 0`). Теперь запись любого исхода появляется в базе
+     * ровно один раз и сразу в правильном виде.
+     *
+     * ПАДЕНИЕ СРАВНЕНИЯ ПОДНИМАЕТ БИТ. Прежде здесь стояла подстановка в
+     * благополучную сторону: сравнение не состоялось — запись сохранялась как
+     * проверенная. Второй попытки при этом не бывает, evaluate зовётся один
+     * раз за жизнь записи, так что непроверенное уходило в горячую память
+     * навсегда и молча. Промах в эту сторону невосстановим; промах в обратную
+     * стоит одной лишней записи в очереди, которую человек снимет.
+     *
+     * ЧЕГО ЭТОТ МЕХАНИЗМ НЕ УМЕЕТ:
+     *  - бит означает "запись не годится в выдачу", а НЕ "запись спорит".
+     *    Спор и несостоявшееся сравнение попадают в него оба, и различить их
+     *    по базе нечем: причина постановки нигде не сохраняется. То же самое
+     *    сказано человеку на экране разбора очереди;
+     *  - отсюда следствие, которое надо знать заранее: систематическая
+     *    поломка сравнения выглядит как всплеск споров. Очередь растёт, человек
+     *    её разбирает, а механизм при этом мёртв. Прибора, отличающего эти два
+     *    случая, нет; при подозрении смотреть Log.e по метке "RiskTrigger";
+     *  - при систематическом падении новые записи перестают попадать в выдачу
+     *    до разбора вручную. Это сознательная цена: скрытая запись цела,
+     *    непроверенная в горячей памяти — нет (ARCHITECTURE.md §0).
+     *
+     * Бит, поднятый вызывающим, не сбрасывается: наш вердикт может его только
+     * добавить.
+     */
     suspend fun saveEvent(sticker: Sticker): Long {
         val (layer, interval) = Prism.classify(sticker)
         sticker.layer = layer.name
         sticker.expiryTime = interval?.let { System.currentTimeMillis() + it }
-        val newId = dao.insert(sticker)
 
-        // RiskTrigger — настоящий жёсткий чекпоинт (ставит reviewPending), но его
-        // сбой не должен каскадом ронять сам факт сохранения. Здесь @Update всей
-        // строки допустим: строка только что вставлена, параллельных читателей ещё нет.
-        try {
-            val hotPool = dao.getByTagInLayers(sticker.tag, HOT_LAYERS).filter { it.id != newId }
-            val saved = sticker.copy(id = newId)
-            val decision = RiskTrigger.evaluate(saved, hotPool)
+        // Кандидата в горячем пуле ещё нет — он не вставлен, и отдельный
+        // отсев его самого не нужен. Самоисключение по id внутри evaluate
+        // при этом остаётся и просто не срабатывает.
+        sticker.reviewPending = sticker.reviewPending || try {
+            val hotPool = dao.getByTagInLayers(sticker.tag, HOT_LAYERS)
+            val decision = RiskTrigger.evaluate(sticker, hotPool)
             Log.d(
                 "RiskTrigger",
-                "sticker id=$newId tag=${sticker.tag} shouldReview=${decision.shouldReview} reasons=${decision.reasons}"
+                "tag=${sticker.tag} shouldReview=${decision.shouldReview} reasons=${decision.reasons}"
             )
-            if (decision.shouldReview) {
-                saved.reviewPending = true
-                dao.update(saved)
-            }
+            decision.shouldReview
         } catch (e: Exception) {
-            Log.e("RiskTrigger", "evaluation failed for sticker id=$newId, save not blocked", e)
+            Log.e("RiskTrigger", "evaluation failed, record hidden until reviewed", e)
+            true
         }
 
-        return newId
+        return dao.insert(sticker)
     }
 
     private companion object {
