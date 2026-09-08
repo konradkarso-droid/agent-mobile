@@ -44,6 +44,11 @@ package com.uroboros.memory
  * 3. Она ничего не хранит между вызовами: записанные touchAccess и touchUserMatch
  *    не меняют того, что вернёт следующий getRanked. Проверять здесь можно факт
  *    обращения, а не его последствия.
+ *
+ * update() ОСТАВЛЕН НЕПОДГОТОВЛЕННЫМ НАМЕРЕННО, и это не пробел. Путь сохранения
+ * пишет запись ровно один раз: вердикт проверки вычисляется до вставки и входит
+ * в неё. Второй записи там взяться неоткуда, и если она появится, падение с
+ * именем метода скажет об этом само — отдельного утверждения в тестах на это нет.
  */
 class FakeStickerDao : StickerDao {
 
@@ -67,6 +72,17 @@ class FakeStickerDao : StickerDao {
     /** Ответ на getExpired(now) — путь чтения зовёт его первым, через migrateExpired. */
     var onGetExpired: ((now: Long) -> List<Sticker>)? = null
 
+    /** Ответ на insert(sticker) — id, который база якобы присвоила. */
+    var onInsert: ((sticker: Sticker) -> Long)? = null
+
+    /**
+     * Ответ на getByTagInLayers(tag, layers) — горячий пул, с которым сверяется
+     * новая запись. Лямбде разрешено бросить исключение: так выражается сбой базы
+     * на этом месте, и это единственный способ проверить, куда ошибётся сохранение,
+     * когда сравнение не состоится.
+     */
+    var onGetByTagInLayers: ((tag: String, layers: List<String>) -> List<Sticker>)? = null
+
     // --- Что записалось (читает тест) ---
 
     data class SearchCall(val query: String, val queryCapitalized: String, val limit: Int)
@@ -87,6 +103,13 @@ class FakeStickerDao : StickerDao {
     val layerUpdates = mutableListOf<LayerUpdate>()
     val touchedAccess = mutableListOf<Long>()
     val touchedUserMatch = mutableListOf<Long>()
+
+    /**
+     * Записи, дошедшие до вставки, в порядке обращения. Хранятся ссылками, а не
+     * копиями: путь сохранения правит переданный объект перед вставкой, и тесту
+     * нужен именно тот вид, в каком запись ушла в базу.
+     */
+    val inserted = mutableListOf<Sticker>()
 
     /** Только запрошенные строчные префиксы, в порядке обращения. */
     val searchedPrefixes: List<String> get() = searchCalls.map { it.query }
@@ -136,16 +159,23 @@ class FakeStickerDao : StickerDao {
         touchedUserMatch += id
     }
 
+    override suspend fun insert(sticker: Sticker): Long {
+        inserted += sticker
+        val answer = onInsert ?: unprepared("insert")
+        return answer(sticker)
+    }
+
+    override suspend fun getByTagInLayers(tag: String, layers: List<String>): List<Sticker> {
+        val answer = onGetByTagInLayers ?: unprepared("getByTagInLayers")
+        return answer(tag, layers)
+    }
+
     // --- Неподготовленные: падают с именем метода ---
 
-    override suspend fun insert(sticker: Sticker): Long = unprepared("insert")
     override suspend fun getById(id: Long): Sticker? = unprepared("getById")
     override suspend fun getRecent(limit: Int): List<Sticker> = unprepared("getRecent")
     override suspend fun search(query: String, limit: Int): List<Sticker> = unprepared("search")
     override suspend fun getAll(): List<Sticker> = unprepared("getAll")
-    override suspend fun getByTagInLayers(tag: String, layers: List<String>): List<Sticker> =
-        unprepared("getByTagInLayers")
-
     override suspend fun getPendingReview(): List<Sticker> = unprepared("getPendingReview")
     override suspend fun clearReviewPending(id: Long) = unprepared("clearReviewPending")
     override suspend fun clearAllReviewPending(): Int = unprepared("clearAllReviewPending")
