@@ -11,7 +11,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
@@ -119,14 +121,33 @@ const val CONTEXT_SIZE = 8192
  * придерживается в несколько раз реже, чем читается из слова «троттлинг», и
  * зона сверяется тогда же — раз в кусок, а не раз в токен.
  *
- * Учащать проверку смысла нет: зона живёт в подписках и обновляется своим
- * темпом, раз в десятки секунд, — читая её чаще, получишь то же число.
- * Свежи по-настоящему только часы, то есть потолок непрерывной работы.
+ * Проверка зоны и потолка к этим событиям больше НЕ привязана: рядом с
+ * барьером идёт часовой со своими часами ([WATCHDOG_TICK_MS]). Здесь
+ * осталось только придерживание выдачи.
+ *
+ * ЧЕГО ЭТА ПАУЗА НЕ УМЕЕТ: она придерживает РАЗБОР на нашей стороне, а не
+ * счёт. Движок считает в своей корутине и в эту паузу не упирается, поэтому
+ * железо она щадит куда слабее, чем читается из слова «троттлинг».
  *
  * Названа числом в одном месте, потому что от неё же считается потерянное
  * время в отчёте — два литерала со временем разошлись бы.
  */
 private const val FATIGUE_DELAY_MS = 100L
+
+/**
+ * Как часто часовой сам смотрит на зону и потолок, мс.
+ *
+ * ГРАНИЦА ОБЪЯВЛЕНА, А НЕ ПОДОБРАНА. Чаще смысла нет: показания зоны приходят
+ * от источников раз в десятки секунд, и лишние чтения вернут то же число.
+ * Реже нельзя: наш вклад в опоздание стал бы сравним с чужим, а весь смысл
+ * часового в том, чтобы он был заведомо мал.
+ *
+ * ОБЛАСТЬ. Число верно, пока источники зоны присылают показания в темпе
+ * десятков секунд, а потолок непрерывной работы измеряется минутами.
+ * Перепроверяется строкой отчёта: у исправного часового «наибольший отрезок
+ * без проверки» не должен заметно превышать этот тик.
+ */
+private const val WATCHDOG_TICK_MS = 2_000L
 
 enum class GenerationEnd {
 
@@ -394,6 +415,64 @@ class LlmEngine(
     private val barrierLastCheckAtMs = AtomicLong(0L)
 
     /**
+     * Сколько раз часовой посмотрел на зону и потолок за прогон.
+     *
+     * СЧИТАЕТСЯ РАДИ ТОГО, ЧТОБЫ НОЛЬ В СОСЕДНЕМ СЧЁТЧИКЕ ЧТО-ТО ЗНАЧИЛ. «Ни
+     * разу не пришлось останавливать» при сотне проверок — исправность; то же
+     * самое при нуле проверок означает, что часового не было вовсе. На экране
+     * без этого числа оба случая выглядят одинаково.
+     */
+    private val barrierClockTicks = AtomicInteger(0)
+
+    /**
+     * Сколько раз остановки потребовал именно часовой, а не событийный барьер.
+     *
+     * Считается ОТДЕЛЬНО от [barrierDroppedAfterStop] намеренно. Слитые в одно
+     * число, они сделали бы невидимым важнейший промах: событийный путь мёртв
+     * (события не приходят или ветка не срабатывает), часовой добросовестно
+     * останавливает, и контур, которого наполовину нет, выглядит исправным.
+     */
+    private val barrierClockStops = AtomicInteger(0)
+
+    /**
+     * Отметить состоявшуюся проверку и обновить наибольший отрезок без неё.
+     *
+     * ОДНА ФУНКЦИЯ НА ОБА ИСТОЧНИКА ПРОВЕРКИ — событие потока и тик часового.
+     * Считая только события, прибор показывал бы прежний зазор и после того,
+     * как часовой его закрыл, то есть врал бы в благополучную сторону ровно
+     * про то, ради чего заведён.
+     *
+     * Чего не умеет: два источника пишут без общей блокировки, и на
+     * одновременной паре отметок наибольшее может потеряться. Промах в сторону
+     * МЕНЬШЕГО числа, то есть в благополучную; величина от этого годится для
+     * порядка, а не для точности — как и сказано в [barrierMaxGapMs].
+     */
+    private fun noteBarrierCheck(atMs: Long) {
+        val previousCheckMs = barrierLastCheckAtMs.getAndSet(atMs)
+        if (previousCheckMs != 0L) {
+            val gap = atMs - previousCheckMs
+            if (gap > barrierMaxGapMs.get()) barrierMaxGapMs.set(gap)
+        }
+    }
+
+    /**
+     * Надо ли останавливать генерацию, и по какой причине. `null` — не надо.
+     *
+     * ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЭТО РЕШАЕТСЯ. Вопросов два — опасная зона и
+     * исчерпанный потолок непрерывной работы, — а спрашивающих теперь тоже
+     * два: событийный барьер и часовой. Копия условия у второго разошлась бы
+     * с первой молча, и на экране оба выглядели бы одинаково.
+     *
+     * Чего не умеет: причина одна, а совпасть их может две. Возвращается та,
+     * что проверена раньше.
+     */
+    private fun barrierStopReason(zone: SafetyZone): GenerationEnd? = when {
+        zone == SafetyZone.CRITICAL -> GenerationEnd.WATCHDOG_CRITICAL
+        watchdog.shouldForceCooldown() -> GenerationEnd.WATCHDOG_TIMEOUT
+        else -> null
+    }
+
+    /**
      * Что барьер сделал за последний прогон, строкой для экрана.
      *
      * Потерянное время СЧИТАЕТСЯ УМНОЖЕНИЕМ, а не замеряется: настоящая
@@ -422,9 +501,18 @@ class LlmEngine(
             return "Барьер: прогонов ещё не было."
         }
         val gapSec = String.format("%.1f", maxGap / 1000.0)
+        // Часовой печатается ВСЕГДА и отдельной величиной: без числа проверок
+        // его молчание неотличимо от его отсутствия.
+        val ticks = barrierClockTicks.get()
+        val clockStops = barrierClockStops.get()
+        val clockTail = when {
+            ticks == 0 -> " Часовой: НИ ОДНОЙ проверки за прогон."
+            clockStops == 0 -> " Часовой: $ticks проверок, останавливать не пришлось."
+            else -> " Часовой: $ticks проверок, остановки требовал $clockStops раз."
+        }
         if (text == 0 && other == 0) {
-            return "Барьер: событий не проходило вовсе — прогон шёл $gapSec с " +
-                "без единой проверки зоны и потолка."
+            return "Барьер: событий не проходило вовсе. " +
+                "Наибольший отрезок без проверки: $gapSec с." + clockTail
         }
         val passed = "Барьер: пропущено $text кусков текста и $other служебных"
         val delayTail = if (delayed == 0) {
@@ -438,7 +526,7 @@ class LlmEngine(
         val gapTail = " Наибольший отрезок без проверки: $gapSec с."
         val stopMs = barrierStopToEndMs.get()
         if (stopMs == 0L) {
-            return passed + delayTail + gapTail
+            return passed + delayTail + gapTail + clockTail
         }
         // Строка про остановку показывается ТОЛЬКО когда барьер срабатывал.
         // Иначе её ноль читался бы как «остановились мгновенно», хотя означал
@@ -447,7 +535,7 @@ class LlmEngine(
         val stopSec = String.format("%.1f", stopMs / 1000.0)
         return passed + delayTail + gapTail +
             " После требования остановки прошло $stopSec с, " +
-            "отброшено ещё $dropped событий."
+            "отброшено ещё $dropped событий." + clockTail
     }
 
     suspend fun loadModel(modelPath: String): Boolean {
@@ -1057,7 +1145,7 @@ class LlmEngine(
      * экране оба выглядят одинаково. Та же мера, что и с
      * [configureAfterLoad], и по той же причине.
      */
-    private fun guardedFlow(messagesJson: String, maxTokens: Int): Flow<GenerationEvent> = flow {
+    private fun guardedFlow(messagesJson: String, maxTokens: Int): Flow<GenerationEvent> = channelFlow {
         watchdog.markInferenceStarted()
         val startedAtMs = System.currentTimeMillis()
         // Причина сбрасывается ЗДЕСЬ, в начале прогона, а не в конце прошлого.
@@ -1072,36 +1160,66 @@ class LlmEngine(
         barrierStopToEndMs.set(0L)
         barrierStopAtMs.set(0L)
         barrierMaxGapMs.set(0L)
+        barrierClockTicks.set(0)
+        barrierClockStops.set(0)
         // Отсчёт зазора начинается ОТ СТАРТА ПРОГОНА, а не от первого события:
         // отрезок до первого события — тот самый, ради которого прибор заведён.
         // На нём идёт обсчёт запроса, и проверок там может не быть вовсе.
         barrierLastCheckAtMs.set(startedAtMs)
+
+        // ЧАСОВОЙ СО СВОИМИ ЧАСАМИ.
+        //
+        // Событийный барьер ниже сверяет зону и потолок только когда приходит
+        // событие потока, а до первого токена событий может не быть вовсе:
+        // измеренный отрезок без единой проверки — секунды, и верхней границы
+        // у него нет, потому что задаёт её чужая сторона. Всё это время идёт
+        // обсчёт запроса на восьми потоках против трёх у выдачи, то есть самая
+        // горячая часть прогона не проверялась никем.
+        //
+        // Форма взята у движка ([GGMLEngine.generateMultiTurnFlow]): вторая
+        // корутина рядом с работой, снимаемая при закрытии. Оттуда же и ответ
+        // на главный вопрос этой постройки — остановку можно звать из чужой
+        // корутины: движок сам так делает в своём `awaitClose`, счёт идёт на
+        // `Dispatchers.IO`, а остановка помечена как идемпотентная и дешёвая.
+        // Нового риска мы здесь не добавляем.
+        //
+        // ЧЕГО ЧАСОВОЙ НЕ УМЕЕТ. Он не ускоряет источники зоны: его тик — лишь
+        // наше слагаемое в общем опоздании, а показания приходят своим темпом,
+        // раз в десятки секунд. И он ТРЕБУЕТ остановки, а не обеспечивает её:
+        // остановится ли счёт и когда — решает нативная сторона, и меряется
+        // это отдельным числом ([barrierStopToEndMs]).
+        val clock = launch {
+            while (isActive) {
+                delay(WATCHDOG_TICK_MS)
+                barrierClockTicks.incrementAndGet()
+                val tickAtMs = System.currentTimeMillis()
+                noteBarrierCheck(tickAtMs)
+                val reason = barrierStopReason(watchdog.zone.value)
+                if (reason != null) {
+                    recordGenerationEnd(reason)
+                    barrierStopAtMs.compareAndSet(0L, tickAtMs)
+                    barrierClockStops.incrementAndGet()
+                    // Повторяется на каждом тике, как и в событийной ветке:
+                    // вызов идемпотентен, а заводить второе состояние ради
+                    // экономии на пути, который и так заканчивается, дороже.
+                    engine.stopGeneration()
+                }
+            }
+        }
         try {
             engine.generateMultiTurnFlow(messagesJson, maxTokens).collect { event ->
                 // Отрезок без проверки считается ПЕРВЫМ делом и на КАЖДОМ
                 // событии, включая те, что ветка обрыва ниже отбросит:
                 // проверка на них всё равно состоялась.
                 //
-                // Предыдущая отметка не бывает нулём внутри прогона — она
-                // поставлена на старте. Условие оставлено защитой от пути, на
-                // котором сбор пошёл бы в обход начала.
-                val checkAtMs = System.currentTimeMillis()
-                val previousCheckMs = barrierLastCheckAtMs.getAndSet(checkAtMs)
-                if (previousCheckMs != 0L) {
-                    val gap = checkAtMs - previousCheckMs
-                    if (gap > barrierMaxGapMs.get()) barrierMaxGapMs.set(gap)
-                }
+                // Учёт общий с часовым, см. [noteBarrierCheck].
+                noteBarrierCheck(System.currentTimeMillis())
 
                 val zone = watchdog.zone.value
+                val stopReason = barrierStopReason(zone)
 
-                if (zone == SafetyZone.CRITICAL || watchdog.shouldForceCooldown()) {
-                    recordGenerationEnd(
-                        if (zone == SafetyZone.CRITICAL) {
-                            GenerationEnd.WATCHDOG_CRITICAL
-                        } else {
-                            GenerationEnd.WATCHDOG_TIMEOUT
-                        }
-                    )
+                if (stopReason != null) {
+                    recordGenerationEnd(stopReason)
                     // Момент ставится один раз, первым срабатыванием: ветка
                     // повторяется на каждом следующем событии, и без этого
                     // условия отсчёт начинался бы заново с последнего.
@@ -1151,15 +1269,22 @@ class LlmEngine(
                     delay(FATIGUE_DELAY_MS)
                 }
 
-                // Считается ДО emit: собирающий вправе оборвать сбор прямо на
-                // этом событии, и тогда счёт после emit не случился бы, а
+                // Считается ДО отправки: собирающий вправе оборвать сбор прямо
+                // на этом событии, и тогда счёт после неё не случился бы, а
                 // событие барьер всё-таки пропустил.
+                //
+                // Число означает «барьер пропустил», а не «собирающий получил»:
+                // отправка в канал может приостановиться, и на отмене ровно в
+                // этот момент событие досчитано, но не доставлено. Разница в
+                // одно событие и на диагностику не влияет.
                 if (event is GenerationEvent.Token) {
                     barrierPassedText.incrementAndGet()
                 } else {
                     barrierPassedOther.incrementAndGet()
                 }
-                emit(event)
+                // `send`, а не `trySend`: отправка ждёт места в канале. Отказ
+                // без ожидания терял бы кусок текста молча.
+                send(event)
             }
         } catch (cancel: CancellationException) {
             // Отмена корутины снаружи. Ловится отдельно и БРОСАЕТСЯ ДАЛЬШЕ:
@@ -1170,6 +1295,11 @@ class LlmEngine(
             // Последняя черта: прогон кончился, а причины никто не назвал.
             // Сработает только если ни одна ветка выше не успела — первая
             // названная причина побеждает.
+            // Часовой снимается ПЕРВЫМ делом и именно здесь, а не по нашей
+            // аккуратности в каждой ветке выхода. Переживший свой прогон
+            // тикер позвал бы остановку поверх ЧУЖОЙ, следующей генерации, и
+            // на экране это выглядело бы необъяснимым обрывом без причины.
+            clock.cancel()
             recordGenerationEnd(GenerationEnd.UNEXPLAINED)
             val endedAtMs = System.currentTimeMillis()
             // Хвост: от последней проверки до конца потока. Без него прибор
