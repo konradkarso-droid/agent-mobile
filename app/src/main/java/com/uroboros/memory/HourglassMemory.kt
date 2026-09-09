@@ -429,6 +429,15 @@ class HourglassMemory(
 
     private val HOT_LAYERS = listOf(Layer.RED.name, Layer.ORANGE.name, Layer.YELLOW.name, Layer.GREEN.name)
 
+    /**
+     * Остальные слои — те, из которых запись в выдачу уже не попадает по
+     * умолчанию. Нужны ровно одному месту: чтобы отличить "спора нет" от
+     * "противник остыл и вышел из горячего пула". Проверка на противоречие
+     * сюда не заглядывает и заглядывать не должна — она работает по
+     * [HOT_LAYERS].
+     */
+    private val COLD_LAYERS = listOf(Layer.BLUE.name, Layer.PURPLE.name)
+
     suspend fun migrateExpired() {
         val now = System.currentTimeMillis()
         for (sticker in dao.getExpired(now)) {
@@ -1120,6 +1129,80 @@ class HourglassMemory(
         } catch (e: Exception) {
             RecheckOutcome.Failed
         }
+
+    /**
+     * С кем запись спорит СЕЙЧАС и где эти записи лежат.
+     *
+     * Только для показа. Ничего не решает, ничего не пишет, на приём не
+     * влияет — тот идёт через [recheckForAccept].
+     *
+     * ЗАЧЕМ РАЗДЕЛЬНО «видимый» И «скрытый». Пул сравнения шире пула выдачи,
+     * и из-за этого одна и та же пара лечится односторонне: скрывается та
+     * запись, которая пришла позже, а её противник продолжает уходить в
+     * ответы. На экране это не видно ничем: скрытая запись выглядит
+     * одинаково независимо от того, лежит её противник в горячей памяти или
+     * тоже спрятан.
+     *
+     * ЧЕТЫРЕ ИСХОДА, И ЧЕТВЁРТЫЙ НЕ ЛИШНИЙ. Пустой отчёт означает, что спора
+     * нет сейчас; отдельно от него стоит [cooled] — противник нашёлся, но
+     * только в холодных слоях, то есть спор был и распался сам, когда
+     * противник остыл. Слить их значило бы выдать распавшийся спор за
+     * отсутствие спора. Отдельно от обоих — [failed]: запрос к базе не
+     * состоялся, и молчание отчёта тогда не значит ничего.
+     *
+     * ЧЕГО НЕ УМЕЕТ:
+     *  - это НЕ причина постановки бита. Причина нигде не сохраняется, а
+     *    здесь считается сегодняшнее состояние. Запись, чей бит подняли два
+     *    слабых признака или сбой сравнения, законно даёт пустой отчёт;
+     *  - отчёт шире правила, по которому бит ставится: при сохранении поиск
+     *    останавливается на первом подошедшем противнике, здесь собираются
+     *    все. Значит запись может спорить с тремя, а в очередь попасть из-за
+     *    одной из них — какой именно, не знает никто;
+     *  - холодный проход делается ТОЛЬКО когда горячих противников нет:
+     *    он отвечает на вопрос «а был ли спор вообще», а не пополняет список.
+     */
+    suspend fun disputesOf(sticker: Sticker): DisputeReport {
+        return try {
+            var comparisons = 0
+            val visible = mutableListOf<Sticker>()
+            val hidden = mutableListOf<Sticker>()
+            for (other in dao.getByTagInLayers(sticker.tag, HOT_LAYERS)) {
+                if (other.id == sticker.id) continue
+                comparisons++
+                if (!RiskTrigger.contradicts(sticker.content, other.content)) continue
+                if (other.reviewPending) hidden += other else visible += other
+            }
+            if (visible.isNotEmpty() || hidden.isNotEmpty()) {
+                return DisputeReport(visible, hidden, emptyList(), comparisons)
+            }
+            val cooled = mutableListOf<Sticker>()
+            for (other in dao.getByTagInLayers(sticker.tag, COLD_LAYERS)) {
+                if (other.id == sticker.id) continue
+                comparisons++
+                if (RiskTrigger.contradicts(sticker.content, other.content)) cooled += other
+            }
+            DisputeReport(emptyList(), emptyList(), cooled, comparisons)
+        } catch (e: Exception) {
+            DisputeReport(emptyList(), emptyList(), emptyList(), 0, failed = true)
+        }
+    }
+
+    /**
+     * Итог [disputesOf]. Пустой отчёт при `failed = false` означает «спора
+     * сейчас нет»; при `failed = true` не означает ничего.
+     *
+     * [comparisons] — сколько пар сравнено. Число нужно затем, чтобы пустой
+     * отчёт при живом механизме отличался от пустого отчёта при мёртвом:
+     * ноль сравнений при непустой памяти означает, что сравнивать даже не
+     * начинали.
+     */
+    data class DisputeReport(
+        val visible: List<Sticker>,
+        val hidden: List<Sticker>,
+        val cooled: List<Sticker>,
+        val comparisons: Int,
+        val failed: Boolean = false,
+    )
 
     private companion object {
         /**
