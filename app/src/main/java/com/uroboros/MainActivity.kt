@@ -28,6 +28,7 @@ import com.uroboros.llm.CONTEXT_SIZE
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
+import com.uroboros.memory.AcceptCheck
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.EmergencyStop
@@ -356,7 +357,8 @@ class MainActivity : AppCompatActivity() {
      * вовсе — сбой проверки прячет запись, а не пропускает (полное объяснение
      * в HourglassMemory.saveEvent). Отсюда следствие для того, кто смотрит на
      * экран: растущая очередь означает либо всплеск споров, либо мёртвую
-     * проверку, и различить это отсюда нечем.
+     * проверку. ИЗ ЭТОГО СПИСКА различить их нечем — различает счёт входов,
+     * он печатается отдельным отчётом на показе памяти (см. ReviewWitness).
      *
      * Он не показывает и того, С ЧЕМ запись спорила. Причина постановки бита вычисляется в
      * RiskTrigger.evaluate и никуда не сохраняется: id противника и список
@@ -386,8 +388,11 @@ class MainActivity : AppCompatActivity() {
         out.append("очередь нечем, кроме как сохранить спорное утверждение заново.")
         out.append("\n\nС чем именно запись спорила, здесь не видно: причина ")
         out.append("постановки нигде не сохраняется. Часть записей попадает ")
-        out.append("сюда не из-за спора, а из-за сбоя самой проверки — на ")
-        out.append("экране эти два случая неразличимы.")
+        out.append("сюда не из-за спора, а из-за сбоя самой проверки — в этом ")
+        out.append("списке эти два случая неразличимы.")
+        out.append("\n\nПри нажатии «принять» запись сверяется заново, и там ")
+        out.append("видно, спорит ли она СЕЙЧАС и с чем. Это сегодняшнее ")
+        out.append("состояние, а не причина, по которой она сюда попала.")
         val shown = pending.take(PENDING_REVIEW_LIMIT)
         for (sticker in shown) {
             out.append("\n\n• ").append(sourceLabel(sticker.source)).append(" ")
@@ -452,38 +457,103 @@ class MainActivity : AppCompatActivity() {
      *
      * Длина обрезки взята общая с диалогом отрезания хода: величина
      * косметическая, разойтись ей незачем.
+     *
+     * ПЕРЕД ПОКАЗОМ ЗАПИСЬ СВЕРЯЕТСЯ ЗАНОВО. Причина постановки бита нигде не
+     * сохраняется, поэтому человек решал вслепую: спорная запись и запись,
+     * попавшая сюда из-за сбоя проверки, выглядели одинаково. Перепроверка
+     * отвечает на другой вопрос — спорит ли запись СЕГОДНЯ и с чем, — и для
+     * записи, попавшей сюда по сбою, это её единственная вторая попытка:
+     * сравнение зовётся один раз за жизнь записи.
+     *
+     * СПОР ПРИЁМУ НЕ МЕШАЕТ. Запись, попавшая в очередь по настоящему спору,
+     * будет спорить и завтра — противная запись никуда не делась. Запрет сделал
+     * бы очередь неразбираемой ровно для тех записей, ради которых она заведена.
+     * Механизм показывает, решает человек.
+     *
+     * Единственный исход, при котором приёма нет, — несостоявшаяся проверка.
+     * Отказ живёт на фасаде, где его не обойти; здесь кнопка приёма просто не
+     * предлагается, чтобы человек не жал в пустоту.
      */
     private fun showAcceptRecordDialog(sticker: Sticker) {
-        val preview = sticker.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
-        val tail = if (sticker.content.length > DROP_PREVIEW_CHARS) "…" else ""
+        lifecycleScope.launch {
+            val check = mediator.checkBeforeAccept(sticker)
+            val preview = sticker.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+            val tail = if (sticker.content.length > DROP_PREVIEW_CHARS) "…" else ""
 
-        AlertDialog.Builder(this)
-            .setTitle("Принять запись?")
-            .setMessage(
-                "«$preview$tail»\n\n" +
+            val verdict = when (check) {
+                is AcceptCheck.Disputes -> {
+                    val other = check.opponentContent
+                        .take(DROP_PREVIEW_CHARS).replace("\n", " ")
+                    val otherTail = if (check.opponentContent.length > DROP_PREVIEW_CHARS) "…" else ""
+                    "Сейчас спорит с записью:\n«$other$otherTail»"
+                }
+                AcceptCheck.Clean ->
+                    "Сейчас ни с чем не спорит. Это не значит, что спора не было " +
+                        "при сохранении: противник мог устареть и уйти из горячей памяти."
+                AcceptCheck.CheckFailed ->
+                    "Проверка не состоялась, и принять сейчас нельзя. Это говорит " +
+                        "не о записи, а о том, что сверить её не с чем: память не " +
+                        "ответила. Попробуйте ещё раз."
+            }
+
+            val message = if (check.allowsAccept) {
+                "«$preview$tail»\n\n$verdict\n\n" +
                     "Запись перестанет быть скрытой и снова сможет попасть в " +
                     "ответ агента. Вернуть её в очередь нечем — только сохранить " +
                     "спорное утверждение заново."
-            )
-            .setPositiveButton("Принять") { _, _ ->
-                lifecycleScope.launch {
-                    mediator.clearReviewPending(sticker.id)
-                    // Список перечитывается, а не правится на месте: после
-                    // записи в базу на экране должно стоять то, что в базе,
-                    // а не то, что мы рассчитывали туда положить.
-                    val pending = mediator.getPendingReview()
-                    binding.textResults.text = renderPendingReview(pending)
-                    // Число остатка называется вслух: без него приём и
-                    // несработавший приём выглядят одинаково.
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Принято · в очереди осталось ${pending.size}",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+            } else {
+                "«$preview$tail»\n\n$verdict"
             }
-            .setNegativeButton("Отмена", null)
-            .show()
+
+            val builder = AlertDialog.Builder(this@MainActivity)
+                .setTitle("Принять запись?")
+                .setMessage(message)
+
+            if (check.allowsAccept) {
+                builder.setPositiveButton("Принять") { _, _ ->
+                    lifecycleScope.launch { acceptRecord(sticker) }
+                }
+                builder.setNegativeButton("Отмена", null)
+            } else {
+                builder.setPositiveButton("Проверить снова") { _, _ ->
+                    showAcceptRecordDialog(sticker)
+                }
+                builder.setNegativeButton("Закрыть", null)
+            }
+            builder.show()
+        }
+    }
+
+    /**
+     * Собственно приём.
+     *
+     * Проверка идёт ЗАНОВО внутри фасада, а не берётся с экрана: между показом
+     * диалога и нажатием проходит время, и необратимое действие решается по
+     * свежему состоянию. Поэтому отказ возможен и здесь — тогда бит остаётся,
+     * и об этом надо сказать, иначе несработавший приём выглядит как приём.
+     */
+    private suspend fun acceptRecord(sticker: Sticker) {
+        val result = mediator.acceptFromReview(sticker)
+        if (!result.allowsAccept) {
+            Toast.makeText(
+                this@MainActivity,
+                "Не принято: проверка не состоялась. Запись осталась в очереди.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        // Список перечитывается, а не правится на месте: после записи в базу
+        // на экране должно стоять то, что в базе, а не то, что мы
+        // рассчитывали туда положить.
+        val pending = mediator.getPendingReview()
+        binding.textResults.text = renderPendingReview(pending)
+        // Число остатка называется вслух: без него приём и несработавший
+        // приём выглядят одинаково.
+        Toast.makeText(
+            this@MainActivity,
+            "Принято · в очереди осталось ${pending.size}",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     /**
@@ -1708,6 +1778,15 @@ class MainActivity : AppCompatActivity() {
                     // уже печатает "Всего записей", а два независимых запроса к базе
                     // могли бы показать два разных числа на одном экране.
                     val canaryReport = mediator.memoryCanaryReport()
+                    // Второй отчёт стоит рядом с первым и в него НЕ вложен.
+                    // Снимок считает состояние базы, прибор очереди — поток
+                    // входов в неё, и числа приходят с разных сторон: число
+                    // проверок у прибора и число записей в снимке должны
+                    // совпадать по порядку величины. Расхождение означает, что
+                    // один из двух механизмов не работает, и заметить это может
+                    // только человек, глядя на оба числа сразу. Порога здесь нет
+                    // намеренно (см. KDoc ReviewWitness).
+                    val witnessReport = mediator.reviewWitnessReport()
                     // Просмотр, а не ответ: записи никому ни в чём не помогли,
                     // их показали. Этой кнопкой пользуются как диагностическим
                     // прибором, и засчитывать пользу за каждый осмотр памяти
@@ -1737,12 +1816,12 @@ class MainActivity : AppCompatActivity() {
                     // дотянулся. Она не попадает ни в кандидатов, ни в отсеянных
                     // (см. KDoc SelectionSummary).
                     val body = if (shown.stickers.isEmpty()) {
-                        "$canaryReport\n\n${shown.summary}\n\n(записей для показа нет)"
+                        "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n(записей для показа нет)"
                     } else {
                         val lines = shown.stickers.joinToString("\n\n") { sticker ->
                             "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
                         }
-                        "$canaryReport\n\n${shown.summary}\n\n$lines"
+                        "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n$lines"
                     }
                     binding.textResults.text = withPendingReviewLink(body)
                 } finally {
