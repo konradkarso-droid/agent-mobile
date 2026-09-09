@@ -48,6 +48,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
@@ -397,12 +399,16 @@ class MainActivity : AppCompatActivity() {
         out.append("сравнивает запись только с горячими записями того же тега. ")
         out.append("Один и тот же тег у всех означает, что сравнивали со всей ")
         out.append("горячей памятью. О причине постановки тег не говорит ничего.")
+        out.append("\n\nВремя — когда запись создана, и оно же время попадания ")
+        out.append("сюда: бит поднимается вместе со вставкой записи в базу, а ")
+        out.append("поднять его у уже лежащей записи не может ничто. Отдельного ")
+        out.append("времени постановки поэтому не существует.")
         val shown = pending.take(PENDING_REVIEW_LIMIT)
         for (sticker in shown) {
             out.append("\n\n• ").append(sourceLabel(sticker.source)).append(" ")
             out.append(sticker.content)
             out.append("\n  [").append(sticker.layer).append("] тег: ")
-            out.append(sticker.tag)
+            out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
             // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
             // строке с меткой оно читается как ещё одна подпись записи: цвет
             // один это не вытягивает, потому что метка и ссылка оказываются в
@@ -827,6 +833,23 @@ class MainActivity : AppCompatActivity() {
     private fun fmt0(value: Double): String = String.format(Locale.US, "%.0f", value)
 
     private fun fmtSec(millis: Double): String = fmt1(millis / 1000.0)
+
+    /**
+     * Момент времени для экрана.
+     *
+     * С секундами намеренно: записи сохраняются подряд, в одну минуту их
+     * попадает несколько, и без секунд порядок сохранения — то единственное,
+     * ради чего момент и печатается, — не восстанавливается.
+     *
+     * Год не печатается: на экране это всегда недавнее, а строка и без того
+     * стоит в одном ряду со слоем и тегом.
+     *
+     * Формат создаётся на каждый вызов, а не хранится в поле:
+     * SimpleDateFormat не потокобезопасен, а вызывают его из нескольких
+     * корутин. Цена — один короткоживущий объект на строку списка.
+     */
+    private fun fmtMoment(millis: Long): String =
+        SimpleDateFormat("dd.MM HH:mm:ss", Locale.US).format(Date(millis))
 
     /**
      * Зона сторожа по-русски. На экран не должно попадать слово FATIGUE:
@@ -1821,25 +1844,30 @@ class MainActivity : AppCompatActivity() {
                         "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n(записей для показа нет)"
                     } else {
                         val lines = shown.stickers.joinToString("\n\n") { sticker ->
-                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] тег: ${sticker.tag} (обращений: ${sticker.accessCount})"
+                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] тег: ${sticker.tag} · ${fmtMoment(sticker.createdAt)} (обращений: ${sticker.accessCount})"
                         }
                         // Счёт тегов идёт по ПОКАЗАННЫМ записям, а не по базе, и
-                        // на экране назван именно так. Выдача ограничена limit и
-                        // словами запроса, поэтому число описывает её, а не память;
-                        // подписать его "в базе" значило бы назвать под числом не ту
-                        // величину.
+                        // на экране назван именно так. Выдача сужена трижды: по
+                        // limit, по словам запроса и по карантинному биту — все
+                        // три запроса пути чтения начинаются с reviewPending = 0,
+                        // поэтому скрытых записей в этом счёте нет вовсе.
+                        // Подписать число "в базе" значило бы назвать под ним не
+                        // ту величину.
                         //
-                        // Зачем оно здесь. Тег выбирает пул сравнения на проверке
-                        // противоречий (getByTagInLayers): запись сверяется только с
-                        // горячими записями того же тега. В самом отборе тег не
-                        // участвует — поиск идёт по словам и слоям, — поэтому из
-                        // выдачи никак не видно, разделяет тег память или у всех
-                        // записей он один. Пока он один, пул равен всей горячей
-                        // памяти, и проверка на противоречие ничем не сужена.
+                        // Зачем оно на экране. Тег выбирает пул сравнения на
+                        // проверке противоречий (getByTagInLayers): запись
+                        // сверяется только с горячими записями того же тега. В
+                        // самом отборе тег не участвует — поиск идёт по словам и
+                        // слоям, — поэтому из выдачи никак не видно, разделяет тег
+                        // память или у всех записей он один. Пока он один, пул
+                        // равен всей горячей памяти, и проверка на противоречие
+                        // ничем не сужена.
                         val tagCounts = shown.stickers.groupingBy { it.tag }.eachCount()
                             .entries.sortedByDescending { it.value }
                             .joinToString(", ") { "${it.key} — ${it.value}" }
-                        val tagLine = "Теги среди показанных записей: $tagCounts"
+                        val tagLine = "Теги среди показанных записей: $tagCounts\n" +
+                            "Скрытые карантином сюда не входят — их теги и время видны в очереди.\n" +
+                            "Время — когда запись создана. Список идёт по рангу, а не по времени."
                         "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n$tagLine\n\n$lines"
                     }
                     binding.textResults.text = withPendingReviewLink(body)
