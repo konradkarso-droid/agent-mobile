@@ -612,13 +612,20 @@ class MainActivity : AppCompatActivity() {
     /**
      * Первый противник текстом плюс счёт остальных. Длина обрезки взята общая
      * с диалогом приёма: величина косметическая, расходиться ей незачем.
+     *
+     * Время печатается рядом с текстом не для полноты. Записи с близким
+     * текстом попадают в память по нескольку штук — набраны в разное время,
+     * различаются знаком препинания, — и часть их скрыта, часть нет. Без
+     * времени такие близнецы на экране неразличимы, и верное показание
+     * выглядит как ошибка механизма: одна и та же с виду запись оказывается
+     * разом и видимой, и лежащей в очереди.
      */
     private fun opponentPreview(opponents: List<Sticker>): String {
-        val first = opponents.first().content
-        val text = first.take(DROP_PREVIEW_CHARS).replace("\n", " ")
-        val tail = if (first.length > DROP_PREVIEW_CHARS) "…" else ""
+        val first = opponents.first()
+        val text = first.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+        val tail = if (first.content.length > DROP_PREVIEW_CHARS) "…" else ""
         val more = if (opponents.size > 1) " (и ещё ${opponents.size - 1})" else ""
-        return "«$text$tail»$more"
+        return "«$text$tail» ${fmtMoment(first.createdAt)}$more"
     }
 
     /**
