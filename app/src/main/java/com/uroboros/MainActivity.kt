@@ -32,6 +32,7 @@ import com.uroboros.memory.AcceptCheck
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.EmergencyStop
+import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
@@ -379,7 +380,7 @@ class MainActivity : AppCompatActivity() {
      * после каждого приёма стоит тем дороже, чем он длиннее. Остаток назван
      * числом, иначе обрезка была бы неотличима от конца очереди.
      */
-    private fun renderPendingReview(pending: List<Sticker>): CharSequence {
+    private suspend fun renderPendingReview(pending: List<Sticker>): CharSequence {
         val out = SpannableStringBuilder("ОЧЕРЕДЬ НА ПРОВЕРКЕ")
         if (pending.isEmpty()) {
             out.append("\n\nВ очереди пусто: скрытых записей нет.")
@@ -403,12 +404,21 @@ class MainActivity : AppCompatActivity() {
         out.append("сюда: бит поднимается вместе со вставкой записи в базу, а ")
         out.append("поднять его у уже лежащей записи не может ничто. Отдельного ")
         out.append("времени постановки поэтому не существует.")
+        out.append("\n\nПоследняя строка у записи — с кем она спорит СЕЙЧАС. ")
+        out.append("Важно, где лежит противник: если он ВИДЕН в памяти, то из ")
+        out.append("пары спрятана только одна сторона, а вторая продолжает ")
+        out.append("уходить в ответы агента. Прячется всегда та запись, что ")
+        out.append("пришла позже, — это следствие того, что проверка стоит на ")
+        out.append("входе, а не решение о том, какая из двух вернее.")
         val shown = pending.take(PENDING_REVIEW_LIMIT)
         for (sticker in shown) {
             out.append("\n\n• ").append(sourceLabel(sticker.source)).append(" ")
             out.append(sticker.content)
             out.append("\n  [").append(sticker.layer).append("] тег: ")
             out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
+            for (line in disputeLines(mediator.disputesOf(sticker))) {
+                out.append("\n  ").append(line)
+            }
             // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
             // строке с меткой оно читается как ещё одна подпись записи: цвет
             // один это не вытягивает, потому что метка и ссылка оказываются в
@@ -565,6 +575,50 @@ class MainActivity : AppCompatActivity() {
             "Принято · в очереди осталось ${pending.size}",
             Toast.LENGTH_SHORT
         ).show()
+    }
+
+    /**
+     * Как выглядит спор записи на экране очереди.
+     *
+     * Исходов четыре, и четвёртый не лишний: «спора нет» и «противник остыл»
+     * — разные вещи, а «проверить не удалось» не значит ни того, ни другого.
+     * Что стоит за каждым — в KDoc HourglassMemory.disputesOf.
+     *
+     * Показывается ВСЯ найденная родня, а не один противник. Правило, по
+     * которому запись попала в очередь, устроено иначе: там поиск
+     * останавливается на первом подошедшем. Поэтому экран здесь шире базы, и
+     * запись может спорить с тремя, а в очередь попасть из-за одной из них.
+     */
+    private fun disputeLines(report: HourglassMemory.DisputeReport): List<String> {
+        if (report.failed) {
+            return listOf("спор проверить не удалось — это НЕ значит, что спора нет")
+        }
+        val out = mutableListOf<String>()
+        if (report.visible.isNotEmpty()) {
+            out += "спорит с записью, которая ВИДНА в памяти: " + opponentPreview(report.visible)
+        }
+        if (report.hidden.isNotEmpty()) {
+            out += "спорит со скрытой записью, тоже в очереди: " + opponentPreview(report.hidden)
+        }
+        if (report.cooled.isNotEmpty()) {
+            out += "противник остыл и вышел из горячих слоёв: " + opponentPreview(report.cooled)
+        }
+        if (out.isEmpty()) {
+            out += "сейчас ни с чем не спорит (сравнено пар: ${report.comparisons})"
+        }
+        return out
+    }
+
+    /**
+     * Первый противник текстом плюс счёт остальных. Длина обрезки взята общая
+     * с диалогом приёма: величина косметическая, расходиться ей незачем.
+     */
+    private fun opponentPreview(opponents: List<Sticker>): String {
+        val first = opponents.first().content
+        val text = first.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+        val tail = if (first.length > DROP_PREVIEW_CHARS) "…" else ""
+        val more = if (opponents.size > 1) " (и ещё ${opponents.size - 1})" else ""
+        return "«$text$tail»$more"
     }
 
     /**
@@ -1843,8 +1897,31 @@ class MainActivity : AppCompatActivity() {
                     val body = if (shown.stickers.isEmpty()) {
                         "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n(записей для показа нет)"
                     } else {
+                        // Пары считаются ОТ ОЧЕРЕДИ, а не от списка памяти:
+                        // скрытых записей единицы, показанных два десятка, а
+                        // ответ один и тот же. Обратный порядок стоил бы
+                        // запроса к базе на каждую показанную запись.
+                        //
+                        // Что означает пометка: у этой записи есть скрытая
+                        // поправка. Чего она НЕ означает: её отсутствие не
+                        // говорит, что поправки нет. Противник скрытой записи
+                        // мог не попасть в показанные два десятка, и тогда
+                        // помечать нечего.
+                        val pending = mediator.getPendingReview()
+                        var comparisons = 0
+                        var checkFailed = false
+                        val correctedIds = mutableSetOf<Long>()
+                        for (hidden in pending) {
+                            val report = mediator.disputesOf(hidden)
+                            comparisons += report.comparisons
+                            if (report.failed) checkFailed = true
+                            correctedIds += report.visible.map { it.id }
+                        }
                         val lines = shown.stickers.joinToString("\n\n") { sticker ->
-                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] тег: ${sticker.tag} · ${fmtMoment(sticker.createdAt)} (обращений: ${sticker.accessCount})"
+                            val mark = if (sticker.id in correctedIds) {
+                                "\n  ↑ на эту запись есть скрытая поправка — она в очереди"
+                            } else ""
+                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] тег: ${sticker.tag} · ${fmtMoment(sticker.createdAt)} (обращений: ${sticker.accessCount})$mark"
                         }
                         // Счёт тегов идёт по ПОКАЗАННЫМ записям, а не по базе, и
                         // на экране назван именно так. Выдача сужена трижды: по
@@ -1865,9 +1942,23 @@ class MainActivity : AppCompatActivity() {
                         val tagCounts = shown.stickers.groupingBy { it.tag }.eachCount()
                             .entries.sortedByDescending { it.value }
                             .joinToString(", ") { "${it.key} — ${it.value}" }
+                        // Счёт сравнений печатается всегда. Без него ноль
+                        // поправок означал бы и "спорить не с чем", и
+                        // "сопоставление не работает".
+                        val marked = shown.stickers.count { it.id in correctedIds }
+                        val pairLine = when {
+                            checkFailed ->
+                                "Скрытые поправки: проверить не удалось — ноль ниже не значит ничего."
+                            pending.isEmpty() ->
+                                "Скрытых поправок нет: очередь пуста, сравнивать нечего."
+                            else ->
+                                "Скрытых поправок к показанным записям: $marked " +
+                                    "(сравнено пар: $comparisons)"
+                        }
                         val tagLine = "Теги среди показанных записей: $tagCounts\n" +
                             "Скрытые карантином сюда не входят — их теги и время видны в очереди.\n" +
-                            "Время — когда запись создана. Список идёт по рангу, а не по времени."
+                            "Время — когда запись создана. Список идёт по рангу, а не по времени.\n" +
+                            pairLine
                         "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n$tagLine\n\n$lines"
                     }
                     binding.textResults.text = withPendingReviewLink(body)
