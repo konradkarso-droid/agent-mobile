@@ -138,28 +138,65 @@ object RiskTrigger {
         }
     }
 
-    private fun findContradiction(candidate: Sticker, pool: List<Sticker>): Sticker? {
-        val candidateWords = stemmedTokenize(candidate.content)
-        val candidateHasNegation = tokenize(candidate.content).any { it in NEGATION_MARKERS }
-        val candidateNumbers = extractNumbers(candidate.content)
+    /**
+     * Противоречат ли два текста по тому же правилу, по которому запись
+     * встаёт в очередь на проверку.
+     *
+     * Вынесено наружу, чтобы у правила была ОДНА реализация. Экран разбора
+     * сопоставляет записи, уже вытащенные из базы, и без этого предиката ему
+     * пришлось бы либо звать проверку по разу на запись, либо завести вторую
+     * копию правила рядом. Вторая копия расходится с первой, и не видно,
+     * какая врёт.
+     *
+     * ЧТО ЭТО НЕ ЗНАЧИТ. Предикат отвечает на вопрос о ПАРЕ и ничего не знает
+     * о том, как решалось при сохранении. Там противник ищется перебором и
+     * поиск останавливается на первом подошедшем (см. [findContradiction]),
+     * поэтому две записи могут противоречить друг другу по этому предикату,
+     * а бит при сохранении был поднят из-за третьей. Обратное тоже бывает:
+     * бит поднимается и вовсе без противника — по двум слабым признакам
+     * сразу (см. [evaluate]).
+     *
+     * ЧЕГО НЕ УМЕЕТ. Правило грубое намеренно: это дешёвое трение к проверке
+     * человеком, а не разбор смысла. Пересказ теми же по смыслу, но другими
+     * словами не берётся вовсе — до сравнения отрицаний и чисел такая пара не
+     * доходит, схожесть ниже порога. Порог и его область — у
+     * [CONTRADICTION_JACCARD_THRESHOLD].
+     *
+     * Записи не сравниваются с самими собой: об этом заботится вызывающий,
+     * предикату идентичности записей не видно — он получает только тексты.
+     */
+    fun contradicts(a: String, b: String): Boolean {
+        val wordsA = stemmedTokenize(a)
+        val wordsB = stemmedTokenize(b)
+        if (jaccard(wordsA, wordsB) < CONTRADICTION_JACCARD_THRESHOLD) return false
 
+        val negationMismatch =
+            tokenize(a).any { it in NEGATION_MARKERS } != tokenize(b).any { it in NEGATION_MARKERS }
+
+        val numbersA = extractNumbers(a)
+        val numbersB = extractNumbers(b)
+        val numberMismatch = numbersA.isNotEmpty() && numbersB.isNotEmpty() && numbersA != numbersB
+
+        return negationMismatch || numberMismatch
+    }
+
+    /**
+     * Первый противник кандидата в пуле — или null.
+     *
+     * ПЕРВЫЙ, А НЕ ЕДИНСТВЕННЫЙ: перебор останавливается на подошедшем, и
+     * порядок пула задаёт запрос к базе, у которого своей сортировки нет.
+     * Значит выбор конкретного противника из нескольких возможных
+     * произволен, и опираться на него как на "тот самый" нельзя.
+     *
+     * Разбор пары вынесен в [contradicts]. Слова кандидата стеммируются
+     * заново на каждой паре, а не один раз на весь пул: пул ограничен
+     * горячими слоями одного тега, и цена этого — десятки коротких строк на
+     * сохранение. Плата за то, что правило живёт в одном месте.
+     */
+    private fun findContradiction(candidate: Sticker, pool: List<Sticker>): Sticker? {
         for (existing in pool) {
             if (existing.id == candidate.id) continue
-            val existingWords = stemmedTokenize(existing.content)
-            val overlap = jaccard(candidateWords, existingWords)
-            if (overlap < CONTRADICTION_JACCARD_THRESHOLD) continue
-
-            val existingHasNegation = tokenize(existing.content).any { it in NEGATION_MARKERS }
-            val negationMismatch = candidateHasNegation != existingHasNegation
-
-            val existingNumbers = extractNumbers(existing.content)
-            val numberMismatch = candidateNumbers.isNotEmpty() &&
-                existingNumbers.isNotEmpty() &&
-                candidateNumbers != existingNumbers
-
-            if (negationMismatch || numberMismatch) {
-                return existing
-            }
+            if (contradicts(candidate.content, existing.content)) return existing
         }
         return null
     }
