@@ -187,6 +187,19 @@ class TrustedMediator(context: Context) {
     suspend fun clearAllPendingReview(): Int = dao.clearAllReviewPending()
 
     /**
+     * С кем запись спорит сейчас и где эти записи лежат. ТОЛЬКО ЧТЕНИЕ,
+     * только для показа: на приём этот отчёт не влияет, приём идёт через
+     * [checkBeforeAccept] и [acceptFromReview].
+     *
+     * Проброс без логики — что считать спором и какие слои смотреть, решает
+     * HourglassMemory. Что означает пустой отчёт и чего он не умеет —
+     * в KDoc HourglassMemory.disputesOf; повторять здесь незачем, две копии
+     * разойдутся.
+     */
+    suspend fun disputesOf(sticker: Sticker): HourglassMemory.DisputeReport =
+        hourglass.disputesOf(sticker)
+
+    /**
      * Перепроверить запись перед тем, как показать человеку подтверждение
      * приёма. ТОЛЬКО ЧТЕНИЕ — бит не трогается.
      *
