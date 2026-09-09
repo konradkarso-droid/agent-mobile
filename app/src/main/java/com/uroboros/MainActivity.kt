@@ -393,11 +393,16 @@ class MainActivity : AppCompatActivity() {
         out.append("\n\nПри нажатии «принять» запись сверяется заново, и там ")
         out.append("видно, спорит ли она СЕЙЧАС и с чем. Это сегодняшнее ")
         out.append("состояние, а не причина, по которой она сюда попала.")
+        out.append("\n\nТег у записи — это пул, с которым её сверяли: проверка ")
+        out.append("сравнивает запись только с горячими записями того же тега. ")
+        out.append("Один и тот же тег у всех означает, что сравнивали со всей ")
+        out.append("горячей памятью. О причине постановки тег не говорит ничего.")
         val shown = pending.take(PENDING_REVIEW_LIMIT)
         for (sticker in shown) {
             out.append("\n\n• ").append(sourceLabel(sticker.source)).append(" ")
             out.append(sticker.content)
-            out.append("\n  [").append(sticker.layer).append("]")
+            out.append("\n  [").append(sticker.layer).append("] тег: ")
+            out.append(sticker.tag)
             // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
             // строке с меткой оно читается как ещё одна подпись записи: цвет
             // один это не вытягивает, потому что метка и ссылка оказываются в
@@ -1816,9 +1821,26 @@ class MainActivity : AppCompatActivity() {
                         "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n(записей для показа нет)"
                     } else {
                         val lines = shown.stickers.joinToString("\n\n") { sticker ->
-                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] (обращений: ${sticker.accessCount})"
+                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] тег: ${sticker.tag} (обращений: ${sticker.accessCount})"
                         }
-                        "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n$lines"
+                        // Счёт тегов идёт по ПОКАЗАННЫМ записям, а не по базе, и
+                        // на экране назван именно так. Выдача ограничена limit и
+                        // словами запроса, поэтому число описывает её, а не память;
+                        // подписать его "в базе" значило бы назвать под числом не ту
+                        // величину.
+                        //
+                        // Зачем оно здесь. Тег выбирает пул сравнения на проверке
+                        // противоречий (getByTagInLayers): запись сверяется только с
+                        // горячими записями того же тега. В самом отборе тег не
+                        // участвует — поиск идёт по словам и слоям, — поэтому из
+                        // выдачи никак не видно, разделяет тег память или у всех
+                        // записей он один. Пока он один, пул равен всей горячей
+                        // памяти, и проверка на противоречие ничем не сужена.
+                        val tagCounts = shown.stickers.groupingBy { it.tag }.eachCount()
+                            .entries.sortedByDescending { it.value }
+                            .joinToString(", ") { "${it.key} — ${it.value}" }
+                        val tagLine = "Теги среди показанных записей: $tagCounts"
+                        "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n$tagLine\n\n$lines"
                     }
                     binding.textResults.text = withPendingReviewLink(body)
                 } finally {
