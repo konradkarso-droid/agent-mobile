@@ -64,7 +64,7 @@ class ReviewWitnessTest {
         val witness = ReviewWitness(FakeStore())
 
         HourglassMemory(dao { _, _ -> emptyList() }, witness)
-            .saveEvent(sticker("у паука восемь ног"))
+            .saveEventChecked(sticker("у паука восемь ног"))
 
         val counts = witness.counts(now = 5_000L)
         assertEquals(
@@ -81,7 +81,7 @@ class ReviewWitnessTest {
         val witness = ReviewWitness(FakeStore())
 
         HourglassMemory(dao { _, _ -> listOf(existing) }, witness)
-            .saveEvent(sticker("у паука четыре ноги"))
+            .saveEventChecked(sticker("у паука четыре ноги"))
 
         val counts = witness.counts(now = 5_000L)
         assertEquals(1L, counts.checks)
@@ -96,7 +96,7 @@ class ReviewWitnessTest {
         HourglassMemory(
             dao { _, _ -> throw IllegalStateException("база недоступна") },
             witness
-        ).saveEvent(sticker("у паука восемь ног"))
+        ).saveEventChecked(sticker("у паука восемь ног"))
 
         val counts = witness.counts(now = 5_000L)
         assertEquals(1L, counts.checks)
@@ -111,12 +111,12 @@ class ReviewWitnessTest {
     fun `отказ укладки не роняет сохранение и виден в отчёте`() = runBlocking {
         val witness = ReviewWitness(FakeStore(failOnSave = true))
 
-        val id = HourglassMemory(dao { _, _ -> emptyList() }, witness)
-            .saveEvent(sticker("у паука восемь ног"))
+        val outcome = HourglassMemory(dao { _, _ -> emptyList() }, witness)
+            .saveEventChecked(sticker("у паука восемь ног"))
 
         assertEquals(
             "потерянное показание восстановимо наблюдением, потерянная запись нет",
-            42L, id
+            42L, (outcome as HourglassMemory.SaveOutcome.Saved).id
         )
         assertTrue(
             "прибор, молчащий о собственной поломке, не прибор",
@@ -143,7 +143,7 @@ class ReviewWitnessTest {
         val witness = ReviewWitness(store)
 
         HourglassMemory(dao { _, _ -> emptyList() }, witness)
-            .saveEvent(sticker("у паука восемь ног"))
+            .saveEventChecked(sticker("у паука восемь ног"))
 
         val counts = witness.counts(now = 900_000L)
         assertEquals("иначе каждый запуск начинал бы счёт заново", 1_000L, counts.startedAt)
