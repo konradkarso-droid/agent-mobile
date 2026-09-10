@@ -47,9 +47,14 @@ class SaveEventReviewTest {
     fun `сбой сравнения прячет запись, а не пропускает её`() = runBlocking {
         val dao = dao { _, _ -> throw IllegalStateException("база недоступна") }
 
-        val id = HourglassMemory(dao).saveEvent(sticker("у паука восемь ног"))
+        val outcome = HourglassMemory(dao).saveEventChecked(sticker("у паука восемь ног"))
 
-        assertEquals(42L, id)
+        assertTrue(
+            "тот же отказ пула читают два механизма, и направления у них разные: " +
+                "проверка ужесточает исход, отсев повторов молчит и сохраняет",
+            outcome is HourglassMemory.SaveOutcome.Saved
+        )
+        assertEquals(42L, (outcome as HourglassMemory.SaveOutcome.Saved).id)
         assertEquals(1, dao.inserted.size)
         assertTrue(
             "сравнение не состоялось — запись обязана уйти в очередь, а не в выдачу",
@@ -61,7 +66,7 @@ class SaveEventReviewTest {
     fun `сравнение прошло и спора нет — бит опущен`() = runBlocking {
         val dao = dao { _, _ -> emptyList() }
 
-        HourglassMemory(dao).saveEvent(sticker("у паука восемь ног"))
+        HourglassMemory(dao).saveEventChecked(sticker("у паука восемь ног"))
 
         assertFalse(
             "иначе в очередь уходило бы всё подряд, и разбирать её стало бы нечем",
@@ -74,7 +79,7 @@ class SaveEventReviewTest {
         val existing = sticker("у паука восемь ног").copy(id = 7L)
         val dao = dao { _, _ -> listOf(existing) }
 
-        HourglassMemory(dao).saveEvent(sticker("у паука четыре ноги"))
+        HourglassMemory(dao).saveEventChecked(sticker("у паука четыре ноги"))
 
         assertTrue(dao.inserted.single().reviewPending)
     }
