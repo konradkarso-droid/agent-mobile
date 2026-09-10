@@ -84,7 +84,7 @@ object RiskTrigger {
 
         var lowWeightCount = 0
 
-        if (Importance.valueOf(candidate.importance) == Importance.HIGH) {
+        if (importanceOf(candidate.importance) == Importance.HIGH) {
             lowWeightCount++
             reasons += "high_importance"
         }
@@ -130,6 +130,35 @@ object RiskTrigger {
      */
     fun textSimilarity(a: String, b: String): Double =
         jaccard(stemmedTokenize(a), stemmedTokenize(b))
+
+    /**
+     * Важность записи из строки, лежащей в базе. Незнакомое или пустое
+     * значение — [Importance.LOW], а не исключение.
+     *
+     * Поле строковое, и в нём может оказаться что угодно: значение из старой
+     * схемы, опечатка, чужой импорт. Разворачивать его через
+     * Importance.valueOf() нельзя: тот бросает на любом незнакомом слове, и
+     * падение уносит с собой всю оценку записи — хотя важность здесь лишь
+     * один из трёх слабых признаков и решающего голоса не имеет.
+     * Направление ошибки выбрано в восстановимую сторону: непонятная
+     * важность считается низкой, признак не срабатывает, запись сохраняется
+     * как обычная.
+     *
+     * Ровно так же поступают два других места проекта, где та же строка
+     * превращается в важность (ранжирование в отборе и importanceRank). Это
+     * третий экземпляр одного приёма, и он приведён к тем же двум.
+     *
+     * Сравнение точное, без приведения регистра и обрезки пробелов: строку
+     * пишет код, а не человек, и молчаливое исправление здесь скрыло бы
+     * настоящий разнобой в том, кто и как её ставит.
+     *
+     * ЧТО ЭТО НЕ ЧИНИТ. Признак "high_importance" сегодня не срабатывает
+     * никогда, и по другой причине: важность никто не выставляет, у всех
+     * записей значение по умолчанию. Здесь исправлено только поведение при
+     * мусоре в поле.
+     */
+    private fun importanceOf(raw: String): Importance =
+        Importance.values().firstOrNull { it.name == raw } ?: Importance.LOW
 
     private fun hasUncertaintyMarker(text: String): Boolean {
         val words = tokenize(text)
