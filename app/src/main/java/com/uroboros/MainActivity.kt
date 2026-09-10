@@ -34,6 +34,7 @@ import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.RetrievalPurpose
+import com.uroboros.memory.SaveResult
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StopCause
@@ -894,6 +895,60 @@ class MainActivity : AppCompatActivity() {
     private fun fmt0(value: Double): String = String.format(Locale.US, "%.0f", value)
 
     private fun fmtSec(millis: Double): String = fmt1(millis / 1000.0)
+
+    /**
+     * Сказать человеку, чем кончилось сохранение.
+     *
+     * ПОЧЕМУ НЕ ОДИН TOAST НА ВСЁ. Раньше здесь стояло безусловное
+     * «Сохранено»: показание печаталось до того, как исход был известен, и
+     * после появления отсева повторов стало бы прямой ложью — память не
+     * прибавляется, а экран сообщает, что прибавилась. Обычное сохранение
+     * остаётся Toast'ом, два остальных исхода идут диалогом: в них есть что
+     * читать — чужой текст и время, — а Toast обрезается на двух строках.
+     *
+     * ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ. Ни один диалог не предлагает убрать лишнюю
+     * запись: пути удаления записи в проекте не существует вовсе, и кнопка,
+     * обещающая его, обещала бы механизм, которого нет.
+     */
+    private fun showSaveResult(result: SaveResult) {
+        fun preview(content: String): String {
+            val head = content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+            val tail = if (content.length > DROP_PREVIEW_CHARS) "…" else ""
+            return "«$head$tail»"
+        }
+
+        when (result) {
+            is SaveResult.Saved ->
+                Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
+
+            is SaveResult.SavedNearDuplicate ->
+                AlertDialog.Builder(this)
+                    .setTitle("Сохранено, рядом почти такое же")
+                    .setMessage(
+                        "От ${fmtMoment(result.similarToCreatedAt)} уже лежит:\n\n" +
+                            preview(result.similarToContent) + "\n\n" +
+                            "Тексты сходятся всюду, кроме знаков и разделителей. " +
+                            "Различие могло быть значащим, поэтому сохранены обе."
+                    )
+                    .setPositiveButton("Понятно", null)
+                    .show()
+
+            is SaveResult.Duplicate ->
+                AlertDialog.Builder(this)
+                    .setTitle("Такое уже записано")
+                    .setMessage(
+                        "От ${fmtMoment(result.existingCreatedAt)} лежит дословно то же:\n\n" +
+                            preview(result.existingContent) + "\n\n" +
+                            "Новой записи не появилось. Лежащей засчитано обращение — " +
+                            "повтор той же мысли продлевает ей жизнь в горячей памяти.\n\n" +
+                            "Набранный текст оставлен в поле: если он должен был быть " +
+                            "другим, поправьте и сохраните."
+                    )
+                    .setPositiveButton("Понятно", null)
+                    .show()
+        }
+    }
+
 
     /**
      * Момент времени для экрана.
@@ -1833,13 +1888,18 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 // Дыра №4: провенанс задаётся явно. Это ручной ввод пользователя —
                 // единственное место в проекте, где USER_STATED действительно верен.
-                mediator.saveEvent(
+                val result = mediator.saveEvent(
                     content = text,
                     source = SourceKind.USER_STATED,
                     confidence = ConfidenceLevel.OBSERVED
                 )
-                binding.editTextInput.text.clear()
-                Toast.makeText(this@MainActivity, "Сохранено", Toast.LENGTH_SHORT).show()
+                // Поле пустеет только когда запись действительно прибавилась. На
+                // дословном повторе в памяти не появилось ничего, и стереть
+                // набранное значило бы забрать текст, не дав ничего взамен, —
+                // причём именно в том случае, когда человек, возможно, хотел
+                // написать другое и промахнулся.
+                if (result.stored) binding.editTextInput.text.clear()
+                showSaveResult(result)
             }
         }
 
