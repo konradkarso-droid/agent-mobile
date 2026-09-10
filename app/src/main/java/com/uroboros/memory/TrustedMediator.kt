@@ -33,6 +33,54 @@ sealed class AcceptCheck {
 }
 
 /**
+ * Чем кончилось сохранение — в виде, пригодном для чтения человеком.
+ *
+ * Запечатан: «сохранено» и «не сохранено, такое уже лежит» — разные события, а
+ * вызывающему видно одно и то же опустевшее поле ввода. Пока исход был числом,
+ * экран не мог их различить и говорил «Сохранено» в обоих случаях.
+ *
+ * Похожая запись отдаётся ТЕКСТОМ и временем, а не номером, по той же причине,
+ * что и противник в [AcceptCheck]: читать это будет человек, и «похоже на
+ * запись 47» ему не говорит ничего. Время нужно потому, что похожие записи
+ * различаются в основном им — сам текст у них почти одинаков.
+ */
+sealed class SaveResult {
+
+    /** Запись сохранена, похожих рядом не нашлось. */
+    data class Saved(val id: Long) : SaveResult()
+
+    /**
+     * Запись сохранена, но рядом уже лежит почти такая же: тексты сходятся
+     * всюду, кроме знаков и разделителей. Различие могло быть значащим,
+     * поэтому запись сохранена, а не съедена, и человеку сказано.
+     */
+    data class SavedNearDuplicate(
+        val id: Long,
+        val similarToContent: String,
+        val similarToCreatedAt: Long
+    ) : SaveResult()
+
+    /**
+     * Запись НЕ сохранена: дословный повтор уже лежащей. Номер здесь — чужой,
+     * записи по нему вызывающий не создавал; он дан для показа, а не для того,
+     * чтобы считать его номером своей записи.
+     */
+    data class Duplicate(
+        val existingId: Long,
+        val existingContent: String,
+        val existingCreatedAt: Long
+    ) : SaveResult()
+
+    /**
+     * Прибавилась ли запись в памяти. Правило живёт на типе, а не у
+     * вызывающего: иначе второй экран, написанный позже, решит иначе.
+     */
+    val stored: Boolean
+        get() = this !is Duplicate
+}
+
+
+/**
  * Фасад памяти — единственная точка записи и чтения Sticker'ов для остального кода.
  *
  * Дыра №4 (аудит 2026-08-21): у saveEvent() не было параметров source/confidence,
@@ -127,21 +175,57 @@ class TrustedMediator(context: Context) {
      *  - ввод пользователя         -> USER_STATED  + OBSERVED
      *  - вывод/итог работы агента  -> AGENT_INFERRED + INFERRED
      *  - распознанный текст с фото -> OCR_EXTRACTED + UNCERTAIN
+     *
+     * ВОЗВРАЩАЕТ ИСХОД, А НЕ НОМЕР. Дословный повтор в память не кладётся, и
+     * номера новой записи в этом случае не существует. Пока возвращалось
+     * число, отличить это от обычного сохранения было нельзя, и экран говорил
+     * «Сохранено» там, где ничего не прибавилось.
+     *
+     * Что считать повтором и что почти-повтором, решает HourglassMemory;
+     * фасад лишь переводит исход в читаемый вид. Границы отсева — в KDoc
+     * HourglassMemory.saveEventChecked, повторять их здесь незачем: две копии
+     * разойдутся.
      */
     suspend fun saveEvent(
         content: String,
         source: SourceKind,
         confidence: ConfidenceLevel,
         tag: String = "general"
-    ): Long {
+    ): SaveResult {
         val sticker = Sticker(
             content = content,
             tag = tag,
             source = source.name,
             confidence = confidence.name
         )
-        return hourglass.saveEvent(sticker)
+        return describeSave(hourglass.saveEventChecked(sticker))
     }
+
+    /**
+     * Достать текст похожей записи по номеру.
+     *
+     * Пропавшая запись не выдаётся за отсутствие похожей: отсев её нашёл, а
+     * показать нечем. Человек увидит это прямо, а не пустую строку. Та же
+     * форма, что у [describe] для противника.
+     */
+    private suspend fun describeSave(outcome: HourglassMemory.SaveOutcome): SaveResult =
+        when (outcome) {
+            is HourglassMemory.SaveOutcome.Saved -> SaveResult.Saved(outcome.id)
+
+            is HourglassMemory.SaveOutcome.SavedNearDuplicate -> SaveResult.SavedNearDuplicate(
+                id = outcome.id,
+                similarToContent = dao.getById(outcome.similarToId)?.content
+                    ?: "запись не найдена",
+                similarToCreatedAt = outcome.similarToCreatedAt
+            )
+
+            is HourglassMemory.SaveOutcome.Duplicate -> SaveResult.Duplicate(
+                existingId = outcome.existingId,
+                existingContent = dao.getById(outcome.existingId)?.content
+                    ?: "запись не найдена",
+                existingCreatedAt = outcome.existingCreatedAt
+            )
+        }
 
     /**
      * Достать записи под запрос. purpose обязателен и умолчания не имеет — по той же
