@@ -1218,22 +1218,6 @@ class HourglassMemory(
     }
 
     /**
-     * Прежний вход, оставленный только на время перевода вызывающих на
-     * [saveEventChecked].
-     *
-     * ЧИСЛУ БОЛЬШЕ НЕЛЬЗЯ ВЕРИТЬ так, как верилось раньше: на дословном
-     * повторе возвращается id УЖЕ ЛЕЖАВШЕЙ записи, а новой не появляется.
-     * Отличить это по числу нельзя — за тем исход и заведён. Новый код должен
-     * звать [saveEventChecked]; этот метод подлежит удалению, как только
-     * последний вызывающий переведён.
-     */
-    suspend fun saveEvent(sticker: Sticker): Long = when (val outcome = saveEventChecked(sticker)) {
-        is SaveOutcome.Saved -> outcome.id
-        is SaveOutcome.SavedNearDuplicate -> outcome.id
-        is SaveOutcome.Duplicate -> outcome.existingId
-    }
-
-    /**
      * Чем кончилась перепроверка записи, лежащей в очереди.
      *
      * Запечатан, потому что третье значение здесь обязательно: без [Failed]
