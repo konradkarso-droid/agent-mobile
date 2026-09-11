@@ -121,9 +121,10 @@ class ReviewWitness(private val store: ReviewWitnessStore = NoReviewWitnessStore
         /**
          * Ширина колонки подписей. Держится общей со снимком памяти намеренно:
          * отчёты стоят на экране друг под другом, и разъехавшиеся колонки
-         * читались бы как разные по устройству приборы.
+         * читались бы как разные по устройству приборы. Меняется только
+         * вместе с той.
          */
-        const val LABEL_WIDTH = 18
+        const val LABEL_WIDTH = 14
     }
 
     private var counts: ReviewCounts? = null
