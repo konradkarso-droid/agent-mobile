@@ -290,7 +290,16 @@ class MainActivity : AppCompatActivity() {
      * Черта между текстом записи и её служебными строками. Темнее подложки,
      * но заметно светлее текста: она делит блок, а не спорит с содержимым.
      */
-    private val colorRecordRule = Color.parseColor("#C2D3D6")
+    private val colorRecordRule = Color.parseColor("#9BB0B5")
+
+    /**
+     * Толщина черты в пикселях — один dp, а не один пиксель.
+     *
+     * Пиксель на плотном экране даёт волосок, который на глаз неотличим от
+     * края строки: черта была, а разделения видно не было.
+     */
+    private val ruleThickness: Float
+        get() = resources.displayMetrics.density.coerceAtLeast(1f)
 
     /**
      * Лента в том виде, в каком её читает человек.
@@ -562,7 +571,16 @@ class MainActivity : AppCompatActivity() {
      */
     private class RecordRuleSpan(
         private val color: Int,
-        private val paragraphStart: Int
+        private val paragraphStart: Int,
+        private val thickness: Float,
+        /**
+         * По центру строки вместо её верха. Нужно, когда черта стоит на
+         * ПУСТОМ абзаце-разделителе: воздух тогда получается с обеих сторон,
+         * а вплотную к тексту черта тонет в нём. Внутри блока записи
+         * наоборот: там строка не пустая, и черта обязана лечь по её верху,
+         * иначе перечеркнёт буквы.
+         */
+        private val centered: Boolean = false
     ) : LineBackgroundSpan {
         override fun drawBackground(
             canvas: Canvas,
@@ -580,8 +598,9 @@ class MainActivity : AppCompatActivity() {
             if (start != paragraphStart) return
             val previous = paint.color
             paint.color = color
+            val y = if (centered) (top + bottom) / 2f else top.toFloat()
             canvas.drawRect(
-                left.toFloat(), top.toFloat(), right.toFloat(), top + 1f, paint
+                left.toFloat(), y, right.toFloat(), y + thickness, paint
             )
             paint.color = previous
         }
@@ -909,7 +928,7 @@ class MainActivity : AppCompatActivity() {
         }
         for ((from, to) in rules) {
             out.setSpan(
-                RecordRuleSpan(colorRecordRule, from),
+                RecordRuleSpan(colorRecordRule, from, ruleThickness),
                 from, paragraphEnd(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
@@ -1503,8 +1522,12 @@ class MainActivity : AppCompatActivity() {
             val present = lines.filterNotNull()
             if (present.isEmpty()) return
             if (metrics.isNotEmpty()) {
+                // Пустой абзац между группами: на нём и лежит черта, по его
+                // центру. Это и есть воздух — вплотную к строкам черта
+                // читается как край текста, а не как граница.
                 metrics.append("\n")
                 metricRules += metrics.length
+                metrics.append("\n")
             }
             metrics.append(present.joinToString("\n"))
         }
@@ -1512,7 +1535,12 @@ class MainActivity : AppCompatActivity() {
             journalLine(), journalDiskLine, journalRestoreLine,
             checkpointDiskLine, checkpointActionLine,
         )
-        group(engineParamsLine, promptCacheLine, lastMetricsLine)
+        group(engineParamsLine, promptCacheLine)
+        // Числа прогона — своя группа: после ответа их приходит больше десятка
+        // строк, и слитые с параметрами движка они превращали шторку в
+        // простыню. Параметры отвечают на "с чем запущено", прогон — на "как
+        // прошло"; это разные вопросы и разная свежесть.
+        group(lastMetricsLine)
         group(
             // Наблюдение за зоной стоит последним: смотрят на него не при
             // каждом ответе, а когда показания железа выглядят странно.
@@ -1522,7 +1550,7 @@ class MainActivity : AppCompatActivity() {
         )
         for (start in metricRules) {
             metrics.setSpan(
-                RecordRuleSpan(colorRecordRule, start),
+                RecordRuleSpan(colorRecordRule, start, ruleThickness, centered = true),
                 start, metrics.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
