@@ -13,6 +13,7 @@ import android.text.Spanned
 import android.text.TextPaint
 import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
+import android.text.style.LeadingMarginSpan
 import android.text.style.LineBackgroundSpan
 import android.util.Log
 import android.view.View
@@ -277,6 +278,12 @@ class MainActivity : AppCompatActivity() {
     private val colorRecordBlock = Color.parseColor("#EDF3F4")
 
     /**
+     * Черта между текстом записи и её служебными строками. Темнее подложки,
+     * но заметно светлее текста: она делит блок, а не спорит с содержимым.
+     */
+    private val colorRecordRule = Color.parseColor("#C2D3D6")
+
+    /**
      * Лента в том виде, в каком её читает человек.
      *
      * Показывается ВОПРОС, а не реплика целиком: записи памяти уходят в
@@ -459,15 +466,40 @@ class MainActivity : AppCompatActivity() {
         // перевод строки за последней строкой блока пишется только тогда,
         // когда начинается следующий блок.
         val blockRanges = mutableListOf<Pair<Int, Int>>()
+        // Абзацы служебных строк: у них будет висячий отступ, у первого из
+        // них — ещё и черта. Тем же способом и по той же причине, что и
+        // подложка: границы копятся, спаны навешиваются после сборки.
+        val disputeRanges = mutableListOf<Pair<Int, Int>>()
+        val ruleRanges = mutableListOf<Pair<Int, Int>>()
+        // Ширина колонки НЕ назначена числом, а измерена по шрифту самой
+        // панели: столько, сколько занимает самая длинная подпись с отбивкой.
+        // Тогда её не надо не забыть подкрутить при смене шрифта или его
+        // размера. Область: перенесённые строки встают под значение при любом
+        // шрифте, а вот САМА колонка держится на том, что шрифт панели
+        // моноширинный (задано в разметке). Сменят шрифт — подписи разъедутся
+        // по первой строке, и это видно глазом сразу.
+        val disputeLabel = "спорит".length + 2
+        val disputeColumn = binding.textResults.paint
+            .measureText("".padEnd(disputeLabel)).toInt()
         for (sticker in shown) {
             out.append("\n\n")
             val blockStart = out.length
-            out.append("• ").append(sourceLabel(sticker.source)).append(" ")
+            // Маркера "•" здесь больше нет: границу между записями держит
+            // подложка, и две границы подряд — это одна лишняя. Пометка
+            // источника осталась, она не оформление: без неё не видно, чьё
+            // это утверждение.
+            out.append(sourceLabel(sticker.source)).append(" ")
             out.append(sticker.content)
-            out.append("\n  [").append(sticker.layer).append("] тег: ")
+            out.append("\n")
+            val serviceStart = out.length
+            out.append("[").append(sticker.layer).append("] тег: ")
             out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
-            for (line in disputeLines(mediator.disputesOf(sticker))) {
-                out.append("\n  ").append(line)
+            ruleRanges += serviceStart to out.length
+            for ((label, value) in disputeLines(mediator.disputesOf(sticker))) {
+                out.append("\n")
+                val lineStart = out.length
+                out.append(label.padEnd(disputeLabel)).append(value)
+                disputeRanges += lineStart to out.length
             }
             // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
             // строке с меткой оно читается как ещё одна подпись записи: цвет
@@ -481,7 +513,7 @@ class MainActivity : AppCompatActivity() {
             // "показать" стоит в хвосте строки записей, и спутать его не с
             // чем — вся строка служебная, текста самой записи рядом нет.
             // Расхождение намеренное, а не недоделанная правка.
-            out.append("\n  ")
+            out.append("\n")
             val start = out.length
             out.append("принять")
             out.setSpan(
@@ -496,14 +528,32 @@ class MainActivity : AppCompatActivity() {
             )
             blockRanges += blockStart to out.length
         }
+        // Конец абзаца — до перевода строки включительно, иначе спан кончался
+        // бы в середине абзаца и Android выбросил бы его целиком, молча.
+        fun paragraphEnd(end: Int): Int =
+            if (end < out.length && out[end] == '\n') end + 1 else end
+        for ((from, to) in disputeRanges) {
+            // Первая строка идёт от края — её левую часть занимает подпись;
+            // перенесённые встают под значение. Без этого длинная цитата
+            // возвращается к краю и читается как начало новой записи.
+            out.setSpan(
+                LeadingMarginSpan.Standard(0, disputeColumn),
+                from, paragraphEnd(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        for ((ruleStart, ruleEnd) in ruleRanges) {
+            out.setSpan(
+                RecordRuleSpan(colorRecordRule, ruleStart),
+                ruleStart, paragraphEnd(ruleEnd), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
         for ((blockStart, blockEnd) in blockRanges) {
             // Конец захватывает перевод строки, если он там есть: без него
             // спан кончался бы в середине абзаца, и Android бросил бы его
             // целиком — молча, без единого признака на экране.
-            val end = if (blockEnd < out.length && out[blockEnd] == '\n') blockEnd + 1 else blockEnd
             out.setSpan(
                 BlockBackgroundSpan(colorRecordBlock),
-                blockStart, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                blockStart, paragraphEnd(blockEnd), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
         if (pending.size > shown.size) {
@@ -511,6 +561,47 @@ class MainActivity : AppCompatActivity() {
             out.append("Остальные появятся здесь, когда эти будут разобраны.")
         }
         return out
+    }
+
+    /**
+     * Черта над первой строкой абзаца, к которому спан привешен.
+     *
+     * ЗАЧЕМ ЗДЕСЬ НОМЕР НАЧАЛА. Отрисовка зовётся на каждую экранную строку
+     * абзаца, и без сравнения черта появилась бы над каждым переносом. Спан
+     * знает, где начинается его абзац, и рисует только там.
+     *
+     * ЧЕРТА — ЭТО ЕЩЁ И ПРИЗНАК, и убирать её как украшение нельзя. Она и
+     * висячий отступ ставятся одним способом (абзацным спаном) на одни и те
+     * же абзацы. Абзацный спан, поставленный мимо границы абзаца, Android
+     * выбрасывает молча — экран тогда выглядит ровно так, как до всей этой
+     * правки, и отличить "не применилось" от "не сделано" было бы нечем.
+     * Черты нет на экране — значит не применилось ничего.
+     */
+    private class RecordRuleSpan(
+        private val color: Int,
+        private val paragraphStart: Int
+    ) : LineBackgroundSpan {
+        override fun drawBackground(
+            canvas: Canvas,
+            paint: Paint,
+            left: Int,
+            right: Int,
+            top: Int,
+            baseline: Int,
+            bottom: Int,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            lineNumber: Int
+        ) {
+            if (start != paragraphStart) return
+            val previous = paint.color
+            paint.color = color
+            canvas.drawRect(
+                left.toFloat(), top.toFloat(), right.toFloat(), top + 1f, paint
+            )
+            paint.color = previous
+        }
     }
 
     /**
@@ -707,25 +798,39 @@ class MainActivity : AppCompatActivity() {
      * которому запись попала в очередь, устроено иначе: там поиск
      * останавливается на первом подошедшем. Поэтому экран здесь шире базы, и
      * запись может спорить с тремя, а в очередь попасть из-за одной из них.
+     *
+     * ВОЗВРАЩАЕТСЯ ПОДПИСЬ И ЗНАЧЕНИЕ, а не готовая фраза. Подпись уходит в
+     * колонку на экране, значение — за неё; у второй и третьей строки подпись
+     * ПУСТАЯ намеренно, они продолжают ту же самую. Повторять "спорит" у
+     * каждой значило бы, что это разные сведения об одном, тогда как это одно
+     * перечисление.
+     *
+     * Ширину колонки здесь не знают и знать не должны: она меряется по шрифту
+     * там, где строится экран.
      */
-    private fun disputeLines(report: HourglassMemory.DisputeReport): List<String> {
+    private fun disputeLines(report: HourglassMemory.DisputeReport): List<Pair<String, String>> {
         if (report.failed) {
-            return listOf("спор проверить не удалось — это НЕ значит, что спора нет")
+            return listOf("спор" to "проверить не удалось — это НЕ значит, что спора нет")
         }
-        val out = mutableListOf<String>()
+        val values = mutableListOf<String>()
         if (report.visible.isNotEmpty()) {
-            out += "спорит с записью, которая ВИДНА в памяти: " + opponentPreview(report.visible)
+            values += "с записью, которая ВИДНА в памяти: " + opponentPreview(report.visible)
         }
         if (report.hidden.isNotEmpty()) {
-            out += "спорит со скрытой записью, тоже в очереди: " + opponentPreview(report.hidden)
+            values += "со скрытой записью, тоже в очереди: " + opponentPreview(report.hidden)
         }
         if (report.cooled.isNotEmpty()) {
-            out += "противник остыл и вышел из горячих слоёв: " + opponentPreview(report.cooled)
+            values += "с противником, который остыл и вышел из горячих слоёв: " +
+                opponentPreview(report.cooled)
         }
-        if (out.isEmpty()) {
-            out += "сейчас ни с чем не спорит (сравнено пар: ${report.comparisons})"
+        if (values.isEmpty()) {
+            return listOf(
+                "спорит" to "сейчас ни с чем (сравнено пар: ${report.comparisons})"
+            )
         }
-        return out
+        return values.mapIndexed { index, value ->
+            (if (index == 0) "спорит" else "") to value
+        }
     }
 
     /**
