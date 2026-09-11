@@ -1479,24 +1479,54 @@ class MainActivity : AppCompatActivity() {
         // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
         // больше не входит: она обязана быть видна независимо от того,
         // раскрыта шторка или нет.
+        //
+        // ГРУППЫ РАЗДЕЛЕНЫ ЧЕРТОЙ, И ГРАНИЦА ПРОВЕДЕНА НЕ ПО ТЕМАМ. Деление по
+        // темам (память, скорость, модель) разлучило бы строки, которые стоят
+        // рядом затем, чтобы сверять друг друга: "Лента" и "Лента на диске"
+        // интересны разницей между тем, что в памяти процесса, и тем, что
+        // переживёт перезапуск, а наблюдение за зоной и опрос источников — тем,
+        // сходятся ли подписка и прямой опрос. Поэтому группы отвечают на
+        // разные вопросы: что останется от разговора, чем он считается, чем
+        // меряется железо.
+        //
         // Строка ленты стоит ВЫШЕ чисел прогона намеренно: она отвечает на
         // вопрос "сколько разговора ещё поместится", и увидеть её надо до
-        // того, как упрёшься. Считается при каждой отрисовке, а не хранится
-        // отдельной переменной, как соседи: она целиком выводится из ленты,
-        // и второе место, где она может разойтись с лентой, заводить незачем.
-        binding.textMetrics.text =
-            listOfNotNull(
-                engineParamsLine, promptCacheLine, journalLine(),
-                journalDiskLine, journalRestoreLine,
-                checkpointDiskLine, checkpointActionLine,
-                lastMetricsLine,
-                // Наблюдение за зоной стоит последним: смотрят на него не при
-                // каждом ответе, а когда показания железа выглядят странно.
-                // Печатается ВСЕГДА, включая случай "событий не было": прибор,
-                // молчащий при нуле, неотличим от неподключённого.
-                watchdog.formatZoneObservation(::zoneLabel),
+        // того, как упрёшься. Это и определило порядок групп. Считается при
+        // каждой отрисовке, а не хранится отдельной переменной, как соседи:
+        // она целиком выводится из ленты, и второе место, где она может
+        // разойтись с лентой, заводить незачем.
+        val metrics = SpannableStringBuilder()
+        val metricRules = mutableListOf<Int>()
+        // Пустая группа не оставляет ни черты, ни пустой строки: черта над
+        // пустотой читалась бы как "здесь что-то не напечаталось".
+        fun group(vararg lines: String?) {
+            val present = lines.filterNotNull()
+            if (present.isEmpty()) return
+            if (metrics.isNotEmpty()) {
+                metrics.append("\n")
+                metricRules += metrics.length
+            }
+            metrics.append(present.joinToString("\n"))
+        }
+        group(
+            journalLine(), journalDiskLine, journalRestoreLine,
+            checkpointDiskLine, checkpointActionLine,
+        )
+        group(engineParamsLine, promptCacheLine, lastMetricsLine)
+        group(
+            // Наблюдение за зоной стоит последним: смотрят на него не при
+            // каждом ответе, а когда показания железа выглядят странно.
+            // Печатается ВСЕГДА, включая случай "событий не было": прибор,
+            // молчащий при нуле, неотличим от неподключённого.
+            watchdog.formatZoneObservation(::zoneLabel),
+        )
+        for (start in metricRules) {
+            metrics.setSpan(
+                RecordRuleSpan(colorRecordRule, start),
+                start, metrics.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
-                .joinToString("\n")
+        }
+        binding.textMetrics.text = metrics
     }
 
     /**
