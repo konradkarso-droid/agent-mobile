@@ -89,6 +89,11 @@ data class MemorySnapshot(
 
 class MemoryCanary(private val dao: StickerDao) {
 
+    private companion object {
+        /** Ширина колонки подписей. Задана самой длинной: "След. истечение:". */
+        const val LABEL_WIDTH = 18
+    }
+
     /**
      * Снять снимок. Только чтение.
      *
@@ -116,36 +121,83 @@ class MemoryCanary(private val dao: StickerDao) {
         )
     }
 
-    /** Человекочитаемый вид одного снимка. */
+    /**
+     * Человекочитаемый вид одного снимка.
+     *
+     * СЖАТО ПО ПРАВИЛУ: спокойное показание уходит в хвост соседней строки,
+     * тревожное занимает свою. Долга нет — он приписан к числу записей; долг
+     * появился — обе величины стоят порознь, и блок на экране становится выше
+     * ровно тогда, когда есть на что смотреть. Высота здесь сама по себе
+     * признак, и ради неё сжатие и сделано.
+     *
+     * НОЛЬ НИКОГДА НЕ ИСЧЕЗАЕТ ВМЕСТЕ СО СТРОКОЙ. Пустые слои свёрнуты в
+     * "прочие 0", а не выброшены: "слоя нет в строке" и "в слое ноль записей"
+     * должны остаться различимыми, иначе показание подменяется молчанием.
+     *
+     * СУММА ПО СЛОЯМ СВЕРЯЕТСЯ С ЧИСЛОМ ЗАПИСЕЙ. Пока слои печатались
+     * столбиком, расхождение надо было заметить, сложив шесть чисел в уме, —
+     * то есть практически никогда. Ловится этим ровно один промах: запись с
+     * чужим значением слоя не попадает ни в один счётчик и пропадает из
+     * распределения, оставаясь в базе.
+     */
     fun format(s: MemorySnapshot): String = buildString {
         appendLine("СНИМОК ПАМЯТИ")
-        appendLine("Всего записей:      ${s.total}")
-        appendLine("Просрочено:         ${s.expired}")
-        appendLine("На проверке:        ${s.pendingReview}")
-        val debt = s.oldestDebtDays
-        appendLine(
-            if (debt == null) "Долг копится:       нет просроченных"
-            else "Долг копится:       $debt дн."
-        )
-        // Без этих двух строк "просрочено 0" не отличить от "сроков нет вовсе".
+        if (s.expired == 0) {
+            appendLine("${label("Всего записей:")}${s.total} · просрочено 0, долга нет")
+        } else {
+            appendLine("${label("Всего записей:")}${s.total}")
+            appendLine("${label("Просрочено:")}${s.expired}")
+            val debt = s.oldestDebtDays
+            appendLine(
+                if (debt == null) "${label("Долг копится:")}срок не записан"
+                else "${label("Долг копится:")}$debt дн."
+            )
+        }
+        appendLine("${label("На проверке:")}${s.pendingReview}")
+        // Без этой строки "просрочено 0" не отличить от "сроков нет вовсе".
         val untilNext = s.daysUntilNextExpiry
         appendLine(
             when {
-                untilNext == null -> "След. истечение:    нет запланированных"
-                untilNext == 0L -> "След. истечение:    менее суток"
-                else -> "След. истечение:    через $untilNext дн."
+                untilNext == null -> "${label("След. истечение:")}нет запланированных"
+                untilNext == 0L -> "${label("След. истечение:")}менее суток"
+                else -> "${label("След. истечение:")}через $untilNext дн."
             }
         )
-        appendLine("Без срока вообще:   ${s.withoutExpiry} из ${s.total}")
+        appendLine("${label("Без срока:")}${s.withoutExpiry} из ${s.total}")
         appendLine(
-            if (s.userMatchesTotal == 0) "Отметок пользы:     ни одной"
-            else "Отметок пользы:     ${s.userMatchesTotal} у ${s.withUserMatches} записей, макс. ${s.maxUserMatches}"
+            if (s.userMatchesTotal == 0) "${label("Отметок пользы:")}ни одной"
+            else "${label("Отметок пользы:")}${s.userMatchesTotal} у ${s.withUserMatches} записей, макс. ${s.maxUserMatches}"
         )
-        appendLine("По слоям:")
-        for ((layer, count) in s.byLayer) {
-            appendLine("  ${layer.name.padEnd(8)} $count")
-        }
+        appendLine("${label("Слои:")}${layerLine(s)}")
     }.trimEnd()
+
+    /** Подпись, добитая до общей колонки. Шире самой длинной из подписей выше. */
+    private fun label(text: String): String = text.padEnd(LABEL_WIDTH)
+
+    /**
+     * Слои одной строкой: непустые по убыванию, пустые числом.
+     *
+     * Расхождение суммы с общим числом записей приписывается прямо сюда, а не
+     * печатается отдельной строкой: оно относится к этому счёту и без него
+     * читается как загадка.
+     */
+    private fun layerLine(s: MemorySnapshot): String {
+        val filled = s.byLayer.entries
+            .filter { it.value > 0 }
+            .sortedByDescending { it.value }
+            .joinToString(" · ") { "${it.key.name} ${it.value}" }
+        val empty = s.byLayer.count { it.value == 0 }
+        val counted = s.byLayer.values.sum()
+        val mismatch =
+            if (counted != s.total) "  !!! сумма $counted ≠ всего ${s.total}" else ""
+        val body = when {
+            filled.isEmpty() && empty == 0 -> "слоёв не сосчитано"
+            filled.isEmpty() -> "все $empty по нулю"
+            empty == 0 -> filled
+            else -> "$filled · прочие 0"
+        }
+        return body + mismatch
+    }
 
     /**
      * Сравнение "до/после". Это и есть то, ради чего canary существует.
