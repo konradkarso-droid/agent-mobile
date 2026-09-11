@@ -84,6 +84,17 @@ class FakeStickerDao : StickerDao {
      */
     var onGetByTagInLayers: ((tag: String, layers: List<String>) -> List<Sticker>)? = null
 
+    /**
+     * Ответ на setReviewPending(id) — поднятие бита у записи, уже лежащей в
+     * базе. Лямбде разрешено бросить исключение по той же причине, что и у
+     * горячего пула: иначе нечем выразить сбой запроса, а именно на нём
+     * проверяется, куда ошибётся скрытие.
+     *
+     * Лямбда ничего не возвращает: настоящий запрос тоже не возвращает
+     * ничего, и подделка не должна уметь больше подделываемого.
+     */
+    var onSetReviewPending: ((id: Long) -> Unit)? = null
+
     // --- Что записалось (читает тест) ---
 
     data class SearchCall(val query: String, val queryCapitalized: String, val limit: Int)
@@ -104,6 +115,13 @@ class FakeStickerDao : StickerDao {
     val layerUpdates = mutableListOf<LayerUpdate>()
     val touchedAccess = mutableListOf<Long>()
     val touchedUserMatch = mutableListOf<Long>()
+
+    /**
+     * Записи, которым поднимали бит, в порядке обращения. Порядок и число
+     * значимы: скрытие нескольких противников идёт по одной, и тест обязан
+     * видеть, что обошли всех, а не первого.
+     */
+    val reviewPendingSet = mutableListOf<Long>()
 
     /**
      * Записи, дошедшие до вставки, в порядке обращения. Хранятся ссылками, а не
@@ -171,6 +189,14 @@ class FakeStickerDao : StickerDao {
         return answer(tag, layers)
     }
 
+    override suspend fun setReviewPending(id: Long) {
+        // Обращение записывается ДО ответа лямбды: запрос состоялся, даже если
+        // она бросит. Иначе упавший вызов выглядел бы как несостоявшийся.
+        reviewPendingSet += id
+        val answer = onSetReviewPending ?: unprepared("setReviewPending")
+        answer(id)
+    }
+
     // --- Неподготовленные: падают с именем метода ---
 
     override suspend fun getById(id: Long): Sticker? = unprepared("getById")
@@ -179,7 +205,6 @@ class FakeStickerDao : StickerDao {
     override suspend fun getAll(): List<Sticker> = unprepared("getAll")
     override suspend fun getPendingReview(): List<Sticker> = unprepared("getPendingReview")
     override suspend fun clearReviewPending(id: Long) = unprepared("clearReviewPending")
-    override suspend fun setReviewPending(id: Long) = unprepared("setReviewPending")
     override suspend fun clearAllReviewPending(): Int = unprepared("clearAllReviewPending")
     override suspend fun update(sticker: Sticker) = unprepared("update")
 
