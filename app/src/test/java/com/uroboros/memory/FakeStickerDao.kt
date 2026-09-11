@@ -9,7 +9,8 @@ package com.uroboros.memory
  * его результат не зависит от содержимого устройства.
  *
  * НЕПОДГОТОВЛЕННЫЙ МЕТОД БРОСАЕТ ИСКЛЮЧЕНИЕ, а не возвращает ноль или пустой
- * список. Методов в интерфейсе 28, а любой путь чтения трогает шесть-восемь;
+ * список. Методов в интерфейсе под три десятка, а любой путь чтения трогает
+ * шесть-восемь;
  * молчаливое умолчание у остальных двадцати означало бы зелёный тест на пустом
  * месте — проверяемый код позвал бы что-то незамеченное и получил бы правдоподобный
  * ответ ни о чём. Падение с именем метода вдобавок отвечает на вопрос, что путь
@@ -178,6 +179,7 @@ class FakeStickerDao : StickerDao {
     override suspend fun getAll(): List<Sticker> = unprepared("getAll")
     override suspend fun getPendingReview(): List<Sticker> = unprepared("getPendingReview")
     override suspend fun clearReviewPending(id: Long) = unprepared("clearReviewPending")
+    override suspend fun setReviewPending(id: Long) = unprepared("setReviewPending")
     override suspend fun clearAllReviewPending(): Int = unprepared("clearAllReviewPending")
     override suspend fun update(sticker: Sticker) = unprepared("update")
 
