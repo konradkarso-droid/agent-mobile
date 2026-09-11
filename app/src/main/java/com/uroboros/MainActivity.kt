@@ -3,7 +3,9 @@ package com.uroboros
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.net.Uri
 import android.os.Bundle
 import android.text.SpannableStringBuilder
@@ -11,6 +13,7 @@ import android.text.Spanned
 import android.text.TextPaint
 import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
+import android.text.style.LineBackgroundSpan
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -267,6 +270,13 @@ class MainActivity : AppCompatActivity() {
     private val colorRecordsLink = Color.parseColor("#17697B")
 
     /**
+     * Подложка блока одной записи в очереди. Очень светлая намеренно: она
+     * делит список на блоки, а не красит их. Цвет здесь ничего не означает —
+     * все записи в очереди равны, и подложка у всех одна.
+     */
+    private val colorRecordBlock = Color.parseColor("#EDF3F4")
+
+    /**
      * Лента в том виде, в каком её читает человек.
      *
      * Показывается ВОПРОС, а не реплика целиком: записи памяти уходят в
@@ -444,8 +454,15 @@ class MainActivity : AppCompatActivity() {
             out.append("стоит на входе.")
         }
         val shown = pending.take(PENDING_REVIEW_LIMIT)
+        // Границы блоков собираются здесь, а подложка навешивается после
+        // цикла: абзацный спан требует границы абзаца с обеих сторон, а
+        // перевод строки за последней строкой блока пишется только тогда,
+        // когда начинается следующий блок.
+        val blockRanges = mutableListOf<Pair<Int, Int>>()
         for (sticker in shown) {
-            out.append("\n\n• ").append(sourceLabel(sticker.source)).append(" ")
+            out.append("\n\n")
+            val blockStart = out.length
+            out.append("• ").append(sourceLabel(sticker.source)).append(" ")
             out.append(sticker.content)
             out.append("\n  [").append(sticker.layer).append("] тег: ")
             out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
@@ -477,12 +494,61 @@ class MainActivity : AppCompatActivity() {
                 },
                 start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
+            blockRanges += blockStart to out.length
+        }
+        for ((blockStart, blockEnd) in blockRanges) {
+            // Конец захватывает перевод строки, если он там есть: без него
+            // спан кончался бы в середине абзаца, и Android бросил бы его
+            // целиком — молча, без единого признака на экране.
+            val end = if (blockEnd < out.length && out[blockEnd] == '\n') blockEnd + 1 else blockEnd
+            out.setSpan(
+                BlockBackgroundSpan(colorRecordBlock),
+                blockStart, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
         }
         if (pending.size > shown.size) {
             out.append("\n\nПоказаны первые ${shown.size} из ${pending.size}. ")
             out.append("Остальные появятся здесь, когда эти будут разобраны.")
         }
         return out
+    }
+
+    /**
+     * Полоса фона во всю ширину строки — под всеми строками одной записи.
+     *
+     * ПОЧЕМУ НЕ BackgroundColorSpan. Тот красит только под буквами, и блок из
+     * строк разной длины получается рваным по правому краю: границы блока из
+     * такой заливки не видно, видно форму текста.
+     *
+     * Это абзацный спан, и Android применит его, только если он начинается на
+     * границе абзаца и кончается на ней же. Отсюда способ, которым он ставится
+     * в [renderPendingReview]: границы блоков запоминаются при сборке, а
+     * навешиваются после — когда перевод строки за блоком уже написан.
+     *
+     * Кисть здесь общая с текстом, поэтому цвет возвращается на место: иначе
+     * следующая строка нарисуется цветом подложки.
+     */
+    private class BlockBackgroundSpan(private val color: Int) : LineBackgroundSpan {
+        override fun drawBackground(
+            canvas: Canvas,
+            paint: Paint,
+            left: Int,
+            right: Int,
+            top: Int,
+            baseline: Int,
+            bottom: Int,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            lineNumber: Int
+        ) {
+            val previous = paint.color
+            paint.color = color
+            canvas.drawRect(
+                left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), paint
+            )
+            paint.color = previous
+        }
     }
 
     /**
