@@ -35,6 +35,7 @@ import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.AcceptCheck
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
+import com.uroboros.memory.DisputeCluster
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.RetrievalPurpose
@@ -43,6 +44,7 @@ import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
+import com.uroboros.memory.clusterDisputes
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.will.SimplePendingQuerySource
@@ -447,7 +449,14 @@ class MainActivity : AppCompatActivity() {
         // прибавилось — на каждую показанную запись он по-прежнему один.
         val shown = pending.take(PENDING_REVIEW_LIMIT)
         val reports = shown.map { mediator.disputesOf(it) }
-        out.append("\n\n").append(clusterLine(reports))
+        // Дела собираются из тех же отчётов — нового обращения к базе
+        // группировка не стоит. Что она умеет и чего нет, сказано в KDoc
+        // clusterDisputes; повторять здесь незачем, две копии разойдутся.
+        val clusters = clusterDisputes(shown, reports)
+        // Отчёт ищется по номеру записи, а не по месту в списке: порядок
+        // задают дела, и совпадение с порядком shown больше не гарантировано.
+        val reportById = shown.indices.associate { shown[it].id to reports[it] }
+        out.append("\n\n").append(clusterLine(reports, clusters))
         // ЧЕГО ЗДЕСЬ НЕТ НАМЕРЕННО. Что приём необратим и что при нажатии
         // запись сверяется заново, здесь НЕ говорится: то и другое печатает
         // showAcceptRecordDialog в момент действия. Две копии одного
@@ -484,6 +493,11 @@ class MainActivity : AppCompatActivity() {
             out.append("дела. Видимая сторона спора в счёт не входит: бит ")
             out.append("поднимается только пришедшей позже, и запись, с которой ")
             out.append("всё началось, в очереди не лежит.")
+            out.append("\n\nдело — записи, связанные спорами через общего ")
+            out.append("противника. Видимая сторона в дело входит, в связность ")
+            out.append("нет, поэтому числа рядом расходятся законно. Дело ")
+            out.append("собрано по показанной части списка: что осталось за ")
+            out.append("потолком, названо в его шапке числом.")
             // Подписи к трём полям строки записи, в том же порядке, в каком
             // поля идут ниже. Строчные названия полей — не небрежность: они
             // повторяют то, как поле подписано в самой строке.
@@ -512,52 +526,123 @@ class MainActivity : AppCompatActivity() {
         // по первой строке, и это видно глазом сразу.
         val disputeLabel = "спорит".length + 2
         val disputeColumn = labelColumn(disputeLabel)
-        for ((index, sticker) in shown.withIndex()) {
-            out.append("\n\n")
-            val blockStart = out.length
-            // Маркера "•" здесь больше нет: границу между записями держит
-            // подложка, и две границы подряд — это одна лишняя. Пометка
-            // источника осталась, она не оформление: без неё не видно, чьё
-            // это утверждение.
-            out.append(sourceLabel(sticker.source)).append(" ")
-            out.append(sticker.content)
-            out.append("\n")
-            val serviceStart = out.length
-            out.append("[").append(sticker.layer).append("] тег: ")
-            out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
-            ruleRanges += serviceStart to out.length
-            for ((label, value) in disputeLines(reports[index])) {
-                out.append("\n")
-                val lineStart = out.length
-                out.append(label.padEnd(disputeLabel)).append(value)
-                disputeRanges += lineStart to out.length
+        for (cluster in clusters) {
+            // ШАПКА ТОЛЬКО У ДЕЛА ИЗ НЕСКОЛЬКИХ ЗАПИСЕЙ. У пары всё, что она
+            // сказала бы, уже стоит в строках самой записи: с кем спорит и
+            // сколько сторон. Лишняя строка на каждую запись — ровно то, от
+            // чего этот экран чистили.
+            if (cluster.queueMembers.size > 1) {
+                out.append("\n\n")
+                val caseStart = out.length
+                out.append("дело: записей ${cluster.queueMembers.size}")
+                out.append(" · видимых сторон ${cluster.visibleOpponents.size}")
+                // Неполнота дела называется числом, а не молчанием: человек,
+                // убравший видимые стороны, иначе уйдёт уверенным, что по
+                // этому предмету в выдаче не осталось ничего.
+                if (cluster.failedMembers > 0) {
+                    out.append(" · проверка не состоялась у ${cluster.failedMembers}")
+                }
+                if (cluster.hiddenOutsideList > 0) {
+                    out.append(" · за потолком списка ещё ${cluster.hiddenOutsideList}")
+                }
+                if (cluster.visibleOpponents.isNotEmpty()) {
+                    out.append("\n")
+                    val caseHideStart = out.length
+                    out.append("убрать видимые стороны (${cluster.visibleOpponents.size})")
+                    out.setSpan(
+                        object : ClickableSpan() {
+                            override fun onClick(widget: View) = showHideOpponentsDialog(
+                                cluster.visibleOpponents,
+                                "Записи этого дела спорят с тем, что СЕЙЧАС видно в памяти:",
+                            )
+                            override fun updateDrawState(ds: TextPaint) {
+                                ds.color = colorRecordsLink
+                                ds.isUnderlineText = false
+                            }
+                        },
+                        caseHideStart, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+                ruleRanges += caseStart to out.length
             }
-            // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
-            // строке с меткой оно читается как ещё одна подпись записи: цвет
-            // один это не вытягивает, потому что метка и ссылка оказываются в
-            // одном ритме. Цена промаха здесь мала — случайное нажатие ловит
-            // диалог подтверждения, — но список для того и строится, чтобы по
-            // нему можно было водить глазом, не разбирая, где текст, а где
-            // кнопка.
-            //
-            // В ЛЕНТЕ (renderJournal) тот же приём оставлен как есть: там
-            // "показать" стоит в хвосте строки записей, и спутать его не с
-            // чем — вся строка служебная, текста самой записи рядом нет.
-            // Расхождение намеренное, а не недоделанная правка.
-            out.append("\n")
-            val start = out.length
-            out.append("принять")
-            out.setSpan(
-                object : ClickableSpan() {
-                    override fun onClick(widget: View) = showAcceptRecordDialog(sticker)
-                    override fun updateDrawState(ds: TextPaint) {
-                        ds.color = colorRecordsLink
-                        ds.isUnderlineText = false
-                    }
-                },
-                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-            blockRanges += blockStart to out.length
+            for (sticker in cluster.queueMembers) {
+                val report = reportById.getValue(sticker.id)
+                out.append("\n\n")
+                val blockStart = out.length
+                // Маркера "•" здесь больше нет: границу между записями держит
+                // подложка, и две границы подряд — это одна лишняя. Пометка
+                // источника осталась, она не оформление: без неё не видно, чьё
+                // это утверждение.
+                out.append(sourceLabel(sticker.source)).append(" ")
+                out.append(sticker.content)
+                out.append("\n")
+                val serviceStart = out.length
+                out.append("[").append(sticker.layer).append("] тег: ")
+                out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
+                ruleRanges += serviceStart to out.length
+                for ((label, value) in disputeLines(report)) {
+                    out.append("\n")
+                    val lineStart = out.length
+                    out.append(label.padEnd(disputeLabel)).append(value)
+                    disputeRanges += lineStart to out.length
+                }
+                // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
+                // строке с меткой оно читается как ещё одна подпись записи: цвет
+                // один это не вытягивает, потому что метка и ссылка оказываются в
+                // одном ритме. Цена промаха здесь мала — случайное нажатие ловит
+                // диалог подтверждения, — но список для того и строится, чтобы по
+                // нему можно было водить глазом, не разбирая, где текст, а где
+                // кнопка.
+                //
+                // В ЛЕНТЕ (renderJournal) тот же приём оставлен как есть: там
+                // "показать" стоит в хвосте строки записей, и спутать его не с
+                // чем — вся строка служебная, текста самой записи рядом нет.
+                // Расхождение намеренное, а не недоделанная правка.
+                out.append("\n")
+                val start = out.length
+                out.append("принять")
+                out.setSpan(
+                    object : ClickableSpan() {
+                        override fun onClick(widget: View) = showAcceptRecordDialog(sticker)
+                        override fun updateDrawState(ds: TextPaint) {
+                            ds.color = colorRecordsLink
+                            ds.isUnderlineText = false
+                        }
+                    },
+                    start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+                // Второй рычаг встал на ту же строку действия, а не на свою:
+                // экран от него не растёт ни на строку, и место здесь уже
+                // объявлено местом действия.
+                //
+                // ТРОГАЕТ ТОЛЬКО СТОРОНЫ ЭТОЙ ЗАПИСИ — те самые, что названы в
+                // её строке спора выше. Расширить его на всё дело нельзя:
+                // человек нажал бы здесь и убрал запись, названную в чужом
+                // блоке ниже, которую он не читал. Действие над делом целиком
+                // живёт в шапке дела, где перечислено, что именно уйдёт.
+                if (report.visible.isNotEmpty()) {
+                    out.append(" · ")
+                    val hideStart = out.length
+                    out.append(
+                        if (report.visible.size == 1) "убрать вторую сторону"
+                        else "убрать видимые стороны (${report.visible.size})"
+                    )
+                    out.setSpan(
+                        object : ClickableSpan() {
+                            override fun onClick(widget: View) = showHideOpponentsDialog(
+                                report.visible,
+                                "Запись из очереди спорит с тем, что СЕЙЧАС видно в памяти:",
+                            )
+                            override fun updateDrawState(ds: TextPaint) {
+                                ds.color = colorRecordsLink
+                                ds.isUnderlineText = false
+                            }
+                        },
+                        hideStart, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+                blockRanges += blockStart to out.length
+            }
         }
         // Конец абзаца — до перевода строки включительно, иначе спан кончался
         // бы в середине абзаца и Android выбросил бы его целиком, молча.
@@ -591,11 +676,13 @@ class MainActivity : AppCompatActivity() {
      * считаются отдельно и в связанные не попадают.
      *
      * ЧЕГО ЧИСЛО НЕ ЗНАЧИТ:
-     *  - это счёт ЗАПИСЕЙ, а не групп. Пять связанных записей могут быть одной
-     *    гроздью, а могут быть двумя; чтобы различить, нужен обход связей.
-     *    Здесь он сознательно не делается: на вопрос «бывает ли так вообще»
-     *    отвечает уже это число, а различать группы не для чего, пока не
-     *    известно, что они есть;
+     *  - это счёт ЗАПИСЕЙ, а не групп: пять связанных записей могут быть одной
+     *    гроздью, а могут быть двумя. Различает их число дел, которое печатается
+     *    рядом; считается оно обходом связей в clusterDisputes, из тех же самых
+     *    отчётов. Два числа расходятся законно: в связность входят только споры
+     *    записей очереди между собой, а в дело — ещё и видимая сторона. Три
+     *    записи, спорящие с одной видимой и не спорящие между собой, дают
+     *    связность ноль и одно дело;
      *  - видимая сторона спора в счёт не входит никогда. Бит поднимается
      *    только пришедшей позже, поэтому запись, с которой началось, лежит в
      *    памяти, а не в очереди, и группой не считается. Счёт связности всегда
@@ -608,16 +695,26 @@ class MainActivity : AppCompatActivity() {
      *  - пул горячий и по одному тегу, как и везде на этом пути: остывший
      *    член грозди не найдётся вовсе.
      */
-    private fun clusterLine(reports: List<HourglassMemory.DisputeReport>): String {
+    private fun clusterLine(
+        reports: List<HourglassMemory.DisputeReport>,
+        clusters: List<DisputeCluster>,
+    ): String {
         val total = reports.size
         val failed = reports.count { it.failed }
         val linked = reports.count { !it.failed && it.hidden.isNotEmpty() }
+        // Дело из одной записи без единого противника делом не считается:
+        // иначе на очереди, где никто ни с кем не спорит, число дел равнялось
+        // бы числу записей и не говорило бы ничего.
+        val cases = clusters.count { it.queueMembers.size + it.visibleOpponents.size > 1 }
+        val casesTail = if (cases > 0) " · дел: $cases" else ""
         val tail = if (failed > 0) " · проверка не состоялась у $failed" else ""
-        if (linked == 0) {
-            return "связность: ни одна из $total не спорит с другой записью очереди$tail"
+        val head = if (linked == 0) {
+            "связность: ни одна из $total не спорит с другой записью очереди"
+        } else {
+            val verb = if (linked == 1) "спорит" else "спорят"
+            "связность: $linked из $total $verb с другой записью очереди"
         }
-        val verb = if (linked == 1) "спорит" else "спорят"
-        return "связность: $linked из $total $verb с другой записью очереди$tail"
+        return head + casesTail + tail
     }
 
     /**
@@ -1137,7 +1234,10 @@ class MainActivity : AppCompatActivity() {
             "Принято · в очереди осталось ${pending.size}$tail",
             Toast.LENGTH_SHORT
         ).show()
-        if (report.visible.isNotEmpty()) showHideOpponentsDialog(report.visible)
+        if (report.visible.isNotEmpty()) showHideOpponentsDialog(
+            report.visible,
+            "Принятая запись спорит с тем, что СЕЙЧАС видно в памяти:",
+        )
     }
 
     /**
@@ -1168,8 +1268,13 @@ class MainActivity : AppCompatActivity() {
      *    появиться;
      *  - остывших противников и противников под другим тегом здесь нет:
      *    показываются только видимые из того же горячего пула, что у проверки.
+     *
+     * ПЕРВАЯ ФРАЗА ПРИХОДИТ ПАРАМЕТРОМ, И УМОЛЧАНИЯ У НЕЁ НЕТ. Сюда ведут три
+     * входа: приём записи, рычаг у записи в списке и рычаг у шапки дела. Фраза
+     * "принятая запись спорит" верна только для первого, а забытое умолчание
+     * соврало бы молча — человек читал бы про приём, которого не было.
      */
-    private fun showHideOpponentsDialog(opponents: List<Sticker>) {
+    private fun showHideOpponentsDialog(opponents: List<Sticker>, lead: String) {
         val list = opponents.joinToString("\n\n") { opponent ->
             val text = opponent.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
             val cut = if (opponent.content.length > DROP_PREVIEW_CHARS) "…" else ""
@@ -1181,11 +1286,11 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this@MainActivity)
             .setTitle(title)
             .setMessage(
-                "Принятая запись спорит с тем, что СЕЙЧАС видно в памяти:\n\n$list\n\n" +
-                    "Пока обе стороны видны, агент читает их как факты и может " +
-                    "опереться на любую. Убрать их в очередь?\n\n" +
+                "$lead\n\n$list\n\n" +
+                    "Пока они видны, агент читает их как факты наравне с " +
+                    "остальными и может опереться на любую. Убрать в очередь?\n\n" +
                     "Это обратимо: записи целы и принимаются назад тем же способом, " +
-                    "что и эта."
+                    "что и всё, что в очереди уже лежит."
             )
             .setPositiveButton("Убрать в очередь") { _, _ ->
                 lifecycleScope.launch { hideOpponents(opponents) }
