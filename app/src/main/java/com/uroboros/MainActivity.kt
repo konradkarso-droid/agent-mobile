@@ -326,6 +326,12 @@ class MainActivity : AppCompatActivity() {
     private fun renderJournal(pendingQuestion: String? = null): CharSequence {
         turnOffsets.clear()
         val out = SpannableStringBuilder()
+        // Отступ у строк записей держит тот же спан, что на экране очереди и в
+        // показе памяти, а не пробелы в тексте. Пробелы отодвигают только первую
+        // строку: перенесённая цитата возвращалась к левому краю и читалась как
+        // начало новой. Ширина меряется по шрифту панели там же, где и везде.
+        val recordRanges = mutableListOf<Pair<Int, Int>>()
+        val recordColumn = labelColumn(2)
 
         // Строка записей стоит МЕЖДУ вопросом и ответом — в том порядке, в
         // каком всё и произошло: человек спросил, отбор подложил записи,
@@ -362,7 +368,10 @@ class MainActivity : AppCompatActivity() {
                 val origin =
                     if (use.firstSeenTurn == index) "новая"
                     else "с хода ${use.firstSeenTurn + 1}"
-                out.append("\n  • ").append(origin).append(": ").append(use.text)
+                out.append("\n")
+                val lineStart = out.length
+                out.append("• ").append(origin).append(": ").append(use.text)
+                recordRanges += lineStart to out.length
             }
         }
 
@@ -381,6 +390,9 @@ class MainActivity : AppCompatActivity() {
         // У начатого хода записей ещё нет: они помечаются уложенными только
         // после того, как ответ получен.
         if (pendingQuestion != null) addTurn(pendingQuestion, null, null, -1)
+        // Подложки и черты у ленты нет намеренно: она не список записей, а
+        // разговор, и блоки в ней держит пустая строка между ходами.
+        applyRecordSpans(out, emptyList(), emptyList(), recordRanges, recordColumn)
         return out
     }
 
