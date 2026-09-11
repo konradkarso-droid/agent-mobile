@@ -264,6 +264,15 @@ class MainActivity : AppCompatActivity() {
     private var pendingHelpExpanded = false
 
     /**
+     * Развёрнуто ли пояснение к прибору очереди на показе памяти.
+     *
+     * Прячется ТОЛЬКО пояснение. Сами показания прибора видны всегда: их
+     * сверяет человек с соседним снимком памяти, и спрятать их значило бы
+     * отменить то, ради чего два отчёта стоят рядом.
+     */
+    private var witnessNoteExpanded = false
+
+    /**
      * Цвет кликабельной части строки записей. Бирюзовый — цвет обычного
      * действия в приложении; фиолетовый занят речью агента, красный —
      * аварийным стопом.
@@ -479,8 +488,7 @@ class MainActivity : AppCompatActivity() {
         // моноширинный (задано в разметке). Сменят шрифт — подписи разъедутся
         // по первой строке, и это видно глазом сразу.
         val disputeLabel = "спорит".length + 2
-        val disputeColumn = binding.textResults.paint
-            .measureText("".padEnd(disputeLabel)).toInt()
+        val disputeColumn = labelColumn(disputeLabel)
         for (sticker in shown) {
             out.append("\n\n")
             val blockStart = out.length
@@ -530,32 +538,7 @@ class MainActivity : AppCompatActivity() {
         }
         // Конец абзаца — до перевода строки включительно, иначе спан кончался
         // бы в середине абзаца и Android выбросил бы его целиком, молча.
-        fun paragraphEnd(end: Int): Int =
-            if (end < out.length && out[end] == '\n') end + 1 else end
-        for ((from, to) in disputeRanges) {
-            // Первая строка идёт от края — её левую часть занимает подпись;
-            // перенесённые встают под значение. Без этого длинная цитата
-            // возвращается к краю и читается как начало новой записи.
-            out.setSpan(
-                LeadingMarginSpan.Standard(0, disputeColumn),
-                from, paragraphEnd(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-        }
-        for ((ruleStart, ruleEnd) in ruleRanges) {
-            out.setSpan(
-                RecordRuleSpan(colorRecordRule, ruleStart),
-                ruleStart, paragraphEnd(ruleEnd), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-        }
-        for ((blockStart, blockEnd) in blockRanges) {
-            // Конец захватывает перевод строки, если он там есть: без него
-            // спан кончался бы в середине абзаца, и Android бросил бы его
-            // целиком — молча, без единого признака на экране.
-            out.setSpan(
-                BlockBackgroundSpan(colorRecordBlock),
-                blockStart, paragraphEnd(blockEnd), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-        }
+        applyRecordSpans(out, blockRanges, ruleRanges, disputeRanges, disputeColumn)
         if (pending.size > shown.size) {
             out.append("\n\nПоказаны первые ${shown.size} из ${pending.size}. ")
             out.append("Остальные появятся здесь, когда эти будут разобраны.")
@@ -643,6 +626,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * То же для пояснения к прибору очереди на показе памяти: устроено как
+     * [togglePendingHelp] и по тем же доводам, включая цену пересборки.
+     */
+    private fun toggleWitnessNote() {
+        if (!binding.buttonGenerate.isEnabled) return
+        witnessNoteExpanded = !witnessNoteExpanded
+        openMemoryView()
+    }
+
+    /**
      * Развернуть или свернуть пояснения над очередью.
      *
      * Перерисовывается ВЕСЬ экран очереди, а не одна строка: текст в панели
@@ -660,6 +653,272 @@ class MainActivity : AppCompatActivity() {
         if (!binding.buttonGenerate.isEnabled) return
         pendingHelpExpanded = !pendingHelpExpanded
         openPendingReview()
+    }
+
+    /**
+     * Показ памяти: два прибора, итог отбора и срез записей.
+     *
+     * ВЫНЕСЕНО ИЗ ОБРАБОТЧИКА КНОПКИ, чтобы экран можно было собрать заново
+     * не только нажатием: пояснение к прибору очереди сворачивается ссылкой,
+     * а текст в панели единый — вставить кусок в середину нечем.
+     *
+     * Пересборка стоит повторного отбора и повторного обхода очереди. Цена
+     * та же, что у нажатия самой кнопки, и принята по той же причине: отбор
+     * здесь просмотровый, пользы записям не засчитывает и состояния не меняет.
+     */
+    private fun openMemoryView() {
+
+        binding.buttonShow.isEnabled = false
+        lifecycleScope.launch {
+            try {
+                val query = binding.editTextInput.text.toString().ifBlank { null }
+                // Item 6, подшаг 1c (2026-08-22): снимок канарейки в шапке.
+                // Только чтение. Прежний вызов totalStickers() убран: канарейка
+                // уже печатает "Всего записей", а два независимых запроса к базе
+                // могли бы показать два разных числа на одном экране.
+                val canaryReport = mediator.memoryCanaryReport()
+                // Второй отчёт стоит рядом с первым и в него НЕ вложен:
+                // числа приходят с разных сторон и служат проверкой друг
+                // другу, а заметить расхождение может только человек, глядя
+                // на оба сразу. Что с чем сверяется и почему без порога —
+                // в шапке ReviewWitness.
+                val witnessReport = mediator.reviewWitnessReport()
+                // Просмотр, а не ответ: записи никому ни в чём не помогли,
+                // их показали. Этой кнопкой пользуются как диагностическим
+                // прибором, и засчитывать пользу за каждый осмотр памяти
+                // значило бы портить то самое число, по которому потом
+                // назначать пороги.
+                val shown = mediator.getContextWithSummary(
+                    purpose = RetrievalPurpose.BROWSING,
+                    query = query,
+                    limit = 20
+                )
+                // Построчный разбор отбора печатает ЭТОТ слой, а не память:
+                // класс уровня памяти не зовёт android.util.Log, иначе его не
+                // запустить в юнит-тесте (см. KDoc MemoryCanary, п. 2).
+                // На экран разбор не идёт — там его несколько десятков строк,
+                // и он нужен только при калибровке порогов.
+                shown.trace.forEach { Log.d("MemorySelect", it) }
+                // Итог отбора печатается ВСЕГДА, а не только когда показывать
+                // нечего. Прибор, молчащий при благополучном исходе, своей
+                // поломкой выглядел бы как нормальная работа.
+                //
+                // Он отвечает на вопрос, которого прежняя фраза "(записей для
+                // показа нет)" не различала вовсе: искать было не по чему,
+                // искали и не нашли, или нашли и всё отсеяли. Лечится это
+                // тремя разными способами.
+                //
+                // Чего в этих числах НЕТ: записи, до которой поиск не
+                // дотянулся. Она не попадает ни в кандидатов, ни в отсеянных
+                // (см. KDoc SelectionSummary).
+                // Экран собирается теми же блоками, что и очередь, и той
+                // же общей навеской: подложка отделяет предмет от
+                // предмета, черта внутри блока — заголовок от показаний.
+                // Строки-подписи копятся при сборке, а не ищутся потом по
+                // тексту.
+                val out = SpannableStringBuilder()
+                val blocks = mutableListOf<Pair<Int, Int>>()
+                val rules = mutableListOf<Pair<Int, Int>>()
+                val hangs = mutableListOf<Pair<Int, Int>>()
+                val markLabel = "поправка".length + 2
+                val markColumn = labelColumn(markLabel)
+
+                // Отчёты приходят готовыми строками с заголовком в первой
+                // строке. Черта ставится под ним, и только если за
+                // заголовком что-то есть: у блока в одну строку делить
+                // нечего.
+                fun section(text: CharSequence, headed: Boolean) {
+                    if (out.isNotEmpty()) out.append("\n\n")
+                    val start = out.length
+                    out.append(text)
+                    blocks += start to out.length
+                    if (!headed) return
+                    val firstBreak = text.indexOf('\n')
+                    if (firstBreak < 0) return
+                    rules += (start + firstBreak + 1) to out.length
+                }
+
+                section(canaryReport, headed = true)
+                // Прибор очереди собирается вручную, а не через section:
+                // ссылка и текст пояснения входят в ТОТ ЖЕ блок, что и числа.
+                // Вынеси их за подложку — и стало бы не видно, к чему это
+                // пояснение относится, а блоков на экране шесть.
+                if (out.isNotEmpty()) out.append("\n\n")
+                val witnessStart = out.length
+                out.append(witnessReport)
+                val witnessBreak = witnessReport.indexOf('\n')
+                out.append("\n")
+                val noteLinkStart = out.length
+                out.append(if (witnessNoteExpanded) "скрыть" else "как это читать")
+                out.setSpan(
+                    object : ClickableSpan() {
+                        override fun onClick(widget: View) = toggleWitnessNote()
+                        override fun updateDrawState(ds: TextPaint) {
+                            ds.color = colorRecordsLink
+                            ds.isUnderlineText = false
+                        }
+                    },
+                    noteLinkStart, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+                if (witnessNoteExpanded) {
+                    out.append("\n").append(mediator.reviewWitnessNote())
+                }
+                if (witnessBreak >= 0) {
+                    rules += (witnessStart + witnessBreak + 1) to out.length
+                }
+                blocks += witnessStart to out.length
+                section(shown.summary, headed = false)
+                if (shown.stickers.isEmpty()) {
+                    section("(записей для показа нет)", headed = false)
+                } else {
+                    // Пары считаются ОТ ОЧЕРЕДИ, а не от списка памяти:
+                    // скрытых записей единицы, показанных два десятка, а
+                    // ответ один и тот же. Обратный порядок стоил бы
+                    // запроса к базе на каждую показанную запись.
+                    //
+                    // Что означает пометка: у этой записи есть скрытая
+                    // поправка. Чего она НЕ означает: её отсутствие не
+                    // говорит, что поправки нет. Противник скрытой записи
+                    // мог не попасть в показанные два десятка, и тогда
+                    // помечать нечего.
+                    val pending = mediator.getPendingReview()
+                    var comparisons = 0
+                    var checkFailed = false
+                    val correctedIds = mutableSetOf<Long>()
+                    for (hidden in pending) {
+                        val report = mediator.disputesOf(hidden)
+                        comparisons += report.comparisons
+                        if (report.failed) checkFailed = true
+                        correctedIds += report.visible.map { it.id }
+                    }
+                    // Счёт тегов идёт по ПОКАЗАННЫМ записям, а не по базе, и
+                    // на экране назван именно так. Выдача сужена трижды: по
+                    // limit, по словам запроса и по карантинному биту — все
+                    // три запроса пути чтения начинаются с reviewPending = 0,
+                    // поэтому скрытых записей в этом счёте нет вовсе.
+                    // Подписать число "в базе" значило бы назвать под ним не
+                    // ту величину.
+                    //
+                    // Зачем оно на экране. Тег выбирает пул сравнения на
+                    // проверке противоречий (getByTagInLayers): запись
+                    // сверяется только с горячими записями того же тега. В
+                    // самом отборе тег не участвует — поиск идёт по словам и
+                    // слоям, — поэтому из выдачи никак не видно, разделяет тег
+                    // память или у всех записей он один. Пока он один, пул
+                    // равен всей горячей памяти, и проверка на противоречие
+                    // ничем не сужена.
+                    val tagCounts = shown.stickers.groupingBy { it.tag }.eachCount()
+                        .entries.sortedByDescending { it.value }
+                        .joinToString(", ") { "${it.key} — ${it.value}" }
+                    // Счёт сравнений печатается всегда. Без него ноль
+                    // поправок означал бы и "спорить не с чем", и
+                    // "сопоставление не работает".
+                    val marked = shown.stickers.count { it.id in correctedIds }
+                    val pairLine = when {
+                        checkFailed ->
+                            "Скрытые поправки: проверить не удалось — ноль ниже не значит ничего."
+                        pending.isEmpty() ->
+                            "Скрытых поправок нет: очередь пуста, сравнивать нечего."
+                        else ->
+                            "Скрытых поправок к показанным записям: $marked " +
+                                "(сравнено пар: $comparisons)"
+                    }
+                    val tagLine = "Теги среди показанных записей: $tagCounts\n" +
+                        "Скрытые карантином не входят. Время — создания, порядок — по рангу.\n" +
+                        pairLine
+                    section(tagLine, headed = false)
+                    for (sticker in shown.stickers) {
+                        out.append("\n\n")
+                        val blockStart = out.length
+                        out.append(sourceLabel(sticker.source)).append(" ")
+                        out.append(sticker.content)
+                        out.append("\n")
+                        val serviceStart = out.length
+                        out.append("[").append(sticker.layer).append("] тег: ")
+                        out.append(sticker.tag).append(" · ")
+                        out.append(fmtMoment(sticker.createdAt))
+                        out.append(" (обращений: ${sticker.accessCount})")
+                        if (sticker.id in correctedIds) {
+                            out.append("\n")
+                            val markStart = out.length
+                            out.append("поправка".padEnd(markLabel))
+                            out.append("есть скрытая, она в очереди")
+                            hangs += markStart to out.length
+                        }
+                        rules += serviceStart to out.length
+                        blocks += blockStart to out.length
+                    }
+                }
+                applyRecordSpans(out, blocks, rules, hangs, markColumn)
+                binding.textResults.text = withPendingReviewLink(out)
+            } finally {
+                binding.buttonShow.isEnabled = true
+            }
+        }
+    }
+
+    /**
+     * Ширина колонки подписей в знаках шрифта панели.
+     *
+     * Меряется, а не назначается: при смене шрифта или его размера
+     * подкручивать нечего. Сколько знаков — говорит вызывающий, у каждого
+     * экрана своя самая длинная подпись.
+     */
+    private fun labelColumn(chars: Int): Int =
+        binding.textResults.paint.measureText("".padEnd(chars)).toInt()
+
+    /**
+     * Разметка списка: подложка блоков, черта под первой строкой блока,
+     * висячий отступ у строк с подписью.
+     *
+     * ОДНА НА ВСЕ ЭКРАНЫ намеренно. Приём один, и два его экземпляра
+     * разошлись бы молча: подложка на одном экране осталась бы без черты на
+     * другом, и читалось бы это как разное устройство списков, а не как
+     * недоделка.
+     *
+     * ГРАНИЦЫ ПЕРЕДАЮТСЯ ГОТОВЫМИ, а не ищутся здесь по тексту. Разбирать
+     * собранный текст обратно на куски значило бы завести второе описание
+     * того же устройства — первое уже есть у того, кто его собирал.
+     *
+     * Конец отрезка захватывает перевод строки, если он там есть: без него
+     * спан кончался бы в середине абзаца.
+     *
+     * ЧЕГО НЕ УМЕЕТ. Все три спана абзацные, и Android применит их, только
+     * если отрезок начинается и кончается на границе абзаца. Поданный мимо
+     * неё — выбрасывается молча, без единого признака. Признак поэтому
+     * заведён снаружи: это черта, и её отсутствие на экране означает, что не
+     * применилось ничего.
+     */
+    private fun applyRecordSpans(
+        out: SpannableStringBuilder,
+        blocks: List<Pair<Int, Int>>,
+        rules: List<Pair<Int, Int>>,
+        hangs: List<Pair<Int, Int>>,
+        hangColumn: Int
+    ) {
+        fun paragraphEnd(end: Int): Int =
+            if (end < out.length && out[end] == '\n') end + 1 else end
+        for ((from, to) in hangs) {
+            // Первая строка идёт от края — её левую часть занимает подпись;
+            // перенесённые встают под значение. Без этого длинная цитата
+            // возвращается к краю и читается как начало новой записи.
+            out.setSpan(
+                LeadingMarginSpan.Standard(0, hangColumn),
+                from, paragraphEnd(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        for ((from, to) in rules) {
+            out.setSpan(
+                RecordRuleSpan(colorRecordRule, from),
+                from, paragraphEnd(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+        for ((from, to) in blocks) {
+            out.setSpan(
+                BlockBackgroundSpan(colorRecordBlock),
+                from, paragraphEnd(to), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
     }
 
     /**
@@ -2140,122 +2399,7 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        binding.buttonShow.setOnClickListener {
-            binding.buttonShow.isEnabled = false
-            lifecycleScope.launch {
-                try {
-                    val query = binding.editTextInput.text.toString().ifBlank { null }
-                    // Item 6, подшаг 1c (2026-08-22): снимок канарейки в шапке.
-                    // Только чтение. Прежний вызов totalStickers() убран: канарейка
-                    // уже печатает "Всего записей", а два независимых запроса к базе
-                    // могли бы показать два разных числа на одном экране.
-                    val canaryReport = mediator.memoryCanaryReport()
-                    // Второй отчёт стоит рядом с первым и в него НЕ вложен:
-                    // числа приходят с разных сторон и служат проверкой друг
-                    // другу, а заметить расхождение может только человек, глядя
-                    // на оба сразу. Что с чем сверяется и почему без порога —
-                    // в шапке ReviewWitness.
-                    val witnessReport = mediator.reviewWitnessReport()
-                    // Просмотр, а не ответ: записи никому ни в чём не помогли,
-                    // их показали. Этой кнопкой пользуются как диагностическим
-                    // прибором, и засчитывать пользу за каждый осмотр памяти
-                    // значило бы портить то самое число, по которому потом
-                    // назначать пороги.
-                    val shown = mediator.getContextWithSummary(
-                        purpose = RetrievalPurpose.BROWSING,
-                        query = query,
-                        limit = 20
-                    )
-                    // Построчный разбор отбора печатает ЭТОТ слой, а не память:
-                    // класс уровня памяти не зовёт android.util.Log, иначе его не
-                    // запустить в юнит-тесте (см. KDoc MemoryCanary, п. 2).
-                    // На экран разбор не идёт — там его несколько десятков строк,
-                    // и он нужен только при калибровке порогов.
-                    shown.trace.forEach { Log.d("MemorySelect", it) }
-                    // Итог отбора печатается ВСЕГДА, а не только когда показывать
-                    // нечего. Прибор, молчащий при благополучном исходе, своей
-                    // поломкой выглядел бы как нормальная работа.
-                    //
-                    // Он отвечает на вопрос, которого прежняя фраза "(записей для
-                    // показа нет)" не различала вовсе: искать было не по чему,
-                    // искали и не нашли, или нашли и всё отсеяли. Лечится это
-                    // тремя разными способами.
-                    //
-                    // Чего в этих числах НЕТ: записи, до которой поиск не
-                    // дотянулся. Она не попадает ни в кандидатов, ни в отсеянных
-                    // (см. KDoc SelectionSummary).
-                    val body = if (shown.stickers.isEmpty()) {
-                        "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n(записей для показа нет)"
-                    } else {
-                        // Пары считаются ОТ ОЧЕРЕДИ, а не от списка памяти:
-                        // скрытых записей единицы, показанных два десятка, а
-                        // ответ один и тот же. Обратный порядок стоил бы
-                        // запроса к базе на каждую показанную запись.
-                        //
-                        // Что означает пометка: у этой записи есть скрытая
-                        // поправка. Чего она НЕ означает: её отсутствие не
-                        // говорит, что поправки нет. Противник скрытой записи
-                        // мог не попасть в показанные два десятка, и тогда
-                        // помечать нечего.
-                        val pending = mediator.getPendingReview()
-                        var comparisons = 0
-                        var checkFailed = false
-                        val correctedIds = mutableSetOf<Long>()
-                        for (hidden in pending) {
-                            val report = mediator.disputesOf(hidden)
-                            comparisons += report.comparisons
-                            if (report.failed) checkFailed = true
-                            correctedIds += report.visible.map { it.id }
-                        }
-                        val lines = shown.stickers.joinToString("\n\n") { sticker ->
-                            val mark = if (sticker.id in correctedIds) {
-                                "\n  ↑ на эту запись есть скрытая поправка — она в очереди"
-                            } else ""
-                            "• ${sourceLabel(sticker.source)} ${sticker.content}\n  [${sticker.layer}] тег: ${sticker.tag} · ${fmtMoment(sticker.createdAt)} (обращений: ${sticker.accessCount})$mark"
-                        }
-                        // Счёт тегов идёт по ПОКАЗАННЫМ записям, а не по базе, и
-                        // на экране назван именно так. Выдача сужена трижды: по
-                        // limit, по словам запроса и по карантинному биту — все
-                        // три запроса пути чтения начинаются с reviewPending = 0,
-                        // поэтому скрытых записей в этом счёте нет вовсе.
-                        // Подписать число "в базе" значило бы назвать под ним не
-                        // ту величину.
-                        //
-                        // Зачем оно на экране. Тег выбирает пул сравнения на
-                        // проверке противоречий (getByTagInLayers): запись
-                        // сверяется только с горячими записями того же тега. В
-                        // самом отборе тег не участвует — поиск идёт по словам и
-                        // слоям, — поэтому из выдачи никак не видно, разделяет тег
-                        // память или у всех записей он один. Пока он один, пул
-                        // равен всей горячей памяти, и проверка на противоречие
-                        // ничем не сужена.
-                        val tagCounts = shown.stickers.groupingBy { it.tag }.eachCount()
-                            .entries.sortedByDescending { it.value }
-                            .joinToString(", ") { "${it.key} — ${it.value}" }
-                        // Счёт сравнений печатается всегда. Без него ноль
-                        // поправок означал бы и "спорить не с чем", и
-                        // "сопоставление не работает".
-                        val marked = shown.stickers.count { it.id in correctedIds }
-                        val pairLine = when {
-                            checkFailed ->
-                                "Скрытые поправки: проверить не удалось — ноль ниже не значит ничего."
-                            pending.isEmpty() ->
-                                "Скрытых поправок нет: очередь пуста, сравнивать нечего."
-                            else ->
-                                "Скрытых поправок к показанным записям: $marked " +
-                                    "(сравнено пар: $comparisons)"
-                        }
-                        val tagLine = "Теги среди показанных записей: $tagCounts\n" +
-                            "Скрытые карантином не входят. Время — создания, порядок — по рангу.\n" +
-                            pairLine
-                        "$canaryReport\n\n$witnessReport\n\n${shown.summary}\n\n$tagLine\n\n$lines"
-                    }
-                    binding.textResults.text = withPendingReviewLink(body)
-                } finally {
-                    binding.buttonShow.isEnabled = true
-                }
-            }
-        }
+        binding.buttonShow.setOnClickListener { openMemoryView() }
 
         binding.buttonShow.setOnLongClickListener {
             binding.textResults.text = codingTask.getDebugLog()
