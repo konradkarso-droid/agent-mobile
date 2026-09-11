@@ -90,8 +90,13 @@ data class MemorySnapshot(
 class MemoryCanary(private val dao: StickerDao) {
 
     private companion object {
-        /** Ширина колонки подписей. Задана самой длинной: "След. истечение:". */
-        const val LABEL_WIDTH = 18
+        /**
+         * Ширина колонки подписей. Задана самой длинной из них — "Долг
+         * копится:" — плюс один пробел. Подписи держатся короткими нарочно:
+         * каждый лишний знак колонки отъедается у значения и гонит его на
+         * второй ряд, а перенесённое значение читается хуже длинной подписи.
+         */
+        const val LABEL_WIDTH = 14
     }
 
     /**
@@ -143,9 +148,9 @@ class MemoryCanary(private val dao: StickerDao) {
     fun format(s: MemorySnapshot): String = buildString {
         appendLine("СНИМОК ПАМЯТИ")
         if (s.expired == 0) {
-            appendLine("${label("Всего записей:")}${s.total} · просрочено 0, долга нет")
+            appendLine("${label("Записей:")}${s.total} · просрочено 0, долга нет")
         } else {
-            appendLine("${label("Всего записей:")}${s.total}")
+            appendLine("${label("Записей:")}${s.total}")
             appendLine("${label("Просрочено:")}${s.expired}")
             val debt = s.oldestDebtDays
             appendLine(
@@ -158,15 +163,15 @@ class MemoryCanary(private val dao: StickerDao) {
         val untilNext = s.daysUntilNextExpiry
         appendLine(
             when {
-                untilNext == null -> "${label("След. истечение:")}нет запланированных"
-                untilNext == 0L -> "${label("След. истечение:")}менее суток"
-                else -> "${label("След. истечение:")}через $untilNext дн."
+                untilNext == null -> "${label("Истекает:")}нет запланированных"
+                untilNext == 0L -> "${label("Истекает:")}менее суток"
+                else -> "${label("Истекает:")}через $untilNext дн."
             }
         )
         appendLine("${label("Без срока:")}${s.withoutExpiry} из ${s.total}")
         appendLine(
-            if (s.userMatchesTotal == 0) "${label("Отметок пользы:")}ни одной"
-            else "${label("Отметок пользы:")}${s.userMatchesTotal} у ${s.withUserMatches} записей, макс. ${s.maxUserMatches}"
+            if (s.userMatchesTotal == 0) "${label("Отметок:")}ни одной"
+            else "${label("Отметок:")}${s.userMatchesTotal} у ${s.withUserMatches} записей, макс. ${s.maxUserMatches}"
         )
         appendLine("${label("Слои:")}${layerLine(s)}")
     }.trimEnd()
