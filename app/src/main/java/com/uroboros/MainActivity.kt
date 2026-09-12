@@ -12,6 +12,7 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
 import android.text.method.LinkMovementMethod
+import android.text.style.BackgroundColorSpan
 import android.text.style.ClickableSpan
 import android.text.style.LeadingMarginSpan
 import android.text.style.LineBackgroundSpan
@@ -39,6 +40,7 @@ import com.uroboros.memory.DisputeCluster
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.RetrievalPurpose
+import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.SaveResult
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
@@ -295,6 +297,20 @@ class MainActivity : AppCompatActivity() {
     private val colorRecordRule = Color.parseColor("#9BB0B5")
 
     /**
+     * Заливка под словом, за которое зацепилось правило противоречия.
+     *
+     * ФОН, А НЕ ЦВЕТ БУКВ, и это не вкусовое. В приложении цвет букв означает
+     * КАНАЛ: бирюзовый — действие, фиолетовый — речь агента, красный —
+     * аварийный стоп. Признак спора ни о чём таком не говорит, он говорит
+     * «вот здесь», то есть указывает место. Место красится фоном, канал —
+     * буквами, и тогда набор канальных цветов остаётся закрытым.
+     *
+     * Светлая заливка ещё и единственная, что здесь читается: тёмный текст
+     * `#123540` остаётся на месте, а жёлтым по белому написать нельзя.
+     */
+    private val colorDisputeMark = Color.parseColor("#FCE8B8")
+
+    /**
      * Толщина черты в пикселях — один dp, а не один пиксель.
      *
      * Пиксель на плотном экране даёт волосок, который на глаз неотличим от
@@ -513,6 +529,14 @@ class MainActivity : AppCompatActivity() {
             // Подписи к трём полям строки записи, в том же порядке, в каком
             // поля идут ниже. Строчные названия полей — не небрежность: они
             // повторяют то, как поле подписано в самой строке.
+            out.append("\n\nжёлтым закрашено то, за что зацепилось правило: ")
+            out.append("отрицание с одной стороны или разошедшееся число. В ")
+            out.append("тексте самой записи это объединение по всем её ")
+            out.append("противникам — какие слова участвовали хоть в одном ")
+            out.append("споре, а не с кем именно. С кем именно — в строках ")
+            out.append("ниже, и там закрашено уже по паре. Незакрашенное не ")
+            out.append("значит, что там не спорят: пересказ другими словами ")
+            out.append("правило не берёт вовсе.")
             out.append("\n\nтег — пул, с которым сверяли: только горячие ")
             out.append("записи того же тега. время — когда запись создана. ")
             out.append("последняя строка — с кем запись спорит СЕЙЧАС; ")
@@ -563,6 +587,10 @@ class MainActivity : AppCompatActivity() {
                     out.append("убрать видимые стороны (${cluster.visibleOpponents.size})")
                     out.setSpan(
                         object : ClickableSpan() {
+                            // Признаки сюда НЕ передаются: противники собраны
+                            // из отчётов нескольких записей, и какая из них с
+                            // кем спорит — в этом списке не сказано. Почему
+                            // это запрет, а не недоделка — в KDoc диалога.
                             override fun onClick(widget: View) = showHideOpponentsDialog(
                                 cluster.visibleOpponents,
                                 "Записи этого дела спорят с тем, что СЕЙЧАС видно в памяти:",
@@ -586,16 +614,22 @@ class MainActivity : AppCompatActivity() {
                 // источника осталась, она не оформление: без неё не видно, чьё
                 // это утверждение.
                 out.append(sourceLabel(sticker.source)).append(" ")
+                val contentStart = out.length
                 out.append(sticker.content)
+                highlightWords(out, contentStart, out.length, recordSideWords(report))
                 out.append("\n")
                 val serviceStart = out.length
                 out.append("[").append(sticker.layer).append("] тег: ")
                 out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
                 ruleRanges += serviceStart to out.length
-                for ((label, value) in disputeLines(report)) {
+                for (line in disputeLines(report)) {
                     out.append("\n")
                     val lineStart = out.length
-                    out.append(label.padEnd(disputeLabel)).append(value)
+                    out.append(line.label.padEnd(disputeLabel))
+                    val valueStart = out.length
+                    out.append(line.value)
+                    highlightWords(out, valueStart, out.length, line.marked)
+                    out.append(line.tail)
                     disputeRanges += lineStart to out.length
                 }
                 // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
@@ -644,6 +678,7 @@ class MainActivity : AppCompatActivity() {
                             override fun onClick(widget: View) = showHideOpponentsDialog(
                                 report.visible,
                                 "Запись из очереди спорит с тем, что СЕЙЧАС видно в памяти:",
+                                report.marks,
                             )
                             override fun updateDrawState(ds: TextPaint) {
                                 ds.color = colorRecordsLink
@@ -1115,6 +1150,86 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Закрасить в отрезке текста слова, названные правилом противоречия.
+     *
+     * ПОЧЕМУ СЛОВА ИЩУТСЯ ЗДЕСЬ, А НЕ ПРИХОДЯТ МЕСТАМИ. Правило работает на
+     * множествах слов: порядок и смещения теряются на разборе, и взяться им
+     * неоткуда. Решает по-прежнему правило — оно называет, ЧТО выделить;
+     * здесь только поиск вхождения. Разбирать текст на признаки заново нельзя
+     * ни при каких обстоятельствах: это вторая копия правила, и она
+     * разойдётся с первой.
+     *
+     * ГРАНИЦА СЛОВА ПРОВЕРЯЕТСЯ, И БЕЗ НЕЁ МЕХАНИЗМ ВРЁТ. Слово «не»
+     * встречается внутри «нельзя», «конечно», «неделя»; закрасив их, экран
+     * показал бы отрицание там, где правило ничего не находило. Совпадением
+     * считается только кусок, с обеих сторон которого стоит не буква и не
+     * цифра.
+     *
+     * РЕГИСТР НЕ РАЗЛИЧАЕТСЯ: правило приводит слова к нижнему, а в тексте
+     * стоит то, что написал человек. Приведение идёт посимвольно, чтобы длина
+     * не поехала и отрезок не сдвинулся.
+     *
+     * ЧЕГО НЕ УМЕЕТ:
+     *  - слово, встречающееся в отрезке несколько раз, закрашивается везде.
+     *    Правило не знает, о каком именно вхождении речь, и знать не может;
+     *  - в обрезанном превью противника искомого слова может не оказаться
+     *    вовсе — тогда не закрасится ничего, и это законно.
+     *
+     * @return сколько мест закрашено. Ноль при непустом списке слов означает,
+     *         что слова в отрезок не попали, а не что признаков не было.
+     */
+    private fun highlightWords(
+        out: SpannableStringBuilder,
+        from: Int,
+        to: Int,
+        words: Set<String>,
+    ): Int {
+        if (words.isEmpty() || to <= from) return 0
+        val lowered = buildString(to - from) {
+            for (i in from until to) append(out[i].lowercaseChar())
+        }
+        var applied = 0
+        for (word in words) {
+            if (word.isEmpty()) continue
+            var index = lowered.indexOf(word)
+            while (index >= 0) {
+                val end = index + word.length
+                val before = if (index == 0) ' ' else lowered[index - 1]
+                val after = if (end >= lowered.length) ' ' else lowered[end]
+                if (!before.isLetterOrDigit() && !after.isLetterOrDigit()) {
+                    out.setSpan(
+                        BackgroundColorSpan(colorDisputeMark),
+                        from + index, from + end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                    applied++
+                }
+                index = lowered.indexOf(word, index + 1)
+            }
+        }
+        return applied
+    }
+
+    /**
+     * Слова САМОЙ записи, за которые зацепилось правило, по всем её
+     * противникам сразу.
+     *
+     * ОБЪЕДИНЕНИЕ, И ЭТО НАДО ЗНАТЬ ЧИТАЮЩЕМУ ЭКРАН. Запись может спорить с
+     * одним противником числом, а с другим отрицанием; подсветка в её тексте
+     * не говорит, с кем именно — она говорит, какие слова участвовали хоть в
+     * одном споре. С кем именно, сказано строками ниже, где противник назван
+     * поимённо.
+     */
+    private fun recordSideWords(report: HourglassMemory.DisputeReport): Set<String> =
+        report.marks.values.flatMapTo(HashSet()) { pair -> pair.flatMap { it.first } }
+
+    /** Слова названного противника, за которые зацепилось правило в паре с ним. */
+    private fun opponentSideWords(
+        report: HourglassMemory.DisputeReport,
+        opponentId: Long,
+    ): Set<String> =
+        report.marks[opponentId]?.flatMapTo(HashSet()) { it.second } ?: emptySet()
+
+    /**
      * Открыть очередь. Список читается из базы каждый раз, а не держится в
      * поле активности: единственный источник правды — таблица, и показанный
      * список не должен переживать чужую правку той же строки.
@@ -1249,6 +1364,7 @@ class MainActivity : AppCompatActivity() {
         if (report.visible.isNotEmpty()) showHideOpponentsDialog(
             report.visible,
             "Принятая запись спорит с тем, что СЕЙЧАС видно в памяти:",
+            report.marks,
         )
     }
 
@@ -1281,29 +1397,52 @@ class MainActivity : AppCompatActivity() {
      *  - остывших противников и противников под другим тегом здесь нет:
      *    показываются только видимые из того же горячего пула, что у проверки.
      *
+     * ПРИЗНАКИ ТОЖЕ ПРИХОДЯТ ПАРАМЕТРОМ, И У НИХ УМОЛЧАНИЕ ПУСТОЕ. Признак
+     * принадлежит ПАРЕ, а не противнику: одна и та же видимая запись может
+     * спорить с одной записью очереди числом, а с другой отрицанием. Там, где
+     * противники собраны из нескольких отчётов сразу — в шапке дела, — пара не
+     * названа, и заливка указывала бы на признак из спора, которого на экране
+     * нет. Поэтому оттуда признаки не передаются вовсе, и пустая карта здесь
+     * означает «подсвечивать нечем», а не «признаков не нашлось».
+     *
      * ПЕРВАЯ ФРАЗА ПРИХОДИТ ПАРАМЕТРОМ, И УМОЛЧАНИЯ У НЕЁ НЕТ. Сюда ведут три
      * входа: приём записи, рычаг у записи в списке и рычаг у шапки дела. Фраза
      * "принятая запись спорит" верна только для первого, а забытое умолчание
      * соврало бы молча — человек читал бы про приём, которого не было.
      */
-    private fun showHideOpponentsDialog(opponents: List<Sticker>, lead: String) {
-        val list = opponents.joinToString("\n\n") { opponent ->
+    private fun showHideOpponentsDialog(
+        opponents: List<Sticker>,
+        lead: String,
+        marks: Map<Long, List<RiskTrigger.ContradictionMark>> = emptyMap(),
+    ) {
+        val message = SpannableStringBuilder(lead).append("\n\n")
+        opponents.forEachIndexed { index, opponent ->
+            if (index > 0) message.append("\n\n")
             val text = opponent.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
             val cut = if (opponent.content.length > DROP_PREVIEW_CHARS) "…" else ""
-            "«$text$cut» ${fmtMoment(opponent.createdAt)}"
+            message.append("«")
+            val textStart = message.length
+            message.append(text)
+            // Заливка ложится только на цитату: кавычки, время и служебные
+            // слова вокруг — не текст записи, и правило про них ничего не
+            // говорило.
+            highlightWords(
+                message, textStart, message.length,
+                marks[opponent.id]?.flatMapTo(HashSet()) { it.second } ?: emptySet(),
+            )
+            message.append(cut).append("» ").append(fmtMoment(opponent.createdAt))
         }
+        message.append("\n\n")
+            .append("Пока они видны, агент читает их как факты наравне с ")
+            .append("остальными и может опереться на любую. Убрать в очередь?\n\n")
+            .append("Это обратимо: записи целы и принимаются назад тем же способом, ")
+            .append("что и всё, что в очереди уже лежит.")
         val title =
             if (opponents.size == 1) "Вторая сторона спора"
             else "Другие стороны спора: ${opponents.size}"
         AlertDialog.Builder(this@MainActivity)
             .setTitle(title)
-            .setMessage(
-                "$lead\n\n$list\n\n" +
-                    "Пока они видны, агент читает их как факты наравне с " +
-                    "остальными и может опереться на любую. Убрать в очередь?\n\n" +
-                    "Это обратимо: записи целы и принимаются назад тем же способом, " +
-                    "что и всё, что в очереди уже лежит."
-            )
+            .setMessage(message)
             .setPositiveButton("Убрать в очередь") { _, _ ->
                 lifecycleScope.launch { hideOpponents(opponents) }
             }
@@ -1353,30 +1492,60 @@ class MainActivity : AppCompatActivity() {
      * Ширину колонки здесь не знают и знать не должны: она меряется по шрифту
      * там, где строится экран.
      */
-    private fun disputeLines(report: HourglassMemory.DisputeReport): List<Pair<String, String>> {
+    private fun disputeLines(report: HourglassMemory.DisputeReport): List<DisputeLine> {
         if (report.failed) {
-            return listOf("спор" to "проверить не удалось — это НЕ значит, что спора нет")
-        }
-        val values = mutableListOf<String>()
-        if (report.visible.isNotEmpty()) {
-            values += "с записью, которая ВИДНА в памяти: " + opponentPreview(report.visible)
-        }
-        if (report.hidden.isNotEmpty()) {
-            values += "со скрытой записью, тоже в очереди: " + opponentPreview(report.hidden)
-        }
-        if (report.cooled.isNotEmpty()) {
-            values += "с противником, который остыл и вышел из горячих слоёв: " +
-                opponentPreview(report.cooled)
-        }
-        if (values.isEmpty()) {
             return listOf(
-                "спорит" to "сейчас ни с чем (сравнено пар: ${report.comparisons})"
+                DisputeLine("спор", "проверить не удалось — это НЕ значит, что спора нет")
             )
         }
-        return values.mapIndexed { index, value ->
-            (if (index == 0) "спорит" else "") to value
+        val previews = mutableListOf<Pair<String, Sticker>>()
+        if (report.visible.isNotEmpty()) {
+            previews += ("с записью, которая ВИДНА в памяти: " +
+                opponentPreview(report.visible)) to report.visible.first()
+        }
+        if (report.hidden.isNotEmpty()) {
+            previews += ("со скрытой записью, тоже в очереди: " +
+                opponentPreview(report.hidden)) to report.hidden.first()
+        }
+        if (report.cooled.isNotEmpty()) {
+            previews += ("с противником, который остыл и вышел из горячих слоёв: " +
+                opponentPreview(report.cooled)) to report.cooled.first()
+        }
+        if (previews.isEmpty()) {
+            return listOf(
+                DisputeLine("спорит", "сейчас ни с чем (сравнено пар: ${report.comparisons})")
+            )
+        }
+        return previews.mapIndexed { index, (value, shown) ->
+            val marks = report.marks[shown.id]
+            DisputeLine(
+                label = if (index == 0) "спорит" else "",
+                value = value,
+                // Признаков у названного противника всегда хотя бы один:
+                // правило признаёт спор только по признаку. Ноль или
+                // отсутствие — поломка, и сказать о ней надо словами, иначе
+                // она выглядит как «выделять нечего».
+                tail = if (marks.isNullOrEmpty()) " · признаков нет, и это поломка"
+                else " · признаков: ${marks.size}",
+                marked = opponentSideWords(report, shown.id),
+            )
         }
     }
+
+    /**
+     * Одна строка спора: подпись, значение, хвост и слова под заливку.
+     *
+     * ХВОСТ ОТДЕЛЁН ОТ ЗНАЧЕНИЯ НЕ ДЛЯ КРАСОТЫ. Подсветка ищет слово по всему
+     * отрезку, который ей дали, а в хвосте стоят обычные русские слова — в
+     * том числе «нет», которое правило считает отрицанием. Отдай ему весь
+     * отрезок, и служебная приписка закрасилась бы наравне с цитатой.
+     */
+    private data class DisputeLine(
+        val label: String,
+        val value: String,
+        val tail: String = "",
+        val marked: Set<String> = emptySet(),
+    )
 
     /**
      * Первый противник текстом плюс счёт остальных. Длина обрезки взята общая
@@ -1815,6 +1984,9 @@ class MainActivity : AppCompatActivity() {
             // молчащий при нуле, неотличим от неподключённого.
             watchdog.formatZoneObservation(::zoneLabel),
         )
+        // Ширина панели в знаках — своей группой и в самом низу: смотрят на
+        // неё, когда разметка выглядит странно, а не при работе.
+        group(panelWidthLine())
         for (start in metricRules) {
             metrics.setSpan(
                 RecordRuleSpan(colorRecordRule, start, ruleThickness, centered = true),
@@ -1822,6 +1994,30 @@ class MainActivity : AppCompatActivity() {
             )
         }
         binding.textMetrics.text = metrics
+    }
+
+    /**
+     * Сколько знаков помещается в строку панели результатов.
+     *
+     * ЗАЧЕМ. На этом числе стоит вся разметка списков: колонки подписей
+     * меряются по шрифту панели (см. labelColumn), а колонки держатся на том,
+     * что шрифт моноширинный. Оно же отвечает на вопрос, помещаются ли два
+     * текста рядом или только друг под другом.
+     *
+     * ТРИ ЗНАЧЕНИЯ, А НЕ ДВА. Пока разметка не посчитана, ширина панели равна
+     * нулю, и напечатанный ноль читался бы как «не помещается ничего». До
+     * первой отрисовки здесь стоит «?», как у температуры и заряда.
+     *
+     * Область: число верно для шрифта и размера, заданных панели в разметке, и
+     * меняется вместе с ними и с устройством. Перепроверяется само собой —
+     * строка считается при каждой отрисовке шторки.
+     */
+    private fun panelWidthLine(): String {
+        val panel = binding.textResults
+        val usable = panel.width - panel.paddingLeft - panel.paddingRight
+        val charWidth = panel.paint.measureText("0")
+        return if (usable <= 0 || charWidth <= 0f) "Ширина панели: ? (разметка ещё не посчитана)"
+        else "Ширина панели: ${(usable / charWidth).toInt()} знаков в строке"
     }
 
     /**
