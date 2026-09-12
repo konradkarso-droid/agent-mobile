@@ -37,6 +37,7 @@ import com.uroboros.memory.AcceptCheck
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.DisputeCluster
+import com.uroboros.memory.DisputeNotice
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.RetrievalPurpose
@@ -155,6 +156,23 @@ class MainActivity : AppCompatActivity() {
      */
     private var journalDiskLine: String? = null
     private var lastMetricsLine: String? = null
+
+    /**
+     * Что сказала сверка записей между собой на последнем ходе.
+     *
+     * ТРИ ЗНАЧЕНИЯ, А НЕ ДВА: «расхождений нет», «сверять было нечего» и сами
+     * расхождения. Механизм, у которого «нашлось» и «не нашлось» — весь
+     * словарь, молчит одинаково и когда ловить нечего, и когда он мёртв.
+     *
+     * ЧЕТВЁРТОЕ ЗНАЧЕНИЕ — ОТСУТСТВИЕ САМОЙ СТРОКИ, и его надо уметь читать:
+     * строки нет вовсе только тогда, когда сверку не звали. Поэтому во всех
+     * трёх исходах строка печатается, включая пустые.
+     *
+     * Когда расхождение нашлось, под строкой стоит ДОСЛОВНО тот текст, что
+     * ушёл в модель, а не его пересказ. Иначе экран и лента разошлись бы
+     * молча, и увидеть это было бы нечем.
+     */
+    private var disputeNoticeLine: String? = null
 
     /**
      * Две строки о контрольной точке, намеренно НЕ слитые в одну.
@@ -1939,6 +1957,25 @@ class MainActivity : AppCompatActivity() {
         SafetyZone.CRITICAL -> "критическая"
     }
 
+    /**
+     * Исход сверки записей — строкой для человека.
+     *
+     * Числа здесь считает не экран: они приходят из самого исхода. Посчитать
+     * их заново значило бы завести второе мнение о том же, а разошлись бы они
+     * молча.
+     *
+     * Слова «спорят» в этой строке нет намеренно, как нет его и в тексте для
+     * модели: правило отвечает, что тексты РАЗОШЛИСЬ по механическому
+     * признаку, и о том, кто прав, не знает ничего.
+     */
+    private fun disputeNoticeLabel(result: DisputeNotice.Result): String = when (result) {
+        DisputeNotice.Result.NothingToCompare -> "Сверка записей: сверять было нечего"
+        DisputeNotice.Result.Clean -> "Сверка записей: расхождений нет"
+        is DisputeNotice.Result.Found ->
+            "Сверка записей: расхождений ${result.pairsFound}, названо ${result.pairsShown}\n" +
+                result.text
+    }
+
     private fun renderMetricsPanel() {
         val zone = watchdog.zone.value
         val power = watchdog.power.value
@@ -1999,7 +2036,10 @@ class MainActivity : AppCompatActivity() {
         // строк, и слитые с параметрами движка они превращали шторку в
         // простыню. Параметры отвечают на "с чем запущено", прогон — на "как
         // прошло"; это разные вопросы и разная свежесть.
-        group(lastMetricsLine)
+        // Сверка стоит в одной группе с числами прогона и ВЫШЕ них: она
+        // описывает то, что ушло в модель, а числа — то, чем это кончилось.
+        // Обе строки живут один ход и стираются вместе.
+        group(disputeNoticeLine, lastMetricsLine)
         group(
             // Наблюдение за зоной стоит последним: смотрят на него не при
             // каждом ответе, а когда показания железа выглядят странно.
@@ -2113,6 +2153,10 @@ class MainActivity : AppCompatActivity() {
      */
     private fun clearRunMetrics() {
         lastMetricsLine = null
+        // Строка сверки стирается вместе с числами и по той же причине: она
+        // описывает ход, который может не состояться, и оставшись на экране,
+        // читалась бы как относящаяся к следующему.
+        disputeNoticeLine = null
         showProgress(null)
         renderMetricsPanel()
     }
@@ -3051,13 +3095,30 @@ class MainActivity : AppCompatActivity() {
                 val allRecords = stickers.map { sticker ->
                     "${provenancePhrase(sticker.source)}: «${sticker.content}»."
                 }
+                // Сверка идёт по ТЕКСТАМ записей, а не по готовым строкам
+                // выше: строка несёт провенанс и кавычки, которых правило не
+                // видело и видеть не должно.
+                //
+                // Сверяются ВСЕ найденные отбором, а не только новые. Запись,
+                // которую отсев повторов не стал класть второй раз, модель всё
+                // равно видит — она лежит выше в ленте, — и промолчать о её
+                // расхождении значило бы соврать умолчанием.
+                //
+                // База здесь не трогается: disputesOf берёт одну запись и весь
+                // горячий пул по тегу, а нужна попарная сверка тех пяти, что
+                // уже на руках.
+                val notice = DisputeNotice.of(stickers.map { it.content })
+                disputeNoticeLine = disputeNoticeLabel(notice)
+                renderMetricsPanel()
+                val disputeText = (notice as? DisputeNotice.Result.Found)?.text
+
                 // Записи, уже лежащие в ленте, второй раз не кладём: отбор
                 // тянет до пяти штук на КАЖДЫЙ вопрос, а лента только растёт.
                 // Считано 28.08: без этого ход дорожает со 125 токенов до 325
                 // и лента кончается к двадцатому ходу вместо шестидесятого,
                 // причём почти всё добавленное — повторы одного и того же.
                 val newRecords = journal.unseenRecords(allRecords)
-                val userContent = journal.composeUserContent(newRecords, userText)
+                val userContent = journal.composeUserContent(newRecords, userText, disputeText)
 
                 // Проверка края ДО отправки. Движок при переполнении молча
                 // выбрасывает половину ленты посреди генерации, поэтому
