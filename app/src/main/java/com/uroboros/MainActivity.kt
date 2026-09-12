@@ -616,7 +616,9 @@ class MainActivity : AppCompatActivity() {
                 out.append(sourceLabel(sticker.source)).append(" ")
                 val contentStart = out.length
                 out.append(sticker.content)
-                highlightWords(out, contentStart, out.length, recordSideWords(report))
+                val ownWords = recordSideWords(report)
+                val ownPainted = highlightWords(out, contentStart, out.length, ownWords)
+                out.append(missingMarkNote(ownWords, ownPainted))
                 out.append("\n")
                 val serviceStart = out.length
                 out.append("[").append(sticker.layer).append("] тег: ")
@@ -628,8 +630,9 @@ class MainActivity : AppCompatActivity() {
                     out.append(line.label.padEnd(disputeLabel))
                     val valueStart = out.length
                     out.append(line.value)
-                    highlightWords(out, valueStart, out.length, line.marked)
+                    val painted = highlightWords(out, valueStart, out.length, line.marked)
                     out.append(line.tail)
+                    out.append(missingMarkNote(line.marked, painted))
                     disputeRanges += lineStart to out.length
                 }
                 // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
@@ -1521,16 +1524,49 @@ class MainActivity : AppCompatActivity() {
             DisputeLine(
                 label = if (index == 0) "спорит" else "",
                 value = value,
-                // Признаков у названного противника всегда хотя бы один:
-                // правило признаёт спор только по признаку. Ноль или
-                // отсутствие — поломка, и сказать о ней надо словами, иначе
-                // она выглядит как «выделять нечего».
+                // Признак НАЗЫВАЕТСЯ, а не считается. Счёт был неверной
+                // меркой: у отрицания слова есть только с одной стороны, и
+                // «признаков: 1» при чистой цитате противника читалось как
+                // поломка, хотя это устройство самого признака. Имя объясняет
+                // чистую сторону само.
+                //
+                // Признак у названного противника всегда есть: правило
+                // признаёт спор только по признаку. Пусто здесь — поломка, и
+                // сказать о ней надо словами.
                 tail = if (marks.isNullOrEmpty()) " · признаков нет, и это поломка"
-                else " · признаков: ${marks.size}",
+                else " · " + marks.joinToString(", ") { markName(it.kind) },
                 marked = opponentSideWords(report, shown.id),
             )
         }
     }
+
+    /**
+     * Имя признака для экрана.
+     *
+     * Живёт здесь, а не у правила: правило отвечает на вопрос механизма, а это
+     * слово читает человек, и меняться оно может независимо от того, как
+     * признак устроен внутри.
+     */
+    private fun markName(kind: RiskTrigger.MarkKind): String = when (kind) {
+        RiskTrigger.MarkKind.NEGATION -> "отрицание"
+        RiskTrigger.MarkKind.NUMBER -> "число"
+    }
+
+    /**
+     * Приписка, которая молчит, когда всё сошлось.
+     *
+     * ЧТО ОНА ЛОВИТ. Правило назвало слова, а в показанном куске текста их не
+     * нашлось ни одного — чаще всего потому, что цитата обрезана по длине и
+     * нужное слово осталось за обрезкой. Без приписки этот случай выглядит
+     * ровно как чистая вторая сторона у отрицания, то есть как норма.
+     *
+     * ЧЕГО ОНА НЕ ЛОВИТ, и на это опираться нельзя: заливка могла быть
+     * назначена и не нарисоваться. Здесь считаются назначенные места, а не
+     * увиденные глазом; расхождение между этим числом и экраном не видно
+     * ничему в программе.
+     */
+    private fun missingMarkNote(words: Set<String>, painted: Int): String =
+        if (words.isNotEmpty() && painted == 0) " · слов признака в этом тексте нет" else ""
 
     /**
      * Одна строка спора: подпись, значение, хвост и слова под заливку.
@@ -2016,8 +2052,29 @@ class MainActivity : AppCompatActivity() {
         val panel = binding.textResults
         val usable = panel.width - panel.paddingLeft - panel.paddingRight
         val charWidth = panel.paint.measureText("0")
-        return if (usable <= 0 || charWidth <= 0f) "Ширина панели: ? (разметка ещё не посчитана)"
-        else "Ширина панели: ${(usable / charWidth).toInt()} знаков в строке"
+        if (usable <= 0 || charWidth <= 0f) return "Ширина панели: ? (разметка ещё не посчитана)"
+        val chars = (usable / charWidth).toInt()
+        return "Ширина панели: $chars ${pluralRu(chars, "знак", "знака", "знаков")} в строке"
+    }
+
+    /**
+     * Форма существительного при числе по правилам русского языка.
+     *
+     * Нужна везде, где число печатается рядом со словом: «42 знака», но «41
+     * знак» и «45 знаков». Без неё строка врёт на четырёх числах из десяти, и
+     * врёт тихо — читается как небрежность, а не как ошибка.
+     *
+     * Одиннадцать-четырнадцать — исключение из правила последней цифры, и
+     * проверяются они первыми.
+     */
+    private fun pluralRu(count: Int, one: String, few: String, many: String): String {
+        val hundred = count % 100
+        if (hundred in 11..14) return many
+        return when (count % 10) {
+            1 -> one
+            2, 3, 4 -> few
+            else -> many
+        }
     }
 
     /**
