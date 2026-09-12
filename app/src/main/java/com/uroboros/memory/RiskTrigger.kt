@@ -69,6 +69,45 @@ object RiskTrigger {
         val contradictionCandidateId: Long? = null
     )
 
+    /** За что правило противоречия зацепилось в паре текстов. */
+    enum class MarkKind {
+        /** Отрицание есть у одной стороны и отсутствует у другой. */
+        NEGATION,
+
+        /** Числа сторон разошлись. */
+        NUMBER,
+    }
+
+    /**
+     * Один признак спора, найденный в паре текстов, со словами, которыми он
+     * выражен.
+     *
+     * ЗАЧЕМ СЛОВА, А НЕ ПРОСТО ВИД ПРИЗНАКА. Показ обязан уметь выделить в
+     * самой фразе то, за что зацепилось правило. Считать это на экране заново
+     * значило бы завести вторую копию правила: она разойдётся с первой, и не
+     * будет видно, какая врёт.
+     *
+     * СТОРОНЫ НЕ СИММЕТРИЧНЫ, И ПУСТАЯ СТОРОНА — ЗАКОННЫЙ ИСХОД. У [NEGATION]
+     * слова есть ровно у одной стороны: признак в том и состоит, что у второй
+     * отрицания НЕТ, и выделять там нечего. У [NUMBER] пустой может оказаться
+     * любая из двух, когда числа одной стороны — подмножество чисел другой.
+     *
+     * ЧЕГО ЗДЕСЬ НЕТ. Мест в тексте. Правило работает на множествах слов:
+     * порядок и смещения теряются на разборе, и восстановить их нечем.
+     * Вхождение ищет тот, кто показывает, и отсюда две его границы: слово,
+     * встречающееся в тексте несколько раз, выделится везде, а искать надо не
+     * различая регистра — слова здесь приведены к нижнему.
+     *
+     * @property first слова со стороны первого текста, как они стоят в нём
+     *                 (для числительных словами — само слово, а не цифра).
+     * @property second то же со стороны второго.
+     */
+    data class ContradictionMark(
+        val kind: MarkKind,
+        val first: Set<String>,
+        val second: Set<String>,
+    )
+
     fun evaluate(candidate: Sticker, sameTagHotStickers: List<Sticker>): Decision {
         val reasons = mutableListOf<String>()
 
@@ -194,20 +233,64 @@ object RiskTrigger {
      * Записи не сравниваются с самими собой: об этом заботится вызывающий,
      * предикату идентичности записей не видно — он получает только тексты.
      */
-    fun contradicts(a: String, b: String): Boolean {
+    fun contradicts(a: String, b: String): Boolean =
+        contradictionMarks(a, b).isNotEmpty()
+
+    /**
+     * Те же признаки, по которым отвечает [contradicts], но названные
+     * поимённо и со словами, которыми они выражены.
+     *
+     * ЭТО ТО ЖЕ САМОЕ ПРАВИЛО, А НЕ ВТОРОЕ. [contradicts] спрашивает у него
+     * же и отвечает "да", когда список непуст. Двух реализаций нет и заводить
+     * их нельзя: разойдясь, они дадут экран, противоречащий очереди.
+     *
+     * ПУСТОЙ СПИСОК ОЗНАЧАЕТ "НЕ ПРОТИВОРЕЧАТ", и другого смысла у него нет.
+     * Обратное тоже верно и нужнее: у пары, признанной спорящей, признаков
+     * всегда хотя бы один. Ноль признаков рядом с названным противником —
+     * поломка, а не тишина, и показывающий вправе на это опереться.
+     *
+     * ПОРЯДОК ПРИЗНАКОВ УСТОЙЧИВ: сперва отрицание, потом числа. Экран,
+     * перечисляющий их подряд, не должен переставляться от запуска к запуску.
+     *
+     * ЧЕГО НЕ УМЕЕТ — всё то же, что у [contradicts]: пара сравнивается только
+     * после порога схожести, пересказ другими словами не берётся вовсе. Плюс
+     * своё: числа сверяются как множества, поэтому названы будут только те,
+     * что есть у одной стороны и нет у другой. Общее число, стоящее рядом с
+     * разошедшимся, не назовётся, хотя спор может быть именно о нём.
+     */
+    fun contradictionMarks(a: String, b: String): List<ContradictionMark> {
         val wordsA = stemmedTokenize(a)
         val wordsB = stemmedTokenize(b)
-        if (jaccard(wordsA, wordsB) < CONTRADICTION_JACCARD_THRESHOLD) return false
+        if (jaccard(wordsA, wordsB) < CONTRADICTION_JACCARD_THRESHOLD) return emptyList()
 
-        val negationMismatch =
-            tokenize(a).any { it in NEGATION_MARKERS } != tokenize(b).any { it in NEGATION_MARKERS }
+        val marks = mutableListOf<ContradictionMark>()
 
-        val numbersA = extractNumbers(a)
-        val numbersB = extractNumbers(b)
-        val numberMismatch = numbersA.isNotEmpty() && numbersB.isNotEmpty() && numbersA != numbersB
+        val negationsA = tokenize(a).filterTo(HashSet()) { it in NEGATION_MARKERS }
+        val negationsB = tokenize(b).filterTo(HashSet()) { it in NEGATION_MARKERS }
+        if (negationsA.isEmpty() != negationsB.isEmpty()) {
+            marks += ContradictionMark(MarkKind.NEGATION, negationsA, negationsB)
+        }
 
-        return negationMismatch || numberMismatch
+        // Цифровая запись служит ключом сравнения, слова из текста — ответом
+        // показу: "семь" и "7" спорят об одном, а выделить в тексте надо то,
+        // что там написано.
+        val numbersA = numbersWithSurface(a)
+        val numbersB = numbersWithSurface(b)
+        if (numbersA.isNotEmpty() && numbersB.isNotEmpty() && numbersA.keys != numbersB.keys) {
+            marks += ContradictionMark(
+                MarkKind.NUMBER,
+                surfacesOf(numbersA, numbersA.keys - numbersB.keys),
+                surfacesOf(numbersB, numbersB.keys - numbersA.keys),
+            )
+        }
+
+        return marks
     }
+
+    private fun surfacesOf(
+        numbers: Map<String, Set<String>>,
+        keys: Set<String>,
+    ): Set<String> = keys.flatMapTo(HashSet()) { numbers.getValue(it) }
 
     /**
      * Первый противник кандидата в пуле — или null.
@@ -252,7 +335,14 @@ object RiskTrigger {
     }
 
     /**
-     * Числа из текста, приведённые к цифровой записи: «семь» и «7» дают "7".
+     * Числа из текста: цифровая запись как ключ, написанное в тексте как
+     * значение. «семь» и «7» дают один и тот же ключ "7", а под ним лежит то
+     * слово, которое в этом тексте стоит.
+     *
+     * ДВА УРОВНЯ, А НЕ ОДИН, потому что у них разные потребители. Сравнение
+     * «то же число или другое» идёт по ключам: иначе «семь» и «7» считались бы
+     * разными числами. Выделение в тексте идёт по значениям: искать там «7»,
+     * когда написано «семь», не по чему.
      *
      * Числительные словами ищутся ЧЛЕНСТВОМ в разобранных токенах, а не
      * регулярным выражением с `\b`. Причина не стилистическая: в Java `\b`
@@ -273,18 +363,23 @@ object RiskTrigger {
      *    или другое» такой набор шумит; отсечь его нечем, пока нет разбора
      *    того, к чему число относится.
      *
-     * Вызывающий, findContradiction, сравнивает эти множества только после
-     * порога схожести, так что шум из предыдущего пункта до сравнения обычно
-     * не доходит.
+     * Вызывающий, contradictionMarks, сравнивает эти ключи только после порога
+     * схожести, так что шум из предыдущего пункта до сравнения обычно не
+     * доходит.
+     *
+     * Под одним ключом может оказаться несколько написаний сразу: в тексте,
+     * где стоит и «7», и «семь», выделены будут оба.
      */
-    private fun extractNumbers(text: String): Set<String> {
-        val digitNumbers = Regex("\\d+").findAll(text).map { it.value }.toSet()
+    private fun numbersWithSurface(text: String): Map<String, Set<String>> {
+        val found = mutableMapOf<String, MutableSet<String>>()
+        for (match in Regex("\\d+").findAll(text)) {
+            found.getOrPut(match.value) { mutableSetOf() } += match.value
+        }
         val words = tokenize(text)
-        val wordNumbers = WORD_NUMBERS
-            .filterKeys { it in words }
-            .values
-            .toSet()
-        return digitNumbers + wordNumbers
+        for ((word, digits) in WORD_NUMBERS) {
+            if (word in words) found.getOrPut(digits) { mutableSetOf() } += word
+        }
+        return found
     }
 
     private fun jaccard(a: Set<String>, b: Set<String>): Double {
