@@ -49,6 +49,7 @@ import com.uroboros.memory.TrustedMediator
 import com.uroboros.memory.clusterDisputes
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
+import com.uroboros.util.wordSpots
 import com.uroboros.will.SimplePendingQuerySource
 import com.uroboros.will.ToteResult
 import com.uroboros.will.TermuxKotlinCompiler
@@ -1169,28 +1170,14 @@ class MainActivity : AppCompatActivity() {
     /**
      * Закрасить в отрезке текста слова, названные правилом противоречия.
      *
-     * ПОЧЕМУ СЛОВА ИЩУТСЯ ЗДЕСЬ, А НЕ ПРИХОДЯТ МЕСТАМИ. Правило работает на
-     * множествах слов: порядок и смещения теряются на разборе, и взяться им
-     * неоткуда. Решает по-прежнему правило — оно называет, ЧТО выделить;
-     * здесь только поиск вхождения. Разбирать текст на признаки заново нельзя
-     * ни при каких обстоятельствах: это вторая копия правила, и она
-     * разойдётся с первой.
+     * ЧТО ЗДЕСЬ ЕСТЬ, А ЧЕГО НЕТ. Здесь только назначение заливки. Какие
+     * слова выделять, решает правило противоречия; ГДЕ они стоят, отвечает
+     * wordSpots — вместе с границей слова, регистром и всем, что к поиску
+     * относится. Разобрано порознь затем, что поиск проверяется тестом, а
+     * этот метод — нет: он внутри Activity и без экрана не запускается.
      *
-     * ГРАНИЦА СЛОВА ПРОВЕРЯЕТСЯ, И БЕЗ НЕЁ МЕХАНИЗМ ВРЁТ. Слово «не»
-     * встречается внутри «нельзя», «конечно», «неделя»; закрасив их, экран
-     * показал бы отрицание там, где правило ничего не находило. Совпадением
-     * считается только кусок, с обеих сторон которого стоит не буква и не
-     * цифра.
-     *
-     * РЕГИСТР НЕ РАЗЛИЧАЕТСЯ: правило приводит слова к нижнему, а в тексте
-     * стоит то, что написал человек. Приведение идёт посимвольно, чтобы длина
-     * не поехала и отрезок не сдвинулся.
-     *
-     * ЧЕГО НЕ УМЕЕТ:
-     *  - слово, встречающееся в отрезке несколько раз, закрашивается везде.
-     *    Правило не знает, о каком именно вхождении речь, и знать не может;
-     *  - в обрезанном превью противника искомого слова может не оказаться
-     *    вовсе — тогда не закрасится ничего, и это законно.
+     * Отрезок задаётся от [from] до [to], а места приходят от начала
+     * поданного куска, поэтому к ним прибавляется [from].
      *
      * @return сколько мест закрашено. Ноль при непустом списке слов означает,
      *         что слова в отрезок не попали, а не что признаков не было.
@@ -1202,28 +1189,14 @@ class MainActivity : AppCompatActivity() {
         words: Set<String>,
     ): Int {
         if (words.isEmpty() || to <= from) return 0
-        val lowered = buildString(to - from) {
-            for (i in from until to) append(out[i].lowercaseChar())
+        val spots = wordSpots(out.subSequence(from, to), words)
+        for (spot in spots) {
+            out.setSpan(
+                BackgroundColorSpan(colorDisputeMark),
+                from + spot.start, from + spot.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
         }
-        var applied = 0
-        for (word in words) {
-            if (word.isEmpty()) continue
-            var index = lowered.indexOf(word)
-            while (index >= 0) {
-                val end = index + word.length
-                val before = if (index == 0) ' ' else lowered[index - 1]
-                val after = if (end >= lowered.length) ' ' else lowered[end]
-                if (!before.isLetterOrDigit() && !after.isLetterOrDigit()) {
-                    out.setSpan(
-                        BackgroundColorSpan(colorDisputeMark),
-                        from + index, from + end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                    )
-                    applied++
-                }
-                index = lowered.indexOf(word, index + 1)
-            }
-        }
-        return applied
+        return spots.size
     }
 
     /**
