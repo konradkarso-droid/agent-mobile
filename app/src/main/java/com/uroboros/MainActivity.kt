@@ -619,11 +619,17 @@ class MainActivity : AppCompatActivity() {
                 val ownWords = recordSideWords(report)
                 val ownPainted = highlightWords(out, contentStart, out.length, ownWords)
                 out.append(missingMarkNote(ownWords, ownPainted))
-                out.append("\n")
-                val serviceStart = out.length
-                out.append("[").append(sticker.layer).append("] тег: ")
-                out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
-                ruleRanges += serviceStart to out.length
+                // ЦИТАТА ПРОТИВНИКА СТОИТ ВПЛОТНУЮ К ТЕКСТУ ЗАПИСИ, и порядок
+                // здесь несущий, а не оформительский. Спорящие фразы читаются
+                // сличением, а сличать можно только соседнее: служебная строка
+                // между ними разводила две половины спора на разные концы
+                // блока. Слой, тег и время отвечают на другой вопрос — «что это
+                // за запись», а не «в чём спор», — и ждут внизу.
+                //
+                // Рядом их ставит порядок, а не колонки: панель узкая, и две
+                // колонки дали бы по двадцать знаков на сторону, то есть рваный
+                // текст против рваного. Ширина панели печатается в шторке, по
+                // ней это и решается.
                 for (line in disputeLines(report)) {
                     out.append("\n")
                     val lineStart = out.length
@@ -635,6 +641,14 @@ class MainActivity : AppCompatActivity() {
                     out.append(missingMarkNote(line.marked, painted))
                     disputeRanges += lineStart to out.length
                 }
+                out.append("\n")
+                val serviceStart = out.length
+                out.append("[").append(sticker.layer).append("] тег: ")
+                out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
+                // Черта ложится по верху служебной строки: она отделяет спор от
+                // паспорта записи и заодно служит признаком того, что абзацные
+                // спаны применились.
+                ruleRanges += serviceStart to out.length
                 // Действие стоит СВОЕЙ строкой, а не в хвосте строки слоя. В одной
                 // строке с меткой оно читается как ещё одна подпись записи: цвет
                 // один это не вытягивает, потому что метка и ссылка оказываются в
@@ -1099,7 +1113,7 @@ class MainActivity : AppCompatActivity() {
         binding.textResults.paint.measureText("".padEnd(chars)).toInt()
 
     /**
-     * Разметка списка: подложка блоков, черта под первой строкой блока,
+     * Разметка списка: подложка блоков, черта по верху поданного отрезка,
      * висячий отступ у строк с подписью.
      *
      * ОДНА НА ВСЕ ЭКРАНЫ намеренно. Приём один, и два его экземпляра
