@@ -1361,22 +1361,31 @@ class HourglassMemory(
             var comparisons = 0
             val visible = mutableListOf<Sticker>()
             val hidden = mutableListOf<Sticker>()
+            // Признаки складываются в том же обходе, что и сами противники:
+            // пара существует только здесь, и второго места, где её можно было
+            // бы разобрать, у показа нет.
+            val marks = mutableMapOf<Long, List<RiskTrigger.ContradictionMark>>()
             for (other in dao.getByTagInLayers(sticker.tag, HOT_LAYERS)) {
                 if (other.id == sticker.id) continue
                 comparisons++
-                if (!RiskTrigger.contradicts(sticker.content, other.content)) continue
+                val pairMarks = RiskTrigger.contradictionMarks(sticker.content, other.content)
+                if (pairMarks.isEmpty()) continue
+                marks[other.id] = pairMarks
                 if (other.reviewPending) hidden += other else visible += other
             }
             if (visible.isNotEmpty() || hidden.isNotEmpty()) {
-                return DisputeReport(visible, hidden, emptyList(), comparisons)
+                return DisputeReport(visible, hidden, emptyList(), comparisons, marks = marks)
             }
             val cooled = mutableListOf<Sticker>()
             for (other in dao.getByTagInLayers(sticker.tag, COLD_LAYERS)) {
                 if (other.id == sticker.id) continue
                 comparisons++
-                if (RiskTrigger.contradicts(sticker.content, other.content)) cooled += other
+                val pairMarks = RiskTrigger.contradictionMarks(sticker.content, other.content)
+                if (pairMarks.isEmpty()) continue
+                marks[other.id] = pairMarks
+                cooled += other
             }
-            DisputeReport(emptyList(), emptyList(), cooled, comparisons)
+            DisputeReport(emptyList(), emptyList(), cooled, comparisons, marks = marks)
         } catch (e: Exception) {
             DisputeReport(emptyList(), emptyList(), emptyList(), 0, failed = true)
         }
@@ -1390,6 +1399,18 @@ class HourglassMemory(
      * отчёт при живом механизме отличался от пустого отчёта при мёртвом:
      * ноль сравнений при непустой памяти означает, что сравнивать даже не
      * начинали.
+     *
+     * [marks] — за что правило зацепилось в каждой паре, по номеру противника.
+     * Отдельным полем, а не внутри списков: списки читает и группировка
+     * записей в дела, и показ, и признаки не нужны ни одному из них — нужны
+     * они только там, где печатается сам текст.
+     *
+     * ЧЕМ ЗА ЭТО ПЛАЧЕНО. Поле и списки могут разойтись: противник названным
+     * есть, признаков под его номером нет. Случай этот незаконный — правило
+     * признаёт спор только по признаку, значит их всегда хотя бы один, — но
+     * выглядел бы он как «показывать нечего». Показывающий поэтому обязан
+     * различать пустой список признаков и отсутствие ключа, а не молча
+     * подставлять первое вместо второго.
      */
     data class DisputeReport(
         val visible: List<Sticker>,
@@ -1397,6 +1418,7 @@ class HourglassMemory(
         val cooled: List<Sticker>,
         val comparisons: Int,
         val failed: Boolean = false,
+        val marks: Map<Long, List<RiskTrigger.ContradictionMark>> = emptyMap(),
     )
 
     private companion object {
