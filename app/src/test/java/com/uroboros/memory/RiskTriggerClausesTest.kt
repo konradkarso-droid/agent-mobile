@@ -58,25 +58,28 @@ class RiskTriggerClausesTest {
     }
 
     @Test
-    fun `известная ложная - отрицается одно, утверждается другое`() {
-        // Спора нет: обе стороны отрицают рубанок. Правило видит часть
-        // «…— стамеска» против «…— не рубанок» и засчитывает отрицание. Тест
-        // упадёт, когда этот класс починят, — и починка будет видна.
-        assertTrue(
+    fun `отрицание из связки есть и в утверждаемой части - согласие не помечается`() {
+        // Обе фразы отрицают рубанок. Без явного «не» в части «…— стамеска»
+        // она спорила бы отрицанием с «…— не рубанок».
+        assertFalse(
             RiskTrigger.contradicts(notPlaneButChisel, "Мой любимый инструмент — не рубанок")
         )
     }
 
     @Test
-    fun `обе фразы разложены - отрицание названо у обеих, и стороны меняются вместе с текстами`() {
-        val straight = RiskTrigger.contradictionMarks(notPlaneButChisel, sawNotPlane)
-        val reversed = RiskTrigger.contradictionMarks(sawNotPlane, notPlaneButChisel)
+    fun `известная граница - замена слова между двумя связками не видна`() {
+        // Спор есть: стамеска и ножовка исключают друг друга. Правило замену
+        // слова не берёт. Тест упадёт, когда её научатся брать, — и это
+        // будет видно.
+        assertFalse(RiskTrigger.contradicts(notPlaneButChisel, sawNotPlane))
+    }
 
-        assertEquals(listOf(RiskTrigger.MarkKind.NEGATION), straight.map { it.kind })
-        assertEquals(setOf("не"), straight[0].first)
-        assertEquals(setOf("не"), straight[0].second)
-        assertEquals(straight.map { it.kind }, reversed.map { it.kind })
-        assertEquals(straight[0].first, reversed[0].second)
-        assertEquals(straight[0].second, reversed[0].first)
+    @Test
+    fun `известная ложная - отрицается одно, а без отрицания утверждено то же`() {
+        // Спора нет: обе фразы за стамеску. Часть «…— не рубанок» спорит
+        // отрицанием с «…— стамеска». Тест упадёт, когда класс починят.
+        assertTrue(
+            RiskTrigger.contradicts(notPlaneButChisel, "Мой любимый инструмент — стамеска")
+        )
     }
 }
