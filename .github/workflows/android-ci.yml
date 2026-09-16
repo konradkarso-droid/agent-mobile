@@ -50,8 +50,17 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      # Список пакетов задан явно. По умолчанию v3 ставит «tools platform-tools»,
+      # а пакета tools в репозитории Google больше нет: sdkmanager падает на нём,
+      # и сборка встаёт до компиляции. Остальное — платформы, build-tools, NDK —
+      # действие не ставило и раньше, так что сужение списка ничего не отнимает.
+      # На v4 не переходим этой же правкой: она меняет сразу и версию
+      # cmdline-tools, и среду действия, и при красной сборке было бы не видно,
+      # что из этого виновато.
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install required CMake version
         run: sdkmanager --install "cmake;3.31.4"
