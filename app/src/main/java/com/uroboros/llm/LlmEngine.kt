@@ -9,6 +9,7 @@ import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -621,12 +622,71 @@ class LlmEngine(
      */
     private fun configureAfterLoad(sourceIdentity: String, loadIdentity: String) {
         applyPromptCache(sourceIdentity, loadIdentity)
-        engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
-        engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
+        applyChatSampling()
         // BIBLE soft-wall: задаётся один раз при загрузке (static), не на каждый
         // generateFlow-вызов — сохраняет KV-cache prefix reuse в native-движке.
         engine.setSystemPrompt(BibleSoftWall.TEXT)
         applyStreamingLatency()
+    }
+
+    /**
+     * Разговорные настройки выдачи.
+     *
+     * Числа стоят здесь, а не в теле [configureAfterLoad], потому что вернуть
+     * их надо ещё в одном месте — после прогона на повторяемой выдаче
+     * ([withDeterministicSampling]). Две копии одних и тех же цифр разошлись
+     * бы молча: ответы просто стали бы другими, и по экрану не понять, какая
+     * из копий тому виной.
+     */
+    private fun applyChatSampling() {
+        engine.setSampling(temperature = 0.7f, topK = 40, topP = 0.9f, minP = 0.05f, mirostat = 0)
+        engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
+    }
+
+    /**
+     * Повторяемая выдача: одна и та же просьба даёт один и тот же ответ.
+     *
+     * Зачем. Судья памяти спрашивает модель об одной паре записей дважды, в
+     * обоих порядках, и считает спором только единицу в обоих. На разговорных
+     * настройках ответ разыгрывается, и совпадение двух ответов означало бы
+     * удачу, а не согласие модели с самой собой.
+     *
+     * Повторяемость держится на topK = 1: до розыгрыша доходит один кандидат,
+     * и разыгрывать нечего. Нулевая температура и заданное зерно — вторая и
+     * третья опора того же. Порознь ни на одну из них полагаться нельзя:
+     * что делает нулевая температура, зависит от версии библиотеки, а зерно
+     * без сужения кандидатов лишь делает случайность повторяемой.
+     */
+    private fun applyDeterministicSampling() {
+        engine.setSampling(temperature = 0f, topK = 1, topP = 1f, minP = 0f, mirostat = 0, seed = 0)
+        engine.updateSamplerParams(SAMPLER_PARAMS_JSON)
+    }
+
+    /**
+     * Выполнить [block] на повторяемой выдаче и вернуть разговорные настройки.
+     *
+     * ОБЛАСТЬ, ЗА КОТОРОЙ ЭТО ВРЁТ. Настройки сэмплера одни на весь движок.
+     * Пока идёт [block], любая другая генерация тоже получит повторяемую
+     * выдачу — на экране это выглядело бы как внезапно одинаковые ответы.
+     * Сегодня пересекаться нечему: генерация в приложении не запускается из
+     * двух мест сразу (см. [generationEnd]). Разрешив такое, настройки
+     * придётся заводить на прогон, а не на движок.
+     *
+     * Возврат стоит в finally и снят с отмены. Прогон судьи обрывается
+     * буднично — часовым по нагреву, закрытием экрана, — и без этого
+     * разговор продолжился бы на повторяемой выдаче, отвечая на близкие
+     * реплики дословно одинаково. Поломка выглядела бы как поломка модели.
+     *
+     * Смена настроек идёт на IO: нативная сторона берёт под неё тот же
+     * замок, что и под генерацию.
+     */
+    suspend fun <T> withDeterministicSampling(block: suspend () -> T): T {
+        withContext(Dispatchers.IO) { applyDeterministicSampling() }
+        try {
+            return block()
+        } finally {
+            withContext(NonCancellable + Dispatchers.IO) { applyChatSampling() }
+        }
     }
 
     /**
