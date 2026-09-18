@@ -6,16 +6,19 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.uroboros.memory.judge.JudgeVerdict
+import com.uroboros.memory.judge.JudgeVerdictDao
 
 @Database(
-    entities = [Sticker::class, ActionEvidence::class, LastStableSnapshot::class],
-    version = 8,
+    entities = [Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class],
+    version = 9,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
     abstract fun stickerDao(): StickerDao
     abstract fun actionEvidenceDao(): ActionEvidenceDao
     abstract fun lastStableSnapshotDao(): LastStableSnapshotDao
+    abstract fun judgeVerdictDao(): JudgeVerdictDao
 
     companion object {
         // Item 6b/8 (2026-08-17): новая таблица для снимка последнего стабильного
@@ -70,6 +73,34 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Хранилище разобранных судьёй пар (см. JudgeVerdict). Только новая
+        // таблица: существующих строк миграция не касается вовсе, поэтому
+        // испортить ею память нельзя — в отличие от двух миграций выше, которые
+        // правили сами записи.
+        //
+        // Пустая таблица — верное начальное состояние: до этой версии пары никто
+        // не разбирал, и дописывать историческим парам какой-либо вердикт значило
+        // бы выдумывать оценку, которой не было. Первый прогон разберёт их сам.
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `judge_verdicts` (
+                        `firstId` INTEGER NOT NULL,
+                        `secondId` INTEGER NOT NULL,
+                        `loadFingerprint` TEXT NOT NULL,
+                        `forward` TEXT NOT NULL,
+                        `backward` TEXT NOT NULL,
+                        `verdict` TEXT NOT NULL,
+                        `judgedAt` INTEGER NOT NULL,
+                        `spentMs` INTEGER NOT NULL,
+                        PRIMARY KEY(`firstId`, `secondId`, `loadFingerprint`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -96,7 +127,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                  .build().also { INSTANCE = it }
             }
         }
