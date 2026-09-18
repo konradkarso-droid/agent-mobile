@@ -48,6 +48,8 @@ import com.uroboros.memory.Sticker
 import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.memory.clusterDisputes
+import com.uroboros.memory.judge.JudgeLauncher
+import com.uroboros.memory.judge.JudgeUi
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -355,6 +357,18 @@ class MainActivity : AppCompatActivity() {
      * аварийным стопом.
      */
     private val colorRecordsLink = Color.parseColor("#17697B")
+
+    // Судья памяти. Собирается лениво: движок к моменту создания активности
+    // ещё не назначен, а раньше первого обращения к разбору он и не нужен.
+    private val judgeLauncher by lazy { JudgeLauncher(this, llmEngine) }
+    private val judgeUi by lazy { JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) }
+
+    /**
+     * Чем судим — в части модели. Ссылка на файл, а не подпись на экране:
+     * подпись человек видит, а различать судей надо по тому, что загружено.
+     */
+    private fun modelIdentity(): String =
+        prefs.getString(KEY_LAST_MODEL_URI, null) ?: "модель неизвестна"
 
     /**
      * Подложка блока одной записи в очереди. Очень светлая намеренно: она
@@ -1086,6 +1100,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 blocks += witnessStart to out.length
                 section(shown.summary, headed = false)
+                section(judgeUi.section(modelIdentity()) { openMemoryView() }, headed = true)
                 if (shown.stickers.isEmpty()) {
                     section("(записей для показа нет)", headed = false)
                 } else {
@@ -3695,6 +3710,38 @@ class MainActivity : AppCompatActivity() {
         // Жест остался ДОЛГИМ намеренно, см. пояснение в разметке: цикл это
         // двадцать минут работы и нагрева, и удержание — физическая защита от
         // случайного запуска, которая не стоит ни диалога, ни лишнего касания.
+        // Разбор памяти судьёй. Жесты как у цикла: короткое нажатие показывает
+        // уже найденное, долгое запускает разбор. Проверки перед запуском те же
+        // и по тем же причинам; разбор вдобавок не пускается поверх цикла —
+        // модель одна, и настройки её выдачи на время разбора меняются на
+        // повторяемые (см. LlmEngine.withDeterministicSampling).
+        binding.buttonJudge.setOnClickListener { openMemoryView() }
+
+        binding.buttonJudge.setOnLongClickListener {
+            if (isToteRunning) {
+                Toast.makeText(this@MainActivity, "Идёт цикл — модель занята", Toast.LENGTH_SHORT).show()
+                return@setOnLongClickListener true
+            }
+            if (EmergencyStop.isActive()) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Взведён аварийный стоп — снимите его в красной полосе вверху",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@setOnLongClickListener true
+            }
+            if (!llmEngine.isLoaded) {
+                Toast.makeText(this@MainActivity, "Сначала загрузите модель", Toast.LENGTH_SHORT).show()
+                return@setOnLongClickListener true
+            }
+            binding.textResults.text =
+                "Разбираю память. Прогон идёт, пока хватает времени и пока не нагрелось."
+            lifecycleScope.launch {
+                binding.textResults.text = judgeLauncher.runAndReport(modelIdentity(), JUDGE_BUDGET_MS)
+            }
+            true
+        }
+
         binding.buttonCycle.setOnLongClickListener {
             // Хвост 20, как и на "Генерировать": числа прошлого прогона
             // стираются до всех проверок, чтобы отказ запуска не оставил их
@@ -3825,6 +3872,11 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val KEY_MODEL_FOLDER_URI = "model_folder_uri"
         private const val KEY_LAST_MODEL_URI = "last_model_uri"
+
+        // Шесть часов: столько человек готов отдать под первый разбор
+        // накопленного. Прогон почти наверняка кончится раньше — часовой
+        // остановит по нагреву, и остаток достанется следующему запуску.
+        private const val JUDGE_BUDGET_MS = 6L * 60 * 60 * 1000
         private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
         private const val KEY_PROVENANCE_REPAIR_DONE = "provenance_repair_done_2026_08_24"
         private const val KEY_DETAILS_EXPANDED = "details_expanded"
