@@ -412,6 +412,21 @@ internal fun scoreCandidate(
  * оставлены как есть — но это тот же класс, и при попытке покрыть их тестом
  * первым делом упрётесь в это. Заплатка, а не решение.
  */
+/**
+ * Слои, записи из которых модель читает в ответах по умолчанию.
+ *
+ * Стоял внутри класса, вынесен сюда, когда читателей стало двое: отбор пула для
+ * правила здесь и отбор пар для судьи памяти (JudgeRun). Копия списка у второго
+ * читателя разошлась бы молча — судья разбирал бы пары, которых модель не
+ * видит, либо переставал бы видеть те, что она читает, и по экрану это не
+ * различить.
+ *
+ * Плата за вынос — видимость: теперь список видит весь модуль. Третий читатель —
+ * повод пересмотреть отбор, а не переиспользовать список ещё раз.
+ */
+internal val HOT_LAYERS =
+    listOf(Layer.RED.name, Layer.ORANGE.name, Layer.YELLOW.name, Layer.GREEN.name)
+
 class HourglassMemory(
     private val dao: StickerDao,
     /**
@@ -426,8 +441,6 @@ class HourglassMemory(
      */
     private val witness: ReviewWitness = ReviewWitness()
 ) {
-
-    private val HOT_LAYERS = listOf(Layer.RED.name, Layer.ORANGE.name, Layer.YELLOW.name, Layer.GREEN.name)
 
     /**
      * Остальные слои — те, из которых запись в выдачу уже не попадает по
