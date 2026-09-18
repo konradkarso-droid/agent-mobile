@@ -11,7 +11,7 @@ import com.uroboros.memory.judge.JudgeVerdictDao
 
 @Database(
     entities = [Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -101,6 +101,19 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Отметка человека на разобранной паре (см. JudgeVerdict.humanVerdict).
+        // Две колонки к существующей таблице; строки, разобранные до этой
+        // версии, получают "не смотрел" — единственное верное для них значение.
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `judge_verdicts` ADD COLUMN `humanVerdict` TEXT NOT NULL " +
+                        "DEFAULT 'UNREVIEWED'"
+                )
+                db.execSQL("ALTER TABLE `judge_verdicts` ADD COLUMN `reviewedAt` INTEGER")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -127,7 +140,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                  .build().also { INSTANCE = it }
             }
         }
