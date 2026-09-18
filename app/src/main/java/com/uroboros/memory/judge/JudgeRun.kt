@@ -94,6 +94,11 @@ class JudgeRun(
     suspend fun run(fingerprint: String, budgetMs: Long): JudgeRunReport {
         val startedAt = System.currentTimeMillis()
         verdicts.forgetVerdictsOfDeletedStickers()
+        // Показания прежних судей сносятся здесь, а не при смене модели: момент
+        // смены никому не виден, а начало прогона — единственное место, где
+        // нынешний отпечаток точно известен. Заодно таблица всегда весит один
+        // комплект, а не по комплекту на каждого судью, которого пробовали.
+        verdicts.forgetOtherJudges(fingerprint)
 
         val pool = stickers.getAll()
             .filter { it.layer in HOT_LAYERS }
