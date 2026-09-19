@@ -57,9 +57,16 @@ class JudgeLauncher(
         Integer.toHexString(modelIdentity.hashCode()) + "-" +
             Integer.toHexString(MemoryJudge.SYSTEM.hashCode())
 
-    /** Разобрать, сколько успеется за [budgetMs]. Текст — для ленты, не для «Показать». */
-    suspend fun runAndReport(modelIdentity: String, budgetMs: Long): String =
-        describe(run.run(fingerprint(modelIdentity), budgetMs))
+    /**
+     * Разобрать, сколько успеется за [budgetMs]. Текст — для ленты, не для «Показать».
+     * [onProgress] — см. JudgeRun.run.
+     */
+    suspend fun runAndReport(
+        modelIdentity: String,
+        budgetMs: Long,
+        onProgress: (done: Int) -> Unit = {},
+    ): String =
+        describe(run.run(fingerprint(modelIdentity), budgetMs, onProgress))
 
     suspend fun counters(modelIdentity: String): JudgeCounters {
         val print = fingerprint(modelIdentity)
