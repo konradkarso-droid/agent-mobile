@@ -1144,6 +1144,20 @@ static int find_common_prefix(const std::vector<llama_token> & a, const std::vec
     return n;
 }
 
+// Сколько начала запроса можно взять из уже обсчитанного, не обсчитывая заново.
+//
+// Не больше длины запроса минус один. Выдача начинается с оценок модели после
+// ПОСЛЕДНЕГО токена запроса, а оценки у движка лежат от последнего обсчёта.
+// Если запрос целиком лежит внутри обсчитанного (тот же запрос повторён после
+// «Убрать ход», поднятая точка знает больше ленты), обсчитывать нечего, и
+// оценки остались от конца прошлого ответа — после него модель ставит конец
+// ответа, и выдача пустая. Один токен, обсчитанный заново, даёт свежие оценки
+// ровно в нужном месте; цена — один токен.
+static int reusable_prefix(const std::vector<llama_token> & prev, const std::vector<llama_token> & tokens) {
+    int n = find_common_prefix(prev, tokens);
+    return std::max(0, std::min(n, (int)tokens.size() - 1));
+}
+
 // 0 = fits, -1 = prompt alone overflows the context window (fatal).
 static int check_prompt_fits(int n_prompt_tokens, int max_gen_tokens) {
     if (!g_state.ctx) return -1;
@@ -1681,7 +1695,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
     // when the same system prompt is used repeatedly, only the user message changes,
     // so we skip re-evaluating the shared prefix.
     llama_memory_t mem = llama_get_memory(g_state.ctx);
-    int n_common = find_common_prefix(g_state.prev_prompt_tokens, tokens);
+    int n_common = reusable_prefix(g_state.prev_prompt_tokens, tokens);
 
     if (n_common > 0 && n_common <= g_state.n_past) {
         bool removed = llama_memory_seq_rm(mem, 0, n_common, -1);
@@ -1955,7 +1969,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     // context reuse: find common prefix with previous prompt
     llama_memory_t mem = llama_get_memory(g_state.ctx);
-    int n_common = find_common_prefix(g_state.prev_prompt_tokens, tokens);
+    int n_common = reusable_prefix(g_state.prev_prompt_tokens, tokens);
 
     if (n_common > 0 && n_common <= g_state.n_past) {
         // remove stale tokens after the common prefix
@@ -1977,7 +1991,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         if (starts_with_wall) {
             auto sys_tokens = tokenize_string(g_state.system_prompt, true);
             if (try_restore_prompt_cache(g_state.system_prompt, sys_tokens)) {
-                n_common = find_common_prefix(g_state.prev_prompt_tokens, tokens);
+                n_common = reusable_prefix(g_state.prev_prompt_tokens, tokens);
                 if (n_common > 0 && n_common <= g_state.n_past) {
                     llama_memory_seq_rm(mem, 0, n_common, -1);
                     g_state.n_past = n_common;
