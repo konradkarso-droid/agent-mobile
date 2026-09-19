@@ -107,8 +107,18 @@ class JudgeRun(
      * Бюджет проверяется между парами, а не внутри: пара судится целиком или не
      * судится вовсе, потому что вердикт по одному порядку — не вердикт.
      * Значит прогон перебирает бюджет на время последней пары.
+     *
+     * [onProgress] зовётся после каждой пары, которую прогон довёл до конца
+     * (с вердиктом или с нечитаемым ответом), и получает их число за этот
+     * прогон. Нужен тому, кто показывает ход работы снаружи: по моменту
+     * последнего вызова видно, идёт ли прогон или стоит. Пары, пропущенные
+     * как уже разобранные, и пара, оборванная часовым, его не зовут.
      */
-    suspend fun run(fingerprint: String, budgetMs: Long): JudgeRunReport {
+    suspend fun run(
+        fingerprint: String,
+        budgetMs: Long,
+        onProgress: (done: Int) -> Unit = {},
+    ): JudgeRunReport {
         val startedAt = System.currentTimeMillis()
         verdicts.forgetVerdictsOfDeletedStickers()
         // Показания прежних судей сносятся здесь, а не при смене модели: момент
@@ -158,6 +168,7 @@ class JudgeRun(
 
                         if (judgement.verdict == MemoryJudge.Verdict.UNREADABLE) {
                             unreadable++
+                            onProgress(judged + unreadable)
                             continue
                         }
 
@@ -175,6 +186,7 @@ class JudgeRun(
                         )
                         judged++
                         if (judgement.verdict == MemoryJudge.Verdict.DISPUTE) disputes++
+                        onProgress(judged + unreadable)
                     }
                 }
             }
