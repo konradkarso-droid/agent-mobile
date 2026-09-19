@@ -3026,6 +3026,7 @@ class MainActivity : AppCompatActivity() {
             // что-то ещё успело бы пройти через гейт.
             EmergencyStop.triggerManual("Остановлено вручную кнопкой на экране.")
             toteJob?.cancel()
+            AgentService.stop(applicationContext)
             Toast.makeText(this, "Аварийный стоп взведён", Toast.LENGTH_SHORT).show()
         }
 
@@ -3320,6 +3321,12 @@ class MainActivity : AppCompatActivity() {
             if (userText.isBlank()) {
                 val hint = if (isToteRunning) "Введите вопрос" else "Введите запрос для генерации"
                 Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            // Модель одна: вопрос поверх разбора памяти сбил бы разбору его
+            // повторяемые настройки выдачи, а ответу — разговорные.
+            if (AgentService.state.value is AgentService.RunState.Running) {
+                Toast.makeText(this, JUDGE_BUSY, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
@@ -3809,28 +3816,44 @@ class MainActivity : AppCompatActivity() {
         // повторяемые (см. LlmEngine.withDeterministicSampling).
         binding.buttonJudge.setOnClickListener { openMemoryView() }
 
+        // Ход и итог разбора из службы. Итог показывается один раз и после
+        // показа снимается: разбор, кончившийся ночью, ждёт здесь, пока экран
+        // откроют, но не всплывает заново при каждом следующем открытии.
+        lifecycleScope.launch {
+            AgentService.state.collect { st ->
+                when (st) {
+                    is AgentService.RunState.Running -> {
+                        val last = st.lastProgressAt?.let {
+                            ", последняя в " + SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it))
+                        } ?: ", первая пара ещё идёт"
+                        binding.textResults.text =
+                            "Разбираю память в фоне. Разобрано пар: ${st.done}$last.\n" +
+                                "Прогон идёт, пока хватает времени и пока не нагрелось; " +
+                                "экран можно гасить."
+                    }
+                    is AgentService.RunState.Finished -> {
+                        binding.textResults.text = st.report
+                        AgentService.acknowledgeFinished()
+                    }
+                    AgentService.RunState.Idle -> Unit
+                }
+            }
+        }
+
         binding.buttonJudge.setOnLongClickListener {
             if (isToteRunning) {
                 Toast.makeText(this@MainActivity, "Идёт цикл — модель занята", Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
             }
-            if (EmergencyStop.isActive()) {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Взведён аварийный стоп — снимите его в красной полосе вверху",
-                    Toast.LENGTH_LONG
-                ).show()
+            // Остальные условия запуска живут в одном месте — у службы.
+            val refusal = AgentService.whyCannotStart(applicationContext)
+            if (refusal != null) {
+                Toast.makeText(this@MainActivity, refusal, Toast.LENGTH_LONG).show()
                 return@setOnLongClickListener true
             }
-            if (!llmEngine.isLoaded) {
-                Toast.makeText(this@MainActivity, "Сначала загрузите модель", Toast.LENGTH_SHORT).show()
-                return@setOnLongClickListener true
-            }
-            binding.textResults.text =
-                "Разбираю память. Прогон идёт, пока хватает времени и пока не нагрелось."
-            lifecycleScope.launch {
-                binding.textResults.text = judgeLauncher.runAndReport(modelIdentity(), JUDGE_BUDGET_MS)
-            }
+            // Прогон идёт в службе, а не на экране: переживает погасший экран
+            // и уход из приложения. Ход и итог приходят через AgentService.state.
+            AgentService.startJudge(applicationContext, modelIdentity(), JUDGE_BUDGET_MS)
             true
         }
 
@@ -3842,6 +3865,10 @@ class MainActivity : AppCompatActivity() {
 
             if (isToteRunning) {
                 Toast.makeText(this@MainActivity, "Цикл уже идёт", Toast.LENGTH_SHORT).show()
+                return@setOnLongClickListener true
+            }
+            if (AgentService.state.value is AgentService.RunState.Running) {
+                Toast.makeText(this@MainActivity, JUDGE_BUSY, Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
             }
             // Запуск цикла под взведённым стопом запрещён. Формально гейт всё
@@ -3969,6 +3996,7 @@ class MainActivity : AppCompatActivity() {
         // накопленного. Прогон почти наверняка кончится раньше — часовой
         // остановит по нагреву, и остаток достанется следующему запуску.
         private const val JUDGE_BUDGET_MS = 6L * 60 * 60 * 1000
+        private const val JUDGE_BUSY = "Идёт разбор памяти — модель занята"
         private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
         private const val KEY_PROVENANCE_REPAIR_DONE = "provenance_repair_done_2026_08_24"
         private const val KEY_DETAILS_EXPANDED = "details_expanded"
