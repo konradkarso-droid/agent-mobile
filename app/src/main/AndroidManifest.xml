@@ -3,6 +3,15 @@
 
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
+    <!-- Служба переднего плана для долгих прогонов (AgentService): держит процесс
+         живым и процессор проснувшимся при погасшем экране. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- С Android 13 без этого разрешения уведомление службы не видно в шторке.
+         Служба при этом работает; спрашивать разрешение пока некому. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <queries>
         <package android:name="com.termux" />
     </queries>
@@ -25,6 +34,17 @@
         <service
             android:name=".will.TermuxResultService"
             android:exported="false" />
+
+        <!-- Тип specialUse обязателен только с Android 14: вычисление модели на
+             устройстве не подходит ни под один из готовых типов. -->
+        <service
+            android:name=".AgentService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="on-device language model inference for memory maintenance" />
+        </service>
 
     </application>
 
