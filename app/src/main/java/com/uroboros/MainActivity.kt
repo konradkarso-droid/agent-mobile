@@ -116,6 +116,9 @@ class MainActivity : AppCompatActivity() {
     // гонять один текст и бояться затереть чужую половину.
     private var engineParamsLine: String? = null
     private var promptCacheLine: String? = null
+    // Что код дописал к стене в «О себе». Меняется только с загрузкой модели,
+    // как и строка параметров, поэтому читается там же.
+    private var buildSelfLine: String? = null
 
     /**
      * Что стало с сохранённым на диске разговором — строка для человека.
@@ -2127,7 +2130,7 @@ class MainActivity : AppCompatActivity() {
             // она описывает разговор целиком и живёт столько же, сколько он.
             autoSaveLine(),
         )
-        group(engineParamsLine, promptCacheLine)
+        group(engineParamsLine, promptCacheLine, buildSelfLine)
         // Числа прогона — своя группа: после ответа их приходит больше десятка
         // строк, и слитые с параметрами движка они превращали шторку в
         // простыню. Параметры отвечают на "с чем запущено", прогон — на "как
@@ -2619,6 +2622,7 @@ class MainActivity : AppCompatActivity() {
                 // диске, и его размер виден ещё до первого вопроса. То есть
                 // "кэш подхватился" видно раньше, чем это подтвердит секундомер.
                 promptCacheLine = llmEngine.getPromptCacheReport()
+                buildSelfLine = llmEngine.getBuildSelfReport()
                 // Тот же момент и по той же причине: путь к точке считается от
                 // отпечатка загрузки, до неё его просто нет. Заодно это первое,
                 // что человек увидит после перезапуска, — успела ли вчерашняя
