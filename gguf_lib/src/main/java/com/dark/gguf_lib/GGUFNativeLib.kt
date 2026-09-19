@@ -58,6 +58,7 @@ internal object GGUFNativeLib {
     external fun nativeSetChatTemplate(template: String)
     external fun nativeUpdateSamplerParams(paramsJson: String): Boolean
     external fun nativeSetLogitBias(biasJson: String)
+    external fun nativeSetConversationGloss(on: Boolean)
 
     external fun nativeGenerateStream(
         prompt: String, maxTokens: Int, callback: StreamCallback,
