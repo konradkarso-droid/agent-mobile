@@ -2651,10 +2651,21 @@ class MainActivity : AppCompatActivity() {
                 "дольше обычного, при длинном разговоре это минуты. Дальше скорость " +
                 "обычная."
         }
+        // Шов показывается здесь, до выбора: продолжать разговор под другой
+        // стеной безопасно (см. LlmEngine.loadFingerprint), но решать, нужно ли
+        // это, человеку, а для решения ему надо знать, что стена сменилась.
+        val wallText = if (llmEngine.wallChangedAtLoad) {
+            "С прошлого запуска сменилась системная стена — текст, который агент " +
+                "читает перед разговором. Если продолжить, разговор пойдёт под новой: " +
+                "прежние ответы агента писались при старой.\n\n"
+        } else {
+            ""
+        }
         AlertDialog.Builder(this)
             .setTitle("Сохранённый разговор")
             .setMessage(
                 "На диске лежит разговор из ${saved.size} ходов.\n\n" +
+                    wallText +
                     "Если продолжить, $costText\n\n" +
                     "Начать заново — значит закрыть этот разговор: его ${saved.size} ходов " +
                     "уйдут в архив на устройстве, но ни на экран, ни к агенту не вернутся."
@@ -2667,7 +2678,8 @@ class MainActivity : AppCompatActivity() {
                     // "не измерено" остаётся "не измерено", а не становится
                     // измеренным нулём.
                     journal.notePromptTokens(promptTokens)
-                    journalRestoreLine = "Разговор поднят с диска: ходов ${saved.size}"
+                    journalRestoreLine = "Разговор поднят с диска: ходов ${saved.size}" +
+                        if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
                     binding.textResults.text = renderJournal()
                     binding.scrollResults.post {
                         binding.scrollResults.fullScroll(View.FOCUS_DOWN)
