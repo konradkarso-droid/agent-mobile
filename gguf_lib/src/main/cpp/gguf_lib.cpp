@@ -1722,6 +1722,20 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         }
     }
 
+    // Начинается ли этот запрос со стены. Дисковый кэш стены — это
+    // состояние запроса, начавшегося со стены, и файл назван по ней.
+    // Поднимать его под чужое начало бесполезно, а записывать под именем
+    // стены запрос с другим началом вредно: первым в свежей папке мог
+    // оказаться запрос со своим системным сообщением (судья памяти), он
+    // лёг бы на диск под именем стены, и кэш стены перестал бы помогать до
+    // смены папки. Ответы при этом не портятся — при подъёме сверяются
+    // сами токены, — но и снаружи этого не видно, кроме строки «Стена:» в
+    // отчёте хода (LlmEngine.promptReuseReport).
+    const bool starts_with_wall = !g_state.system_prompt.empty()
+        && !messages.empty()
+        && messages[0].role == "system"
+        && messages[0].content == g_state.system_prompt;
+
     chat_template_result tmpl_result;
     try {
         tmpl_result = apply_chat_template(messages, true);
@@ -1783,7 +1797,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         g_state.n_past = 0;
         n_common = 0;
 
-        if (!g_state.system_prompt.empty()) {
+        if (starts_with_wall) {
             auto sys_tokens = tokenize_string(g_state.system_prompt, true);
             if (try_restore_prompt_cache(g_state.system_prompt, sys_tokens)) {
                 n_common = find_common_prefix(g_state.prev_prompt_tokens, tokens);
@@ -1804,6 +1818,14 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     }
 
     // track system prompt token count on first full evaluation
+    //
+    // ЧЕГО НЕ УМЕЕТ. Счётчик берётся от системного сообщения того запроса,
+    // на котором он пересчитывается, и дальше не обновляется, пока не
+    // придёт полный пересчёт. Если первым целиком обсчитан запрос со своим
+    // системным сообщением (судья памяти), а следом пошёл разговор с
+    // частичным совпадением, счётчик останется длиной того сообщения, и при
+    // сдвиге окна стена разговора будет защищена не целиком. Та же граница
+    // встанет при смене стены на лету.
     if ((g_state.n_past == 0 || g_state.n_system_tokens == 0)
             && !messages.empty() && messages[0].role == "system") {
         try {
@@ -1848,7 +1870,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     }
 
     // try saving system prompt cache for future warm restarts
-    if (g_state.n_past > 0 && n_common == 0 && !g_state.system_prompt.empty()) {
+    // Только для запроса, начавшегося со стены, — см. starts_with_wall.
+    if (g_state.n_past > 0 && n_common == 0 && starts_with_wall) {
         save_prompt_cache(g_state.system_prompt, tokens, g_state.n_past);
     }
 
