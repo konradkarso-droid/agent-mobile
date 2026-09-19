@@ -183,13 +183,20 @@ class GGMLEngine {
      * @property banState  Состояние запрета восточноазиатских письменностей у
      *                     загруженной модели: 0 — не собран, 1 — включён,
      *                     2 — в словаре запрещать нечего, 3 — выключен
-     *                     самопроверкой. -1 — библиотека поля не прислала.
+     *                     самопроверкой, 4 — выключен переключателем в
+     *                     библиотеке. -1 — библиотека поля не прислала.
      *                     Смысл и границы запрета — `build_script_ban` в
      *                     `gguf_lib.cpp`.
      * @property banTokens Сколько токенов словаря под запретом.
      * @property banHits   Сколько раз за последнюю генерацию лучшим кандидатом
      *                     модели был запрещённый токен (число занижено, см.
      *                     `count_script_ban_hit`).
+     * @property glossState Перевод иероглифов в скобках в последней генерации:
+     *                     0 — не просили, 1 — работал, 2 — просили, но правило
+     *                     не собралось. -1 — библиотека поля не прислала.
+     *                     Смысл — `gloss_grammar` в `gguf_lib.cpp`.
+     * @property glossSpans Сколько мест с иероглифами было в последнем ответе
+     *                     (см. `count_gloss_span`).
      */
     data class DecodeBreakdown(
         val tokens: Long,
@@ -201,6 +208,8 @@ class GGMLEngine {
         val banState: Int = -1,
         val banTokens: Long = 0,
         val banHits: Long = 0,
+        val glossState: Int = -1,
+        val glossSpans: Long = 0,
     )
 
     fun getLastDecodeBreakdown(): DecodeBreakdown {
@@ -217,6 +226,8 @@ class GGMLEngine {
             banState = j.optInt("ban_state", -1),
             banTokens = j.optLong("ban_tokens"),
             banHits  = j.optLong("ban_hits"),
+            glossState = j.optInt("gloss_state", -1),
+            glossSpans = j.optLong("gloss_spans"),
         )
     }
 
@@ -406,6 +417,13 @@ class GGMLEngine {
      *                 `[{"token": id_or_string, "bias": float}, ...]`.
      */
     fun setLogitBias(biasJson: String) = GGUFNativeLib.nativeSetLogitBias(biasJson)
+
+    /**
+     * Перевод иероглифов в скобках для следующих генераций: включать для
+     * разговора, выключать для всего остального. Что делает правило и чего
+     * не умеет — у `gloss_grammar` в `gguf_lib.cpp`.
+     */
+    fun setConversationGloss(on: Boolean) = GGUFNativeLib.nativeSetConversationGloss(on)
 
     /** Set the system prompt prepended to every chat. */
     fun setSystemPrompt(prompt: String) = GGUFNativeLib.nativeSetSystemPrompt(prompt)
