@@ -180,6 +180,16 @@ class GGMLEngine {
      * @property decodeUs  Time inside `llama_decode` — the model forward pass.
      *                     On a memory-bandwidth-bound model this dominates.
      * @property totalUs   Sum of the four; ~equal to wall time per token.
+     * @property banState  Состояние запрета восточноазиатских письменностей у
+     *                     загруженной модели: 0 — не собран, 1 — включён,
+     *                     2 — в словаре запрещать нечего, 3 — выключен
+     *                     самопроверкой. -1 — библиотека поля не прислала.
+     *                     Смысл и границы запрета — `build_script_ban` в
+     *                     `gguf_lib.cpp`.
+     * @property banTokens Сколько токенов словаря под запретом.
+     * @property banHits   Сколько раз за последнюю генерацию лучшим кандидатом
+     *                     модели был запрещённый токен (число занижено, см.
+     *                     `count_script_ban_hit`).
      */
     data class DecodeBreakdown(
         val tokens: Long,
@@ -188,6 +198,9 @@ class GGMLEngine {
         val stopUs: Long,
         val decodeUs: Long,
         val totalUs: Long,
+        val banState: Int = -1,
+        val banTokens: Long = 0,
+        val banHits: Long = 0,
     )
 
     fun getLastDecodeBreakdown(): DecodeBreakdown {
@@ -201,6 +214,9 @@ class GGMLEngine {
             stopUs   = j.optLong("stop_us"),
             decodeUs = j.optLong("decode_us"),
             totalUs  = j.optLong("total_us"),
+            banState = j.optInt("ban_state", -1),
+            banTokens = j.optLong("ban_tokens"),
+            banHits  = j.optLong("ban_hits"),
         )
     }
 
