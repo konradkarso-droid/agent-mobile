@@ -331,6 +331,15 @@ static struct {
     common_chat_templates_ptr chat_templates;
     common_params_sampling    sampling_params;
 
+    // Запрет восточноазиатских письменностей в выдаче. Живёт отдельно от
+    // sampling_params.logit_bias: тот заменяется целиком вызовом
+    // nativeSetLogitBias, и запрет пропал бы вместе с ним. Смысл и границы —
+    // у build_script_ban.
+    std::vector<llama_logit_bias> script_ban;
+    std::vector<uint8_t>          script_ban_mask;   // по номеру токена: 1 = запрещён
+    int                           script_ban_state = 0;  // SCRIPT_BAN_*
+    uint64_t                      last_ban_hits    = 0;  // см. count_script_ban_hit
+
     std::string system_prompt;
     std::string chat_template_override;
 
@@ -565,7 +574,16 @@ static void rebuild_sampler(bool force = true) {
         g_state.sampler = nullptr;
     }
     if (g_state.model) {
-        g_state.sampler = common_sampler_init(g_state.model, g_state.sampling_params);
+        if (g_state.script_ban.empty()) {
+            g_state.sampler = common_sampler_init(g_state.model, g_state.sampling_params);
+        } else {
+            // Копия ради того, чтобы запрет не смешался с настройкой,
+            // которую присылает вызывающий (см. поле script_ban).
+            common_params_sampling params = g_state.sampling_params;
+            params.logit_bias.insert(params.logit_bias.end(),
+                                     g_state.script_ban.begin(), g_state.script_ban.end());
+            g_state.sampler = common_sampler_init(g_state.model, params);
+        }
     }
     g_sampler_needs_rebuild = false;
 }
@@ -908,6 +926,148 @@ static std::vector<llama_token> tokenize_string(const std::string & text, bool a
     }
     tokens.resize(std::max(0, n));
     return tokens;
+}
+
+// ── Запрет восточноазиатских письменностей в выдаче ─────────────────────────
+//
+// Что делает. Модель не может ВЫВЕСТИ ни одного знака из U+3000–U+DFFF
+// (иероглифы, кана, бопомофо, китайская пунктуация, хангыль, И), а также из
+// U+F900–U+FAFF (совместимые иероглифы) и U+FF00–U+FFFF (широкие формы вроде
+// «，» и полуширинная кана). Просьба в стене «отвечай по-русски» — мягкая, и
+// модель, обученная на большом объёме китайского, её нарушает; здесь запрет
+// жёсткий.
+//
+// Почему по байтам, а не по символам. У модели с байтовым словарём знак может
+// собраться из нескольких токенов-обрывков, и проверка «в токене есть
+// иероглиф» такой знак пропустила бы. Правило здесь: запрещён всякий токен, в
+// байтах которого есть ведущий байт 0xE3–0xED, либо 0xEF, за которым в том же
+// токене идёт 0xA4–0xAB или 0xBC–0xBF, либо 0xEF последним байтом токена.
+// Любой запрещённый знак обязан вывести свой ведущий байт в каком-то токене;
+// все такие токены запрещены, значит, собрать знак не из чего. Байты 0xE3–0xED
+// не бывают продолжением UTF-8, поэтому правило не задевает чужих знаков.
+//
+// Чего нельзя делать ради «полноты». Запретить все обрывки вообще: русская «ё»
+// после пробела у Qwen2.5 собирается из двух обрывков (" \xd1" + "\x91"), и
+// такой запрет её убил бы. Трогать 0xE2 (тире, «№», многоточие) и 0xD0/0xD1
+// (кириллица) нельзя по той же причине.
+//
+// Чего не умеет.
+//  - Не делает ответ русским: английский, латиница, прочие письменности
+//    проходят. Обещание — «иероглифов не пишет», не больше.
+//  - Не трогает вход: китайский текст в запросе модель читает как раньше.
+//  - Не убирает мысль, а перенаправляет её: на месте запрещённого слова модель
+//    выберет следующий вариант, часто английское слово или корявую фразу.
+//  - Привязан к словарю загруженной модели и собирается заново при каждой
+//    загрузке; номера токенов от одной модели к другой не переносятся.
+//
+// Цена. Запрет стоит первым в цепочке сэмплера (common_sampler_init кладёт
+// logit_bias перед top_k), и кандидаты приходят туда полным словарём по
+// порядку номеров. На этом пути llama.cpp применяет его одним сложением на
+// запрещённый токен — порядка десятков микросекунд на токен выдачи при
+// сотне миллисекунд на прямой проход. Если кандидаты придут в другом виде
+// (сэмплинг на ускорителе, запрет не первым в цепочке), llama.cpp перейдёт на
+// перебор «кандидаты × запреты», а это на порядки дороже прямого прохода.
+// Проверка — доля «сэмплер» в строке «Разбивка» отчёта хода.
+//
+// Самопроверка. После сборки русская проба прогоняется через токенизатор;
+// если хоть один её токен попал под запрет, запрет не включается вовсе и
+// состояние становится SCRIPT_BAN_SELFCHECK_FAILED — лучше иероглиф в ответе,
+// чем вырезанная русская буква.
+static constexpr int SCRIPT_BAN_NOT_BUILT       = 0;  // модели нет или сборка не шла
+static constexpr int SCRIPT_BAN_ON              = 1;
+static constexpr int SCRIPT_BAN_NOTHING_TO_BAN  = 2;  // в словаре таких токенов нет
+static constexpr int SCRIPT_BAN_SELFCHECK_FAILED = 3;
+
+static bool script_ban_bytes(const std::string & piece) {
+    const size_t n = piece.size();
+    for (size_t k = 0; k < n; ++k) {
+        const unsigned char b = (unsigned char)piece[k];
+        if (b >= 0xE3 && b <= 0xED) return true;
+        if (b == 0xEF) {
+            if (k + 1 == n) return true;
+            const unsigned char c = (unsigned char)piece[k + 1];
+            if ((c >= 0xA4 && c <= 0xAB) || (c >= 0xBC && c <= 0xBF)) return true;
+        }
+    }
+    return false;
+}
+
+static void clear_script_ban() {
+    g_state.script_ban.clear();
+    g_state.script_ban_mask.clear();
+    g_state.script_ban_state = SCRIPT_BAN_NOT_BUILT;
+    g_state.last_ban_hits = 0;
+}
+
+static void build_script_ban() {
+    clear_script_ban();
+    if (!g_state.model) return;
+    const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
+    const int n_vocab = llama_vocab_n_tokens(vocab);
+
+    std::vector<uint8_t> mask((size_t)n_vocab, 0);
+    std::vector<llama_logit_bias> ban;
+    std::vector<char> buf(256);
+    for (llama_token id = 0; id < n_vocab; ++id) {
+        // special = false: служебные токены (<|im_end|> и т.п.) дают пустой
+        // кусок и под запрет не попадают — конец ответа запрещать нельзя.
+        int n = llama_token_to_piece(vocab, id, buf.data(), (int32_t)buf.size(), 0, false);
+        if (n < 0) {
+            buf.resize((size_t)(-n));
+            n = llama_token_to_piece(vocab, id, buf.data(), (int32_t)buf.size(), 0, false);
+        }
+        if (n <= 0) continue;
+        if (script_ban_bytes(std::string(buf.data(), (size_t)n))) {
+            mask[(size_t)id] = 1;
+            ban.push_back(llama_logit_bias{id, -INFINITY});
+        }
+    }
+
+    if (ban.empty()) {
+        g_state.script_ban_state = SCRIPT_BAN_NOTHING_TO_BAN;
+        LOGI("Script ban: vocabulary has no East Asian tokens, nothing to ban");
+        return;
+    }
+
+    // Проба держит то, что в русском ответе встречается и легко задевается:
+    // «ё» после пробела (собирается из обрывков), кавычки-ёлочки, тире, «№»,
+    // многоточие, эмодзи с селектором вида.
+    static const char * kProbe =
+        "Съешь же ещё этих мягких французских булок, да выпей чаю. "
+        "Ёж, ёлка, «цитата» — №5… ❤️ OK, 42%.";
+    for (llama_token t : tokenize_string(kProbe, false)) {
+        if (t >= 0 && t < n_vocab && mask[(size_t)t]) {
+            g_state.script_ban_state = SCRIPT_BAN_SELFCHECK_FAILED;
+            LOGE("Script ban DISABLED: probe token %d fell under the ban", (int)t);
+            return;
+        }
+    }
+
+    g_state.script_ban      = std::move(ban);
+    g_state.script_ban_mask = std::move(mask);
+    g_state.script_ban_state = SCRIPT_BAN_ON;
+    LOGI("Script ban: %zu tokens", g_state.script_ban.size());
+}
+
+// Прибор к запрету: сколько раз за генерацию лучшим кандидатом модели был
+// запрещённый токен. Смотрит сырые оценки модели ДО всех сэмплеров, поэтому
+// вызывается перед common_sampler_sample.
+//
+// Чего не умеет. Считает только случаи, когда запрещённый токен стоял первым.
+// На разговорной температуре мог бы разыграться и второй-третий кандидат —
+// такие попытки сюда не попадают, так что число занижено, а не завышено.
+// Ноль при включённом запрете значит «модель к иероглифам не тянулась», а не
+// «запрет не работает»; сломанный запрет виден по состоянию, не по нулю.
+static void count_script_ban_hit() {
+    if (g_state.script_ban_mask.empty() || !g_state.ctx) return;
+    const float * logits = llama_get_logits_ith(g_state.ctx, -1);
+    if (!logits) return;
+    const size_t n = g_state.script_ban_mask.size();
+    size_t best = 0;
+    for (size_t i = 1; i < n; ++i) {
+        if (logits[i] > logits[best]) best = i;
+    }
+    if (g_state.script_ban_mask[best]) ++g_state.last_ban_hits;
 }
 
 // Reusable batches: one sized to n_batch for prompt eval, one of size 1 for
@@ -1268,6 +1428,21 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
     g_chat_templates_tried = false;
     LOGI("post-ctx: chat templates DEFERRED to first generate call");
 
+    // Номера токенов в logit_bias принадлежат словарю ПРЕЖНЕЙ модели; на новой
+    // они молча запретили бы или подтолкнули чужие токены. Вызывающий, которому
+    // нужен свой logit_bias, присылает его заново после загрузки.
+    g_state.sampling_params.logit_bias.clear();
+    LOGI("post-ctx: building script ban...");
+    try {
+        build_script_ban();
+    } catch (const std::exception & e) {
+        clear_script_ban();
+        LOGE("build_script_ban threw: %s", e.what());
+    } catch (...) {
+        clear_script_ban();
+        LOGE("build_script_ban threw unknown exception");
+    }
+
     LOGI("post-ctx: building sampler...");
     try {
         rebuild_sampler();
@@ -1530,6 +1705,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
     g_state.last_stop_us   = 0;
     g_state.last_decode_us = 0;
     g_state.last_decode_tokens = 0;
+    g_state.last_ban_hits = 0;
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
@@ -1568,6 +1744,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         if (!g_state.sampler) break;
 
         auto ts0 = std::chrono::high_resolution_clock::now();
+        count_script_ban_hit();
         llama_token id = common_sampler_sample(g_state.sampler, g_state.ctx, -1);
         common_sampler_accept(g_state.sampler, id, true);
         auto ts1 = std::chrono::high_resolution_clock::now();
@@ -1917,6 +2094,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     g_state.last_stop_us   = 0;
     g_state.last_decode_us = 0;
     g_state.last_decode_tokens = 0;
+    g_state.last_ban_hits = 0;
 
     const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
     int n_generated = 0;
@@ -1930,6 +2108,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         if (!g_state.sampler) break;
 
         auto ts0 = std::chrono::high_resolution_clock::now();
+        count_script_ban_hit();
         llama_token id = common_sampler_sample(g_state.sampler, g_state.ctx, -1);
         common_sampler_accept(g_state.sampler, id, true);
         auto ts1 = std::chrono::high_resolution_clock::now();
@@ -2072,6 +2251,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeRelease(JNIEnv *, jobject) {
         llama_model_free(g_state.model);
         g_state.model = nullptr;
     }
+    clear_script_ban();
     g_state.chat_templates.reset();
     g_chat_templates_tried = false;
     g_state.n_past = 0;
@@ -2204,6 +2384,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeUpdateSamplerParams(
     }
 }
 
+// Заменяет logit_bias вызывающего целиком. Запрет письменностей здесь не
+// затрагивается — он хранится отдельно (поле script_ban). После загрузки
+// модели список вызывающего пуст, см. nativeLoadModel.
 extern "C" JNIEXPORT void JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetLogitBias(
         JNIEnv * env, jobject, jstring jbiasJson) {
@@ -2612,23 +2795,30 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeAutoModeTick(JNIEnv *, jobject) {
 
 // Per-stage decode timings from the LAST completed generate. Returns JSON:
 //   { "tokens": N, "sample_us": ..., "detok_us": ..., "stop_us": ...,
-//     "decode_us": ..., "total_us": ... }
+//     "decode_us": ..., "total_us": ...,
+//     "ban_state": SCRIPT_BAN_*, "ban_tokens": ..., "ban_hits": ... }
 // All us values are AGGREGATE across the run; divide by tokens for per-token.
+// ban_state и ban_tokens описывают запрет письменностей загруженной модели,
+// ban_hits — последнюю генерацию (см. build_script_ban, count_script_ban_hit).
 // Returns "{}" if no generate has run yet.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env, jobject) {
     uint64_t total = g_state.last_sample_us + g_state.last_detok_us
                    + g_state.last_stop_us  + g_state.last_decode_us;
-    char buf[256];
+    char buf[384];
     snprintf(buf, sizeof(buf),
         "{\"tokens\":%llu,\"sample_us\":%llu,\"detok_us\":%llu,"
-        "\"stop_us\":%llu,\"decode_us\":%llu,\"total_us\":%llu}",
+        "\"stop_us\":%llu,\"decode_us\":%llu,\"total_us\":%llu,"
+        "\"ban_state\":%d,\"ban_tokens\":%zu,\"ban_hits\":%llu}",
         (unsigned long long)g_state.last_decode_tokens,
         (unsigned long long)g_state.last_sample_us,
         (unsigned long long)g_state.last_detok_us,
         (unsigned long long)g_state.last_stop_us,
         (unsigned long long)g_state.last_decode_us,
-        (unsigned long long)total);
+        (unsigned long long)total,
+        g_state.script_ban_state,
+        g_state.script_ban.size(),
+        (unsigned long long)g_state.last_ban_hits);
     return env->NewStringUTF(buf);
 }
 
