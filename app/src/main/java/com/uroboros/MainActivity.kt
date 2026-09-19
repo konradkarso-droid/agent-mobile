@@ -2418,7 +2418,8 @@ class MainActivity : AppCompatActivity() {
         worstZone: SafetyZone,
         generationEnd: GenerationEnd,
         tokenLimit: Int,
-        promptShape: String
+        promptShape: String,
+        reuseLine: String
     ): String {
         val lines = mutableListOf<String>()
 
@@ -2427,6 +2428,10 @@ class MainActivity : AppCompatActivity() {
         // "до 1-го токена 19 с" ничего не значит, пока неизвестно, что
         // обсчитывалось.
         lines += promptShape
+        // Второй — сколько из этого было взято готовым. По той же причине:
+        // долгое "до 1-го токена" при совпавшей стене и при пересчитанной —
+        // два разных случая.
+        lines += reuseLine
 
         val ttft = firstTokenAtMs?.let { fmtSec(it.toDouble()) } ?: "—"
         lines += "Секундомер: всего ${fmtSec(wallMs.toDouble())} с, до 1-го токена $ttft с"
@@ -3693,6 +3698,16 @@ class MainActivity : AppCompatActivity() {
                     // Читается сразу после завершения: движок хранит разбивку
                     // ПОСЛЕДНЕЙ генерации, и следующий запуск её затрёт.
                     val breakdown = runCatching { llmEngine.getLastDecodeBreakdown() }.getOrNull()
+                    // Тем же моментом и по той же причине: строка собирается из
+                    // хвоста лога движка, и следующий запрос её вытеснит. Но
+                    // только если генерация точно дошла до обсчёта — иначе
+                    // последним в логе окажется ПРОШЛЫЙ запрос, и его числа
+                    // показались бы как числа этого.
+                    val reuseLine = if (engineMetrics != null || tokensSeen > 0) {
+                        llmEngine.promptReuseReport()
+                    } else {
+                        "Стена: не известно — генерация не дошла до ответа"
+                    }
                     // Перечитываем после генерации: запись кэша делает сама
                     // библиотека по ходу обсчёта, и на ПЕРВОМ холодном запуске
                     // строка меняется с "пуст" на размер файла именно здесь.
@@ -3707,7 +3722,8 @@ class MainActivity : AppCompatActivity() {
                         worstZone = worstZone,
                         generationEnd = generationEnd,
                         tokenLimit = ANSWER_TOKEN_LIMIT,
-                        promptShape = promptShape
+                        promptShape = promptShape,
+                        reuseLine = reuseLine
                     )
                     renderMetricsPanel()
                 }
