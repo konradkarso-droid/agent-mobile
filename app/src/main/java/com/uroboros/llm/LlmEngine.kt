@@ -654,12 +654,53 @@ class LlmEngine(
             (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
         )
         applyChatSampling()
-        applyWall(BibleSoftWall.TEXT)
+        // Состояние запрета уже известно: библиотека собирает его внутри
+        // load(). Поля ban_* в отчёте о декодировании описывают загрузку, а
+        // не последний ход, поэтому читать их до первой генерации законно.
+        val banState = engine.getLastDecodeBreakdown().banState
+        scriptBanStateAtLoad = banState
+        buildSelfLines = BuildSelfDescription.lines(banState)
+        applyWall(BuildSelfDescription.compose(BibleSoftWall.TEXT, buildSelfLines))
         applyStreamingLatency()
     }
 
     /**
+     * Строки «о себе», которые код добавил к стене при этой загрузке, см.
+     * [BuildSelfDescription]. Пусто до загрузки и когда добавлять нечего.
+     */
+    var buildSelfLines: List<String> = emptyList()
+        private set
+
+    /** Состояние запрета иероглифов, прочитанное при загрузке; -1 — не читалось. */
+    private var scriptBanStateAtLoad: Int = -1
+
+    /**
+     * Строка для экрана: что код дописал в раздел «О себе» и почему.
+     *
+     * Нужна раньше, чем поведение модели: без неё «строку не добавили» и
+     * «строку добавили, а модель её не слушает» на экране неотличимы.
+     */
+    fun getBuildSelfReport(): String {
+        if (!engine.isLoaded) return "О себе от сборки: модель не загружена"
+        if (buildSelfLines.isNotEmpty()) {
+            return "О себе от сборки: ${buildSelfLines.size} стр. — " +
+                buildSelfLines.joinToString(" / ") { "«$it»" }
+        }
+        val why = when (scriptBanStateAtLoad) {
+            -1 -> "библиотека не сообщила о запрете иероглифов"
+            0 -> "запрет иероглифов не собран"
+            2 -> "в словаре модели иероглифов нет"
+            3 -> "запрет иероглифов выключен самопроверкой"
+            else -> "запрет иероглифов в состоянии $scriptBanStateAtLoad"
+        }
+        return "О себе от сборки: пусто — $why"
+    }
+
+    /**
      * Единственная точка, через которую ставится системная стена.
+     *
+     * Стена — это текст человека и строки сборки ([BuildSelfDescription]),
+     * склеенные в [configureAfterLoad]. Сюда приходит уже склеенная.
      *
      * Текст берётся ОДНОЙ переменной и для имени папки кэша, и для движка.
      * Будь это два обращения к [BibleSoftWall.TEXT] в двух местах, они
