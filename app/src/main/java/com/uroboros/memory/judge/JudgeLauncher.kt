@@ -118,10 +118,24 @@ class JudgeLauncher(
                 // что судья сломался.
                 append("Ответов не прочитано: ").append(report.unreadable).append("\n")
             }
+            if (report.tooLong.isNotEmpty()) {
+                // Строка только при непустом списке, по той же причине, что и
+                // строка выше. Номера даются, чтобы запись можно было найти.
+                append("Не судятся — длиннее ").append(JudgeRun.MAX_RECORD_CHARS)
+                append(" знаков: ").append(report.tooLong.size).append(" зап. (")
+                append(report.tooLong.take(SHOWN_IDS).joinToString(", ") { "№$it" })
+                if (report.tooLong.size > SHOWN_IDS) append(", …")
+                append(")\n")
+            }
             append("Осталось пар: ").append(report.remaining).append("\n")
             append("Времени ушло: ").append(report.spentMs / 1000).append(" с")
             if (perPair > 0) append(" · на пару ").append(perPair).append(" мс")
             append("\n\nСпорные пары — в «Показать».")
         }
+    }
+
+    private companion object {
+        /** Сколько номеров длинных записей называть: список длиннее строки не читают. */
+        const val SHOWN_IDS = 5
     }
 }
