@@ -340,6 +340,14 @@ static struct {
     int                           script_ban_state = 0;  // SCRIPT_BAN_*
     uint64_t                      last_ban_hits    = 0;  // см. count_script_ban_hit
 
+    // Перевод иероглифов в скобках (см. gloss_grammar). Просит вызывающий —
+    // только для разговора; проверка правила — при загрузке модели.
+    bool                          gloss_requested  = false;
+    bool                          gloss_grammar_ok = false;
+    int                           gloss_state      = 0;  // GLOSS_* последней сборки сэмплера
+    uint64_t                      last_gloss_spans = 0;  // см. count_gloss_span
+    bool                          last_token_cjk   = false;
+
     std::string system_prompt;
     std::string chat_template_override;
 
@@ -567,23 +575,45 @@ static void apply_thread_mode(int mode) {
 // tokens change because common_sampler doesn't support in-place edits.
 static bool g_sampler_needs_rebuild = true;
 
+// Переключатель жёсткого запрета иероглифов (см. build_script_ban). Выключен:
+// вместо запрета иероглифы переводятся в скобках (см. gloss_grammar) — запрет
+// ломал слово, которое модель знала, и толкал её к двойникам и выдуманной
+// транслитерации. Список и маска собираются при загрузке и при выключенном
+// запрете: маска нужна счётчику мест с иероглифами.
+static constexpr bool kScriptBanEnabled = false;
+
+static const char * gloss_grammar();
+
+static constexpr int GLOSS_OFF    = 0;  // не просили (судья, цикл) или модели нет
+static constexpr int GLOSS_ON     = 1;
+static constexpr int GLOSS_BROKEN = 2;  // просили, но правило не собралось
+
 static void rebuild_sampler(bool force = true) {
     if (!force && !g_sampler_needs_rebuild && g_state.sampler) return;
     if (g_state.sampler) {
         common_sampler_free(g_state.sampler);
         g_state.sampler = nullptr;
     }
+    g_state.gloss_state = GLOSS_OFF;
     if (g_state.model) {
-        if (g_state.script_ban.empty()) {
-            g_state.sampler = common_sampler_init(g_state.model, g_state.sampling_params);
-        } else {
-            // Копия ради того, чтобы запрет не смешался с настройкой,
-            // которую присылает вызывающий (см. поле script_ban).
-            common_params_sampling params = g_state.sampling_params;
+        // Копия ради того, чтобы запрет и правило перевода не смешались с
+        // настройкой, которую присылает вызывающий (см. поле script_ban).
+        common_params_sampling params = g_state.sampling_params;
+        if (kScriptBanEnabled && !g_state.script_ban.empty()) {
             params.logit_bias.insert(params.logit_bias.end(),
                                      g_state.script_ban.begin(), g_state.script_ban.end());
-            g_state.sampler = common_sampler_init(g_state.model, params);
         }
+        if (g_state.gloss_requested) {
+            // Проверка отдельно, а не по итогу common_sampler_init: при
+            // ошибке в правиле llama.cpp молча собирает сэмплер БЕЗ него.
+            if (g_state.gloss_grammar_ok) {
+                params.grammar = gloss_grammar();
+                g_state.gloss_state = GLOSS_ON;
+            } else {
+                g_state.gloss_state = GLOSS_BROKEN;
+            }
+        }
+        g_state.sampler = common_sampler_init(g_state.model, params);
     }
     g_sampler_needs_rebuild = false;
 }
@@ -930,26 +960,47 @@ static std::vector<llama_token> tokenize_string(const std::string & text, bool a
 
 // ── Запрет восточноазиатских письменностей в выдаче ─────────────────────────
 //
-// Что делает. Модель не может ВЫВЕСТИ ни одного знака из U+3000–U+DFFF
-// (иероглифы, кана, бопомофо, китайская пунктуация, хангыль, И), а также из
-// U+F900–U+FAFF (совместимые иероглифы) и U+FF00–U+FFFF (широкие формы вроде
-// «，» и полуширинная кана). Просьба в стене «отвечай по-русски» — мягкая, и
+// Сейчас выключен переключателем kScriptBanEnabled: вместо запрета работает
+// перевод в скобках (см. gloss_grammar). Список и маска собираются всё равно —
+// маска нужна счётчику мест с иероглифами, а включение запрета остаётся делом
+// одной строки. Описание ниже — о том, что запрет делает, когда включён.
+//
+// Что делает. Модель не может ВЫВЕСТИ ни одного знака из U+2E80–U+2FFF
+// (ключи иероглифов, в том числе ключи Канси, — внешне те же иероглифы),
+// U+3000–U+DFFF (иероглифы, кана, бопомофо, китайская пунктуация, хангыль, И),
+// U+F900–U+FAFF (совместимые иероглифы), U+FF00–U+FFFF (широкие формы вроде
+// «，» и полуширинная кана) и U+20000–U+3FFFF (редкие иероглифы за пределами
+// основной плоскости). Модель под запретом ищет обход, и первым она нашла
+// ключ Канси ⽣ (U+2F63) — двойник запрещённого 生; поэтому двойники входят в
+// запрет наравне с оригиналами. Просьба в стене «отвечай по-русски» — мягкая, и
 // модель, обученная на большом объёме китайского, её нарушает; здесь запрет
 // жёсткий.
 //
 // Почему по байтам, а не по символам. У модели с байтовым словарём знак может
 // собраться из нескольких токенов-обрывков, и проверка «в токене есть
 // иероглиф» такой знак пропустила бы. Правило здесь: запрещён всякий токен, в
-// байтах которого есть ведущий байт 0xE3–0xED, либо 0xEF, за которым в том же
-// токене идёт 0xA4–0xAB или 0xBC–0xBF, либо 0xEF последним байтом токена.
-// Любой запрещённый знак обязан вывести свой ведущий байт в каком-то токене;
-// все такие токены запрещены, значит, собрать знак не из чего. Байты 0xE3–0xED
-// не бывают продолжением UTF-8, поэтому правило не задевает чужих знаков.
+// байтах которого есть
+//  - ведущий байт 0xE3–0xED — где угодно;
+//  - 0xE2, за которым в том же токене идёт 0xBA–0xBF;
+//  - 0xEF, за которым в том же токене идёт 0xA4–0xAB или 0xBC–0xBF;
+//  - 0xF0, за которым в том же токене идёт 0xA0–0xBF;
+//  - 0xE2, 0xEF или 0xF0 последним байтом токена (голый ведущий байт —
+//    иначе второй байт пришёл бы из следующего токена мимо проверки).
+// Любой запрещённый знак обязан вывести свой ведущий байт в каком-то токене
+// вместе со вторым байтом либо голым в конце токена; все такие токены
+// запрещены, значит, собрать знак не из чего. Ведущие байты не бывают
+// продолжением UTF-8, поэтому правило не задевает чужих знаков по ошибке.
+//
+// Цена голых 0xE2 и 0xF0. У Qwen2.5 после этого запрета без пути остаются
+// только редкие блоки на 0xE2 — шрифт Брайля, коптский, эфиопский, часть
+// редкой математики и знаки-надстройки U+20C0–U+20FF — и редкие блоки второй
+// плоскости на 0xF0 (не эмодзи: эмодзи собираются из целых токенов). Тире, «№»,
+// многоточие, стрелки, галочки, ❤️ и обычные эмодзи проходят.
 //
 // Чего нельзя делать ради «полноты». Запретить все обрывки вообще: русская «ё»
 // после пробела у Qwen2.5 собирается из двух обрывков (" \xd1" + "\x91"), и
-// такой запрет её убил бы. Трогать 0xE2 (тире, «№», многоточие) и 0xD0/0xD1
-// (кириллица) нельзя по той же причине.
+// такой запрет её убил бы. По той же причине нельзя запрещать 0xE2 целиком
+// (тире, «№», многоточие) и 0xD0/0xD1 (кириллица).
 //
 // Чего не умеет.
 //  - Не делает ответ русским: английский, латиница, прочие письменности
@@ -977,16 +1028,19 @@ static constexpr int SCRIPT_BAN_NOT_BUILT       = 0;  // модели нет и�
 static constexpr int SCRIPT_BAN_ON              = 1;
 static constexpr int SCRIPT_BAN_NOTHING_TO_BAN  = 2;  // в словаре таких токенов нет
 static constexpr int SCRIPT_BAN_SELFCHECK_FAILED = 3;
+static constexpr int SCRIPT_BAN_DISABLED        = 4;  // выключен переключателем kScriptBanEnabled
 
 static bool script_ban_bytes(const std::string & piece) {
     const size_t n = piece.size();
     for (size_t k = 0; k < n; ++k) {
         const unsigned char b = (unsigned char)piece[k];
         if (b >= 0xE3 && b <= 0xED) return true;
-        if (b == 0xEF) {
+        if (b == 0xE2 || b == 0xEF || b == 0xF0) {
             if (k + 1 == n) return true;
             const unsigned char c = (unsigned char)piece[k + 1];
-            if ((c >= 0xA4 && c <= 0xAB) || (c >= 0xBC && c <= 0xBF)) return true;
+            if (b == 0xE2 && c >= 0xBA && c <= 0xBF) return true;
+            if (b == 0xEF && ((c >= 0xA4 && c <= 0xAB) || (c >= 0xBC && c <= 0xBF))) return true;
+            if (b == 0xF0 && c >= 0xA0 && c <= 0xBF) return true;
         }
     }
     return false;
@@ -1031,10 +1085,11 @@ static void build_script_ban() {
 
     // Проба держит то, что в русском ответе встречается и легко задевается:
     // «ё» после пробела (собирается из обрывков), кавычки-ёлочки, тире, «№»,
-    // многоточие, эмодзи с селектором вида.
+    // многоточие, стрелка, галочка (всё это — 0xE2), эмодзи с селектором вида
+    // и обычные эмодзи (0xF0).
     static const char * kProbe =
         "Съешь же ещё этих мягких французских булок, да выпей чаю. "
-        "Ёж, ёлка, «цитата» — №5… ❤️ OK, 42%.";
+        "Ёж, ёлка, «цитата» — №5… → ✓ ❤️ 🙂 👍 OK, 42%.";
     for (llama_token t : tokenize_string(kProbe, false)) {
         if (t >= 0 && t < n_vocab && mask[(size_t)t]) {
             g_state.script_ban_state = SCRIPT_BAN_SELFCHECK_FAILED;
@@ -1059,6 +1114,7 @@ static void build_script_ban() {
 // Ноль при включённом запрете значит «модель к иероглифам не тянулась», а не
 // «запрет не работает»; сломанный запрет виден по состоянию, не по нулю.
 static void count_script_ban_hit() {
+    if (!kScriptBanEnabled) return;
     if (g_state.script_ban_mask.empty() || !g_state.ctx) return;
     const float * logits = llama_get_logits_ith(g_state.ctx, -1);
     if (!logits) return;
@@ -1068,6 +1124,86 @@ static void count_script_ban_hit() {
         if (logits[i] > logits[best]) best = i;
     }
     if (g_state.script_ban_mask[best]) ++g_state.last_ban_hits;
+}
+
+// ── Перевод иероглифов в скобках ────────────────────────────────────────────
+//
+// Что делает. В разговоре модель вольна написать иероглифы, но сразу за
+// куском иероглифов обязана дать русский перевод в скобках:
+// «生理性别 (биологический пол)». Форму задаёт грамматика llama.cpp; слова
+// перевода пишет сама модель — с китайского на русский она переводит хорошо,
+// это её сильное направление. Случайная вставка становится читаемой, а
+// заказанный китайский («как это по-китайски?») остаётся цел.
+//
+// Почему грамматика, а не второй вызов модели после ответа. Модель одна на
+// разговор, судью и цикл; любой чужой вызов вытесняет из движка состояние
+// разговора, и следующий ход обсчитывал бы ленту заново. Здесь перевод пишется
+// внутри того же ответа, и в движке лежит ровно тот текст, что на экране.
+//
+// Как работает правило. Текст — это обычные знаки либо кусок иероглифов, за
+// которым идёт необязательный пробел, «(», от 1 до 80 знаков без скобок,
+// переводов строки и иероглифов, и «)». Пока кусок иероглифов не закрыт
+// переводом, закончить ответ нельзя. llama.cpp сначала выбирает токен обычным
+// путём и только если он нарушает правило, выбирает заново с правилом по
+// всему словарю — это происходит раз на кусок иероглифов; цена этого выбора
+// видна в доле «сэмплер» строки «Разбивка» отчёта хода.
+//
+// Диапазоны — те же, что у запрета (build_script_ban): ключи иероглифов
+// U+2E80–U+2FFF (двойники вроде ⽣), U+3000–U+9FFF (иероглифы, кана,
+// бопомофо, китайская пунктуация), хангыль U+AC00–U+D7AF, совместимые
+// иероглифы U+F900–U+FAFF, редкие иероглифы U+20000–U+3FFFF. Широкие формы
+// U+FF00–U+FFEF («，», «：») сюда не входят: смысла в них нет, и переводить их
+// незачем.
+//
+// Чего не умеет.
+//  - Правильность перевода не проверяет: что модель написала в скобках, то и
+//    будет.
+//  - Абзац по-китайски в 80 знаков перевода не уложится — скобка закроется на
+//    пределе, недосказанной.
+//  - Только для разговора: судье и циклу скобка сломала бы ответ (цифры, код),
+//    поэтому правило включает вызывающий (nativeSetConversationGloss).
+//  - Если правило не разбирается llama.cpp, перевод выключается целиком, и
+//    иероглифы идут без перевода; это состояние GLOSS_BROKEN, оно выводится
+//    на экран.
+#define GLOSS_CJK_RANGES "\\u2E80-\\u2FFF\\u3000-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF\\U00020000-\\U0003FFFF"
+static const char * gloss_grammar() {
+    return
+        "root  ::= ( plain | span )*\n"
+        "span  ::= cjk+ \" \"? \"(\" gloss \")\"\n"
+        "plain ::= [^" GLOSS_CJK_RANGES "]\n"
+        "cjk   ::= [" GLOSS_CJK_RANGES "]\n"
+        "gloss ::= [^()\\n" GLOSS_CJK_RANGES "]{1,80}\n";
+}
+#undef GLOSS_CJK_RANGES
+
+// Разбирается ли правило этой версией llama.cpp. Вызывается при загрузке
+// модели: разбору нужен словарь.
+static void check_gloss_grammar() {
+    g_state.gloss_grammar_ok = false;
+    if (!g_state.model) return;
+    llama_sampler * probe = llama_sampler_init_grammar(
+        llama_model_get_vocab(g_state.model), gloss_grammar(), "root");
+    if (probe) {
+        g_state.gloss_grammar_ok = true;
+        llama_sampler_free(probe);
+    } else {
+        LOGE("Gloss grammar failed to parse; translation in brackets disabled");
+    }
+}
+
+// Прибор к переводу: сколько мест с иероглифами было в ответе. Место — это
+// токен из маски иероглифов (см. build_script_ban), перед которым стоял токен
+// не из неё.
+//
+// Чего не умеет. Знак, собранный из обрывков, может разорвать место на два
+// (обрывок-продолжение в маску не входит), так что число может быть завышено
+// на единицы. Для прибора важна не точность, а «ноль или не ноль». Если маска
+// не собралась (самопроверка запрета), счётчик молчит.
+static void count_gloss_span(llama_token id) {
+    const auto & mask = g_state.script_ban_mask;
+    const bool cjk = id >= 0 && (size_t)id < mask.size() && mask[(size_t)id];
+    if (cjk && !g_state.last_token_cjk) ++g_state.last_gloss_spans;
+    g_state.last_token_cjk = cjk;
 }
 
 // Reusable batches: one sized to n_batch for prompt eval, one of size 1 for
@@ -1457,6 +1593,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         LOGE("build_script_ban threw unknown exception");
     }
 
+    check_gloss_grammar();
+
     LOGI("post-ctx: building sampler...");
     try {
         rebuild_sampler();
@@ -1720,6 +1858,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
     g_state.last_decode_us = 0;
     g_state.last_decode_tokens = 0;
     g_state.last_ban_hits = 0;
+    g_state.last_gloss_spans = 0;
+    g_state.last_token_cjk = false;
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
@@ -1761,6 +1901,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         count_script_ban_hit();
         llama_token id = common_sampler_sample(g_state.sampler, g_state.ctx, -1);
         common_sampler_accept(g_state.sampler, id, true);
+        count_gloss_span(id);
         auto ts1 = std::chrono::high_resolution_clock::now();
         g_state.last_sample_us += std::chrono::duration_cast<std::chrono::microseconds>(ts1 - ts0).count();
 
@@ -2109,6 +2250,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     g_state.last_decode_us = 0;
     g_state.last_decode_tokens = 0;
     g_state.last_ban_hits = 0;
+    g_state.last_gloss_spans = 0;
+    g_state.last_token_cjk = false;
 
     const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
     int n_generated = 0;
@@ -2125,6 +2268,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         count_script_ban_hit();
         llama_token id = common_sampler_sample(g_state.sampler, g_state.ctx, -1);
         common_sampler_accept(g_state.sampler, id, true);
+        count_gloss_span(id);
         auto ts1 = std::chrono::high_resolution_clock::now();
         g_state.last_sample_us += std::chrono::duration_cast<std::chrono::microseconds>(ts1 - ts0).count();
 
@@ -2266,6 +2410,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeRelease(JNIEnv *, jobject) {
         g_state.model = nullptr;
     }
     clear_script_ban();
+    g_state.gloss_grammar_ok = false;
     g_state.chat_templates.reset();
     g_chat_templates_tried = false;
     g_state.n_past = 0;
@@ -2396,6 +2541,17 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeUpdateSamplerParams(
         tn_error_set_last(TN_ERR_INVALID_PARAM, "InvalidParam", e.what());
         return JNI_FALSE;
     }
+}
+
+// Включает перевод иероглифов в скобках для следующих генераций (см.
+// gloss_grammar). Вызывающий включает его для разговора и выключает для всего
+// остального; сэмплер пересобирается перед каждой генерацией, так что
+// изменение вступает в силу со следующей.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetConversationGloss(
+        JNIEnv *, jobject, jboolean on) {
+    g_state.gloss_requested = (on == JNI_TRUE);
+    mark_sampler_dirty();
 }
 
 // Заменяет logit_bias вызывающего целиком. Запрет письменностей здесь не
@@ -2810,10 +2966,13 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeAutoModeTick(JNIEnv *, jobject) {
 // Per-stage decode timings from the LAST completed generate. Returns JSON:
 //   { "tokens": N, "sample_us": ..., "detok_us": ..., "stop_us": ...,
 //     "decode_us": ..., "total_us": ...,
-//     "ban_state": SCRIPT_BAN_*, "ban_tokens": ..., "ban_hits": ... }
+//     "ban_state": SCRIPT_BAN_*, "ban_tokens": ..., "ban_hits": ...,
+//     "gloss_state": GLOSS_*, "gloss_spans": ... }
 // All us values are AGGREGATE across the run; divide by tokens for per-token.
 // ban_state и ban_tokens описывают запрет письменностей загруженной модели,
 // ban_hits — последнюю генерацию (см. build_script_ban, count_script_ban_hit).
+// gloss_state и gloss_spans — перевод иероглифов в скобках в последней
+// генерации (см. gloss_grammar, count_gloss_span).
 // Returns "{}" if no generate has run yet.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env, jobject) {
@@ -2823,16 +2982,19 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env,
     snprintf(buf, sizeof(buf),
         "{\"tokens\":%llu,\"sample_us\":%llu,\"detok_us\":%llu,"
         "\"stop_us\":%llu,\"decode_us\":%llu,\"total_us\":%llu,"
-        "\"ban_state\":%d,\"ban_tokens\":%zu,\"ban_hits\":%llu}",
+        "\"ban_state\":%d,\"ban_tokens\":%zu,\"ban_hits\":%llu,"
+        "\"gloss_state\":%d,\"gloss_spans\":%llu}",
         (unsigned long long)g_state.last_decode_tokens,
         (unsigned long long)g_state.last_sample_us,
         (unsigned long long)g_state.last_detok_us,
         (unsigned long long)g_state.last_stop_us,
         (unsigned long long)g_state.last_decode_us,
         (unsigned long long)total,
-        g_state.script_ban_state,
+        kScriptBanEnabled ? g_state.script_ban_state : SCRIPT_BAN_DISABLED,
         g_state.script_ban.size(),
-        (unsigned long long)g_state.last_ban_hits);
+        (unsigned long long)g_state.last_ban_hits,
+        g_state.gloss_state,
+        (unsigned long long)g_state.last_gloss_spans);
     return env->NewStringUTF(buf);
 }
 
@@ -4482,6 +4644,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeVlmGenerateStream(
 
         llama_token id = common_sampler_sample(g_state.sampler, g_state.ctx, -1);
         common_sampler_accept(g_state.sampler, id, true);
+        count_gloss_span(id);
 
         if (llama_vocab_is_eog(vocab, id)) break;
 
