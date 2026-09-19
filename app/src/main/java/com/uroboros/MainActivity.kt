@@ -68,6 +68,7 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
+    private lateinit var processObjects: ProcessObjects.Held
     private lateinit var mediator: TrustedMediator
     private lateinit var llmEngine: LlmEngine
     private lateinit var watchdog: DeviceSafetyWatchdog
@@ -2611,33 +2612,47 @@ class MainActivity : AppCompatActivity() {
             binding.buttonLoadModel.isEnabled = true
             if (ok) {
                 prefs.edit().putString(KEY_LAST_MODEL_URI, uri.toString()).apply()
-                binding.textModelStatus.text = "Модель загружена: $displayName"
-                binding.buttonGenerate.isEnabled = true
-                // Момент выбран не случайно: строка про ctx/threads/batch
-                // пишется библиотекой ровно при загрузке и за прогон не
-                // меняется. Читать её здесь — значит не заводить ради неё
-                // отдельный жест и не отнимать долгое нажатие у другой кнопки.
-                engineParamsLine = extractEngineParams(llmEngine.getDebugLog()) +
-                    "\n" + threadModeLine()
-                // Кэш обсчитанной системной стены. Читается сразу после загрузки
-                // намеренно: на ВТОРОМ холодном запуске файл кэша уже лежит на
-                // диске, и его размер виден ещё до первого вопроса. То есть
-                // "кэш подхватился" видно раньше, чем это подтвердит секундомер.
-                promptCacheLine = llmEngine.getPromptCacheReport()
-                buildSelfLine = llmEngine.getBuildSelfReport()
-                // Тот же момент и по той же причине: путь к точке считается от
-                // отпечатка загрузки, до неё его просто нет. Заодно это первое,
-                // что человек увидит после перезапуска, — успела ли вчерашняя
-                // запись при уходе в фон.
-                checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
-                renderMetricsPanel()
-                // Только теперь: до загрузки модели отпечатка ещё нет, а
-                // без него сохранённой ленте не с чем сверяться.
-                maybeOfferRestore()
+                processObjects.loadedModelName = displayName
+                showLoadedModel(displayName)
             } else {
                 binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""
             }
         }
+    }
+
+    /**
+     * Всё, что экран показывает о загруженной модели. Отдельно от загрузки,
+     * потому что экран, созданный заново, застаёт модель уже загруженной (движок
+     * один на процесс, см. ProcessObjects) и должен показать то же самое, не
+     * загружая её второй раз.
+     */
+    private fun showLoadedModel(displayName: String) {
+        binding.textModelStatus.text = "Модель загружена: $displayName"
+        binding.buttonGenerate.isEnabled = true
+        // Момент выбран не случайно: строка про ctx/threads/batch
+        // пишется библиотекой ровно при загрузке и за прогон не
+        // меняется. Читать её здесь — значит не заводить ради неё
+        // отдельный жест и не отнимать долгое нажатие у другой кнопки.
+        // На экране, созданном заново при уже загруженной модели, лог мог
+        // эту строку уже потерять (он кольцевой) — тогда строка честно
+        // скажет, что параметры не найдены.
+        engineParamsLine = extractEngineParams(llmEngine.getDebugLog()) +
+            "\n" + threadModeLine()
+        // Кэш обсчитанной системной стены. Читается сразу после загрузки
+        // намеренно: на ВТОРОМ холодном запуске файл кэша уже лежит на
+        // диске, и его размер виден ещё до первого вопроса. То есть
+        // "кэш подхватился" видно раньше, чем это подтвердит секундомер.
+        promptCacheLine = llmEngine.getPromptCacheReport()
+        buildSelfLine = llmEngine.getBuildSelfReport()
+        // Тот же момент и по той же причине: путь к точке считается от
+        // отпечатка загрузки, до неё его просто нет. Заодно это первое,
+        // что человек увидит после перезапуска, — успела ли вчерашняя
+        // запись при уходе в фон.
+        checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
+        renderMetricsPanel()
+        // Только теперь: до загрузки модели отпечатка ещё нет, а
+        // без него сохранённой ленте не с чем сверяться.
+        maybeOfferRestore()
     }
 
     /**
@@ -2870,6 +2885,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tryAutoLoadOnStartup() {
+        // Экран создан заново, а модель в этом процессе уже загружена: второй
+        // загрузки не нужно, нужен только её показ.
+        if (llmEngine.isLoaded) {
+            showLoadedModel(processObjects.loadedModelName ?: "(имя не сохранилось)")
+            return
+        }
         val folderUriString = prefs.getString(KEY_MODEL_FOLDER_URI, null)
         if (folderUriString == null) {
             binding.textModelStatus.text = "Модель не загружена"
@@ -2938,9 +2959,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        mediator = TrustedMediator(applicationContext)
-        watchdog = DeviceSafetyWatchdog(applicationContext, lifecycleScope)
-        llmEngine = LlmEngine(applicationContext, watchdog)
+        // Память, сторож и движок — одни на процесс, см. ProcessObjects. Экран,
+        // созданный заново, получает те же объекты, а не заводит свои.
+        processObjects = ProcessObjects.get(applicationContext)
+        mediator = processObjects.mediator
+        watchdog = processObjects.watchdog
+        llmEngine = processObjects.llmEngine
         termuxCompiler = TermuxKotlinCompiler(applicationContext)
         pendingQuerySource = SimplePendingQuerySource()
         codingTask = KotlinCodingTask(
