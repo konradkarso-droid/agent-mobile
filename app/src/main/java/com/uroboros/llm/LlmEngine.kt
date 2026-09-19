@@ -648,6 +648,8 @@ class LlmEngine(
      *        см. [loadIdentity]. Тоже входит в отпечаток загрузки.
      */
     private fun configureAfterLoad(sourceIdentity: String, loadIdentity: String) {
+        // Свежая модель пуста: записывать как точку разговора нечего.
+        stateIsConversation = false
         loadPrint = shortHash(
             (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
         )
@@ -925,6 +927,33 @@ class LlmEngine(
      */
     private var checkpointReport: String = "Точка: не пробовали"
 
+    /**
+     * Лежит ли сейчас в движке состояние разговора — то есть то, что вправе
+     * стать контрольной точкой.
+     *
+     * Зачем. Точка пишется при уходе приложения в фон и сохраняет то, что в
+     * движке В ЭТОТ МОМЕНТ. А модель делят три пользователя: разговор, судья
+     * памяти и цикл. Если последним работал судья или цикл, в движке их
+     * состояние, и записанное под именем точки разговора оно затёрло бы
+     * настоящую. Следующий запуск поднял бы ленту, к ней — чужую точку, и
+     * весь разговор пересчитался бы заново, причём ничто, кроме долгого
+     * первого ответа, об этом бы не сказало.
+     *
+     * Как решается. Разговором считается запрос через
+     * [generateConversationFlow] без своего системного сообщения, плюс
+     * успешно поднятая точка. Судья приносит своё системное сообщение, цикл
+     * ходит через [generateFlow] — оба дают `false`. Флаг ставится в начале
+     * каждого запроса, а не по его итогу: оборванный запрос тоже успевает
+     * изменить состояние движка.
+     *
+     * ЧЕГО НЕ УМЕЕТ. Он верит входу, а не содержимому: новый путь, который
+     * пойдёт через [generateConversationFlow] без системного сообщения и при
+     * этом не будет лентой разговора, флаг примет за разговор. Сегодня такой
+     * путь один — экран разговора.
+     */
+    @Volatile
+    private var stateIsConversation: Boolean = false
+
     /** Строка о последней попытке сохранить или поднять контрольную точку. */
     fun getStateCheckpointReport(): String = checkpointReport
 
@@ -1059,6 +1088,14 @@ class LlmEngine(
             return@withContext false
         }
 
+        // Не отказ в прежнем смысле — прежняя точка цела и по-прежнему годна:
+        // ни судья, ни цикл ленту разговора не меняют. См. [stateIsConversation].
+        if (!stateIsConversation) {
+            checkpointReport = "Точка: не записана — последним в движке был не " +
+                "разговор (разбор памяти, цикл или пусто); прежняя точка цела"
+            return@withContext false
+        }
+
         val target = checkpointFile()
         if (target == null) {
             checkpointReport = "Точка: ОТКАЗ — папка кэша не создана, привязать точку не к чему"
@@ -1130,6 +1167,9 @@ class LlmEngine(
 
         val ok = runCatching { engine.stateLoadFromFile(source.absolutePath) }.getOrDefault(false)
 
+        // Поднятая точка — состояние разговора; неудачный подъём оставляет
+        // движок пустым.
+        stateIsConversation = ok
         if (ok) {
             val note = lastEngineLogLine(STATE_LOAD_OK_FRAGMENT) ?: "лог молчит"
             checkpointReport = "Точка: поднята · $note"
@@ -1244,7 +1284,7 @@ class LlmEngine(
      * появилась раньше срока, потому что дисковый кэш живёт только в ней.
      */
     fun generateFlow(prompt: String, maxTokens: Int = 512): Flow<GenerationEvent> =
-        guardedFlow(singleUserMessage(prompt), maxTokens)
+        guardedFlow(singleUserMessage(prompt), maxTokens, conversation = false)
 
     /**
      * Тот же прогон, но запросом идёт вся лента разговора, а не одна
@@ -1265,7 +1305,14 @@ class LlmEngine(
     fun generateConversationFlow(
         messages: List<Pair<String, String>>,
         maxTokens: Int = 512,
-    ): Flow<GenerationEvent> = guardedFlow(conversationMessages(messages), maxTokens)
+    ): Flow<GenerationEvent> = guardedFlow(
+        conversationMessages(messages),
+        maxTokens,
+        // Лента разговора идёт без своего системного сообщения — стену ставит
+        // движок. Своё системное сообщение приносит только судья памяти. См.
+        // [stateIsConversation].
+        conversation = messages.firstOrNull()?.first != "system",
+    )
 
     /**
      * Обёртка над генерацией, общая для обоих входов.
@@ -1276,7 +1323,14 @@ class LlmEngine(
      * экране оба выглядят одинаково. Та же мера, что и с
      * [configureAfterLoad], и по той же причине.
      */
-    private fun guardedFlow(messagesJson: String, maxTokens: Int): Flow<GenerationEvent> = channelFlow {
+    private fun guardedFlow(
+        messagesJson: String,
+        maxTokens: Int,
+        conversation: Boolean,
+    ): Flow<GenerationEvent> = channelFlow {
+        // Первым делом, до всякой работы движка: с этого момента состояние в
+        // нём принадлежит этому запросу, как бы он ни кончился.
+        stateIsConversation = conversation
         watchdog.markInferenceStarted()
         val startedAtMs = System.currentTimeMillis()
         // Причина сбрасывается ЗДЕСЬ, в начале прогона, а не в конце прошлого.
