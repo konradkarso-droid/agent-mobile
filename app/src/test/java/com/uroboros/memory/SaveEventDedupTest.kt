@@ -53,6 +53,9 @@ class SaveEventDedupTest {
 
     private fun dao(pool: List<Sticker>) = FakeStickerDao().apply {
         onInsert = { 42L }
+        // Сохранение сперва убирает просроченное (см. migrateExpired); здесь
+        // убирать нечего, предмет этих тестов — пул после уборки.
+        onGetExpired = { emptyList() }
         onGetByTagInLayers = { _, _ -> pool }
     }
 
