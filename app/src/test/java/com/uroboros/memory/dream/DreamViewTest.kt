@@ -224,4 +224,64 @@ class DreamViewTest {
         assertTrue(text, text.contains("запись 1 → запись 2"))
         assertFalse(text, text.contains("Не показано"))
     }
+
+    // --- Схлопывание вариантов ---
+
+    private fun record(id: Long, text: String) = Sticker(id = id, content = text)
+
+    private fun dreamOf(vararg ids: Long) =
+        Dream(nightAt = 1L, recordIds = ids.joinToString(","), kind = DreamWeaver.Kind.TIME.name)
+
+    private val sunset = record(1, "Алеет солнце на закате")
+    private val white = record(2, "Меркурий светит белым на закате")
+    private val scarlet = record(3, "Меркурий светит алым на закате")
+    private val towel = record(4, "Всегда носи с собой полотенце")
+
+    @Test
+    fun `сны, отличающиеся записью из одной семьи, показываются одной строкой`() {
+        val text = view(
+            rows = listOf(dreamOf(1, 2), dreamOf(1, 3)),
+            records = listOf(sunset, white, scarlet),
+            night = night(dreams = 2, dreamers = 3),
+        )
+        assertTrue(text, text.contains("Снов: 2 · различных: 1"))
+        assertTrue(text, text.contains("Алеет солнце на закате → Меркурий светит белым на закате"))
+        assertTrue("вариант должен быть назван текстом", text.contains("то же с: Меркурий светит алым на закате"))
+    }
+
+    @Test
+    fun `сны с непохожими записями не склеиваются`() {
+        val text = view(
+            rows = listOf(dreamOf(1, 2), dreamOf(1, 4)),
+            records = listOf(sunset, white, towel),
+            night = night(dreams = 2, dreamers = 3),
+        )
+        assertFalse("склеивать разное нельзя", text.contains("то же с"))
+        assertFalse(text, text.contains("различных"))
+        assertTrue(text, text.contains("Меркурий светит белым на закате"))
+        assertTrue(text, text.contains("Всегда носи с собой полотенце"))
+    }
+
+    @Test
+    fun `сны разного вида не склеиваются, даже если записи одной семьи`() {
+        val bridge = Dream(nightAt = 1L, recordIds = "1,3", kind = DreamWeaver.Kind.BRIDGE.name)
+        val text = view(
+            rows = listOf(dreamOf(1, 2), bridge),
+            records = listOf(sunset, white, scarlet),
+            night = night(dreams = 2, dreamers = 3),
+        )
+        assertFalse(text, text.contains("то же с"))
+        assertTrue(text, text.contains("по времени: "))
+        assertTrue(text, text.contains("мост: "))
+    }
+
+    @Test
+    fun `строка «различных» молчит, когда схлопывать нечего`() {
+        val text = view(
+            rows = listOf(dreamOf(1, 2)),
+            records = listOf(sunset, white),
+            night = night(dreams = 1, dreamers = 2),
+        )
+        assertFalse(text, text.contains("различных"))
+    }
 }
