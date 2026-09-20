@@ -1,5 +1,6 @@
 package com.uroboros.memory.dream
 
+import com.uroboros.memory.Layer
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.dream.DreamWeaver.Kind
@@ -30,7 +31,11 @@ class DreamWeaverTest {
         at: Long = id * hour,
         source: String = SourceKind.USER_STATED.name,
         hidden: Boolean = false,
-    ) = Sticker(id = id, content = text, createdAt = at, source = source, reviewPending = hidden)
+        layer: Layer = Layer.GREEN,
+    ) = Sticker(
+        id = id, content = text, createdAt = at, source = source, reviewPending = hidden,
+        layer = layer.name,
+    )
 
     private fun DreamWeaver.Night.of(kind: Kind) = dreams.filter { it.kind == kind }
 
@@ -172,5 +177,78 @@ class DreamWeaverTest {
             )
         )
         assertFalse(night.ceilingHit)
+    }
+
+    // --- Слои ---
+
+    @Test
+    fun `холодное и архив снятся и сосчитаны по самому холодному звену`() {
+        val night = DreamWeaver.weave(
+            listOf(
+                // 1–2: горячие, рядом по времени.
+                rec(1, "Чёрный чай заваривают кипятком", at = 0),
+                rec(2, "Бетономешалка мешает бетон", at = minute),
+                // 3–4: холодная и горячая, рядом по времени.
+                rec(3, "Алеет солнце на закате", at = hour, layer = Layer.BLUE),
+                rec(4, "Жираф ест листья акации", at = hour + minute),
+                // 5–6: архивная и холодная, рядом по времени.
+                rec(6, "Облако похоже на кита", at = 3 * hour, layer = Layer.BLUE),
+                rec(5, "Магнит тянет железо", at = 3 * hour + minute, layer = Layer.PURPLE),
+            )
+        )
+        assertEquals(3, night.dreams.size)
+        assertEquals(6, night.dreamers)
+        assertEquals(2, night.dreamersCold)
+        assertEquals(1, night.dreamersArchive)
+        assertEquals("сон с холодной и горячей", 1, night.coldDreams)
+        assertEquals("сон с архивной и холодной — архивный, не холодный", 1, night.archiveDreams)
+    }
+
+    @Test
+    fun `сон слоя не меняет`() {
+        val cold = rec(1, "Алеет солнце на закате", at = 0, layer = Layer.BLUE)
+        val hot = rec(2, "Бетономешалка мешает бетон", at = minute)
+        val night = DreamWeaver.weave(listOf(cold, hot))
+        assertEquals(1, night.dreams.size)
+        assertEquals(Layer.BLUE.name, cold.layer)
+        assertEquals(Layer.GREEN.name, hot.layer)
+    }
+
+    // --- Итог ночи ---
+
+    @Test
+    fun `ночь без снов оставляет итог с нулём, а не ничего`() {
+        val night = DreamWeaver.weave(listOf(rec(1, "Алеет солнце на закате")))
+        val row = DreamNight.of(nightAt = 42L, night = night)
+        assertEquals(42L, row.nightAt)
+        assertEquals(0, row.dreams)
+        assertEquals(1, row.dreamers)
+        assertFalse(row.ceilingHit)
+    }
+
+    @Test
+    fun `итог ночи переносит все числа прохода`() {
+        val words = listOf(
+            "бетон", "ветер", "горох", "дождь", "ежевика", "жираф",
+            "замок", "искра", "капля", "лимон", "магнит", "облако",
+        )
+        val records = words.mapIndexed { i, w ->
+            rec(i + 1L, w, at = (i + 1) * minute, layer = if (i == 0) Layer.BLUE else Layer.GREEN)
+        } + rec(20, "Какого ты пола?") + rec(21, "скрыта", hidden = true) +
+            rec(22, "[TOTE] отчёт", source = SourceKind.AGENT_INFERRED.name)
+        val night = DreamWeaver.weave(records)
+        val row = DreamNight.of(1L, night)
+        assertEquals(night.dreams.size, row.dreams)
+        assertEquals(night.dreamers, row.dreamers)
+        assertEquals(night.dreamersCold, row.dreamersCold)
+        assertEquals(night.dreamersArchive, row.dreamersArchive)
+        assertEquals(night.coldDreams, row.coldDreams)
+        assertEquals(night.archiveDreams, row.archiveDreams)
+        assertEquals(1, row.skippedHidden)
+        assertEquals(1, row.skippedQuestions)
+        assertEquals(1, row.skippedAgentReports)
+        assertTrue(row.ceilingHit)
+        assertEquals(1, row.dreamersCold)
+        assertTrue("холодная запись в чём-то снилась", row.coldDreams > 0)
     }
 }
