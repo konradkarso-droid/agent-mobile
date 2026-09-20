@@ -369,6 +369,15 @@ class TrustedMediator(context: Context) {
     suspend fun hideForReview(id: Long): Boolean = hourglass.hideForReview(id)
 
     /**
+     * Отвергнуть запись. Проброс без логики: что это значит и почему необратимо
+     * с экрана — в KDoc HourglassMemory.reject. Путь только от человека, как у
+     * приёма и скрытия.
+     */
+    suspend fun reject(id: Long): Boolean = hourglass.reject(id)
+
+    suspend fun getRejected(): List<Sticker> = hourglass.getRejected()
+
+    /**
      * Достать текст противника по номеру записи.
      *
      * Пропавшая запись не считается чистотой: спор был найден, а показать его
