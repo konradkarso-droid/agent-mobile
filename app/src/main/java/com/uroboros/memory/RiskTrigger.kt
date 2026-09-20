@@ -290,6 +290,30 @@ object RiskTrigger {
         contradictionMarks(a, b).isNotEmpty()
 
     /**
+     * Пара, которую сравнивать не на что: отчёт агента о собственной работе
+     * стоит с ОБЕИХ сторон.
+     *
+     * Отчёт о прогоне — запись события, а не утверждение о мире. Два прогона
+     * не спорят никогда, сколько бы чисел в них ни разошлось: «Успех за 3
+     * итераций» и «Успех за 5 итераций» — два разных прогона одной задачи.
+     * Правило этого само не видит: тексты отчётов почти совпадают (тело кода
+     * одно), а числа разные, и признак чисел срабатывает исправно.
+     *
+     * ПОЧЕМУ НЕ СНЯТЬ ОТЧЁТЫ СОВСЕМ. Отчёт против слов человека спорить
+     * может, и такой случай наблюдался живьём: модель пересказала человеку
+     * его же словами то, что на деле было отчётом агента. Снимаются пары, а
+     * не записи.
+     *
+     * ОДНО МЕСТО НА ВЕСЬ ПРОЕКТ. Тем же правилом пользуется ночной судья
+     * (см. JudgeRun): решение здесь одно, и двух его копий быть не должно —
+     * разойдясь, они дали бы очередь и список судьи, спорящие друг с другом.
+     * Сон устроен иначе и строже: отчёты не снятся вовсе, ни в какой паре.
+     */
+    fun bothAgentReports(oneSource: String, otherSource: String): Boolean =
+        oneSource == SourceKind.AGENT_INFERRED.name &&
+            otherSource == SourceKind.AGENT_INFERRED.name
+
+    /**
      * Те же признаки, по которым отвечает [contradicts], но названные
      * поимённо и со словами, которыми они выражены.
      *
@@ -530,6 +554,7 @@ object RiskTrigger {
     private fun findContradiction(candidate: Sticker, pool: List<Sticker>): Sticker? {
         for (existing in pool) {
             if (existing.id == candidate.id) continue
+            if (bothAgentReports(candidate.source, existing.source)) continue
             if (contradicts(candidate.content, existing.content)) return existing
         }
         return null
