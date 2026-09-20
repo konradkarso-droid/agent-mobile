@@ -451,11 +451,37 @@ class HourglassMemory(
      */
     private val COLD_LAYERS = listOf(Layer.BLUE.name, Layer.PURPLE.name)
 
+    /**
+     * Довести слои просроченных записей до текущего часа.
+     *
+     * Сколько ступеней пройти и какой срок поставить, решает Prism.catchUp —
+     * объяснение, почему срок считается от старого срока, живёт там. Отсюда
+     * следует главное свойство: результат не зависит от того, как часто этот
+     * метод зовут, поэтому звать его можно из любого места, где читают слой.
+     *
+     * Чего метод не умеет и не должен:
+     *  - сам по часам он не запускается. Кто читает слой из базы, не позвав его
+     *    перед этим, видит слой на момент последнего вызова, то есть записи,
+     *    которые по часам уже остыли, числятся горячими;
+     *  - не трогает RED и PURPLE — у них нет срока, в отбор они не попадают;
+     *  - меняет только слой и срок: содержимое, авторство, счётчики и бит спора
+     *    остаются как были (см. StickerDao.updateLayer);
+     *  - не прогревает. Прогрев идёт по обращению, в пути чтения, и в уборку не
+     *    сливается: у уборки нет события обращения, по которому греть.
+     */
     suspend fun migrateExpired() {
         val now = System.currentTimeMillis()
+        migrateExpiredAt(now)
+    }
+
+    /**
+     * То же с явным моментом времени — чтобы проверку можно было прогнать
+     * детерминированно, без настоящих часов.
+     */
+    internal suspend fun migrateExpiredAt(now: Long) {
         for (sticker in dao.getExpired(now)) {
-            val newLayer = Prism.colderLayer(Layer.valueOf(sticker.layer))
-            val newExpiry = Prism.newInterval(newLayer)?.let { now + it }
+            val (newLayer, newExpiry) =
+                Prism.catchUp(Layer.valueOf(sticker.layer), sticker.expiryTime, now)
             dao.updateLayer(sticker.id, newLayer.name, newExpiry)
         }
     }
