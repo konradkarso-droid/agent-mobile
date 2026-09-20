@@ -56,6 +56,9 @@ class ReviewWitnessTest {
 
     private fun dao(pool: (String, List<String>) -> List<Sticker>) = FakeStickerDao().apply {
         onInsert = { 42L }
+        // Сохранение сперва убирает просроченное (см. migrateExpired); здесь
+        // убирать нечего, предмет этих тестов — пул после уборки.
+        onGetExpired = { emptyList() }
         onGetByTagInLayers = pool
     }
 
