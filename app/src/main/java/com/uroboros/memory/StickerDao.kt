@@ -216,7 +216,15 @@ interface StickerDao {
     @Query("SELECT * FROM stickers ORDER BY createdAt DESC")
     suspend fun getAll(): List<Sticker>
 
-    @Query("SELECT * FROM stickers WHERE tag = :tag AND layer IN (:layers)")
+    /**
+     * Пул сравнения по тегу и слоям: с ним сверяют при сохранении, перед приёмом
+     * и при показе спора. Записи из очереди в нём есть — спор с ними ещё не
+     * решён. Отвергнутых нет: они больше не часть памяти, с которой спорят.
+     * Иначе запись, сказанная заново после отвержения, отсеивалась бы как повтор
+     * отвергнутой, а ждущая в очереди числилась бы спорящей с тем, что уже
+     * отвергнуто.
+     */
+    @Query("SELECT * FROM stickers WHERE tag = :tag AND layer IN (:layers) AND rejectedAt IS NULL")
     suspend fun getByTagInLayers(tag: String, layers: List<String>): List<Sticker>
 
     /**
