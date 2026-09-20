@@ -3,6 +3,7 @@ package com.uroboros.memory.judge
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.HOT_LAYERS
+import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
@@ -127,6 +128,12 @@ class JudgeRun(
         // комплект, а не по комплекту на каждого судью, которого пробовали.
         verdicts.forgetOtherJudges(fingerprint)
 
+        // Пары отбираются по слою, а слой без уборки отстаёт от часов: записи,
+        // которые по времени уже остыли, судились бы как горячие, и прогон
+        // тратил бы нагрев на то, чего модель в ответах уже не видит. Пул
+        // снимается один раз, в начале; запись, остывшая за время прогона,
+        // досуживается в нём — прогон от этого только длиннее, не неверней.
+        HourglassMemory(stickers).migrateExpired()
         val candidates = stickers.getAll()
             .filter { it.layer in HOT_LAYERS }
             .filter { !it.reviewPending }
