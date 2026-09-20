@@ -389,7 +389,9 @@ class MainActivity : AppCompatActivity() {
     // Судья памяти. Собирается лениво: движок к моменту создания активности
     // ещё не назначен, а раньше первого обращения к разбору он и не нужен.
     private val judgeLauncher by lazy { JudgeLauncher(this, llmEngine) }
-    private val judgeUi by lazy { JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) }
+    private val judgeUi by lazy {
+        JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id -> mediator.reject(id) }
+    }
 
     /**
      * Чем судим — в части модели. Ссылка на файл, а не подпись на экране:
@@ -583,7 +585,8 @@ class MainActivity : AppCompatActivity() {
     private suspend fun renderPendingReview(pending: List<Sticker>): CharSequence {
         val out = SpannableStringBuilder("ОЧЕРЕДЬ НА ПРОВЕРКЕ")
         if (pending.isEmpty()) {
-            out.append("\n\nВ очереди пусто: скрытых записей нет.")
+            out.append("\n\nВ очереди пусто: записей, ждущих решения, нет.")
+            appendRejected(out)
             return out
         }
         // Отчёты о спорах собираются ДО сборки текста, а не по ходу цикла.
@@ -830,7 +833,34 @@ class MainActivity : AppCompatActivity() {
             out.append("\n\nПоказаны первые ${shown.size} из ${pending.size}. ")
             out.append("Остальные появятся здесь, когда эти будут разобраны.")
         }
+        appendRejected(out)
         return out
+    }
+
+    /**
+     * Отвергнутые записи под очередью — текстом, без действий.
+     *
+     * Список нужен, чтобы ошибку отвержения было чем заметить: отвергнутая
+     * запись в ответы не попадает, и без этого списка она исчезла бы из виду
+     * совсем. Действий у строк нет: вернуть отвергнутую нажатием нельзя, почему
+     * — в KDoc HourglassMemory.reject.
+     *
+     * Пусто — раздела нет вовсе: число отвергнутых всегда стоит на канарейке, в
+     * том числе ноль, так что отсутствие раздела с «сломалось» не спутать.
+     */
+    private suspend fun appendRejected(out: SpannableStringBuilder) {
+        val rejected = mediator.getRejected()
+        if (rejected.isEmpty()) return
+        out.append("\n\nОТВЕРГНУТЫ: ${rejected.size}")
+        for (sticker in rejected.take(PENDING_REVIEW_LIMIT)) {
+            val preview = sticker.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+            val tail = if (sticker.content.length > DROP_PREVIEW_CHARS) "…" else ""
+            out.append("\n№${sticker.id} «$preview$tail»")
+            sticker.rejectedAt?.let { out.append(" · ").append(fmtMoment(it)) }
+        }
+        if (rejected.size > PENDING_REVIEW_LIMIT) {
+            out.append("\n… и ещё ${rejected.size - PENDING_REVIEW_LIMIT}")
+        }
     }
 
     /**
@@ -1399,17 +1429,21 @@ class MainActivity : AppCompatActivity() {
                         "ответила. Попробуйте ещё раз."
             }
 
+            // Отвергнуть можно при любом исходе проверки: это решение человека
+            // о записи, и сверка ему не нужна. Принять — только при состоявшейся.
+            val rejectNote = "«Отвергнуть» уберёт запись из очереди и из ответов агента " +
+                "навсегда; из памяти она не стирается, но вернуть её нажатием нельзя."
             val message = if (check.allowsAccept) {
                 "«$preview$tail»\n\n$verdict\n\n" +
-                    "Запись перестанет быть скрытой и снова сможет попасть в " +
+                    "«Принять»: запись перестанет быть скрытой и снова сможет попасть в " +
                     "ответ агента. Вернуть её в очередь нечем — только сохранить " +
-                    "спорное утверждение заново."
+                    "спорное утверждение заново.\n\n$rejectNote"
             } else {
-                "«$preview$tail»\n\n$verdict"
+                "«$preview$tail»\n\n$verdict\n\n$rejectNote"
             }
 
             val builder = AlertDialog.Builder(this@MainActivity)
-                .setTitle("Принять запись?")
+                .setTitle("Принять или отвергнуть?")
                 .setMessage(message)
 
             if (check.allowsAccept) {
@@ -1423,8 +1457,28 @@ class MainActivity : AppCompatActivity() {
                 }
                 builder.setNegativeButton("Закрыть", null)
             }
+            builder.setNeutralButton("Отвергнуть") { _, _ ->
+                lifecycleScope.launch { rejectRecord(sticker) }
+            }
             builder.show()
         }
+    }
+
+    /**
+     * Отвергнуть запись из очереди. Число остатка называется вслух — ради
+     * него отвержение и заведено: без него очередь с настоящим спором не
+     * убывала (см. HourglassMemory.reject).
+     */
+    private suspend fun rejectRecord(sticker: Sticker) {
+        val ok = mediator.reject(sticker.id)
+        val pending = mediator.getPendingReview()
+        binding.textResults.text = renderPendingReview(pending)
+        Toast.makeText(
+            this@MainActivity,
+            if (ok) "Отвергнута · в очереди осталось ${pending.size}"
+            else "Не отвергнуто: память не ответила. Запись осталась в очереди.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     /**
@@ -4021,10 +4075,11 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_MODEL_FOLDER_URI = "model_folder_uri"
         private const val KEY_LAST_MODEL_URI = "last_model_uri"
 
-        // Шесть часов: столько человек готов отдать под первый разбор
-        // накопленного. Прогон почти наверняка кончится раньше — часовой
-        // остановит по нагреву, и остаток достанется следующему запуску.
-        private const val JUDGE_BUDGET_MS = 6L * 60 * 60 * 1000
+        // Семь часов: столько человек отдаёт судье за ночь. Это его число, а не
+        // подбор. Прогон кончается либо на нём, либо раньше, если пары
+        // кончились или часовой остановил по нагреву; остаток пар достаётся
+        // следующему запуску.
+        private const val JUDGE_BUDGET_MS = 7L * 60 * 60 * 1000
         private const val JUDGE_BUSY = "Идёт разбор памяти — модель занята"
         private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
         private const val KEY_PROVENANCE_REPAIR_DONE = "provenance_repair_done_2026_08_24"
