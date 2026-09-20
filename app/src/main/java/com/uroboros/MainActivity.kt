@@ -3490,7 +3490,10 @@ class MainActivity : AppCompatActivity() {
                 // сравнивает речь, а не обрамление. И передаётся ПОСЛЕ
                 // автозаписи выше — но сверяется всё равно с тем, что нашёл
                 // отбор ДО неё, поэтому реплика не сверяется сама с собой.
-                val notice = DisputeNotice.of(stickers.map { it.content }, userText)
+                val notice = DisputeNotice.of(
+                    stickers.map { DisputeNotice.Record(it.content, it.source) },
+                    userText,
+                )
                 disputeNoticeLine = disputeNoticeLabel(notice)
                 val questionsOnly = stickers.count { RiskTrigger.isOnlyQuestions(it.content) }
                 recordsQuestionsLine =
