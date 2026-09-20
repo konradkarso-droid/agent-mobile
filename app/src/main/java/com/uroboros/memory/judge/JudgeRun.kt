@@ -4,6 +4,7 @@ import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.HOT_LAYERS
 import com.uroboros.memory.HourglassMemory
+import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
@@ -53,6 +54,11 @@ data class JudgeRunReport(
      * выпала, иначе число нечем проверить.
      */
     val tooLong: List<Long> = emptyList(),
+    /**
+     * Номера записей из одних вопросов — тоже не судились вовсе; почему — в
+     * шапке [JudgeRun]. Пустой список — таких нет.
+     */
+    val onlyQuestions: List<Long> = emptyList(),
 )
 
 /**
@@ -78,6 +84,17 @@ data class JudgeRunReport(
  * обрывается на середине, и обрываться он должен на самом старом, а не на самом
  * свежем: свежая запись — та самая, которая только что могла опровергнуть
  * старую.
+ *
+ * Записи из одних вопросов не судятся вовсе, ни в одной паре. Судья отвечает,
+ * утверждают ли две записи несовместимое, а вопрос не утверждает ничего: пара с
+ * ним может дать только ложную тревогу, и человеку придётся её разбирать. Это
+ * наблюдалось живьём: автозапись кладёт в память каждую отправленную реплику,
+ * вопросы тоже, и судья, идущий от новых записей, тратил почти всё время на
+ * пары вопросов, а все найденные им «споры» были такими парами. Признак вопроса
+ * — общий с правилом противоречия (RiskTrigger.isOnlyQuestions), и его
+ * промахи те же: риторический вопрос со скрытым утверждением судье больше не
+ * попадёт, вопрос без знака судится как раньше. Запись при этом не меняется и
+ * из памяти не уходит; её номер называется в отчёте каждого прогона.
  *
  * Слишком длинные записи не судятся вовсе, ни в одной паре, — см.
  * [MAX_RECORD_CHARS]. Без этого одна такая запись останавливает весь разбор
@@ -138,7 +155,8 @@ class JudgeRun(
             .filter { it.layer in HOT_LAYERS }
             .filter { !it.reviewPending }
             .sortedByDescending { it.createdAt }
-        val (pool, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
+        val (sized, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
+        val (pool, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }
 
         var judged = 0
         var disputes = 0
@@ -216,10 +234,11 @@ class JudgeRun(
             judged = judged,
             disputes = disputes,
             unreadable = unreadable,
-            remaining = judgeablePairs(pool) - verdicts.countFor(fingerprint),
+            remaining = unjudgedPairs(pool, fingerprint),
             spentMs = System.currentTimeMillis() - startedAt,
             interruptedBy = interruptedBy,
             tooLong = tooLong.map { it.id },
+            onlyQuestions = onlyQuestions.map { it.id },
         )
     }
 
@@ -245,11 +264,26 @@ class JudgeRun(
         else -> null
     }
 
-    /** Сколько пар в пуле вообще подлежит суду — без пар «отчёт против отчёта». */
-    private fun judgeablePairs(pool: List<Sticker>): Int {
-        val all = pool.size * (pool.size - 1) / 2
-        val reports = pool.count { it.source == SourceKind.AGENT_INFERRED.name }
-        return all - reports * (reports - 1) / 2
+    /**
+     * Сколько пар нынешнего пула этот судья ещё не разбирал.
+     *
+     * Считается по самим парам, а не вычитанием числа вердиктов из числа пар:
+     * вердикты остаются и у пар, выпавших из пула (запись остыла, ушла в
+     * очередь или оказалась вопросом), и вычитание занижало бы остаток на
+     * их число, вплоть до нуля при живой очереди. Обход тот же, что в
+     * основном цикле, поэтому и пары «отчёт против отчёта» пропускаются так
+     * же. Цена — по короткому запросу на пару, один раз в конце прогона.
+     */
+    private suspend fun unjudgedPairs(pool: List<Sticker>, fingerprint: String): Int {
+        var left = 0
+        for (i in pool.indices) {
+            for (k in i + 1 until pool.size) {
+                if (bothAgentReports(pool[i], pool[k])) continue
+                val (first, second) = order(pool[i], pool[k])
+                if (verdicts.judged(first.id, second.id, fingerprint) == 0) left++
+            }
+        }
+        return left
     }
 
     companion object {
