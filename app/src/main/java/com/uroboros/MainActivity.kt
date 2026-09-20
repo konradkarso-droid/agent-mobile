@@ -1714,6 +1714,7 @@ class MainActivity : AppCompatActivity() {
     private fun markName(kind: RiskTrigger.MarkKind): String = when (kind) {
         RiskTrigger.MarkKind.NEGATION -> "отрицание"
         RiskTrigger.MarkKind.NUMBER -> "число"
+        RiskTrigger.MarkKind.SWAP -> "другое слово"
     }
 
     /**
