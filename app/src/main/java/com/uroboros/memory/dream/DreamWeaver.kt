@@ -1,5 +1,6 @@
 package com.uroboros.memory.dream
 
+import com.uroboros.memory.Layer
 import com.uroboros.memory.MIN_WORD_LENGTH
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.STOP_WORDS
@@ -23,6 +24,14 @@ import com.uroboros.memory.Sticker
  *    общих слов не имеют. Время связывает соседей по разговору, а не по смыслу,
  *    и именно поэтому это сон, а не вывод.
  * Записи с общими словами между собой не снятся: их и так сводит поиск.
+ *
+ * СЛОИ. Снятся записи всех слоёв, холодные и архивные тоже: ассоциация со
+ * старым — ровно то, чего поиск по вопросу не даёт. Сон слоя не меняет и
+ * никого не греет — ни сейчас, ни когда его вспомнят: воспоминание о сне не
+ * делает приснившееся нынешним. Сколько холодного и архивного попало в сон,
+ * сосчитано в [Night]; доли по слоям не назначены, пока эти числа не покажут,
+ * что холодное вытесняет горячее. Слой читается как есть, поэтому перед сном
+ * звать остывание — забота вызывающего.
  *
  * СПЛЕТЕНИЕ. Внутри одной ночи простые связи сплетаются в сюжеты
  * ([Kind.PLOT]): цепочки из нескольких записей, где каждые две соседние связаны
@@ -77,6 +86,16 @@ object DreamWeaver {
         val skippedHidden: Int,
         val skippedQuestions: Int,
         val skippedAgentReports: Int,
+        /** Из участвовавших — сколько в холодном слое (BLUE) и в архиве (PURPLE). */
+        val dreamersCold: Int,
+        val dreamersArchive: Int,
+        /**
+         * Сны по самому холодному звену: сон с архивной записью считается
+         * архивным, иначе с холодной — холодным. Горячие — остальные. Считаются
+         * сны, вошедшие в ночь, то есть после потолка.
+         */
+        val coldDreams: Int,
+        val archiveDreams: Int,
         /** Потолок снов за ночь сработал — часть сюжетов не построена. */
         val ceilingHit: Boolean,
     )
@@ -144,12 +163,23 @@ object DreamWeaver {
         if (!ceilingHit) {
             ceilingHit = !weavePlots(ids, links, dreams)
         }
+        val kept = dreams.take(MAX_DREAMS_PER_NIGHT)
+        fun layerOf(id: Long) = byId.getValue(id).layer
+        val archiveDreams = kept.count { d -> d.recordIds.any { layerOf(it) == Layer.PURPLE.name } }
+        val coldDreams = kept.count { d ->
+            d.recordIds.none { layerOf(it) == Layer.PURPLE.name } &&
+                d.recordIds.any { layerOf(it) == Layer.BLUE.name }
+        }
         return Night(
-            dreams = dreams.take(MAX_DREAMS_PER_NIGHT),
+            dreams = kept,
             dreamers = dreamers.size,
             skippedHidden = hidden,
             skippedQuestions = questions,
             skippedAgentReports = reports,
+            dreamersCold = dreamers.count { it.layer == Layer.BLUE.name },
+            dreamersArchive = dreamers.count { it.layer == Layer.PURPLE.name },
+            coldDreams = coldDreams,
+            archiveDreams = archiveDreams,
             ceilingHit = ceilingHit,
         )
     }
