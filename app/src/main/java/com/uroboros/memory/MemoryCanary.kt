@@ -49,6 +49,11 @@ data class MemorySnapshot(
     /** Спорные записи. Sweep их не трогает — число обязано совпасть. */
     val pendingReview: Int,
     /**
+     * Отвергнутые человеком. Скрыты, как и очередь, но решения не ждут, поэтому
+     * считаются отдельно: иначе очередь никогда бы не выглядела разобранной.
+     */
+    val rejected: Int = 0,
+    /**
      * Самый старый истёкший expiryTime, либо null если просроченных нет.
      * Показывает, насколько давно копится долг.
      */
@@ -117,6 +122,7 @@ class MemoryCanary(private val dao: StickerDao) {
             expired = dao.countExpired(now),
             byLayer = byLayer,
             pendingReview = dao.countPendingReview(),
+            rejected = dao.countRejected(),
             oldestExpiredAt = dao.oldestExpiredAt(now),
             nextExpiryAt = dao.nextExpiryAt(now),
             withoutExpiry = dao.countWithoutExpiry(),
@@ -158,7 +164,7 @@ class MemoryCanary(private val dao: StickerDao) {
                 else "${label("Долг копится:")}$debt дн."
             )
         }
-        appendLine("${label("На проверке:")}${s.pendingReview}")
+        appendLine("${label("На проверке:")}${s.pendingReview} · отвергнуто ${s.rejected}")
         // Без этой строки "просрочено 0" не отличить от "сроков нет вовсе".
         val untilNext = s.daysUntilNextExpiry
         appendLine(
