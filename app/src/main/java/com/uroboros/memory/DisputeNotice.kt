@@ -125,13 +125,26 @@ object DisputeNotice {
     }
 
     /**
+     * Запись, поданная модели в этом ходе, глазами сверки: текст и
+     * происхождение. Больше сверке знать не нужно, и больше ей не дают.
+     */
+    data class Record(val content: String, val source: String)
+
+    /**
      * Сверяет переданное и собирает блок для реплики.
      *
-     * Принимает тексты, а не записи, намеренно: сверка не смотрит ни на
-     * провенанс, ни на слой, ни на бит — только на тексты. Чистая функция
-     * без базы и без Android, поэтому берётся обычным тестом.
+     * Принимает [Record], а не Sticker, намеренно: сверке нужны ровно две
+     * вещи — текст и происхождение записи, — и тип говорит, что остальное
+     * (слой, бит, время, счётчики) на находку не влияет и влиять не может.
+     * Чистая функция без базы и без Android, поэтому берётся обычным тестом.
      *
-     * @param contents тексты записей, поданных модели в этом ходе.
+     * ПРОИСХОЖДЕНИЕ ЧИТАЕТСЯ ТОЛЬКО РАДИ ОДНОГО ЗАПРЕТА: пара, где отчёт
+     * агента стоит с обеих сторон, не сравнивается — см.
+     * [RiskTrigger.bothAgentReports]. Реплика человека этим запретом не
+     * затронута никогда: она по определению не отчёт, и отчёт против слов
+     * человека спорить может.
+     *
+     * @param records записи, поданные модели в этом ходе.
      * @param utterance текст реплики человека в этом же ходе. Умолчание `null`
      *        означает «реплику не передали» и даёт ровно прежнее поведение —
      *        сверку записей между собой. Умолчание нужно ещё и затем, чтобы
@@ -151,8 +164,9 @@ object DisputeNotice {
      * Пустые и пробельные тексты пропускаются, и реплика тоже: сверять в них
      * нечего, а в цитате они дали бы пустые кавычки.
      */
-    fun of(contents: List<String>, utterance: String? = null): Result {
-        val texts = contents.filter { it.isNotBlank() }
+    fun of(records: List<Record>, utterance: String? = null): Result {
+        val fed = records.filter { it.content.isNotBlank() }
+        val texts = fed.map { it.content }
         val speech = utterance?.takeIf { it.isNotBlank() }
 
         // Пара нужна целиком. Реплика без единой записи не с чем сверяется, а
@@ -181,8 +195,11 @@ object DisputeNotice {
             }
         }
 
-        for (i in texts.indices) {
-            for (j in i + 1 until texts.size) {
+        for (i in fed.indices) {
+            for (j in i + 1 until fed.size) {
+                // Два отчёта о разных прогонах не спорят. Запрет тот же, что у
+                // проверки при сохранении и у судьи, и живёт он в одном месте.
+                if (RiskTrigger.bothAgentReports(fed[i].source, fed[j].source)) continue
                 val marks = RiskTrigger.contradictionMarks(texts[i], texts[j])
                 if (marks.isEmpty()) continue
                 found++
