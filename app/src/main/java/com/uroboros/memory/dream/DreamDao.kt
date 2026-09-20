@@ -15,9 +15,19 @@ interface DreamDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(dreams: List<Dream>)
 
-    /** Последняя ночь, в которую что-нибудь приснилось, — или null, если снов не было ни разу. */
-    @Query("SELECT MAX(nightAt) FROM dreams")
-    suspend fun lastNight(): Long?
+    /**
+     * Итог ночи. Повтор ключа — ошибка, а не пропуск: два прохода с одним
+     * началом слили бы сны двух ночей в одну.
+     */
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertNight(night: DreamNight)
+
+    /**
+     * Последняя ночь — или null, если прохода не было ни разу. Берётся по
+     * итогам, а не по снам: ночь без снов тоже ночь (см. [DreamNight]).
+     */
+    @Query("SELECT * FROM nights ORDER BY nightAt DESC LIMIT 1")
+    suspend fun lastNight(): DreamNight?
 
     @Query("SELECT * FROM dreams WHERE nightAt = :nightAt")
     suspend fun ofNight(nightAt: Long): List<Dream>
