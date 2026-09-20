@@ -3925,15 +3925,21 @@ class MainActivity : AppCompatActivity() {
 
         binding.buttonJudge.setOnLongClickListener {
             if (isToteRunning) {
+                // Ночь пропускается целиком, вместе со сном: модель занята, а
+                // пропуск сна восстановим — тот же материал сплетётся в
+                // следующую ночь.
                 Toast.makeText(this@MainActivity, "Идёт цикл — модель занята", Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
             }
-            // Остальные условия запуска живут в одном месте — у службы.
-            val refusal = AgentService.whyCannotStart(applicationContext)
-            if (refusal != null) {
-                Toast.makeText(this@MainActivity, refusal, Toast.LENGTH_LONG).show()
+            if (AgentService.state.value is AgentService.RunState.Running) {
+                Toast.makeText(this@MainActivity, JUDGE_BUSY, Toast.LENGTH_SHORT).show()
                 return@setOnLongClickListener true
             }
+            // Условия судьи здесь НЕ спрашиваются, хотя раньше спрашивались:
+            // ночь начинается со сна, которому ни модель, ни сторож не нужны, и
+            // отказ на экране отменил бы заодно и сон. Служба сама решит судьбу
+            // судьи и вернёт отказ вместе с тем, что приснилось.
+            //
             // Прогон идёт в службе, а не на экране: переживает погасший экран
             // и уход из приложения. Ход и итог приходят через AgentService.state.
             AgentService.startJudge(applicationContext, modelIdentity(), JUDGE_BUDGET_MS)
