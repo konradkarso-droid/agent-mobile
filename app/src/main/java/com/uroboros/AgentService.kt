@@ -10,6 +10,8 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
 import com.uroboros.memory.EmergencyStop
+import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
@@ -42,8 +44,16 @@ import java.util.Locale
  * командой с экрана. После гибели процесса служба не перезапускается
  * (START_NOT_STICKY) — перезапуск начал бы работу без человека.
  *
- * Условия запуска проверяются в одном месте, [whyCannotStart]: экран спрашивает
- * его же, чтобы показать отказ, и служба сверяется с ним ещё раз при старте.
+ * ДВЕ РАБОТЫ ЗА ОДИН ЗАПУСК, И УСЛОВИЯ У НИХ РАЗНЫЕ. Сначала ночной проход сна
+ * (см. [DreamRunner]), потом разбор памяти судьёй. Сну не нужны ни модель, ни
+ * сторож, ни отсутствие аварийного стопа: он только читает записи и считает.
+ * Поэтому [whyCannotStart] спрашивается ПОСЛЕ сна и решает только судьбу
+ * судьи — иначе незагруженная модель отменяла бы и сон, которому она не нужна.
+ *
+ * Отказ судьи не теряется: он приходит на экран итогом прогона вместе с тем,
+ * что приснилось. Экран поэтому сам условия судьи не спрашивает — иначе ночь
+ * без судьи проходила бы вовсе без сна.
+ *
  * Повторный запуск поверх идущего прогона ничего не меняет.
  *
  * Ход виден в уведомлении: сколько пар разобрано и когда была последняя. Если
@@ -56,8 +66,9 @@ import java.util.Locale
  *    приложению нужны «Автозапуск» и батарея «Без ограничений».
  *  - На Android 13 и новее без разрешения на уведомления работает, но в шторке
  *    не видна. Разрешение здесь не спрашивается.
- *  - Возит один вид работы — разбор памяти. Цикл TOTE по-прежнему живёт на
- *    экране и обрывается вместе с ним.
+ *  - Цикл TOTE по-прежнему живёт на экране и обрывается вместе с ним.
+ *  - Остановка во время сна (первые миллисекунды прогона) не даёт отчёта: сон
+ *    так короток, что попасть в него нажатием почти нельзя.
  */
 class AgentService : Service() {
 
@@ -89,15 +100,15 @@ class AgentService : Service() {
             // Второй запуск поверх идущего прогона идущий не трогает: ни его
             // состояние, ни уведомление.
             running -> Unit
-            else -> startJudgeRun(intent)
+            else -> startRun(intent)
         }
         return START_NOT_STICKY
     }
 
-    private fun startJudgeRun(intent: Intent?) {
-        val refusal = whyCannotStart(applicationContext)
-        if (refusal != null || intent?.action != ACTION_JUDGE) {
-            _state.value = RunState.Finished(refusal ?: "Служба получила неизвестную команду.")
+    /** Ночь целиком: сначала сон, потом — если условия позволяют — судья. */
+    private fun startRun(intent: Intent?) {
+        if (intent?.action != ACTION_JUDGE) {
+            _state.value = RunState.Finished("Служба получила неизвестную команду.")
             finish()
             return
         }
@@ -105,11 +116,23 @@ class AgentService : Service() {
         val objects = ProcessObjects.get(applicationContext)
         val modelIdentity = intent.getStringExtra(EXTRA_MODEL) ?: "модель неизвестна"
         val budgetMs = intent.getLongExtra(EXTRA_BUDGET_MS, 0L)
-        val startedAt = System.currentTimeMillis()
-        _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null)
-        showProgress(startedAt, done = 0, lastAt = null)
 
         job = scope.launch {
+            // Сон идёт без блокировки сна и без пометки "идёт разбор": это
+            // миллисекунды счёта, а не прогон, который надо сторожить.
+            val dreamed = DreamRunner.run(MemoryDatabase.getInstance(applicationContext))
+
+            val refusal = whyCannotStart(applicationContext)
+            if (refusal != null) {
+                _state.value = RunState.Finished(dreamed + "\n\n" + refusal)
+                finish()
+                return@launch
+            }
+
+            val startedAt = System.currentTimeMillis()
+            _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null)
+            showProgress(startedAt, done = 0, lastAt = null)
+
             acquireWakeLock(budgetMs)
             val report = try {
                 JudgeLauncher(applicationContext, objects.llmEngine)
@@ -123,7 +146,7 @@ class AgentService : Service() {
             } finally {
                 releaseWakeLock()
             }
-            _state.value = RunState.Finished(report)
+            _state.value = RunState.Finished(dreamed + "\n\n" + report)
             finish()
         }
     }
@@ -214,9 +237,10 @@ class AgentService : Service() {
         val state: StateFlow<RunState> get() = _state
 
         /**
-         * Почему прогон сейчас нельзя начать, словами для экрана; null — можно.
+         * Почему СУДЬЯ сейчас не может начать, словами для экрана; null — может.
          *
-         * Единственное место этих условий. Сторож, не приславший ни одного
+         * Единственное место этих условий, и они только о судье: сон проходит
+         * и при отказе (см. шапку класса). Сторож, не приславший ни одного
          * показания батареи, считается неработающим: прогон без живой остановки
          * по нагреву не начинается, сомнение решается в сторону отказа.
          */
@@ -234,7 +258,10 @@ class AgentService : Service() {
             }
         }
 
-        /** Запустить разбор памяти в службе. Проверку условий зовёт вызывающий. */
+        /**
+         * Запустить ночь в службе: сон, а за ним разбор памяти. Условия судьи
+         * проверяет сама служба, вызывающему спрашивать их не нужно.
+         */
         fun startJudge(context: Context, modelIdentity: String, budgetMs: Long) {
             val intent = Intent(context, AgentService::class.java)
                 .setAction(ACTION_JUDGE)
