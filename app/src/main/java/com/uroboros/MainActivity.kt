@@ -48,6 +48,7 @@ import com.uroboros.memory.Sticker
 import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.memory.clusterDisputes
+import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
 import com.uroboros.safety.DeviceSafetyWatchdog
@@ -389,6 +390,9 @@ class MainActivity : AppCompatActivity() {
     // Судья памяти. Собирается лениво: движок к моменту создания активности
     // ещё не назначен, а раньше первого обращения к разбору он и не нужен.
     private val judgeLauncher by lazy { JudgeLauncher(this, llmEngine) }
+    /** Раздел «Сны» в «Показать». Только чтение, см. DreamView. */
+    private val dreamView by lazy { DreamView(applicationContext) }
+
     private val judgeUi by lazy {
         JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id -> mediator.reject(id) }
     }
@@ -1159,6 +1163,10 @@ class MainActivity : AppCompatActivity() {
                 blocks += witnessStart to out.length
                 section(shown.summary, headed = false)
                 section(judgeUi.section(modelIdentity()) { openMemoryView() }, headed = true)
+                // Сны идут ОТДЕЛЬНЫМ блоком после судьи и без единой нажимаемой
+                // строки: сон ничего не утверждает, соглашаться с ним нечем.
+                // Почему не рядом со спорными парами — в шапке DreamView.
+                section(dreamView.section(), headed = true)
                 if (shown.stickers.isEmpty()) {
                     section("(записей для показа нет)", headed = false)
                 } else {
