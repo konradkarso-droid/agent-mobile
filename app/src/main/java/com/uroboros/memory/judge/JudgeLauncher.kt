@@ -134,6 +134,14 @@ class JudgeLauncher(
                 if (report.tooLong.size > SHOWN_IDS) append(", …")
                 append(")\n")
             }
+            if (report.onlyQuestions.isNotEmpty()) {
+                // Та же форма, что у строки выше, и по той же причине.
+                append("Не судятся — одни вопросы: ").append(report.onlyQuestions.size)
+                append(" зап. (")
+                append(report.onlyQuestions.take(SHOWN_IDS).joinToString(", ") { "№$it" })
+                if (report.onlyQuestions.size > SHOWN_IDS) append(", …")
+                append(")\n")
+            }
             append("Осталось пар: ").append(report.remaining).append("\n")
             append("Времени ушло: ").append(report.spentMs / 1000).append(" с")
             if (perPair > 0) append(" · на пару ").append(perPair).append(" мс")
