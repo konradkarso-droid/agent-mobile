@@ -1,5 +1,8 @@
 package com.uroboros.memory.dream
 
+import com.uroboros.memory.FakeStickerDao
+import com.uroboros.memory.Sticker
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -137,5 +140,88 @@ class DreamViewTest {
             "по времени: ".length + DreamView.MAX_TEXT + " → коротко".length,
             line.length,
         )
+    }
+
+    // --- Отбор молчащих снов ---
+
+    /**
+     * Подставной DreamDao: ночь и её сны задаёт тест. Записи не пишутся вовсе —
+     * показ только читает, и запись здесь означала бы, что подделка умеет
+     * больше проверяемого пути.
+     */
+    private class FakeDreamDao(
+        private val night: DreamNight?,
+        private val rows: List<Dream>,
+    ) : DreamDao {
+        override suspend fun insertAll(dreams: List<Dream>) = error("показ не пишет")
+        override suspend fun insertNight(night: DreamNight) = error("показ не пишет")
+        override suspend fun lastNight(): DreamNight? = night
+        override suspend fun ofNight(nightAt: Long): List<Dream> = rows
+    }
+
+    private fun record(id: Long, hidden: Boolean = false, rejected: Boolean = false) = Sticker(
+        id = id,
+        content = "запись $id",
+        reviewPending = hidden,
+        rejectedAt = if (rejected) 1L else null,
+    )
+
+    private fun view(rows: List<Dream>, records: List<Sticker>, night: DreamNight?): String {
+        val stickers = FakeStickerDao().apply { onGetAll = { records } }
+        return runBlocking { DreamView(FakeDreamDao(night, rows), stickers).section() }
+    }
+
+    private fun dream(vararg ids: Long) =
+        Dream(nightAt = 1L, recordIds = ids.joinToString(","), kind = DreamWeaver.Kind.TIME.name)
+
+    @Test
+    fun `прохода не было — так и сказано`() {
+        val text = view(emptyList(), emptyList(), null)
+        assertEquals(DreamView.NO_NIGHT, text)
+    }
+
+    @Test
+    fun `сон со скрытым звеном не показывается, но сосчитан`() {
+        val text = view(
+            rows = listOf(dream(1, 2), dream(1, 3)),
+            records = listOf(record(1), record(2, hidden = true), record(3)),
+            night = night(dreams = 2, dreamers = 3),
+        )
+        assertFalse("скрытая запись просочилась через сон", text.contains("запись 2"))
+        assertTrue(text, text.contains("запись 1 → запись 3"))
+        assertTrue(text, text.contains("Не показано снов: 1"))
+    }
+
+    @Test
+    fun `сон с отвергнутым звеном тоже молчит`() {
+        val text = view(
+            rows = listOf(dream(1, 2)),
+            records = listOf(record(1), record(2, rejected = true)),
+            night = night(dreams = 1, dreamers = 2),
+        )
+        assertFalse(text, text.contains("запись 2"))
+        assertTrue(text, text.contains("Не показано снов: 1"))
+    }
+
+    @Test
+    fun `сон с исчезнувшей записью молчит целиком`() {
+        val text = view(
+            rows = listOf(dream(1, 9)),
+            records = listOf(record(1)),
+            night = night(dreams = 1, dreamers = 2),
+        )
+        assertFalse("половина цепочки не показывается", text.contains("запись 1 →"))
+        assertTrue(text, text.contains("Не показано снов: 1"))
+    }
+
+    @Test
+    fun `целые сны показываются как есть`() {
+        val text = view(
+            rows = listOf(dream(1, 2)),
+            records = listOf(record(1), record(2)),
+            night = night(dreams = 1, dreamers = 2),
+        )
+        assertTrue(text, text.contains("запись 1 → запись 2"))
+        assertFalse(text, text.contains("Не показано"))
     }
 }
