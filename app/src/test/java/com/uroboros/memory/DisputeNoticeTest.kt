@@ -30,6 +30,17 @@ import org.junit.Test
  */
 class DisputeNoticeTest {
 
+    /**
+     * Записи, сказанные человеком, — обычный случай этих проверок.
+     * Происхождение сверке нужно ровно для одного запрета (пара из двух
+     * отчётов агента), и там, где он проверяется, источник задаётся явно.
+     */
+    private fun said(vararg texts: String) =
+        texts.map { DisputeNotice.Record(it, SourceKind.USER_STATED.name) }
+
+    private fun reported(vararg texts: String) =
+        texts.map { DisputeNotice.Record(it, SourceKind.AGENT_INFERRED.name) }
+
     private val instrument = "Мой любимый инструмент — рубанок с деревянной колодкой"
     private val instrumentDenied = "Мой любимый инструмент — не рубанок с деревянной колодкой"
     private val instrumentExtended =
@@ -45,14 +56,14 @@ class DisputeNoticeTest {
 
     @Test
     fun `пустой список — сверять нечего`() {
-        assertEquals(DisputeNotice.Result.NothingToCompare, DisputeNotice.of(emptyList()))
+        assertEquals(DisputeNotice.Result.NothingToCompare, DisputeNotice.of(said()))
     }
 
     @Test
     fun `одна запись — сверять нечего`() {
         assertEquals(
             DisputeNotice.Result.NothingToCompare,
-            DisputeNotice.of(listOf(instrument)),
+            DisputeNotice.of(said(instrument)),
         )
     }
 
@@ -60,19 +71,19 @@ class DisputeNoticeTest {
     fun `пробельная строка за запись не считается`() {
         assertEquals(
             DisputeNotice.Result.NothingToCompare,
-            DisputeNotice.of(listOf(instrument, " ")),
+            DisputeNotice.of(said(instrument, " ")),
         )
     }
 
     @Test
     fun `молчание — записи без расхождения дают чистый исход`() {
-        val result = DisputeNotice.of(listOf(instrument, rate5))
+        val result = DisputeNotice.of(said(instrument, rate5))
         assertEquals(DisputeNotice.Result.Clean, result)
     }
 
     @Test
     fun `отрицание названо именем признака`() {
-        val result = DisputeNotice.of(listOf(instrument, instrumentDenied))
+        val result = DisputeNotice.of(said(instrument, instrumentDenied))
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         assertEquals(1, result.pairsFound)
@@ -84,7 +95,7 @@ class DisputeNoticeTest {
 
     @Test
     fun `числа названы своим признаком`() {
-        val result = DisputeNotice.of(listOf(rate5, rate9))
+        val result = DisputeNotice.of(said(rate5, rate9))
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         assertTrue(result.text.contains("числа разошлись"))
@@ -92,7 +103,7 @@ class DisputeNoticeTest {
 
     @Test
     fun `граница механизма стоит последней строкой и один раз`() {
-        val result = DisputeNotice.of(listOf(rate5, rate6, rate7))
+        val result = DisputeNotice.of(said(rate5, rate6, rate7))
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         val lines = result.text.split("\n")
@@ -104,7 +115,7 @@ class DisputeNoticeTest {
     fun `при обрезке названо, сколько пар осталось за потолком`() {
         // Четыре записи, различающиеся только числом, дают шесть пар, и все
         // шесть расходятся. Названы должны быть три.
-        val result = DisputeNotice.of(listOf(rate5, rate6, rate7, rate9))
+        val result = DisputeNotice.of(said(rate5, rate6, rate7, rate9))
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         assertEquals(6, result.pairsFound)
@@ -114,7 +125,7 @@ class DisputeNoticeTest {
 
     @Test
     fun `без обрезки о потолке не говорится`() {
-        val result = DisputeNotice.of(listOf(rate5, rate9))
+        val result = DisputeNotice.of(said(rate5, rate9))
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         assertTrue(!result.text.contains("Названы первые"))
@@ -122,7 +133,7 @@ class DisputeNoticeTest {
 
     @Test
     fun `длинная запись цитируется началом`() {
-        val result = DisputeNotice.of(listOf(instrument, instrumentDenied))
+        val result = DisputeNotice.of(said(instrument, instrumentDenied))
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         // Обе записи длиннее черты, значит обе стоят в тексте обрезанными.
@@ -133,7 +144,7 @@ class DisputeNoticeTest {
     @Test
     fun `перенос строки внутри записи не ломает построчность блока`() {
         val result = DisputeNotice.of(
-            listOf("Ставка по договору\n5 процентов годовых", rate9),
+            said("Ставка по договору\n5 процентов годовых", rate9),
         )
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
@@ -145,7 +156,7 @@ class DisputeNoticeTest {
 
     @Test
     fun `реплика спорит с записью — расхождение найдено и названо своим предметом`() {
-        val result = DisputeNotice.of(listOf(mercury), mercuryDenied)
+        val result = DisputeNotice.of(said(mercury), mercuryDenied)
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         assertEquals(1, result.pairsFound)
@@ -160,16 +171,16 @@ class DisputeNoticeTest {
         // Без реплики тот же вызов дал бы NothingToCompare: пары не набиралось.
         assertEquals(
             DisputeNotice.Result.NothingToCompare,
-            DisputeNotice.of(listOf(mercury)),
+            DisputeNotice.of(said(mercury)),
         )
-        assertTrue(DisputeNotice.of(listOf(mercury), mercuryDenied) is DisputeNotice.Result.Found)
+        assertTrue(DisputeNotice.of(said(mercury), mercuryDenied) is DisputeNotice.Result.Found)
     }
 
     @Test
     fun `молчание — реплика сравнена с записью и расхождения нет`() {
         // Схожесть выше порога, то есть пара ДОШЛА до сравнения: исход Clean
         // здесь означает "сравнили и не нашли", а не "не сравнивали".
-        val result = DisputeNotice.of(listOf(instrument), instrumentExtended)
+        val result = DisputeNotice.of(said(instrument), instrumentExtended)
         assertEquals(DisputeNotice.Result.Clean, result)
     }
 
@@ -177,13 +188,13 @@ class DisputeNoticeTest {
     fun `молчание — пробельная реплика стороной не считается`() {
         assertEquals(
             DisputeNotice.Result.NothingToCompare,
-            DisputeNotice.of(listOf(instrument), "   "),
+            DisputeNotice.of(said(instrument), "   "),
         )
     }
 
     @Test
     fun `молчание — без реплики поведение ровно прежнее`() {
-        val withoutSpeech = DisputeNotice.of(listOf(instrument, instrumentDenied))
+        val withoutSpeech = DisputeNotice.of(said(instrument, instrumentDenied))
         assertTrue(withoutSpeech is DisputeNotice.Result.Found)
         withoutSpeech as DisputeNotice.Result.Found
         assertTrue(!withoutSpeech.text.contains("репликой пользователя"))
@@ -197,7 +208,7 @@ class DisputeNoticeTest {
         // словами; сказанное по-человечески не берётся.
         assertEquals(
             DisputeNotice.Result.Clean,
-            DisputeNotice.of(listOf(mercury), mercuryDeniedAlive),
+            DisputeNotice.of(said(mercury), mercuryDeniedAlive),
         )
     }
 
@@ -206,7 +217,7 @@ class DisputeNoticeTest {
         // Четыре записи дают шесть споров между собой, реплика спорит с каждой
         // из четырёх — всего десять. Потолок общий, и названы должны быть три
         // пары с репликой, иначе частый случай не доехал бы до модели.
-        val result = DisputeNotice.of(listOf(rate5, rate6, rate7, rate9), rate8)
+        val result = DisputeNotice.of(said(rate5, rate6, rate7, rate9), rate8)
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         assertEquals(10, result.pairsFound)
@@ -220,10 +231,44 @@ class DisputeNoticeTest {
         // Реплика стоит в том же сообщении целиком. Цитата здесь дала бы
         // одному утверждению два вхождения, а два вхождения читаются как два
         // свидетельства.
-        val result = DisputeNotice.of(listOf(mercury), mercuryDenied)
+        val result = DisputeNotice.of(said(mercury), mercuryDenied)
         assertTrue(result is DisputeNotice.Result.Found)
         result as DisputeNotice.Result.Found
         assertTrue(result.text.contains(mercury))
         assertTrue(!result.text.contains(mercuryDenied))
+    }
+
+    // --- Отчёты агента ---
+
+    @Test
+    fun `два отчёта агента между собой не сверяются`() {
+        // Разные числа итераций — разные прогоны одной задачи, а не спор.
+        // Почему запрет на пару, а не на запись — у RiskTrigger.bothAgentReports.
+        val result = DisputeNotice.of(
+            reported(
+                "[TOTE] Успех за 3 итераций. Итоговый код: fun sumPositive",
+                "[TOTE] Успех за 5 итераций. Итоговый код: fun sumPositive",
+            )
+        )
+        assertEquals(DisputeNotice.Result.Clean, result)
+    }
+
+    @Test
+    fun `отчёт агента против реплики человека сверяется`() {
+        // Реплика запретом не затронута никогда: человек не отчёт. Этот
+        // случай наблюдался живьём и терять его нельзя.
+        val result = DisputeNotice.of(
+            reported("Задача решена за 3 итераций"),
+            "Задача решена за 5 итераций",
+        )
+        assertTrue(result is DisputeNotice.Result.Found)
+    }
+
+    @Test
+    fun `отчёт агента против записи человека сверяется`() {
+        val result = DisputeNotice.of(
+            reported("Задача решена за 3 итераций") + said("Задача решена за 5 итераций")
+        )
+        assertTrue(result is DisputeNotice.Result.Found)
     }
 }
