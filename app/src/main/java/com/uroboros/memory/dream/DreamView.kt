@@ -2,6 +2,7 @@ package com.uroboros.memory.dream
 
 import android.content.Context
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.StickerDao
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -30,17 +31,28 @@ import java.util.Locale
  *  - длинные записи обрезаются до [MAX_TEXT] знаков — это показ, а не источник:
  *    полный текст записи смотрится в списке памяти ниже.
  */
-class DreamView(context: Context) {
+class DreamView(
+    private val dreams: DreamDao,
+    private val stickers: StickerDao,
+) {
 
-    private val db = MemoryDatabase.getInstance(context)
+    /**
+     * Обычный вход с экрана. Хранилища берутся из базы процесса; отдельный
+     * конструктор выше нужен затем, чтобы отбор молчащих снов проверялся
+     * подделками, без Android и без устройства.
+     */
+    constructor(context: Context) : this(
+        MemoryDatabase.getInstance(context).dreamDao(),
+        MemoryDatabase.getInstance(context).stickerDao(),
+    )
 
     suspend fun section(): String {
-        val night = db.dreamDao().lastNight() ?: return NO_NIGHT
-        val rows = db.dreamDao().ofNight(night.nightAt)
+        val night = dreams.lastNight() ?: return NO_NIGHT
+        val rows = dreams.ofNight(night.nightAt)
         // Вся память берётся одним чтением: номеров в снах сотни, и запрос на
         // каждый номер стоил бы сотни обращений к базе ради того же ответа.
         // Нужны и скрытые, и отвергнутые записи — по ним решается, молчать ли.
-        val byId = db.stickerDao().getAll().associateBy { it.id }
+        val byId = stickers.getAll().associateBy { it.id }
 
         val shown = mutableListOf<Shown>()
         val dreamt = mutableSetOf<Long>()
