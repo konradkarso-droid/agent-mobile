@@ -84,6 +84,11 @@ class JudgeLauncher(
      *
      * Пары с исчезнувшими записями пропускаются молча: уборка снесёт их в
      * начале следующего прогона, а до тех пор показывать половину пары нечестно.
+     *
+     * Пары, где одна сторона отвергнута человеком, тоже не показываются: спор
+     * по ним уже решён, отвергнутая запись в ответы не попадёт. Вердикт судьи
+     * при этом остаётся в хранилище и в счёт спорных входит — он о судье, а не
+     * о памяти.
      */
     suspend fun pendingDisputes(modelIdentity: String): List<DisputePair> =
         verdicts.pairs(
@@ -93,6 +98,7 @@ class JudgeLauncher(
         ).mapNotNull { row ->
             val first: Sticker = stickers.getById(row.firstId) ?: return@mapNotNull null
             val second: Sticker = stickers.getById(row.secondId) ?: return@mapNotNull null
+            if (first.rejectedAt != null || second.rejectedAt != null) return@mapNotNull null
             DisputePair(row.firstId, row.secondId, first.content, second.content)
         }
 
