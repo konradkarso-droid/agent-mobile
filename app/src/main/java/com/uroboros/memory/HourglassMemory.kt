@@ -1517,6 +1517,11 @@ class HourglassMemory(
             val marks = mutableMapOf<Long, List<RiskTrigger.ContradictionMark>>()
             for (other in dao.getByTagInLayers(sticker.tag, HOT_LAYERS)) {
                 if (other.id == sticker.id) continue
+                // Пара из двух отчётов агента не сравнивается — почему, см.
+                // RiskTrigger.bothAgentReports. В счёт сравнений она не идёт:
+                // счёт отвечает на вопрос «сколько пар правило посмотрело», и
+                // несравниваемая пара его завышала бы.
+                if (RiskTrigger.bothAgentReports(sticker.source, other.source)) continue
                 comparisons++
                 val pairMarks = RiskTrigger.contradictionMarks(sticker.content, other.content)
                 if (pairMarks.isEmpty()) continue
@@ -1529,6 +1534,7 @@ class HourglassMemory(
             val cooled = mutableListOf<Sticker>()
             for (other in dao.getByTagInLayers(sticker.tag, COLD_LAYERS)) {
                 if (other.id == sticker.id) continue
+                if (RiskTrigger.bothAgentReports(sticker.source, other.source)) continue
                 comparisons++
                 val pairMarks = RiskTrigger.contradictionMarks(sticker.content, other.content)
                 if (pairMarks.isEmpty()) continue
