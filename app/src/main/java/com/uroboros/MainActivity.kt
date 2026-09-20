@@ -182,6 +182,30 @@ class MainActivity : AppCompatActivity() {
     private var disputeNoticeLine: String? = null
 
     /**
+     * Сколько записей отбор дал к последнему ответу и сколько из них — одни
+     * вопросы. Прибор без механизма: по нему решается, что делать с записями-
+     * вопросами при выдаче, и пока решение не принято, он ничего не меняет.
+     *
+     * ЗАЧЕМ. Автозапись кладёт в память каждую отправленную реплику, вопросы
+     * тоже. Модели запись подаётся как «Пользователь сказал: «…»», и для вопроса
+     * это правда, а не ложный факт. Подозревается другое: на повторный вопрос
+     * отбор по общим словам находит прежние формулировки того же вопроса, и
+     * они занимают места в выдаче, не неся сведений. Это правдоподобно, но не
+     * наблюдалось; строка нужна, чтобы увидеть, так ли это.
+     *
+     * Считается весь отбор, а не только записи, впервые ушедшие в ленту: места
+     * в отборе ограничены, а занимают их и те, что лежат в ленте с прошлых
+     * ходов.
+     *
+     * ЧЕГО НЕ УМЕЕТ: вопрос узнаётся только по знаку, тем же признаком, что у
+     * судьи (RiskTrigger.isOnlyQuestions), со всеми его промахами. Вопрос без
+     * знака считается утверждением.
+     *
+     * null прячет строку: отбора на этом ходе не было.
+     */
+    private var recordsQuestionsLine: String? = null
+
+    /**
      * Последняя реплика пользователя, собранная для движка, — целиком и
      * дословно.
      *
@@ -2153,7 +2177,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2333,6 +2357,8 @@ class MainActivity : AppCompatActivity() {
         // описывает ход, который может не состояться, и оставшись на экране,
         // читалась бы как относящаяся к следующему.
         disputeNoticeLine = null
+        // Строка отбора — по той же причине, что и строка сверки.
+        recordsQuestionsLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
         // относящаяся к нынешнему. Это тот самый хвост 20, из-за которого
@@ -3403,6 +3429,9 @@ class MainActivity : AppCompatActivity() {
                 // отбор ДО неё, поэтому реплика не сверяется сама с собой.
                 val notice = DisputeNotice.of(stickers.map { it.content }, userText)
                 disputeNoticeLine = disputeNoticeLabel(notice)
+                val questionsOnly = stickers.count { RiskTrigger.isOnlyQuestions(it.content) }
+                recordsQuestionsLine =
+                    "Записей к ответу: ${stickers.size} · из них одни вопросы: $questionsOnly"
                 renderMetricsPanel()
                 val disputeText = (notice as? DisputeNotice.Result.Found)?.text
 
