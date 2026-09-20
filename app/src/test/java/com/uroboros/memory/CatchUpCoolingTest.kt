@@ -11,10 +11,11 @@ import org.junit.Test
  * звали уборку. Почему срок отсчитывается от старого срока — в KDoc
  * Prism.catchUp.
  *
- * Две половины. Правила (Prism.catchUp) проверяются как чистая функция. Их
+ * Три части. Правила (Prism.catchUp) проверяются как чистая функция. Их
  * применение (HourglassMemory.migrateExpiredAt) — через подставной DAO: что на
  * каждую просроченную запись уходит ровно одна запись слоя с результатом правил
- * и что больше ничего не трогается.
+ * и что больше ничего не трогается. И читатели слоя — что уборка идёт у них
+ * раньше чтения.
  *
  * ГЛАВНЫЕ ЗДЕСЬ — ТРИ ПРОВЕРКИ:
  *  - `один вызов после паузы равен частым вызовам`: закрепляет, что пауза в
@@ -28,7 +29,9 @@ import org.junit.Test
  *  - что настоящий StickerDao.getExpired отбирает именно просроченные строки,
  *    а updateLayer пишет только слой и срок. Подделка отвечает то, что положил
  *    тест; SQL проверяется на устройстве снимком памяти до и после;
- *  - что уборку вообще зовут. Кто и когда её зовёт — вне этого файла.
+ *  - что уборку зовёт ночной судья: JudgeRun держит движок модели и здесь
+ *    не собирается. Зовут ли её сохранение и показ спора — проверено
+ *    ниже; появится новый читатель слоя — проверка ему добавляется сюда же.
  */
 class CatchUpCoolingTest {
 
@@ -150,5 +153,45 @@ class CatchUpCoolingTest {
         val dao = FakeStickerDao().apply { onGetExpired = { emptyList() } }
         HourglassMemory(dao).migrateExpiredAt(t0)
         assertTrue(dao.layerUpdates.isEmpty())
+    }
+
+    // --- Читатели слоя убирают перед чтением ---
+    //
+    // Проверяется порядок запросов, а не только их наличие: уборка после чтения
+    // пула выглядела бы так же, как её отсутствие.
+
+    private fun readerDao(calls: MutableList<String>) = FakeStickerDao().apply {
+        onInsert = { 42L }
+        onGetExpired = { calls += "уборка"; emptyList() }
+        onGetByTagInLayers = { _, _ -> calls += "пул"; emptyList() }
+    }
+
+    @Test
+    fun `сохранение убирает до того, как берёт горячий пул`() = runBlocking {
+        val calls = mutableListOf<String>()
+        HourglassMemory(readerDao(calls)).saveEventChecked(Sticker(content = "у паука восемь ног"))
+        assertEquals(listOf("уборка", "пул"), calls)
+    }
+
+    @Test
+    fun `сбой уборки при сохранении — сбой пула, запись уходит в очередь`() = runBlocking {
+        val dao = FakeStickerDao().apply {
+            onInsert = { 42L }
+            onGetExpired = { throw IllegalStateException("база недоступна") }
+            onGetByTagInLayers = { _, _ -> emptyList() }
+        }
+        HourglassMemory(dao).saveEventChecked(Sticker(content = "у паука восемь ног"))
+        assertTrue(
+            "пул, снятый без уборки, — не тот пул; молча судить по нему нельзя",
+            dao.inserted.single().reviewPending
+        )
+    }
+
+    @Test
+    fun `показ спора убирает до того, как делит противников по слою`() = runBlocking {
+        val calls = mutableListOf<String>()
+        HourglassMemory(readerDao(calls)).disputesOf(Sticker(id = 3, content = "у паука восемь ног"))
+        assertEquals("уборка", calls.first())
+        assertTrue("дальше идёт чтение по слоям", calls.drop(1).all { it == "пул" })
     }
 }
