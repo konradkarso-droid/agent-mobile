@@ -8,15 +8,16 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.uroboros.memory.dream.Dream
 import com.uroboros.memory.dream.DreamDao
+import com.uroboros.memory.dream.DreamNight
 import com.uroboros.memory.judge.JudgeVerdict
 import com.uroboros.memory.judge.JudgeVerdictDao
 
 @Database(
     entities = [
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
-        Dream::class,
+        Dream::class, DreamNight::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -146,6 +147,32 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Итоги ночей сна (см. dream.DreamNight). Только новая таблица, записей
+        // миграция не касается. Сны, приснившиеся до этой версии, остаются без
+        // итога: какой он был, уже не восстановить, и выдумывать его нельзя.
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `nights` (
+                        `nightAt` INTEGER NOT NULL,
+                        `dreams` INTEGER NOT NULL,
+                        `dreamers` INTEGER NOT NULL,
+                        `dreamersCold` INTEGER NOT NULL,
+                        `dreamersArchive` INTEGER NOT NULL,
+                        `coldDreams` INTEGER NOT NULL,
+                        `archiveDreams` INTEGER NOT NULL,
+                        `skippedHidden` INTEGER NOT NULL,
+                        `skippedQuestions` INTEGER NOT NULL,
+                        `skippedAgentReports` INTEGER NOT NULL,
+                        `ceilingHit` INTEGER NOT NULL,
+                        PRIMARY KEY(`nightAt`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -172,7 +199,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
                  .build().also { INSTANCE = it }
             }
         }
