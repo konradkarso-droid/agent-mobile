@@ -16,7 +16,7 @@ import com.uroboros.memory.judge.JudgeVerdictDao
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -137,6 +137,15 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Отметка отвержения (см. Sticker.rejectedAt). Только новая пустая
+        // колонка: у всех существующих записей null, то есть «не отвергалась», и
+        // это верно — до этой версии отвергать было нечем.
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE stickers ADD COLUMN rejectedAt INTEGER")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -163,7 +172,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
                  .build().also { INSTANCE = it }
             }
         }
