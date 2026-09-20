@@ -123,6 +123,9 @@ class FakeStickerDao : StickerDao {
      */
     val reviewPendingSet = mutableListOf<Long>()
 
+    /** Отвергнутые: номер и момент, в порядке вызова. */
+    val rejected = mutableListOf<Pair<Long, Long>>()
+
     /**
      * Записи, дошедшие до вставки, в порядке обращения. Хранятся ссылками, а не
      * копиями: путь сохранения правит переданный объект перед вставкой, и тесту
@@ -206,6 +209,11 @@ class FakeStickerDao : StickerDao {
     override suspend fun getPendingReview(): List<Sticker> = unprepared("getPendingReview")
     override suspend fun clearReviewPending(id: Long) = unprepared("clearReviewPending")
     override suspend fun clearAllReviewPending(): Int = unprepared("clearAllReviewPending")
+    override suspend fun reject(id: Long, at: Long) {
+        rejected += id to at
+    }
+    override suspend fun getRejected(): List<Sticker> = unprepared("getRejected")
+    override suspend fun countRejected(): Int = unprepared("countRejected")
     override suspend fun update(sticker: Sticker) = unprepared("update")
 
     override suspend fun count(): Int = unprepared("count")
