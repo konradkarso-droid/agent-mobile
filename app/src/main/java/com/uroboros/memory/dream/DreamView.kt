@@ -2,6 +2,8 @@ package com.uroboros.memory.dream
 
 import android.content.Context
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.RiskTrigger
+import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -23,11 +25,21 @@ import java.util.Locale
  * а мост через скрытую запись выдавал бы её содержание соседями. Но число таких
  * снов печатается — без него молчание экрана не отличить от поломки показа.
  *
+ * ВАРИАНТЫ ОДНОГО СНА СХЛОПЫВАЮТСЯ. Близкие по словам записи («Меркурий светит
+ * белым / красным / алым на закате») образуют семью, и сны, отличающиеся только
+ * заменой записи внутри семьи, показываются одной строкой с перечнем вариантов.
+ * На первой живой ночи это 40 снов против 20 различных. Схлопывание живёт
+ * ТОЛЬКО здесь: в базе сны остаются как сплетены, и решение обратимо правкой
+ * одного показа. Семья считается порогом правила противоречия
+ * ([RiskTrigger.closeEnoughToCompare]) и только среди записей этой ночи.
+ *
  * ЧЕГО НЕ УМЕЕТ:
  *  - показывает только последнюю ночь; прежние ночи лежат в базе, ходить по ним
  *    отсюда нельзя;
- *  - похожие сны не схлопываются (см. [DreamWeaver]): у семейства близких
- *    записей на экране будет несколько почти одинаковых строк;
+ *  - семья считается по словам, а не по смыслу: пересказ другими словами семьёй
+ *    не станет, и его варианты останутся отдельными снами. Обратная сторона —
+ *    два сна, где записи похожи, но говорят разное, склеятся в один; поэтому
+ *    варианты перечисляются текстом, а не прячутся;
  *  - длинные записи обрезаются до [MAX_TEXT] знаков — это показ, а не источник:
  *    полный текст записи смотрится в списке памяти ниже.
  */
@@ -54,7 +66,7 @@ class DreamView(
         // Нужны и скрытые, и отвергнутые записи — по ним решается, молчать ли.
         val byId = stickers.getAll().associateBy { it.id }
 
-        val shown = mutableListOf<Shown>()
+        val visible = mutableListOf<Pair<String, List<Sticker>>>()
         val dreamt = mutableSetOf<Long>()
         var silent = 0
         for (row in rows) {
@@ -68,13 +80,74 @@ class DreamView(
                 silent++
                 continue
             }
-            shown += Shown(row.kind, records.map { it!!.content })
+            visible += row.kind to records.map { it!! }
         }
-        return render(night, shown, silent, dreamt.size)
+        return render(night, collapse(visible), silent, dreamt.size)
     }
 
-    /** Один показанный сон: чем приснился и тексты звеньев в порядке цепочки. */
-    data class Shown(val kind: String, val texts: List<String>)
+    /**
+     * Один показанный сон: чем приснился, тексты звеньев в порядке цепочки и
+     * тексты записей, которыми отличаются схлопнутые варианты этого же сна.
+     */
+    data class Shown(
+        val kind: String,
+        val texts: List<String>,
+        val variants: List<String> = emptyList(),
+    )
+
+    /**
+     * Схлопывание вариантов: сны одного вида, у которых на каждом месте цепочки
+     * стоят записи из одной семьи, становятся одним показанным сном.
+     *
+     * Представителем группы берётся первый сон — порядок снов задан плетением
+     * («проще — раньше»), и брать из группы что-то «лучшее» было бы выбором без
+     * основания. Варианты перечисляются текстами тех записей, которыми они
+     * отличаются от представителя, без повторов и в порядке групп.
+     *
+     * Семьи считаются только среди записей, попавших в сны этой ночи: по всей
+     * памяти это были бы тысячи пар ради того же ответа.
+     */
+    private fun collapse(dreams: List<Pair<String, List<Sticker>>>): List<Shown> {
+        val records = dreams.flatMap { it.second }.distinctBy { it.id }
+        // Семьи — объединением: близость не транзитивна, но для показа связная
+        // группа и есть то, что человек читает как «одно и то же разными
+        // словами».
+        val family = HashMap<Long, Long>()
+        records.forEach { family[it.id] = it.id }
+        fun root(id: Long): Long {
+            var r = id
+            while (family.getValue(r) != r) r = family.getValue(r)
+            return r
+        }
+        for (i in records.indices) {
+            for (j in i + 1 until records.size) {
+                val a = records[i]
+                val b = records[j]
+                if (!RiskTrigger.closeEnoughToCompare(a.content, b.content)) continue
+                val ra = root(a.id)
+                val rb = root(b.id)
+                if (ra != rb) family[ra] = rb
+            }
+        }
+
+        val order = mutableListOf<List<Any>>()
+        val groups = LinkedHashMap<List<Any>, MutableList<List<Sticker>>>()
+        for ((kind, chain) in dreams) {
+            val skeleton = listOf(kind) + chain.map { root(it.id) }
+            groups.getOrPut(skeleton) { order += skeleton; mutableListOf() } += chain
+        }
+
+        return groups.entries.map { (skeleton, chains) ->
+            val first = chains.first()
+            val variants = LinkedHashSet<String>()
+            for (chain in chains.drop(1)) {
+                chain.forEachIndexed { at, record ->
+                    if (record.id != first[at].id) variants += record.content
+                }
+            }
+            Shown(skeleton.first() as String, first.map { it.content }, variants.toList())
+        }
+    }
 
     companion object {
 
@@ -96,6 +169,12 @@ class DreamView(
             append("СНЫ\n")
             append("Ночь: ").append(moment(night.nightAt)).append("\n")
             append("Снов: ").append(night.dreams)
+            // Различные — это после схлопывания вариантов. Оба числа стоят
+            // рядом всегда: без второго вдвое короче ставший список выглядит
+            // как пропажа снов, без первого не видно, сколько их сплелось.
+            if (shown.isNotEmpty() && shown.size != night.dreams) {
+                append(" · различных: ").append(shown.size)
+            }
             append(" · снилось записей: ").append(night.dreamers)
             if (night.dreamersCold > 0) append(" · холодных ").append(night.dreamersCold)
             if (night.dreamersArchive > 0) append(" · из архива ").append(night.dreamersArchive)
@@ -137,6 +216,14 @@ class DreamView(
                 append("\n").append(label(dream.kind)).append(": ")
                 append(dream.texts.joinToString(" → ") { short(it) })
                 append("\n")
+                if (dream.variants.isNotEmpty()) {
+                    // Варианты названы текстами, а не числом: склейка по
+                    // словам иногда ошибается, и человек должен видеть, что
+                    // именно свёрнуто в эту строку.
+                    append("    то же с: ")
+                    append(dream.variants.joinToString(" · ") { short(it) })
+                    append("\n")
+                }
             }
         }.trimEnd()
 
