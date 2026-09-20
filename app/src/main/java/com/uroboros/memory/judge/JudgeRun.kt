@@ -5,7 +5,6 @@ import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.HOT_LAYERS
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.RiskTrigger
-import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
 import kotlinx.coroutines.CancellationException
@@ -75,10 +74,9 @@ data class JudgeRunReport(
  * начнут ставить.
  *
  * Отчёты агента о собственной работе (провенанс AGENT_INFERRED) судятся наравне
- * со всем остальным — кроме пар, где отчёты стоят с обеих сторон: двум отчётам
- * о разных прогонах спорить не о чем. А отчёт против слов человека спорить
- * может, и этот случай наблюдался живьём: модель пересказала пользователю его
- * же словами то, что на самом деле было отчётом агента.
+ * со всем остальным — кроме пар, где отчёты стоят с обеих сторон. Правило одно
+ * на проект и живёт у RiskTrigger.bothAgentReports, там же и причина; здесь оно
+ * только применяется.
  *
  * Порядок — от новых записей к старым, и это не украшение. Прогон почти всегда
  * обрывается на середине, и обрываться он должен на самом старом, а не на самом
@@ -168,7 +166,7 @@ class JudgeRun(
             engine.withDeterministicSampling {
                 outer@ for (i in pool.indices) {
                     for (k in i + 1 until pool.size) {
-                        if (bothAgentReports(pool[i], pool[k])) continue
+                        if (RiskTrigger.bothAgentReports(pool[i].source, pool[k].source)) continue
                         val (first, second) = order(pool[i], pool[k])
                         if (verdicts.judged(first.id, second.id, fingerprint) > 0) continue
                         sawWork = true
@@ -243,10 +241,6 @@ class JudgeRun(
     }
 
     /** Отчёт агента против отчёта агента — единственная пара, которую не судят. */
-    private fun bothAgentReports(one: Sticker, other: Sticker): Boolean =
-        one.source == SourceKind.AGENT_INFERRED.name &&
-            other.source == SourceKind.AGENT_INFERRED.name
-
     /** Пара неупорядочена: меньший номер первым — см. [JudgeVerdict]. */
     private fun order(one: Sticker, other: Sticker): Pair<Sticker, Sticker> =
         if (one.id <= other.id) one to other else other to one
@@ -278,7 +272,7 @@ class JudgeRun(
         var left = 0
         for (i in pool.indices) {
             for (k in i + 1 until pool.size) {
-                if (bothAgentReports(pool[i], pool[k])) continue
+                if (RiskTrigger.bothAgentReports(pool[i].source, pool[k].source)) continue
                 val (first, second) = order(pool[i], pool[k])
                 if (verdicts.judged(first.id, second.id, fingerprint) == 0) left++
             }
