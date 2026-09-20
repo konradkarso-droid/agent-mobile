@@ -70,6 +70,9 @@ class FakeStickerDao : StickerDao {
      */
     var onSearchHiddenAnyCase: ((query: String, queryCapitalized: String, limit: Int) -> List<HiddenRow>)? = null
 
+    /** Ответ на getAll() — всю таблицу целиком читает ночной показ снов. */
+    var onGetAll: (() -> List<Sticker>)? = null
+
     /** Ответ на getExpired(now) — путь чтения зовёт его первым, через migrateExpired. */
     var onGetExpired: ((now: Long) -> List<Sticker>)? = null
 
@@ -202,10 +205,12 @@ class FakeStickerDao : StickerDao {
 
     // --- Неподготовленные: падают с именем метода ---
 
+    override suspend fun getAll(): List<Sticker> =
+        onGetAll?.invoke() ?: unprepared("getAll")
+
     override suspend fun getById(id: Long): Sticker? = unprepared("getById")
     override suspend fun getRecent(limit: Int): List<Sticker> = unprepared("getRecent")
     override suspend fun search(query: String, limit: Int): List<Sticker> = unprepared("search")
-    override suspend fun getAll(): List<Sticker> = unprepared("getAll")
     override suspend fun getPendingReview(): List<Sticker> = unprepared("getPendingReview")
     override suspend fun clearReviewPending(id: Long) = unprepared("clearReviewPending")
     override suspend fun clearAllReviewPending(): Int = unprepared("clearAllReviewPending")
