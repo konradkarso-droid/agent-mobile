@@ -6,12 +6,17 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.uroboros.memory.dream.Dream
+import com.uroboros.memory.dream.DreamDao
 import com.uroboros.memory.judge.JudgeVerdict
 import com.uroboros.memory.judge.JudgeVerdictDao
 
 @Database(
-    entities = [Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class],
-    version = 10,
+    entities = [
+        Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
+        Dream::class,
+    ],
+    version = 11,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -19,6 +24,7 @@ abstract class MemoryDatabase : RoomDatabase() {
     abstract fun actionEvidenceDao(): ActionEvidenceDao
     abstract fun lastStableSnapshotDao(): LastStableSnapshotDao
     abstract fun judgeVerdictDao(): JudgeVerdictDao
+    abstract fun dreamDao(): DreamDao
 
     companion object {
         // Item 6b/8 (2026-08-17): новая таблица для снимка последнего стабильного
@@ -114,6 +120,23 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Сны ночного прохода (см. dream.Dream). Только новая таблица, записей
+        // миграция не касается. Пустая таблица верна: до этой версии снов не было.
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `dreams` (
+                        `nightAt` INTEGER NOT NULL,
+                        `recordIds` TEXT NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        PRIMARY KEY(`nightAt`, `recordIds`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -140,7 +163,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                  .build().also { INSTANCE = it }
             }
         }
