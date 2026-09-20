@@ -10,6 +10,7 @@ import com.uroboros.memory.ActionType
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.util.DataSieve
+import com.uroboros.util.EnvironmentNoise
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
@@ -113,14 +114,14 @@ class TermuxKotlinCompiler(private val context: Context) {
 
         val cappedStdout = DataSieve.capBytes(result.stdout, MAX_OUTPUT_BYTES)
         val rawStderr = DataSieve.capBytes(result.stderr, MAX_OUTPUT_BYTES)
-        val cleanedStderr = stripEnvironmentNoise(rawStderr)
+        val cleanedStderr = EnvironmentNoise.strip(rawStderr)
 
         return when {
             result.exitCode == 0 -> CompileResult.Success(cappedStdout)
             // После вычистки шума ничего осмысленного не осталось — значит, упал
             // сам инструмент/окружение (например, jansi), а не код. Не отдаём это
             // модели как "ошибку в коде", иначе она начнёт "чинить" системный мусор.
-            cleanedStderr.isBlank() || isInfrastructureFailure(cleanedStderr) ->
+            cleanedStderr.isBlank() || EnvironmentNoise.isInfrastructureFailure(cleanedStderr) ->
                 CompileResult.Unavailable("сбой компилятора/окружения (не код): ${rawStderr.take(300)}")
             else -> CompileResult.CompileFailure(cappedStdout, cleanedStderr, result.exitCode)
         }
@@ -211,7 +212,7 @@ class TermuxKotlinCompiler(private val context: Context) {
         val rawStderr = DataSieve.capBytes(result.stderr, MAX_OUTPUT_BYTES)
 
         if (result.exitCode != 0) {
-            return BytecodeMeasurement.CompileFailure(stripEnvironmentNoise(rawStderr))
+            return BytecodeMeasurement.CompileFailure(EnvironmentNoise.strip(rawStderr))
         }
 
         val sizeLine = stdout.lineSequence().firstOrNull { it.startsWith("BYTECODE_SIZE:") }
@@ -221,32 +222,6 @@ class TermuxKotlinCompiler(private val context: Context) {
         } else {
             BytecodeMeasurement.Unavailable("не удалось разобрать размер байткода из вывода: ${stdout.take(200)}")
         }
-    }
-
-    /** Убирает известный посторонний шум (например, предупреждения jansi) из stderr. */
-    private fun stripEnvironmentNoise(text: String): String {
-        val noiseMarkers = listOf(
-            "jansi",
-            "libjansi.so",
-            "Failed to load native library",
-            "in namespace (default)"
-        )
-        return text.lineSequence()
-            .filterNot { line -> noiseMarkers.any { marker -> line.contains(marker, ignoreCase = true) } }
-            .joinToString("\n")
-            .trim()
-    }
-
-    /** Признаки того, что упал сам инструмент/окружение, а не код в .kt-файле. */
-    private fun isInfrastructureFailure(stderr: String): Boolean {
-        val markers = listOf(
-            "UnsatisfiedLinkError",
-            "libc.so.6",
-            "java.lang.NoClassDefFoundError",
-            "Could not find or load main class",
-            "OutOfMemoryError"
-        )
-        return markers.any { stderr.contains(it, ignoreCase = true) }
     }
 
     /** Возвращает null если всё ок, иначе точную причину недоступности. */
