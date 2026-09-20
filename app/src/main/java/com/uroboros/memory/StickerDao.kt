@@ -145,7 +145,7 @@ interface StickerDao {
      * что и у видимого пути. См. KDoc у HiddenRow.
      */
     @Query(
-        "SELECT id, layer FROM stickers WHERE reviewPending = 1 " +
+        "SELECT id, layer FROM stickers WHERE reviewPending = 1 AND rejectedAt IS NULL " +
             "AND (content LIKE '%' || :query || '%' " +
             "OR content LIKE '%' || :queryCapitalized || '%') " +
             "ORDER BY createdAt DESC LIMIT :limit"
@@ -219,11 +219,34 @@ interface StickerDao {
     @Query("SELECT * FROM stickers WHERE tag = :tag AND layer IN (:layers)")
     suspend fun getByTagInLayers(tag: String, layers: List<String>): List<Sticker>
 
-    @Query("SELECT * FROM stickers WHERE reviewPending = 1 ORDER BY createdAt DESC")
+    /**
+     * Очередь: скрытые записи, ждущие решения. Отвергнутые сюда не входят — они
+     * скрыты тем же битом, но решение по ним уже принято (см. Sticker.rejectedAt).
+     */
+    @Query("SELECT * FROM stickers WHERE reviewPending = 1 AND rejectedAt IS NULL ORDER BY createdAt DESC")
     suspend fun getPendingReview(): List<Sticker>
 
-    @Query("UPDATE stickers SET reviewPending = 0 WHERE id = :id")
+    /**
+     * Снять бит — принять запись из очереди. Отвергнутую не снимает: принять
+     * её отсюда нельзя, даже если номер пришёл по ошибке.
+     */
+    @Query("UPDATE stickers SET reviewPending = 0 WHERE id = :id AND rejectedAt IS NULL")
     suspend fun clearReviewPending(id: Long)
+
+    /**
+     * Отвергнуть запись: скрыть и отметить момент решения одним запросом, чтобы
+     * не было мгновения, когда запись отмечена, но видна, или скрыта, но числится
+     * ждущей. Повторный вызов переставляет момент и ничего больше не меняет.
+     */
+    @Query("UPDATE stickers SET reviewPending = 1, rejectedAt = :at WHERE id = :id")
+    suspend fun reject(id: Long, at: Long)
+
+    /** Отвергнутые записи, последние решения первыми. */
+    @Query("SELECT * FROM stickers WHERE rejectedAt IS NOT NULL ORDER BY rejectedAt DESC")
+    suspend fun getRejected(): List<Sticker>
+
+    @Query("SELECT COUNT(*) FROM stickers WHERE rejectedAt IS NOT NULL")
+    suspend fun countRejected(): Int
 
     /**
      * Поднять бит у записи, уже лежащей в базе.
@@ -253,7 +276,8 @@ interface StickerDao {
     @Query("UPDATE stickers SET reviewPending = 1 WHERE id = :id")
     suspend fun setReviewPending(id: Long)
 
-    @Query("UPDATE stickers SET reviewPending = 0 WHERE reviewPending = 1")
+    /** Сбросить очередь. Отвергнутые не выпускает: сброс касается только ждущих. */
+    @Query("UPDATE stickers SET reviewPending = 0 WHERE reviewPending = 1 AND rejectedAt IS NULL")
     suspend fun clearAllReviewPending(): Int
 
     /**
@@ -283,8 +307,11 @@ interface StickerDao {
     @Query("SELECT COUNT(*) FROM stickers WHERE layer = :layer")
     suspend fun countInLayer(layer: String): Int
 
-    /** Спорные записи. Sweep их не трогает: число обязано остаться прежним. */
-    @Query("SELECT COUNT(*) FROM stickers WHERE reviewPending = 1")
+    /**
+     * Сколько ждут решения. Отвергнутые не считаются — см. countRejected.
+     * Sweep их не трогает: число обязано остаться прежним.
+     */
+    @Query("SELECT COUNT(*) FROM stickers WHERE reviewPending = 1 AND rejectedAt IS NULL")
     suspend fun countPendingReview(): Int
 
     /** Самый старый истёкший срок — показывает, насколько давно копится долг. */
