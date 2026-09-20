@@ -251,6 +251,7 @@ object DisputeNotice {
     private fun kindWord(kind: RiskTrigger.MarkKind): String = when (kind) {
         RiskTrigger.MarkKind.NEGATION -> "отрицание"
         RiskTrigger.MarkKind.NUMBER -> "числа разошлись"
+        RiskTrigger.MarkKind.SWAP -> "на месте одного слова стоит другое"
     }
 
     /**
