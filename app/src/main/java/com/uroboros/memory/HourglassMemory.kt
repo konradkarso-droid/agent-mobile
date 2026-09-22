@@ -266,6 +266,19 @@ internal sealed class SelectionSummary {
      * ничего, а двое лежат в карантине" — разные диагнозы с разным лечением.
      * Что это число значит и куда врёт — в KDoc SelectionSummary.
      */
+    /**
+     * Все найденные записи оказались только вопросами и были отсеяны.
+     *
+     * Отдельное состояние, а не "ничего не нашли": в базе нашлось, но на
+     * ответ не годится. Лечится не поиском и не порогами, а самим вопросом —
+     * именно он вытащил формулировки себя самого из памяти.
+     */
+    data class OnlyQuestionsFound(val questions: Int) : SelectionSummary() {
+        override val text =
+            "Отбор: найдено записей $questions, но все — только вопросы; " +
+                "для ответа взять нечего."
+    }
+
     data class NothingFound(val words: Int, val hidden: Int) : SelectionSummary() {
         override val text =
             "Отбор: слов $words · не нашлось ни одной записи · " +
@@ -289,7 +302,9 @@ internal sealed class SelectionSummary {
         val tooExpensive: Int,
         val tooBoth: Int,
         /** Сколько записей карантина содержат слова вопроса. См. KDoc SelectionSummary. */
-        val hidden: Int
+        val hidden: Int,
+        /** Сколько записей отсеяно как «только вопросы» на пути ANSWERING_USER. */
+        val questionsFiltered: Int = 0
     ) : SelectionSummary() {
 
         val rejected: Int get() = tooNarrow + tooExpensive + tooBoth
@@ -308,7 +323,9 @@ internal sealed class SelectionSummary {
                         if (tooExpensive > 0) "дорого $tooExpensive" else null,
                         if (tooBoth > 0) "узко и дорого $tooBoth" else null
                     ).joinToString(", ")
-                return head + trim + why + " · скрыто карантином $hidden"
+                val filtered = if (questionsFiltered > 0)
+                    " · отсеяно вопросов $questionsFiltered" else ""
+                return head + trim + why + filtered + " · скрыто карантином $hidden"
             }
     }
 }
@@ -339,7 +356,9 @@ data class ContextResult(
      * идентификаторы, счёт слов и длины; это важно, потому что список пересекает
      * границу слоя памяти и дальше им распоряжается вызывающий.
      */
-    val trace: List<String>
+    val trace: List<String>,
+    /** Сколько записей-вопросов отсеяно при отборе для ответа. */
+    val questionsFiltered: Int = 0,
 )
 
 /**
@@ -663,7 +682,7 @@ class HourglassMemory(
         val roomLeft = (limit - principles.size).coerceAtLeast(0)
         val selection =
             if (roomLeft == 0) SelectionResult(emptyList(), emptyList(), SelectionSummary.NoRoom)
-            else searchByWords(query, roomLeft, layers)
+            else searchByWords(query, roomLeft, layers, purpose)
         val matches = selection.stickers
 
         val result = (principles + matches).distinctBy { it.id }.take(limit)
@@ -711,10 +730,15 @@ class HourglassMemory(
             }
         }
 
+        val qFiltered = (selection.summary as? SelectionSummary.Weighed)?.questionsFiltered
+            ?: if (selection.summary is SelectionSummary.OnlyQuestionsFound)
+                (selection.summary as SelectionSummary.OnlyQuestionsFound).questions
+            else 0
         return ContextResult(
             stickers = touched,
             summary = selection.summary.text,
-            trace = selection.trace
+            trace = selection.trace,
+            questionsFiltered = qFiltered
         )
     }
 
@@ -892,7 +916,8 @@ class HourglassMemory(
     private suspend fun searchByWords(
         query: String,
         limit: Int,
-        allowedLayers: List<String>
+        allowedLayers: List<String>,
+        purpose: RetrievalPurpose,
     ): SelectionResult {
         // Объяснение копится строками и уезжает вызывающему вместе с результатом.
         // Пустой список записей при непустом trace — это "искали и не нашли";
@@ -962,13 +987,33 @@ class HourglassMemory(
             )
         }
 
+        // Вопросы отсеваются здесь, а не при поиске: до взвешивания проще
+        // считать их, и выбор места в candidates.values читается как одно
+        // правило, а не разбросан по нескольким точкам спуска.
+        //
+        // ТОЛЬКО НА ПУТИ ОТВЕТА. Просмотр (BROWSING) и внутренний доступ
+        // агента (AGENT_ACCESS) видят все записи — иначе человек потерял бы
+        // свою запись-вопрос. Цель — не стереть вопросы из памяти, а убрать
+        // их с пути к ответу: там они занимают место сведений, не неся их.
+        //
+        // ЧЕГО НЕ УМЕЕТ: вопрос без знака считается утверждением. Запись,
+        // в которой вопрос смешан с фактом, проходит целиком.
+        var questionsFiltered = 0
         val totalWords = words.size
+
         val passed = mutableListOf<Scored>()
         var tooNarrow = 0
         var tooExpensive = 0
         var tooBoth = 0
 
         for (sticker in candidates.values) {
+            if (purpose == RetrievalPurpose.ANSWERING_USER &&
+                RiskTrigger.isOnlyQuestions(sticker.content)
+            ) {
+                questionsFiltered++
+                continue
+            }
+
             val matched = hits[sticker.id].orEmpty()
             val score = scoreCandidate(matched, totalWords, sticker.content.length)
 
@@ -1000,6 +1045,17 @@ class HourglassMemory(
             .take(limit)
             .map { it.sticker }
 
+        // Нашлись кандидаты, но все оказались вопросами и были отсеяны.
+        // Проверяется здесь, а не до цикла: до цикла questionsFiltered = 0
+        // и условие никогда не выполнилось бы.
+        if (stickers.isEmpty() && questionsFiltered > 0) {
+            return SelectionResult(
+                emptyList(),
+                trace,
+                SelectionSummary.OnlyQuestionsFound(questionsFiltered)
+            )
+        }
+
         return SelectionResult(
             stickers = stickers,
             trace = trace,
@@ -1013,7 +1069,8 @@ class HourglassMemory(
                 tooNarrow = tooNarrow,
                 tooExpensive = tooExpensive,
                 tooBoth = tooBoth,
-                hidden = hidden.size
+                hidden = hidden.size,
+                questionsFiltered = questionsFiltered
             )
         )
     }
