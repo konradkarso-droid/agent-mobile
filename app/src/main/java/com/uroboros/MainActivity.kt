@@ -1919,7 +1919,7 @@ class MainActivity : AppCompatActivity() {
                 // признаёт спор только по признаку. Пусто здесь — поломка, и
                 // сказать о ней надо словами.
                 tail = if (marks.isNullOrEmpty()) " · признаков нет, и это поломка"
-                else " · " + marks.joinToString(", ") { markName(it.kind) },
+                else " · " + marks.joinToString(", ") { markName(it) },
                 marked = opponentSideWords(report, shown.id),
             )
         }
@@ -1931,9 +1931,14 @@ class MainActivity : AppCompatActivity() {
      * Живёт здесь, а не у правила: правило отвечает на вопрос механизма, а это
      * слово читает человек, и меняться оно может независимо от того, как
      * признак устроен внутри.
+     *
+     * У отрицания два имени — по слою (см. RiskTrigger.ContradictionMark).
+     * «Всё остальное совпало» говорит человеку, что искать спор в других
+     * словах незачем; простое «отрицание» — что спор может оказаться ложным.
      */
-    private fun markName(kind: RiskTrigger.MarkKind): String = when (kind) {
-        RiskTrigger.MarkKind.NEGATION -> "отрицание"
+    private fun markName(mark: RiskTrigger.ContradictionMark): String = when (mark.kind) {
+        RiskTrigger.MarkKind.NEGATION ->
+            if (mark.exactRemainder) "отрицание, всё остальное совпало" else "отрицание"
         RiskTrigger.MarkKind.NUMBER -> "число"
         RiskTrigger.MarkKind.SWAP -> "другое слово"
     }
