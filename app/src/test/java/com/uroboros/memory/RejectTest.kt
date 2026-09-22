@@ -2,13 +2,13 @@ package com.uroboros.memory
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Отвержение записи: один запрос, только по названному номеру, и ничего сверх.
+ * Отвержение записи: один запрос, только по названному номеру и с названным
+ * путём, и ничего сверх.
  *
  * ГЛАВНАЯ ПРОВЕРКА — на молчание: отвержение не трогает ни очередь другим
  * путём, ни доступ, ни слои. Всё, что должно случиться с отвергнутой записью,
@@ -22,17 +22,36 @@ import org.junit.Test
 class RejectTest {
 
     @Test
-    fun `отвергается названная запись одним запросом с моментом решения`() = runBlocking {
+    fun `отвергается названная запись одним запросом с моментом и путём решения`() = runBlocking {
         val dao = FakeStickerDao()
-        val ok = HourglassMemory(dao).reject(16, now = 1_000L)
-        assertTrue(ok)
-        assertEquals(listOf(16L to 1_000L), dao.rejected)
+        val outcome = HourglassMemory(dao).reject(16, RejectPath.MISTAKE, now = 1_000L)
+        assertEquals(RejectOutcome.DONE, outcome)
+        assertEquals(listOf(Triple(16L, 1_000L, "MISTAKE")), dao.rejected)
+    }
+
+    @Test
+    fun `путь записывается тот, что назван, а не какой-то один`() = runBlocking {
+        val dao = FakeStickerDao()
+        val memory = HourglassMemory(dao)
+        memory.reject(1, RejectPath.QUEUE, now = 1L)
+        memory.reject(2, RejectPath.DISPUTE, now = 2L)
+        memory.reject(3, RejectPath.MISTAKE, now = 3L)
+        assertEquals(listOf("QUEUE", "DISPUTE", "MISTAKE"), dao.rejected.map { it.third })
+    }
+
+    @Test
+    fun `ничего не изменилось — это не успех и не сбой`() = runBlocking {
+        // Ноль изменённых записей: номера нет или запись уже отвергнута.
+        // Сказать «отвергнута» здесь значило бы соврать, сказать «память не
+        // ответила» — послать человека чинить исправную базу.
+        val dao = FakeStickerDao().apply { rejectChanges = 0 }
+        assertEquals(RejectOutcome.UNCHANGED, HourglassMemory(dao).reject(16, RejectPath.MISTAKE))
     }
 
     @Test
     fun `отвержение ничего другого не трогает`() = runBlocking {
         val dao = FakeStickerDao()
-        HourglassMemory(dao).reject(16)
+        HourglassMemory(dao).reject(16, RejectPath.MISTAKE)
         assertTrue("бит ставит сам запрос отвержения, отдельного скрытия нет", dao.reviewPendingSet.isEmpty())
         assertTrue("слои не трогаются", dao.layerUpdates.isEmpty())
         assertTrue("отвержение — не обращение", dao.touchedAccess.isEmpty())
@@ -40,16 +59,19 @@ class RejectTest {
     }
 
     @Test
-    fun `новая запись не отвергнута`() {
-        assertNull(Sticker(content = "У паука восемь ног").rejectedAt)
+    fun `новая запись не отвергнута и пути у неё нет`() {
+        val sticker = Sticker(content = "У паука восемь ног")
+        assertNull(sticker.rejectedAt)
+        assertNull(sticker.rejectedVia)
     }
 
     @Test
     fun `сбой базы — отказ, а не молчаливый успех`() = runBlocking {
         val dao = object : StickerDao by FakeStickerDao() {
-            override suspend fun reject(id: Long, at: Long) = throw IllegalStateException("база недоступна")
+            override suspend fun reject(id: Long, at: Long, via: String): Int =
+                throw IllegalStateException("база недоступна")
         }
-        assertFalse(HourglassMemory(dao).reject(16))
+        assertEquals(RejectOutcome.FAILED, HourglassMemory(dao).reject(16, RejectPath.MISTAKE))
     }
 
     @Test
