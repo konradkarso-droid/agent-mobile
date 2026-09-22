@@ -27,6 +27,25 @@ internal fun importanceRank(raw: String): Int =
     runCatching { Importance.valueOf(raw).ordinal }.getOrDefault(Importance.LOW.ordinal)
 
 /**
+ * Чем кончился запрос отвержения. Три исхода, а не два: «ничего не изменилось»
+ * и «память не ответила» лечатся по-разному, и сказать человеку одно вместо
+ * другого значит послать его чинить не то.
+ */
+enum class RejectOutcome {
+    /** Запись отвергнута этим запросом. */
+    DONE,
+
+    /**
+     * Ничего не изменилось: записи с таким номером нет или она уже отвергнута
+     * раньше. Какое из двух — запрос не различает, это видно по самой записи.
+     */
+    UNCHANGED,
+
+    /** Запрос к базе упал. Запись осталась, где была. */
+    FAILED,
+}
+
+/**
  * Зачем обратились к памяти. Указывается обязательно, значения по умолчанию нет —
  * тот же приём и та же причина, что у source/confidence в TrustedMediator.saveEvent:
  * умолчание молча приписало бы обращению чужой смысл.
@@ -1514,14 +1533,23 @@ class HourglassMemory(
      * приём, ни сброс очереди отвергнутую не выпускают. Это граница решения
      * «навсегда», а не недоделка.
      *
-     * @return прошёл ли запрос. Ложь — запись осталась, где была.
+     * ПУТЬ ОБЯЗАТЕЛЕН, без значения по умолчанию. Умолчание было бы молчаливой
+     * подменой: забытый путь записался бы как какой-то конкретный, и отличить
+     * его от названного было бы нечем. Зачем путь вообще — в KDoc [RejectPath].
+     *
+     * Уже отвергнутую запись второй вызов не трогает (см. StickerDao.reject):
+     * первое решение остаётся со своим моментом и путём.
      */
-    suspend fun reject(id: Long, now: Long = System.currentTimeMillis()): Boolean =
+    suspend fun reject(
+        id: Long,
+        via: RejectPath,
+        now: Long = System.currentTimeMillis()
+    ): RejectOutcome =
         try {
-            dao.reject(id, now)
-            true
+            if (dao.reject(id, now, via.name) == 1) RejectOutcome.DONE
+            else RejectOutcome.UNCHANGED
         } catch (e: Exception) {
-            false
+            RejectOutcome.FAILED
         }
 
     /** Отвергнутые записи — для списка на экране, чтобы ошибку отвержения было чем заметить. */
