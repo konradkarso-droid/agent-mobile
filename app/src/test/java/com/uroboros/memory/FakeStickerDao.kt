@@ -126,8 +126,14 @@ class FakeStickerDao : StickerDao {
      */
     val reviewPendingSet = mutableListOf<Long>()
 
-    /** Отвергнутые: номер и момент, в порядке вызова. */
-    val rejected = mutableListOf<Pair<Long, Long>>()
+    /** Отвергнутые: номер, момент и путь, в порядке вызова. */
+    val rejected = mutableListOf<Triple<Long, Long, String>>()
+
+    /**
+     * Сколько записей «изменил» запрос отвержения. По умолчанию одну; ноль
+     * изображает запись, которой нет или которая уже отвергнута.
+     */
+    var rejectChanges: Int = 1
 
     /**
      * Записи, дошедшие до вставки, в порядке обращения. Хранятся ссылками, а не
@@ -214,8 +220,9 @@ class FakeStickerDao : StickerDao {
     override suspend fun getPendingReview(): List<Sticker> = unprepared("getPendingReview")
     override suspend fun clearReviewPending(id: Long) = unprepared("clearReviewPending")
     override suspend fun clearAllReviewPending(): Int = unprepared("clearAllReviewPending")
-    override suspend fun reject(id: Long, at: Long) {
-        rejected += id to at
+    override suspend fun reject(id: Long, at: Long, via: String): Int {
+        rejected += Triple(id, at, via)
+        return rejectChanges
     }
     override suspend fun getRejected(): List<Sticker> = unprepared("getRejected")
     override suspend fun countRejected(): Int = unprepared("countRejected")
