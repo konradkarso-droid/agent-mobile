@@ -3448,11 +3448,12 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 // Записи уйдут в промпт и будут участвовать в ответе — это
                 // единственное обращение, за которое засчитывается польза.
-                val stickers = mediator.getContextFor(
+                val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
                     limit = 5
                 )
+                val stickers = contextResult.stickers
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
                 // хвост генерации). Причина — сказанным считается то, что
@@ -3495,9 +3496,12 @@ class MainActivity : AppCompatActivity() {
                     userText,
                 )
                 disputeNoticeLine = disputeNoticeLabel(notice)
-                val questionsOnly = stickers.count { RiskTrigger.isOnlyQuestions(it.content) }
-                recordsQuestionsLine =
-                    "Записей к ответу: ${stickers.size} · из них одни вопросы: $questionsOnly"
+                // После отсева вопросов в памяти stickers их уже не несёт,
+                // поэтому count { isOnlyQuestions } давал бы постоянный ноль.
+                // Счётчик берётся из итога отбора, где он считался до обрезки.
+                val questionsFiltered = contextResult.questionsFiltered
+                recordsQuestionsLine = "Записей к ответу: ${stickers.size}" +
+                    if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else ""
                 renderMetricsPanel()
                 val disputeText = (notice as? DisputeNotice.Result.Found)?.text
 
