@@ -40,6 +40,9 @@ import com.uroboros.memory.DisputeCluster
 import com.uroboros.memory.DisputeNotice
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
+import com.uroboros.memory.RecordNumber
+import com.uroboros.memory.RejectOutcome
+import com.uroboros.memory.RejectPath
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.SaveResult
@@ -394,7 +397,9 @@ class MainActivity : AppCompatActivity() {
     private val dreamView by lazy { DreamView(applicationContext) }
 
     private val judgeUi by lazy {
-        JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id -> mediator.reject(id) }
+        JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id ->
+            mediator.reject(id, RejectPath.DISPUTE) == RejectOutcome.DONE
+        }
     }
 
     /**
@@ -861,6 +866,7 @@ class MainActivity : AppCompatActivity() {
             val tail = if (sticker.content.length > DROP_PREVIEW_CHARS) "…" else ""
             out.append("\n№${sticker.id} «$preview$tail»")
             sticker.rejectedAt?.let { out.append(" · ").append(fmtMoment(it)) }
+            out.append(" · ").append(rejectPathLabel(sticker.rejectedVia))
         }
         if (rejected.size > PENDING_REVIEW_LIMIT) {
             out.append("\n… и ещё ${rejected.size - PENDING_REVIEW_LIMIT}")
@@ -1066,6 +1072,10 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val query = binding.editTextInput.text.toString().ifBlank { null }
+                // Запрос вида «№75» — одна запись по номеру, а не поиск: отбор
+                // тогда не зовётся вовсе, потому что он засчитал бы обращение.
+                // Где граница между номером и поиском — в KDoc RecordNumber.
+                val lookupId = RecordNumber.parse(query)
                 // Item 6, подшаг 1c (2026-08-22): снимок канарейки в шапке.
                 // Только чтение. Прежний вызов totalStickers() убран: канарейка
                 // уже печатает "Всего записей", а два независимых запроса к базе
@@ -1082,7 +1092,7 @@ class MainActivity : AppCompatActivity() {
                 // прибором, и засчитывать пользу за каждый осмотр памяти
                 // значило бы портить то самое число, по которому потом
                 // назначать пороги.
-                val shown = mediator.getContextWithSummary(
+                val shown = if (lookupId != null) null else mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.BROWSING,
                     query = query,
                     limit = 20
@@ -1092,7 +1102,7 @@ class MainActivity : AppCompatActivity() {
                 // запустить в юнит-тесте (см. KDoc MemoryCanary, п. 2).
                 // На экран разбор не идёт — там его несколько десятков строк,
                 // и он нужен только при калибровке порогов.
-                shown.trace.forEach { Log.d("MemorySelect", it) }
+                shown?.trace?.forEach { Log.d("MemorySelect", it) }
                 // Итог отбора печатается ВСЕГДА, а не только когда показывать
                 // нечего. Прибор, молчащий при благополучном исходе, своей
                 // поломкой выглядел бы как нормальная работа.
@@ -1161,13 +1171,20 @@ class MainActivity : AppCompatActivity() {
                     rules += (witnessStart + witnessBreak + 1) to out.length
                 }
                 blocks += witnessStart to out.length
-                section(shown.summary, headed = false)
+                section(
+                    shown?.summary
+                        ?: "Запись по номеру №$lookupId. Поиска по словам не было, " +
+                            "и обращением к записи просмотр не считается.",
+                    headed = false
+                )
                 section(judgeUi.section(modelIdentity()) { openMemoryView() }, headed = true)
                 // Сны идут ОТДЕЛЬНЫМ блоком после судьи и без единой нажимаемой
                 // строки: сон ничего не утверждает, соглашаться с ним нечем.
                 // Почему не рядом со спорными парами — в шапке DreamView.
                 section(dreamView.section(), headed = true)
-                if (shown.stickers.isEmpty()) {
+                if (lookupId != null) {
+                    appendLookedUpRecord(out, lookupId, blocks, rules)
+                } else if (shown == null || shown.stickers.isEmpty()) {
                     section("(записей для показа нет)", headed = false)
                 } else {
                     // Пары считаются ОТ ОЧЕРЕДИ, а не от списка памяти:
@@ -1233,10 +1250,7 @@ class MainActivity : AppCompatActivity() {
                         out.append(sticker.content)
                         out.append("\n")
                         val serviceStart = out.length
-                        out.append("[").append(sticker.layer).append("] тег: ")
-                        out.append(sticker.tag).append(" · ")
-                        out.append(fmtMoment(sticker.createdAt))
-                        out.append(" (обращений: ${sticker.accessCount})")
+                        appendRecordService(out, sticker)
                         if (sticker.id in correctedIds) {
                             out.append("\n")
                             val markStart = out.length
@@ -1244,6 +1258,8 @@ class MainActivity : AppCompatActivity() {
                             out.append("есть скрытая, она в очереди")
                             hangs += markStart to out.length
                         }
+                        out.append("\n")
+                        appendRejectMistakeLink(out, sticker.id)
                         rules += serviceStart to out.length
                         blocks += blockStart to out.length
                     }
@@ -1254,6 +1270,206 @@ class MainActivity : AppCompatActivity() {
                 binding.buttonShow.isEnabled = true
             }
         }
+    }
+
+    /**
+     * Служебная строка записи: номер, слой, тег, время, обращения. Одна на
+     * список и на запись по номеру, чтобы две строки одного устройства не
+     * разошлись.
+     *
+     * Номер стоит первым: по нему запись достаётся запросом «№…» (см.
+     * RecordNumber), и взять его человеку больше неоткуда.
+     */
+    private fun appendRecordService(out: SpannableStringBuilder, sticker: Sticker) {
+        out.append("№").append(sticker.id.toString()).append(" · ")
+        out.append("[").append(sticker.layer).append("] тег: ")
+        out.append(sticker.tag).append(" · ")
+        out.append(fmtMoment(sticker.createdAt))
+        out.append(" (обращений: ${sticker.accessCount})")
+    }
+
+    /**
+     * Одна запись по номеру — тем же блоком, что в списке, и со строкой
+     * состояния: в список попадают только видимые записи, а по номеру
+     * приходит любая — в очереди, отвергнутая.
+     *
+     * Три исхода говорятся словами порознь: записи нет, память не ответила,
+     * запись есть. «Нет» и «не ответила» лечатся по-разному.
+     */
+    private suspend fun appendLookedUpRecord(
+        out: SpannableStringBuilder,
+        id: Long,
+        blocks: MutableList<Pair<Int, Int>>,
+        rules: MutableList<Pair<Int, Int>>,
+    ) {
+        val sticker = try {
+            mediator.getRecord(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            out.append("\n\n")
+            val start = out.length
+            out.append("Запись №$id: память не ответила, проверить не удалось.")
+            blocks += start to out.length
+            return
+        }
+        out.append("\n\n")
+        val blockStart = out.length
+        if (sticker == null) {
+            out.append("Записи №$id в памяти нет.")
+            blocks += blockStart to out.length
+            return
+        }
+        out.append(sourceLabel(sticker.source)).append(" ")
+        out.append(sticker.content)
+        out.append("\n")
+        val serviceStart = out.length
+        appendRecordService(out, sticker)
+        out.append("\n").append(recordStateLine(sticker))
+        if (sticker.rejectedAt == null) {
+            out.append("\n")
+            appendRejectMistakeLink(out, sticker.id)
+        }
+        rules += serviceStart to out.length
+        blocks += blockStart to out.length
+    }
+
+    /** Где запись сейчас — для записи, пришедшей по номеру. */
+    private fun recordStateLine(sticker: Sticker): String {
+        val rejectedAt = sticker.rejectedAt
+        return when {
+            rejectedAt != null ->
+                "отвергнута ${fmtMoment(rejectedAt)} · ${rejectPathLabel(sticker.rejectedVia)}"
+            sticker.reviewPending -> "в очереди проверки: в ответы не попадает, ждёт решения"
+            else -> "видна: может попасть в ответ агента"
+        }
+    }
+
+    /**
+     * Путь отвержения словами. Незнакомое имя печатается как есть, а не
+     * прячется: база могла прийти от более новой версии приложения, и молча
+     * показать «путь не записан» значило бы соврать о записанном.
+     */
+    private fun rejectPathLabel(via: String?): String = when (via) {
+        null -> "путь не записан"
+        RejectPath.QUEUE.name -> "из очереди"
+        RejectPath.DISPUTE.name -> "из спора"
+        RejectPath.MISTAKE.name -> "как ошибочная"
+        else -> "путь «$via»"
+    }
+
+    /**
+     * Ссылка «отвергнуть как ошибочную» под записью. Сама ничего не решает —
+     * открывает диалог подтверждения: одного касания для необратимого мало.
+     */
+    private fun appendRejectMistakeLink(out: SpannableStringBuilder, id: Long) {
+        val start = out.length
+        out.append("отвергнуть как ошибочную")
+        out.setSpan(
+            object : ClickableSpan() {
+                override fun onClick(widget: View) = showRejectMistakeDialog(id)
+                override fun updateDrawState(ds: TextPaint) {
+                    ds.color = colorRecordsLink
+                    ds.isUnderlineText = false
+                }
+            },
+            start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+    }
+
+    /**
+     * Подтверждение отвержения записи как ошибочной.
+     *
+     * Путь для записи, попавшей в память по ошибке: опечатка, случайно
+     * отправленный черновик, испытательный текст. Отличается от отвержения из
+     * очереди и из спора только записанным путём (см. RejectPath); механизм
+     * один — HourglassMemory.reject.
+     *
+     * ЗАПИСЬ ЧИТАЕТСЯ ЗАНОВО перед показом: экран мог устареть, и отвергать
+     * по старому виду нельзя. Уже отвергнутую диалог не предлагает — первое
+     * решение остаётся, второе его не перетрёт (см. StickerDao.reject).
+     *
+     * Кнопка «Отвергнуть» — правая: для левой руки это дальний край диалога.
+     *
+     * Чего путь не умеет: он не спрашивает, почему запись неверна, и не
+     * проверяет, что она не сторона спора. Диалог только говорит, что для
+     * спора есть свой путь, — выбор остаётся за человеком.
+     */
+    private fun showRejectMistakeDialog(id: Long) {
+        lifecycleScope.launch {
+            val sticker = try {
+                mediator.getRecord(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Запись №$id: память не ответила. Ничего не отвергнуто.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            if (sticker == null) {
+                Toast.makeText(this@MainActivity, "Записи №$id в памяти нет.", Toast.LENGTH_LONG).show()
+                openMemoryView()
+                return@launch
+            }
+            val rejectedAt = sticker.rejectedAt
+            if (rejectedAt != null) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Запись №$id уже отвергнута ${fmtMoment(rejectedAt)} · " +
+                        rejectPathLabel(sticker.rejectedVia),
+                    Toast.LENGTH_LONG
+                ).show()
+                openMemoryView()
+                return@launch
+            }
+            val preview = sticker.content.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+            val tail = if (sticker.content.length > DROP_PREVIEW_CHARS) "…" else ""
+            val queueNote = if (sticker.reviewPending) {
+                "\n\nСейчас она стоит в очереди проверки; отсюда решение запишется " +
+                    "как ошибка ввода, а не как исход проверки."
+            } else ""
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Отвергнуть запись №$id?")
+                .setMessage(
+                    "«$preview$tail»\n\n" +
+                        "Для записи, попавшей в память по ошибке: опечатка, случайно " +
+                        "отправленный черновик, испытательный текст. Запись уйдёт из " +
+                        "ответов агента, из проверки и от судьи навсегда; из памяти она " +
+                        "не стирается, но вернуть её нажатием нельзя.\n\n" +
+                        "Если запись неверна потому, что спорит с другой, отвергайте её " +
+                        "из спора или из очереди: там решение запишется как исход спора." +
+                        queueNote
+                )
+                .setPositiveButton("Отвергнуть") { _, _ ->
+                    lifecycleScope.launch { rejectAsMistake(id) }
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+    }
+
+    /**
+     * Собственно отвержение как ошибочной. Экран пересобирается после любого
+     * исхода: при удаче запись уходит из списка (или по номеру показывается
+     * отвергнутой), и это второй признак рядом с сообщением.
+     */
+    private suspend fun rejectAsMistake(id: Long) {
+        val outcome = mediator.reject(id, RejectPath.MISTAKE)
+        Toast.makeText(
+            this@MainActivity,
+            when (outcome) {
+                RejectOutcome.DONE -> "Отвергнута запись №$id как ошибочная"
+                RejectOutcome.UNCHANGED ->
+                    "Ничего не изменилось: записи №$id нет или она уже отвергнута."
+                RejectOutcome.FAILED ->
+                    "Не отвергнуто: память не ответила. Запись осталась, где была."
+            },
+            Toast.LENGTH_LONG
+        ).show()
+        openMemoryView()
     }
 
     /**
@@ -1478,13 +1694,18 @@ class MainActivity : AppCompatActivity() {
      * убывала (см. HourglassMemory.reject).
      */
     private suspend fun rejectRecord(sticker: Sticker) {
-        val ok = mediator.reject(sticker.id)
+        val outcome = mediator.reject(sticker.id, RejectPath.QUEUE)
         val pending = mediator.getPendingReview()
         binding.textResults.text = renderPendingReview(pending)
         Toast.makeText(
             this@MainActivity,
-            if (ok) "Отвергнута · в очереди осталось ${pending.size}"
-            else "Не отвергнуто: память не ответила. Запись осталась в очереди.",
+            when (outcome) {
+                RejectOutcome.DONE -> "Отвергнута · в очереди осталось ${pending.size}"
+                RejectOutcome.UNCHANGED ->
+                    "Ничего не изменилось: запись №${sticker.id} уже отвергнута или её нет. " +
+                        "В очереди ${pending.size}."
+                RejectOutcome.FAILED -> "Не отвергнуто: память не ответила. Запись осталась в очереди."
+            },
             Toast.LENGTH_LONG
         ).show()
     }
