@@ -17,7 +17,7 @@ import com.uroboros.memory.judge.JudgeVerdictDao
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -173,6 +173,15 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Путь отвержения (см. Sticker.rejectedVia). Только новая пустая колонка.
+        // У уже отвергнутых записей остаётся null — «путь не записан»: какой он
+        // был, из базы не восстановить, а выдумывать его нельзя.
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE stickers ADD COLUMN rejectedVia TEXT")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -199,7 +208,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
                  .build().also { INSTANCE = it }
             }
         }
