@@ -9,6 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.uroboros.memory.dream.Dream
 import com.uroboros.memory.dream.DreamDao
 import com.uroboros.memory.dream.DreamNight
+import com.uroboros.memory.dream.DreamServedDao
 import com.uroboros.memory.judge.JudgeVerdict
 import com.uroboros.memory.judge.JudgeVerdictDao
 
@@ -17,7 +18,7 @@ import com.uroboros.memory.judge.JudgeVerdictDao
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class MemoryDatabase : RoomDatabase() {
     abstract fun lastStableSnapshotDao(): LastStableSnapshotDao
     abstract fun judgeVerdictDao(): JudgeVerdictDao
     abstract fun dreamDao(): DreamDao
+    abstract fun dreamServedDao(): DreamServedDao
 
     companion object {
         // Item 6b/8 (2026-08-17): новая таблица для снимка последнего стабильного
@@ -182,6 +184,16 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Отметка «подан» у сна (см. Dream.servedCount). Старые сны получают 0 и
+        // null — «не подавался»: до этой версии подачи не было, так что это
+        // правда, а не подстановка.
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE dreams ADD COLUMN servedCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE dreams ADD COLUMN lastServedAt INTEGER")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -208,7 +220,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
                  .build().also { INSTANCE = it }
             }
         }
