@@ -244,28 +244,6 @@ class DreamRecall(
         }
 
         /**
-         * Прежняя форма строки: вся цепочка целиком, с повтором найденного.
-         * Живёт только до перевода экрана на [lines] и уходит следующим
-         * коммитом этого же файла.
-         */
-        fun line(p: Picked): String {
-            val t = p.records.map { "«${it.content}»" }
-            val body = when (p.dream.kind) {
-                DreamWeaver.Kind.TIME.name ->
-                    "${t.joinToString(" и ")} — это было рядом по времени"
-                // Мост хранится краем, мостом и краем (см. DreamWeaver.Kind.BRIDGE).
-                DreamWeaver.Kind.BRIDGE.name ->
-                    if (t.size == 3) "${t[0]} и ${t[2]} — связались через ${t[1]}"
-                    else t.joinToString(", ")
-                DreamWeaver.Kind.PLOT.name -> t.joinToString(" → ")
-                // Вид, о котором подача не знает, называется перечнем, а не
-                // прячется.
-                else -> t.joinToString(", ")
-            }
-            return "${ProvenanceLabels.DREAM_FOR_MODEL}: $body."
-        }
-
-        /**
          * Строка ли это сна. Нужна показу ленты, чтобы считать сны отдельно от
          * записей: строки обоих видов лежат в ходе одним списком, а слитый
          * счёт «записей 3» мог бы значить «2 записи и сон».
