@@ -46,25 +46,11 @@ object DreamRunner {
         startedBy: NightStart,
         nightAt: Long = System.currentTimeMillis(),
     ): String {
-        return runNight(db, startedBy, nightAt)
-    }
-
-    /**
-     * Прежний вход, без того, кто начал: ночь пишется с «не записано». Не для
-     * новых путей — см. run с [NightStart].
-     */
-    @Deprecated("Кто начал ночь не записывается", ReplaceWith("run(db, NightStart.BUTTON, nightAt)"))
-    suspend fun run(
-        db: MemoryDatabase,
-        nightAt: Long = System.currentTimeMillis(),
-    ): String = runNight(db, null, nightAt)
-
-    private suspend fun runNight(db: MemoryDatabase, startedBy: NightStart?, nightAt: Long): String {
         return try {
             val stickers = db.stickerDao()
             HourglassMemory(stickers).migrateExpired()
             val night = DreamWeaver.weave(stickers.getAll())
-            val row = DreamNight.of(nightAt, night).copy(startedBy = startedBy?.name)
+            val row = DreamNight.of(nightAt, night).copy(startedBy = startedBy.name)
             val rows = night.dreams.map {
                 Dream(
                     nightAt = nightAt,
