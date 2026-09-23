@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.uroboros.memory.dream.AgentRecallDao
 import com.uroboros.memory.dream.Dream
 import com.uroboros.memory.dream.DreamDao
 import com.uroboros.memory.dream.DreamNight
@@ -28,6 +29,7 @@ abstract class MemoryDatabase : RoomDatabase() {
     abstract fun judgeVerdictDao(): JudgeVerdictDao
     abstract fun dreamDao(): DreamDao
     abstract fun dreamServedDao(): DreamServedDao
+    abstract fun agentRecallDao(): AgentRecallDao
 
     companion object {
         // Item 6b/8 (2026-08-17): новая таблица для снимка последнего стабильного
