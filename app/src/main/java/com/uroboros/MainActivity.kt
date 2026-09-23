@@ -465,7 +465,9 @@ class MainActivity : AppCompatActivity() {
             val (dreamUses, recordUses) = turn.records.partition { DreamRecall.isDreamLine(it.text) }
             val fresh = recordUses.count { it.firstSeenTurn == index }
             val expanded = index in expandedTurns
-            val dreamsTail = if (dreamUses.isEmpty()) "" else ", снов ${dreamUses.size}"
+            // Считаются строки сна: сны с одной записью ответа ложатся одной
+            // строкой, и сколько их в ней, говорит прибор хода.
+            val dreamsTail = if (dreamUses.isEmpty()) "" else ", строк сна ${dreamUses.size}"
             out.append("\n[записей ${recordUses.size}, новых $fresh$dreamsTail] ")
             val start = out.length
             out.append(if (expanded) "скрыть" else "показать")
@@ -3681,8 +3683,10 @@ class MainActivity : AppCompatActivity() {
                 // Сны всплывают через записи этого ответа (см. DreamRecall).
                 // Отбор только читает: ни записи, ни сны здесь не меняются, а
                 // отметка «подан» ставится ниже, когда реплика ушла в движок.
-                val dreamOffer = dreamRecall.offer(stickers.map { it.id }.toSet())
-                val dreamLines = dreamOffer.picked.map { DreamRecall.line(it) }
+                val answerIds = stickers.map { it.id }.toSet()
+                val dreamOffer = dreamRecall.offer(answerIds)
+                val dreamLineSet = DreamRecall.lines(dreamOffer.picked, answerIds)
+                val dreamLines = dreamLineSet.map { it.text }
                 // Сверка идёт по ТЕКСТАМ записей, а не по готовым строкам
                 // выше: строка несёт провенанс и кавычки, которых правило не
                 // видело и видеть не должно.
@@ -3730,8 +3734,12 @@ class MainActivity : AppCompatActivity() {
                 // отсевом, что записи. Строки снов идут в реплику ПОСЛЕ строк
                 // записей: сначала найденное, потом то, что с ним связалось.
                 val newDreamLines = journal.unseenRecords(dreamLines)
-                val servedDreams = dreamOffer.picked.filter { DreamRecall.line(it) in newDreamLines }
-                dreamsLine = DreamRecall.meter(dreamOffer, dreamLines.size - newDreamLines.size)
+                val servedDreams = dreamLineSet.filter { it.text in newDreamLines }.flatMap { it.dreams }
+                dreamsLine = DreamRecall.meter(
+                    dreamOffer,
+                    alreadyInRibbon = dreamOffer.picked.size - servedDreams.size,
+                    lineCount = dreamLineSet.size,
+                )
                 val userContent = journal.composeUserContent(newRecords + newDreamLines, userText, disputeText)
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
@@ -3832,7 +3840,7 @@ class MainActivity : AppCompatActivity() {
                 // в реплику целиком.
                 val otherChars = userContent.length - userText.length - recordsChars - dreamsChars
                 val dreamsPart =
-                    if (newDreamLines.isEmpty()) "" else " · снов ${newDreamLines.size} на $dreamsChars зн."
+                    if (newDreamLines.isEmpty()) "" else " · строк сна ${newDreamLines.size} на $dreamsChars зн."
                 val otherPart = if (otherChars > 0) " · прочее $otherChars зн." else ""
                 val promptShape = if (newRecords.isEmpty()) {
                     val skipped = allRecords.size
