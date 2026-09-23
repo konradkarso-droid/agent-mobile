@@ -3,6 +3,7 @@ package com.uroboros.memory.judge
 import android.content.Context
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
 
@@ -20,6 +21,33 @@ data class JudgeCounters(
     val disputes: Int,
     val reviewed: Int,
     val misses: Int,
+    /**
+     * Те же числа по кольцам сита (см. JudgeSieve): внутреннее, внешнее и
+     * «вне колец» — пары, которые сито сегодня не пропустило бы. Последние
+     * могли судиться только до появления сита.
+     *
+     * Кольцо считается по текстам пары СЕЙЧАС, а не хранится с вердиктом.
+     * Граница этого: поменяй правило колец — и старые вердикты разложатся уже
+     * по новому. Для вопроса, ради которого счёт заведён, это верно: «что
+     * находит внешнее кольцо в нынешнем виде». Пары с исчезнувшей записью не
+     * посчитаны ни в одном кольце — кольцо без текста не определить.
+     */
+    val byRing: RingCounters = RingCounters(),
+)
+
+/** Счёт вердиктов одного кольца: судья сказал, человек подтвердил или нет. */
+data class RingTally(
+    val judged: Int = 0,
+    val disputes: Int = 0,
+    val confirmed: Int = 0,
+    val misses: Int = 0,
+)
+
+/** Счёт по кольцам. [outside] — пары вне колец, судившиеся до сита. */
+data class RingCounters(
+    val inner: RingTally = RingTally(),
+    val outer: RingTally = RingTally(),
+    val outside: RingTally = RingTally(),
 )
 
 /**
@@ -76,7 +104,41 @@ class JudgeLauncher(
             reviewed = verdicts.countHuman(print, HumanVerdict.CONFIRMED.name) +
                 verdicts.countHuman(print, HumanVerdict.MISS.name),
             misses = verdicts.countHuman(print, HumanVerdict.MISS.name),
+            byRing = ringCounters(print),
         )
+    }
+
+    /**
+     * Счёт по кольцам. Записи читаются одним запросом, основы слов — по разу
+     * на запись: вердиктов может быть сотни, записей — десятки.
+     */
+    private suspend fun ringCounters(print: String): RingCounters {
+        val texts = stickers.getAll().associate { it.id to it.content }
+        val stems = HashMap<Long, Set<String>>()
+        fun stemsOf(id: Long): Set<String>? =
+            texts[id]?.let { text -> stems.getOrPut(id) { RiskTrigger.significantStems(text) } }
+
+        var inner = RingTally()
+        var outer = RingTally()
+        var outside = RingTally()
+        for (row in verdicts.all(print)) {
+            val first = stemsOf(row.firstId) ?: continue
+            val second = stemsOf(row.secondId) ?: continue
+            val add = { tally: RingTally ->
+                tally.copy(
+                    judged = tally.judged + 1,
+                    disputes = tally.disputes + if (row.verdict == MemoryJudge.Verdict.DISPUTE.name) 1 else 0,
+                    confirmed = tally.confirmed + if (row.humanVerdict == HumanVerdict.CONFIRMED.name) 1 else 0,
+                    misses = tally.misses + if (row.humanVerdict == HumanVerdict.MISS.name) 1 else 0,
+                )
+            }
+            when (JudgeSieve.ring(first, second)) {
+                JudgeRing.INNER -> inner = add(inner)
+                JudgeRing.OUTER -> outer = add(outer)
+                null -> outside = add(outside)
+            }
+        }
+        return RingCounters(inner, outer, outside)
     }
 
     /**
@@ -147,6 +209,12 @@ class JudgeLauncher(
                 append(report.onlyQuestions.take(SHOWN_IDS).joinToString(", ") { "№$it" })
                 if (report.onlyQuestions.size > SHOWN_IDS) append(", …")
                 append(")\n")
+            }
+            if (report.outsideSieve > 0) {
+                // Число, а не номера: таких пар большинство. Строка нужна,
+                // чтобы «осталось 0» не читалось как «все пары разобраны».
+                append("Не судятся — нет общих слов: ").append(report.outsideSieve)
+                append(" пар\n")
             }
             append("Осталось пар: ").append(report.remaining).append("\n")
             append("Времени ушло: ").append(report.spentMs / 1000).append(" с")
