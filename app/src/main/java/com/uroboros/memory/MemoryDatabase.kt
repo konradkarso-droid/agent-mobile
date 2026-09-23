@@ -19,7 +19,7 @@ import com.uroboros.memory.judge.JudgeVerdictDao
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -218,6 +218,15 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Вспомненный сон (см. dream.Dream.recalledCount) — приток реки. У
+        // прежних снов ноль и null — правда: вспоминать снов было нечем.
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE dreams ADD COLUMN recalledCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE dreams ADD COLUMN lastRecalledAt INTEGER")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -244,7 +253,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
                  .build().also { INSTANCE = it }
             }
         }
