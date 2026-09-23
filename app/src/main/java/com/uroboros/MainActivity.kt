@@ -87,6 +87,12 @@ class MainActivity : AppCompatActivity() {
     private var isToteRunning = false
 
     /**
+     * Почему последняя попытка поднять тело агента не удалась; null — удалась
+     * или ещё не делалась. Смысл — в [AgentLife.line].
+     */
+    private var bodyFailure: String? = null
+
+    /**
      * Лента разговора. Живёт столько же, сколько экран: переживает поворот
      * не сама по себе, а потому что процесс тот же — граница названа в
      * [ConversationJournal].
@@ -2379,7 +2385,15 @@ class MainActivity : AppCompatActivity() {
         // там, где смотрят на перегрев. Что именно молчит, разбирается по
         // строке наблюдения за зоной внутри шторки.
         val temp = if (power.temperatureKnown) "${fmt1(power.temperatureCelsius)}°C" else "?"
-        binding.textHardware.text = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · $temp"
+        binding.textHardware.text = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · $temp\n" +
+            // Жизнь агента — под строкой железа и всегда на виду, по той же
+            // причине: кома, увиденная только в раскрытой шторке, не увидена.
+            AgentLife.line(
+                alive = AgentService.alive.value,
+                record = AgentLife.read(applicationContext),
+                batteryOptimized = AgentLife.batteryOptimized(applicationContext),
+                failure = bodyFailure,
+            )
 
         // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
         // больше не входит: она обязана быть видна независимо от того,
@@ -4161,6 +4175,13 @@ class MainActivity : AppCompatActivity() {
         // повторяемые (см. LlmEngine.withDeterministicSampling).
         binding.buttonJudge.setOnClickListener { openMemoryView() }
 
+        // Жизнь тела агента: служба поднимается не сразу после команды, и
+        // строка под железом перерисовывается, когда она действительно ожила
+        // или умерла, а не когда её позвали.
+        lifecycleScope.launch {
+            AgentService.alive.collect { renderMetricsPanel() }
+        }
+
         // Ход и итог разбора из службы. Итог показывается один раз и после
         // показа снимается: разбор, кончившийся ночью, ждёт здесь, пока экран
         // откроют, но не всплывает заново при каждом следующем открытии.
@@ -4321,6 +4342,12 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         presenceLock.onScreenShown()
+        // Поднять тело при каждом показе экрана: у живой службы это ничего не
+        // меняет, а после комы, из которой она не встала сама, это последний
+        // подъём, который у неё есть. Экран на виду, и Android такой запуск
+        // разрешает.
+        bodyFailure = AgentService.live(applicationContext)
+        renderMetricsPanel()
     }
 
     override fun onStop() {
