@@ -42,6 +42,10 @@ import java.util.Locale
  *    варианты перечисляются текстом, а не прячутся;
  *  - длинные записи обрезаются до [MAX_TEXT] знаков — это показ, а не источник:
  *    полный текст записи смотрится в списке памяти ниже.
+ *
+ * Последней строкой раздела стоит давление сна — чем следующая ночь отличалась
+ * бы от показанной (см. [SleepPressure]). Оно считается из того же чтения базы,
+ * что и показ, лишних обращений не добавляет.
  */
 class DreamView(
     private val dreams: DreamDao,
@@ -59,12 +63,16 @@ class DreamView(
     )
 
     suspend fun section(): String {
-        val night = dreams.lastNight() ?: return NO_NIGHT
-        val rows = dreams.ofNight(night.nightAt)
         // Вся память берётся одним чтением: номеров в снах сотни, и запрос на
         // каждый номер стоил бы сотни обращений к базе ради того же ответа.
-        // Нужны и скрытые, и отвергнутые записи — по ним решается, молчать ли.
-        val byId = stickers.getAll().associateBy { it.id }
+        // Нужны и скрытые, и отвергнутые записи — по ним решается, молчать ли;
+        // давлению сна нужны все записи по той же причине, что и самому сну.
+        val all = stickers.getAll()
+        val night = dreams.lastNight()
+        val rows = night?.let { dreams.ofNight(it.nightAt) } ?: emptyList()
+        val pressure = SleepPressure.line(SleepPressure.measure(all, night, rows))
+        if (night == null) return NO_NIGHT + "\n\n" + pressure
+        val byId = all.associateBy { it.id }
 
         val visible = mutableListOf<Pair<String, List<Sticker>>>()
         val dreamt = mutableSetOf<Long>()
@@ -79,7 +87,7 @@ class DreamView(
             }
             visible += row.kind to records.map { it!! }
         }
-        return render(night, collapse(visible), silent, dreamt.size)
+        return render(night, collapse(visible), silent, dreamt.size) + "\n\n" + pressure
     }
 
     /**
