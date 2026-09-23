@@ -18,7 +18,7 @@ import com.uroboros.memory.judge.JudgeVerdictDao
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -194,6 +194,15 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Кто начал ночь (см. dream.DreamNight.startedBy). Только новая пустая
+        // колонка. У прежних ночей остаётся null — «не записано»: кто их начал,
+        // из базы не восстановить, а выдумывать нельзя.
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE nights ADD COLUMN startedBy TEXT")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -220,7 +229,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
                  .build().also { INSTANCE = it }
             }
         }
