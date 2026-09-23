@@ -25,6 +25,12 @@ import androidx.room.PrimaryKey
  *  - проход, сорвавшийся на ошибке, строки не оставляет — о нём говорит только
  *    отчёт того прогона;
  *  - строки копятся и сами не удаляются, по одной на проход.
+ *
+ * КТО НАЧАЛ НОЧЬ ([startedBy]). Без этого поля ночь, в которую агент уснул сам,
+ * на экране неотличима от ночи по кнопке — а проверить самостоятельный сон,
+ * кроме как по этому различию, нечем. [of] его не заполняет: итог ночи
+ * считается из плетения, а кто её начал, знает только проход (см.
+ * [DreamRunner.run]).
  */
 @Entity(tableName = "nights")
 data class DreamNight(
@@ -41,6 +47,12 @@ data class DreamNight(
     val skippedQuestions: Int,
     val skippedAgentReports: Int,
     val ceilingHit: Boolean,
+    /**
+     * Имя значения [NightStart]; null — ночь прошла раньше, чем это стали
+     * записывать. Значение по умолчанию описывает только такие старые строки:
+     * выдумывать им начало нельзя, а новую ночь проход пишет всегда явно.
+     */
+    val startedBy: String? = null,
 ) {
     companion object {
         fun of(nightAt: Long, night: DreamWeaver.Night) = DreamNight(
@@ -57,4 +69,13 @@ data class DreamNight(
             ceilingHit = night.ceilingHit,
         )
     }
+}
+
+/** Кто начал ночь. Хранится именем значения в [DreamNight.startedBy]. */
+enum class NightStart {
+    /** Агент уснул сам: давление сна и тишина. */
+    SELF,
+
+    /** Человек нажал «Разбор памяти». */
+    BUTTON,
 }
