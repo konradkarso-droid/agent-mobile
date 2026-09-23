@@ -3,6 +3,10 @@
 
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
+    <!-- Замок экрана агента спрашивает отпечаток или PIN телефона (PresenceLock).
+         Без этого разрешения системная проверка не запускается вовсе. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
     <!-- Служба переднего плана для долгих прогонов (AgentService): держит процесс
          живым и процессор проснувшимся при погасшем экране. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
