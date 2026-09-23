@@ -4145,6 +4145,14 @@ class MainActivity : AppCompatActivity() {
                             .distinctBy { it.id }
                         val recalled = AgentRecall.recalled(brought, stickers, userText, answerText.toString())
                         val recallOutcome = agentRecaller.recall(recalled.map { it.id })
+                        // Сны, чьё принесённое вспомнено, — притоки реки на
+                        // следующую ночь (см. DreamRiver).
+                        agentRecaller.markDreams(
+                            AgentRecall.recalledDreams(
+                                servedDreams.map { it.dream to it.records },
+                                recalled.mapTo(HashSet()) { it.id },
+                            )
+                        )
                         recallLine = AgentRecall.meter(brought.size, recallOutcome)
                         // Ход состоялся: двери стареют на ход, принесённое
                         // этим ходом получает свою (см. DreamDoor).
