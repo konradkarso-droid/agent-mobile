@@ -41,6 +41,7 @@ import com.uroboros.memory.DisputeCluster
 import com.uroboros.memory.DisputeNotice
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
+import com.uroboros.memory.ProvenanceLabels
 import com.uroboros.memory.RecordNumber
 import com.uroboros.memory.RejectOutcome
 import com.uroboros.memory.RejectPath
@@ -52,6 +53,7 @@ import com.uroboros.memory.Sticker
 import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.memory.clusterDisputes
+import com.uroboros.memory.dream.DreamRecall
 import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
@@ -212,6 +214,16 @@ class MainActivity : AppCompatActivity() {
     private var recordsQuestionsLine: String? = null
 
     /**
+     * Сны к последнему ответу: сколько подходило, сколько подано, а если ноль —
+     * почему (см. [DreamRecall.meter]). Отдельной строкой, а не внутри
+     * «Записей к ответу»: слитое число «записей 5» могло бы значить «3 записи
+     * и сон из двух», и прибор врал бы о том, что нашёл поиск.
+     *
+     * null прячет строку: отбора на этом ходе не было.
+     */
+    private var dreamsLine: String? = null
+
+    /**
      * Последняя реплика пользователя, собранная для движка, — целиком и
      * дословно.
      *
@@ -292,49 +304,6 @@ class MainActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("uroboros_prefs", Context.MODE_PRIVATE) }
 
     /**
-     * Метка источника ДЛЯ ЭКРАНА — для человека, который смотрит содержимое
-     * памяти кнопкой "Показать память".
-     *
-     * Не путать с [provenancePhrase]: та же величина, но два разных читателя.
-     * Функции намеренно НЕ объединены, хотя различаются только словами. Если
-     * их слить, любая правка подписи на экране молча поменяет текст, который
-     * читает модель, — а это уже смена смысла запроса, и обнаружится она не
-     * на экране, а по странным ответам через неделю.
-     */
-    private fun sourceLabel(sourceName: String): String = when (sourceName) {
-        SourceKind.USER_STATED.name -> "[от пользователя]"
-        SourceKind.AGENT_INFERRED.name -> "[вывод агента]"
-        SourceKind.OCR_EXTRACTED.name -> "[из скриншота]"
-        else -> "[?]"
-    }
-
-    /**
-     * Тот же источник, но словами, обращёнными К МОДЕЛИ — и не меткой, а
-     * подлежащим со сказуемым.
-     *
-     * Причина появления (27.08.2026). Провенанс в записях лежал с 24.08, но в
-     * запрос уходил технической меткой вида "[от пользователя]". Модель такую
-     * метку не читает как указание, чьи это слова, и вела себя соответственно:
-     * на вопрос "что ты знаешь про рубанок" отвечала "в моей памяти нет
-     * информации об этом инструменте" — при том что запись лежала прямо в
-     * запросе, — а найденную запись пересказывала дословно вместе с чужим
-     * местоимением ("МОЙ любимый инструмент" вместо "ваш").
-     *
-     * Форма выбрана так, чтобы работу делала грамматика, а не инструкция.
-     * "Пользователь сказал: «...»" само отвечает на вопрос, чья это речь, —
-     * и стоит ДЕШЕВЛЕ прежней метки, тогда как объяснение теми же словами в
-     * отдельном абзаце стоило бы полусотни токенов в каждом запросе.
-     */
-    private fun provenancePhrase(sourceName: String): String = when (sourceName) {
-        SourceKind.USER_STATED.name -> "Пользователь сказал"
-        SourceKind.AGENT_INFERRED.name -> "Ты сам вывел"
-        SourceKind.OCR_EXTRACTED.name -> "Распознано на картинке"
-        // Честнее сказать "не записан", чем подставить пользователя или себя.
-        // Перепутать, кто что сказал, система права не имеет.
-        else -> "Источник не записан"
-    }
-
-    /**
      * Смещения в тексте [renderJournal], с которых начинается каждая
      * реплика человека. По ним прыгают кнопки хода.
      *
@@ -397,6 +366,9 @@ class MainActivity : AppCompatActivity() {
     private val judgeLauncher by lazy { JudgeLauncher(this, llmEngine) }
     /** Раздел «Сны» в «Показать». Только чтение, см. DreamView. */
     private val dreamView by lazy { DreamView(applicationContext) }
+
+    /** Подача снов к ответу, см. DreamRecall. */
+    private val dreamRecall by lazy { DreamRecall(applicationContext) }
 
     private val judgeUi by lazy {
         JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id ->
@@ -488,9 +460,13 @@ class MainActivity : AppCompatActivity() {
                 out.append("\n[записей нет]")
                 return
             }
-            val fresh = turn.records.count { it.firstSeenTurn == index }
+            // Сны лежат в ходе одним списком с записями, но считаются отдельно:
+            // «записей 3» не должно значить «2 записи и сон».
+            val (dreamUses, recordUses) = turn.records.partition { DreamRecall.isDreamLine(it.text) }
+            val fresh = recordUses.count { it.firstSeenTurn == index }
             val expanded = index in expandedTurns
-            out.append("\n[записей ${turn.records.size}, новых $fresh] ")
+            val dreamsTail = if (dreamUses.isEmpty()) "" else ", снов ${dreamUses.size}"
+            out.append("\n[записей ${recordUses.size}, новых $fresh$dreamsTail] ")
             val start = out.length
             out.append(if (expanded) "скрыть" else "показать")
             out.setSpan(
@@ -742,7 +718,7 @@ class MainActivity : AppCompatActivity() {
                 // подложка, и две границы подряд — это одна лишняя. Пометка
                 // источника осталась, она не оформление: без неё не видно, чьё
                 // это утверждение.
-                out.append(sourceLabel(sticker.source)).append(" ")
+                out.append(ProvenanceLabels.forScreen(sticker.source)).append(" ")
                 val contentStart = out.length
                 out.append(sticker.content)
                 val ownWords = recordSideWords(report)
@@ -1248,7 +1224,7 @@ class MainActivity : AppCompatActivity() {
                     for (sticker in shown.stickers) {
                         out.append("\n\n")
                         val blockStart = out.length
-                        out.append(sourceLabel(sticker.source)).append(" ")
+                        out.append(ProvenanceLabels.forScreen(sticker.source)).append(" ")
                         out.append(sticker.content)
                         out.append("\n")
                         val serviceStart = out.length
@@ -1322,7 +1298,7 @@ class MainActivity : AppCompatActivity() {
             blocks += blockStart to out.length
             return
         }
-        out.append(sourceLabel(sticker.source)).append(" ")
+        out.append(ProvenanceLabels.forScreen(sticker.source)).append(" ")
         out.append(sticker.content)
         out.append("\n")
         val serviceStart = out.length
@@ -2468,7 +2444,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2650,6 +2626,8 @@ class MainActivity : AppCompatActivity() {
         disputeNoticeLine = null
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
+        // Строка снов — по той же причине, что и строка отбора.
+        dreamsLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
         // относящаяся к нынешнему. Это тот самый хвост 20, из-за которого
@@ -3698,8 +3676,13 @@ class MainActivity : AppCompatActivity() {
                 // уезжает в модель дважды — репликой и цитатой рядом с ней.
 
                 val allRecords = stickers.map { sticker ->
-                    "${provenancePhrase(sticker.source)}: «${sticker.content}»."
+                    "${ProvenanceLabels.forModel(sticker.source)}: «${sticker.content}»."
                 }
+                // Сны всплывают через записи этого ответа (см. DreamRecall).
+                // Отбор только читает: ни записи, ни сны здесь не меняются, а
+                // отметка «подан» ставится ниже, когда реплика ушла в движок.
+                val dreamOffer = dreamRecall.offer(stickers.map { it.id }.toSet())
+                val dreamLines = dreamOffer.picked.map { DreamRecall.line(it) }
                 // Сверка идёт по ТЕКСТАМ записей, а не по готовым строкам
                 // выше: строка несёт провенанс и кавычки, которых правило не
                 // видело и видеть не должно.
@@ -3743,7 +3726,13 @@ class MainActivity : AppCompatActivity() {
                 // и лента кончается к двадцатому ходу вместо шестидесятого,
                 // причём почти всё добавленное — повторы одного и того же.
                 val newRecords = journal.unseenRecords(allRecords)
-                val userContent = journal.composeUserContent(newRecords, userText, disputeText)
+                // Сон, уже лежащий в ленте, второй раз не кладётся — тем же
+                // отсевом, что записи. Строки снов идут в реплику ПОСЛЕ строк
+                // записей: сначала найденное, потом то, что с ним связалось.
+                val newDreamLines = journal.unseenRecords(dreamLines)
+                val servedDreams = dreamOffer.picked.filter { DreamRecall.line(it) in newDreamLines }
+                dreamsLine = DreamRecall.meter(dreamOffer, dreamLines.size - newDreamLines.size)
+                val userContent = journal.composeUserContent(newRecords + newDreamLines, userText, disputeText)
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
                 // отчёта о прогоне не будет, а реплика уже собрана. Перерисовка
@@ -3830,6 +3819,10 @@ class MainActivity : AppCompatActivity() {
                 // сверка сработала, а смотрят на эту строку именно там.
                 val recordsChars =
                     if (newRecords.isEmpty()) 0 else newRecords.joinToString("\n").length
+                // Сны считаются отдельно от записей по той же причине, что и на
+                // панели: слитые знаки выдали бы сон за найденное поиском.
+                val dreamsChars =
+                    if (newDreamLines.isEmpty()) 0 else newDreamLines.joinToString("\n").length
                 // Всё остальное, что не вопрос и не записи: пометка, блок
                 // сверки, разделители между блоками. ОДНИМ числом намеренно —
                 // разложить его по слагаемым значило бы завести на панели три
@@ -3837,16 +3830,18 @@ class MainActivity : AppCompatActivity() {
                 // сама реплика по ссылке ниже. Величина выводится вычитанием,
                 // поэтому отрицательной стать не может: вопрос и записи входят
                 // в реплику целиком.
-                val otherChars = userContent.length - userText.length - recordsChars
+                val otherChars = userContent.length - userText.length - recordsChars - dreamsChars
+                val dreamsPart =
+                    if (newDreamLines.isEmpty()) "" else " · снов ${newDreamLines.size} на $dreamsChars зн."
                 val otherPart = if (otherChars > 0) " · прочее $otherChars зн." else ""
                 val promptShape = if (newRecords.isEmpty()) {
                     val skipped = allRecords.size
                     val tail = if (skipped > 0) " ($skipped уже в ленте)" else ""
-                    "Запрос: новых записей нет$tail$otherPart · " +
+                    "Запрос: новых записей нет$tail$dreamsPart$otherPart · " +
                         "вопрос ${userText.length} зн.$noteTail"
                 } else {
                     "Запрос: новых записей ${newRecords.size} из ${allRecords.size} на " +
-                        "$recordsChars зн.$otherPart · " +
+                        "$recordsChars зн.$dreamsPart$otherPart · " +
                         "вопрос ${userText.length} зн.$noteTail"
                 }
 
@@ -3958,6 +3953,13 @@ class MainActivity : AppCompatActivity() {
                         confidence = ConfidenceLevel.OBSERVED
                     )
                     if (autoSaved.stored) autoSavedCount++ else autoSavedRepeats++
+
+                    // Отметка «подан» — там же и по той же мерке, что автозапись:
+                    // сон подан, когда реплика с ним ушла в движок. Ноль токенов
+                    // этого не отменяет. Цена названа: ноль токенов на точном
+                    // повторе прошлого запроса не растит ленту, и тот же сон при
+                    // повторной отправке отметится ещё раз.
+                    dreamRecall.markServed(servedDreams, System.currentTimeMillis())
 
                     // finally, а не ветка Done: раньше кнопка включалась только
                     // если поток закончился ожидаемым событием, и любой другой
@@ -4075,7 +4077,11 @@ class MainActivity : AppCompatActivity() {
                             userContent = userContent,
                             agentContent = answerText.toString(),
                             question = userText,
-                            records = allRecords,
+                            // Сны кладутся в ход вместе с записями: по этому
+                            // списку лента отсеивает повторы, и сон без него
+                            // подавался бы заново на каждом ходе. Показ хода
+                            // считает их отдельно (DreamRecall.isDreamLine).
+                            records = allRecords + dreamLines,
                         )
                         // Ход закрыт — перерисовываем ленту целиком.
                         //
