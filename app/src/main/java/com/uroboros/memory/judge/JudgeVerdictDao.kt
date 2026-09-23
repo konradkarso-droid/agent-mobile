@@ -71,6 +71,14 @@ interface JudgeVerdictDao {
     @Query("SELECT COUNT(*) FROM judge_verdicts WHERE loadFingerprint = :fingerprint")
     suspend fun countFor(fingerprint: String): Int
 
+    /**
+     * Все вердикты данного судьи. Для счёта по кольцам сита: кольцо — функция
+     * текстов пары, в таблице его нет, и посчитать его можно только по строкам
+     * целиком (см. JudgeLauncher.counters).
+     */
+    @Query("SELECT * FROM judge_verdicts WHERE loadFingerprint = :fingerprint")
+    suspend fun all(fingerprint: String): List<JudgeVerdict>
+
     /** Сколько пар с данным вердиктом судьи. */
     @Query(
         "SELECT COUNT(*) FROM judge_verdicts WHERE loadFingerprint = :fingerprint AND verdict = :verdict"
