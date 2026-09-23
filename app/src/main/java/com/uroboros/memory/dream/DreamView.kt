@@ -205,6 +205,20 @@ class DreamView(
             if (notDreamt.isNotEmpty()) {
                 append("Не снились вовсе: ").append(notDreamt.joinToString(", ")).append("\n")
             }
+            // Река — всегда, когда ночь её знала: «притоков не было» и «притоки
+            // были, но ни один не продлился» — разные вещи, и пустая река без
+            // строки была бы неотличима от сломанной. null — ночь до реки.
+            night.riverTributaries?.let { tributaries ->
+                append("Река: ")
+                when {
+                    tributaries == 0 -> append("притоков не было — ни один сон прошлой ночи не вспомнен")
+                    (night.riverDreams ?: 0) == 0 ->
+                        append("притоков ").append(tributaries).append(", ни один не продлился")
+                    else -> append("притоков ").append(tributaries)
+                        .append(" · сплетено ").append(night.riverDreams)
+                }
+                append("\n")
+            }
             if (night.ceilingHit) {
                 append("Потолок снов сработал — до длинных сюжетов дело не дошло.\n")
             }
@@ -252,6 +266,7 @@ class DreamView(
             DreamWeaver.Kind.BRIDGE.name -> "мост"
             DreamWeaver.Kind.TIME.name -> "по времени"
             DreamWeaver.Kind.PLOT.name -> "сюжет"
+            DreamRiver.KIND -> "река"
             // Имя как есть: вид сна, о котором этот показ не знает, лучше
             // назвать непонятно, чем спрятать.
             else -> kind
