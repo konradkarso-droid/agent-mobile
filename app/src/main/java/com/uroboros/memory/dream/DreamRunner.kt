@@ -29,24 +29,42 @@ import kotlinx.coroutines.CancellationException
  *    ночь, поэтому срыв сна не должен отнимать ночь у судьи;
  *  - вся память читается в память процесса целиком. При сотнях записей это
  *    ничто, при десятках тысяч придётся менять;
- *  - проход не знает, ночь сейчас или полдень: ночью его делает то, что человек
- *    запускает разбор на ночь.
+ *  - проход не знает, ночь сейчас или полдень: когда спать, решает тот, кто
+ *    его зовёт.
  */
 object DreamRunner {
 
     /**
      * Пройти ночь и вернуть готовые строки для отчёта. Исключений не выпускает,
      * кроме отмены: срыв сна — это строка в отчёте, а не сорванный прогон.
+     *
+     * [startedBy] без значения по умолчанию намеренно: новый путь, начинающий
+     * ночь, обязан сказать, кто он, иначе его ночи смешаются с чужими.
      */
     suspend fun run(
         db: MemoryDatabase,
+        startedBy: NightStart,
         nightAt: Long = System.currentTimeMillis(),
     ): String {
+        return runNight(db, startedBy, nightAt)
+    }
+
+    /**
+     * Прежний вход, без того, кто начал: ночь пишется с «не записано». Не для
+     * новых путей — см. run с [NightStart].
+     */
+    @Deprecated("Кто начал ночь не записывается", ReplaceWith("run(db, NightStart.BUTTON, nightAt)"))
+    suspend fun run(
+        db: MemoryDatabase,
+        nightAt: Long = System.currentTimeMillis(),
+    ): String = runNight(db, null, nightAt)
+
+    private suspend fun runNight(db: MemoryDatabase, startedBy: NightStart?, nightAt: Long): String {
         return try {
             val stickers = db.stickerDao()
             HourglassMemory(stickers).migrateExpired()
             val night = DreamWeaver.weave(stickers.getAll())
-            val row = DreamNight.of(nightAt, night)
+            val row = DreamNight.of(nightAt, night).copy(startedBy = startedBy?.name)
             val rows = night.dreams.map {
                 Dream(
                     nightAt = nightAt,
