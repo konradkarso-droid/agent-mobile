@@ -263,10 +263,21 @@ object DisputeNotice {
 
     /** Имена признаков одной пары, без повторов и в порядке находки. */
     private fun kindWords(marks: List<RiskTrigger.ContradictionMark>): String =
-        marks.map { kindWord(it.kind) }.distinct().joinToString(" и ")
+        marks.map { kindWord(it) }.distinct().joinToString(" и ")
 
-    private fun kindWord(kind: RiskTrigger.MarkKind): String = when (kind) {
-        RiskTrigger.MarkKind.NEGATION -> "отрицание"
+    /**
+     * Имя признака для модели.
+     *
+     * У отрицания два имени — по слою (см. RiskTrigger.ContradictionMark).
+     * Сказано, что сверка УСТАНОВИЛА — «остальные слова совпадают», — а не что
+     * из этого следует: «спор без вариантов» был бы выводом, и делать его
+     * читателю, а не механизму (см. шапку класса, про подлежащее). Какая
+     * сторона верна, и при точном остатке не знает никто, кроме человека;
+     * LIMIT_LINE стоит в блоке и для этих пар.
+     */
+    private fun kindWord(mark: RiskTrigger.ContradictionMark): String = when (mark.kind) {
+        RiskTrigger.MarkKind.NEGATION ->
+            if (mark.exactRemainder) "$NEGATION_WORD, остальные слова совпадают" else NEGATION_WORD
         RiskTrigger.MarkKind.NUMBER -> "числа разошлись"
         RiskTrigger.MarkKind.SWAP -> "на месте одного слова стоит другое"
     }
@@ -297,6 +308,9 @@ object DisputeNotice {
      * рядом с ней.
      */
     const val LIMIT_LINE = "Какая сторона верна, сверка не знает."
+
+    /** Имя признака отрицания. Общее у обоих слоёв, чтобы слой уточнял имя, а не подменял его. */
+    private const val NEGATION_WORD = "отрицание"
 
     /**
      * Сколько пар называется в блоке, обоих видов вместе.
