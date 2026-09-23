@@ -76,6 +76,30 @@ class DisputeNoticeTest {
     }
 
     @Test
+    fun `отрицание при совпавшем остатке сказано со слоем`() {
+        val result = DisputeNotice.of(said(instrument, instrumentDenied))
+        result as DisputeNotice.Result.Found
+        assertTrue(result.text.contains("отрицание, остальные слова совпадают"))
+    }
+
+    @Test
+    fun `молчание — отрицание при разошедшемся остатке слоя не получает`() {
+        // Сторона с «и стальным ножом» говорит больше: остаток не совпал, и
+        // сказать модели «остальные слова совпадают» было бы неправдой.
+        val result = DisputeNotice.of(said(instrumentExtended, instrumentDenied))
+        result as DisputeNotice.Result.Found
+        assertTrue(result.text.contains("отрицание"))
+        assertTrue(!result.text.contains("остальные слова совпадают"))
+    }
+
+    @Test
+    fun `слой сказан и в паре с репликой`() {
+        val result = DisputeNotice.of(said(mercury), mercuryDenied)
+        result as DisputeNotice.Result.Found
+        assertTrue(result.text.contains("репликой пользователя ниже — отрицание, остальные слова совпадают"))
+    }
+
+    @Test
     fun `молчание — записи без расхождения дают чистый исход`() {
         val result = DisputeNotice.of(said(instrument, rate5))
         assertEquals(DisputeNotice.Result.Clean, result)
