@@ -54,6 +54,8 @@ import com.uroboros.memory.StopCause
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.memory.clusterDisputes
 import com.uroboros.memory.dream.DreamRecall
+import com.uroboros.memory.dream.AgentRecall
+import com.uroboros.memory.dream.AgentRecaller
 import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
@@ -230,6 +232,13 @@ class MainActivity : AppCompatActivity() {
     private var dreamsLine: String? = null
 
     /**
+     * Вспомнил ли агент то, что принёс ему сон на последнем ходе (см.
+     * AgentRecall.meter). Отдельно от строки снов: та говорит, что подано, эта —
+     * что агент из поданного взял. null прячет строку: сон ничего не принёс.
+     */
+    private var recallLine: String? = null
+
+    /**
      * Последняя реплика пользователя, собранная для движка, — целиком и
      * дословно.
      *
@@ -375,6 +384,9 @@ class MainActivity : AppCompatActivity() {
 
     /** Подача снов к ответу, см. DreamRecall. */
     private val dreamRecall by lazy { DreamRecall(applicationContext) }
+
+    /** Вспоминание агентом того, что принёс сон, см. AgentRecall. */
+    private val agentRecaller by lazy { AgentRecaller(applicationContext) }
 
     private val judgeUi by lazy {
         JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id ->
@@ -2460,7 +2472,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2644,6 +2656,7 @@ class MainActivity : AppCompatActivity() {
         recordsQuestionsLine = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
+        recallLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
         // относящаяся к нынешнему. Это тот самый хвост 20, из-за которого
@@ -4105,6 +4118,17 @@ class MainActivity : AppCompatActivity() {
                             // считает их отдельно (DreamRecall.isDreamLine).
                             records = allRecords + dreamLines,
                         )
+                        // Вспомнил ли агент принесённое сном — по готовому
+                        // ответу, после закрытия хода: вспоминание греет
+                        // записи, и греть их за ответ, который не лёг в ленту,
+                        // было бы нечестно. Правила — в AgentRecall.
+                        val brought = servedDreams.flatMap { it.records }
+                            .filter { it.id !in answerIds }
+                            .distinctBy { it.id }
+                        val recalled = AgentRecall.recalled(brought, stickers, userText, answerText.toString())
+                        val recallOutcome = agentRecaller.recall(recalled.map { it.id })
+                        recallLine = AgentRecall.meter(brought.size, recallOutcome)
+                        renderMetricsPanel()
                         // Ход закрыт — перерисовываем ленту целиком.
                         //
                         // Во время генерации ход рисовался как начатый
