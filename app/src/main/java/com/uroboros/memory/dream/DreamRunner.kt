@@ -49,14 +49,27 @@ object DreamRunner {
         return try {
             val stickers = db.stickerDao()
             HourglassMemory(stickers).migrateExpired()
-            val night = DreamWeaver.weave(stickers.getAll())
-            val row = DreamNight.of(nightAt, night).copy(startedBy = startedBy.name)
+            val records = stickers.getAll()
+            val night = DreamWeaver.weave(records)
+            // Притоки реки — вспомненные сны прошлой ночи (см. DreamRiver).
+            val previous = db.dreamDao().lastNight()
+            val tributaries = previous?.let { db.dreamDao().ofNight(it.nightAt) }
+                ?.filter { it.lastRecalledAt != null }
+                .orEmpty()
+            val river = DreamRiver.weave(tributaries, night.dreams, records.associateBy { it.id })
+            val row = DreamNight.of(nightAt, night).copy(
+                startedBy = startedBy.name,
+                riverTributaries = tributaries.size,
+                riverDreams = river.size,
+            )
             val rows = night.dreams.map {
                 Dream(
                     nightAt = nightAt,
                     recordIds = it.recordIds.joinToString(","),
                     kind = it.kind.name,
                 )
+            } + river.map {
+                Dream(nightAt = nightAt, recordIds = it.joinToString(","), kind = DreamRiver.KIND)
             }
             db.withTransaction {
                 db.dreamDao().insertNight(row)
@@ -98,6 +111,11 @@ object DreamRunner {
         }
         if (row.ceilingHit) {
             append("Потолок снов сработал — до длинных сюжетов дело не дошло.\n")
+        }
+        val tributaries = row.riverTributaries ?: 0
+        if (tributaries > 0) {
+            append("Река: притоков ").append(tributaries)
+            append(", сплетено ").append(row.riverDreams ?: 0).append("\n")
         }
     }.trimEnd()
 
