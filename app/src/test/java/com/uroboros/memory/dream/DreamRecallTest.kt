@@ -101,21 +101,59 @@ class DreamRecallTest {
         assertEquals(a, b)
     }
 
+    private fun text(id: Long, content: String) = record(id).copy(content = content)
+
     @Test
-    fun `строка сна начинается с метки и узнаётся как сон`() {
-        val offer = pick(listOf(dream(8, 9)), live, setOf(8))
-        val line = DreamRecall.line(offer.picked.single())
-        assertTrue(line, line.startsWith("Тебе снилось: "))
-        assertTrue(line, line.contains("«запись 8»") && line.contains("«запись 9»"))
-        assertTrue(DreamRecall.isDreamLine(line))
-        assertFalse(DreamRecall.isDreamLine("Пользователь сказал: «Тебе снилось: нет»."))
+    fun `сон не повторяет найденное целиком, а приносит новое`() {
+        val records = live.map {
+            when (it.id) {
+                8L -> text(8, "Всегда носи с собой полотенце.")
+                10L -> text(10, "Делать нужно хорошо, а плохо - не делать.")
+                11L -> text(11, "Четвёртое предложение будет немного длиннее.")
+                else -> it
+            }
+        }
+        val offer = pick(listOf(dream(8, 10), dream(8, 11)), records, setOf(8))
+        val lines = DreamRecall.lines(offer.picked, setOf(8))
+        assertEquals(1, lines.size)
+        assertEquals(2, lines.single().dreams.size)
+        assertEquals(
+            "Тебе снилось, что рядом с «Всегда носи с собой…» было: " +
+                "«Делать нужно хорошо, а плохо - не делать.», " +
+                "«Четвёртое предложение будет немного длиннее.».",
+            lines.single().text,
+        )
+        assertFalse(lines.single().text.contains("полотенце"))
     }
 
     @Test
-    fun `мост называет, через что связалось`() {
+    fun `короткая запись ответа называется целиком`() {
+        val records = live.map { if (it.id == 8L) text(8, "Я работаю по субботам") else it }
+        val line = DreamRecall.lines(pick(listOf(dream(8, 9)), records, setOf(8)).picked, setOf(8)).single()
+        assertTrue(line.text, line.text.contains("рядом с «Я работаю по субботам» было: «запись 9»."))
+    }
+
+    @Test
+    fun `разные записи ответа — разные строки`() {
+        val offer = pick(listOf(dream(1, 5), dream(2, 6)), live, setOf(1, 2))
+        assertEquals(2, DreamRecall.lines(offer.picked, setOf(1, 2)).size)
+    }
+
+    @Test
+    fun `строка сна узнаётся как сон, запись с теми же словами — нет`() {
+        val offer = pick(listOf(dream(8, 9)), live, setOf(8))
+        val line = DreamRecall.lines(offer.picked, setOf(8)).single().text
+        assertTrue(line, line.startsWith("Тебе снилось"))
+        assertTrue(DreamRecall.isDreamLine(line))
+        assertTrue(DreamRecall.isDreamLine("Тебе снилось: «а» → «б»."))
+        assertFalse(DreamRecall.isDreamLine("Пользователь сказал: «Тебе снилось, что нет»."))
+    }
+
+    @Test
+    fun `мост называет, через что связалось, и не повторяет найденное`() {
         val bridge = dream(1, 2, 3, kind = DreamWeaver.Kind.BRIDGE)
-        val line = DreamRecall.line(pick(listOf(bridge), live, setOf(1)).picked.single())
-        assertEquals("Тебе снилось: «запись 1» и «запись 3» — связались через «запись 2».", line)
+        val line = DreamRecall.lines(pick(listOf(bridge), live, setOf(1)).picked, setOf(1)).single()
+        assertEquals("Тебе снилось, что «запись 1» и «запись 3» связались через «запись 2».", line.text)
     }
 
     @Test
@@ -136,6 +174,14 @@ class DreamRecallTest {
         val offer = pick(listOf(dream(8, 9), dream(8, 10)), live, setOf(8))
         val text = DreamRecall.meter(offer, alreadyInRibbon = 1)
         assertTrue(text, text.contains("подходило 2 · подано 1 · уже в ленте 1"))
+    }
+
+    @Test
+    fun `прибор называет строки, когда сны легли вместе`() {
+        val offer = pick(listOf(dream(8, 9), dream(8, 10)), live, setOf(8))
+        val text = DreamRecall.meter(offer, alreadyInRibbon = 0, lineCount = 1)
+        assertTrue(text, text.contains("подано 2 · строк 1"))
+        assertFalse(DreamRecall.meter(offer, 0, lineCount = 2).contains("строк"))
     }
 
     // --- Путь с базой: отбор только читает ---
