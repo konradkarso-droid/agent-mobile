@@ -177,7 +177,9 @@ class DreamViewTest {
     @Test
     fun `прохода не было — так и сказано`() {
         val text = view(emptyList(), emptyList(), null)
-        assertEquals(DreamView.NO_NIGHT, text)
+        // С начала раздела, а не целиком: после слов о проходе может стоять
+        // строка давления сна, у неё свои проверки (SleepPressureTest).
+        assertTrue(text, text.startsWith(DreamView.NO_NIGHT))
     }
 
     @Test
