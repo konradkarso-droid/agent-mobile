@@ -31,8 +31,10 @@ class DreamViewTest {
         skippedQuestions: Int = 0,
         skippedAgentReports: Int = 0,
         ceilingHit: Boolean = false,
+        startedBy: String? = null,
     ) = DreamNight(
         nightAt = 1_789_923_154_023L,
+        startedBy = startedBy,
         dreams = dreams,
         dreamers = dreamers,
         dreamersCold = dreamersCold,
@@ -52,6 +54,16 @@ class DreamViewTest {
     fun `ночь всегда названа временем`() {
         val text = DreamView.render(night(dreams = 0, dreamers = 4), emptyList(), 0, 0)
         assertTrue(text, text.contains("Ночь: 20.09"))
+    }
+
+    @Test
+    fun `рядом со временем сказано, кто начал ночь`() {
+        fun first(startedBy: String?) =
+            DreamView.render(night(dreamers = 1, startedBy = startedBy), emptyList(), 0, 0).lines()[1]
+        assertTrue(first("SELF"), first("SELF").endsWith(" · уснул сам"))
+        assertTrue(first("BUTTON"), first("BUTTON").endsWith(" · по кнопке"))
+        // Старая ночь без отметки не выдаётся ни за ту, ни за другую.
+        assertTrue(first(null), first(null).endsWith(" · кто начал — не записано"))
     }
 
     @Test
