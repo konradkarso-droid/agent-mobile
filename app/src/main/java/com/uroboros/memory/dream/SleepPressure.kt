@@ -18,6 +18,14 @@ import com.uroboros.memory.Sticker
  * [DreamRecall] берёт сны только последней ночи, и ночь-двойник обнулила бы для
  * подачи отметки «подан» у снов, которые на деле уже подавались.
  *
+ * РЕКА. Сны реки ночь сама не плетёт — их плетут притоки, вспомненные сны
+ * прошлой ночи (см. [DreamRiver]). Поэтому сны реки в сравнение не входят:
+ * иначе каждый из них читался бы «ушедшим», и давление после ночи с рекой не
+ * падало бы до нуля никогда — агент спал бы каждые полчаса. Зато каждый
+ * приток — это перемена: ночь, начатая сейчас, продолжила бы его. Притоки
+ * берутся из снов последней ночи — подача снов берёт только её, а значит, и
+ * вспомнить можно только её сны.
+ *
  * ЗДЕСЬ ТОЛЬКО МЕРА. Порога нет: решать, ложиться ли, — дело того, кто
  * запускает ночь. Функция ничего не пишет и никого не греет.
  *
@@ -49,9 +57,11 @@ object SleepPressure {
         val dreamersNow: Int,
         /** Сколько участвовало в последней ночи; null — ночей ещё не было. */
         val dreamersThen: Int?,
+        /** Вспомненных снов последней ночи — притоков, которые ночь продолжила бы. */
+        val tributaries: Int = 0,
     ) {
-        /** Само давление: перемена в обе стороны. */
-        val changed: Int get() = appeared + gone
+        /** Само давление: перемена в обе стороны и притоки реки. */
+        val changed: Int get() = appeared + gone + tributaries
     }
 
     /**
@@ -71,13 +81,14 @@ object SleepPressure {
                 dreamersNow = woven.dreamers, dreamersThen = null,
             )
         }
-        val then = lastDreams.map { it.ids() }.toSet()
+        val then = lastDreams.filter { it.kind != DreamRiver.KIND }.map { it.ids() }.toSet()
         return Reading(
             appeared = (now - then).size,
             gone = (then - now).size,
             dreamsNow = now.size,
             dreamersNow = woven.dreamers,
             dreamersThen = lastNight.dreamers,
+            tributaries = lastDreams.count { it.lastRecalledAt != null },
         )
     }
 
@@ -98,6 +109,7 @@ object SleepPressure {
         if (reading.changed > 0) {
             append(" — следующая ночь сплела бы иначе: новых снов ").append(reading.appeared)
             append(", ушедших ").append(reading.gone)
+            if (reading.tributaries > 0) append(", притоков реки ").append(reading.tributaries)
         } else if (reading.dreamersNow != then) {
             append(" — сон видит записей ").append(reading.dreamersNow)
             append(" (прошлой ночью ").append(then).append("), но перемена ни с чем не связалась")
