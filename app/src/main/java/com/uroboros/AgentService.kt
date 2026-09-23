@@ -176,6 +176,10 @@ class AgentService : Service() {
             showSleepLine(it)
             return
         }
+        SleepDecision.waitReason(pressure.changed, now - quietSince)?.let {
+            showSleepLine(it)
+            return
+        }
 
         val report = nightLock.withLock { DreamRunner.run(db, NightStart.SELF) }
         lastSelfSleep = "Уснул сам в ${clock(now)}: " + report.lineSequence().first()
