@@ -239,6 +239,9 @@ class MainActivity : AppCompatActivity() {
      */
     private var recallLine: String? = null
 
+    /** Строка состояния агента на последнем ходе, как её увидела модель (см. SelfState). */
+    private var selfStateLine: String? = null
+
     /**
      * Последняя реплика пользователя, собранная для движка, — целиком и
      * дословно.
@@ -2473,7 +2476,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2658,6 +2661,7 @@ class MainActivity : AppCompatActivity() {
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
+        selfStateLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
         // относящаяся к нынешнему. Это тот самый хвост 20, из-за которого
@@ -3778,7 +3782,22 @@ class MainActivity : AppCompatActivity() {
                     alreadyInRibbon = dreamOffer.picked.size - servedDreams.size,
                     lineCount = dreamLineSet.size,
                 )
-                val userContent = journal.composeUserContent(newRecords + newDreamLines, userText, disputeText)
+                // Состояние агента — только когда что-то сдвинулось с прошлого
+                // показа (см. SelfState). Сбой чтения приборов не срывает ход:
+                // строки просто нет, а на экране сказано почему.
+                val selfSnapshot = runCatching {
+                    SelfState.read(applicationContext, journal.fillPercent(CONTEXT_SIZE))
+                }
+                val selfLine = selfSnapshot.getOrNull()?.let { SelfState.line(SelfState.lastShown(), it) }
+                selfStateLine = when {
+                    selfSnapshot.isFailure -> "О себе сейчас: приборы не ответили — " +
+                        (selfSnapshot.exceptionOrNull()?.javaClass?.simpleName ?: "?")
+                    selfLine == null -> "О себе сейчас: без перемен"
+                    else -> "О себе сейчас: $selfLine"
+                }
+                val userContent = journal.composeUserContent(
+                    newRecords + newDreamLines, userText, disputeText, selfLine,
+                )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
                 // отчёта о прогоне не будет, а реплика уже собрана. Перерисовка
@@ -4157,6 +4176,8 @@ class MainActivity : AppCompatActivity() {
                         // Ход состоялся: двери стареют на ход, принесённое
                         // этим ходом получает свою (см. DreamDoor).
                         DreamDoor.afterTurn(brought.map { it.id })
+                        // Состояние показано: ход лёг в ленту вместе с ним.
+                        selfSnapshot.getOrNull()?.let { SelfState.markShown(it) }
                         renderMetricsPanel()
                         // Ход закрыт — перерисовываем ленту целиком.
                         //
