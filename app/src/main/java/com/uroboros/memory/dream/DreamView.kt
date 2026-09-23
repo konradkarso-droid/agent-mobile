@@ -172,7 +172,8 @@ class DreamView(
             dreamtRecords: Int,
         ): String = buildString {
             append("СНЫ\n")
-            append("Ночь: ").append(moment(night.nightAt)).append("\n")
+            append("Ночь: ").append(moment(night.nightAt))
+            append(" · ").append(startedBy(night.startedBy)).append("\n")
             append("Снов: ").append(night.dreams)
             // Различные — это после схлопывания вариантов. Оба числа стоят
             // рядом всегда: без второго вдвое короче ставший список выглядит
@@ -234,6 +235,18 @@ class DreamView(
                 }
             }
         }.trimEnd()
+
+        /**
+         * Кто начал ночь, словами. Старая ночь без отметки так и названа: пустое
+         * место на экране читалось бы как «по кнопке», а это неизвестно.
+         */
+        private fun startedBy(name: String?): String = when (name) {
+            null -> "кто начал — не записано"
+            NightStart.SELF.name -> "уснул сам"
+            NightStart.BUTTON.name -> "по кнопке"
+            // Имя как есть — по той же причине, что у вида сна ниже.
+            else -> name
+        }
 
         private fun label(kind: String): String = when (kind) {
             DreamWeaver.Kind.BRIDGE.name -> "мост"
