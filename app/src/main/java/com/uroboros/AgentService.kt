@@ -29,8 +29,19 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Служба переднего плана для долгих прогонов: пока она работает, Android не
- * выгружает процесс, а процессор не засыпает при погасшем экране.
+ * Тело агента: служба переднего плана, в которой агент живёт постоянно, и в ней
+ * же долгие прогоны. Пока она работает, Android не выгружает процесс.
+ *
+ * ЖИВЁТ ВСЕГДА. Служба поднимается экраном при каждом его показе, после
+ * загрузки телефона и после установки новой сборки ([BootReceiver]), а убитая
+ * системой — поднимается снова сама (START_STICKY). Смерть службы — кома
+ * агента; сколько раз она прерывалась, считает [AgentLife].
+ *
+ * САМА ЖИЗНЬ НИЧЕГО НЕ НАЧИНАЕТ. Поднявшаяся служба только держит процесс и
+ * висит уведомлением. Разбор памяти приходит командой с экрана; служба,
+ * поднятая заново после комы, прерванный прогон не продолжает — Android отдаёт
+ * ей пустую команду, и она просто живёт. Выключить тело может только человек:
+ * «Остановить» в настройках приложения Android.
  *
  * ДВЕ ЗАЩИТЫ, И ОНИ НЕ ЗАМЕНЯЮТ ДРУГ ДРУГА. Служба с уведомлением не даёт
  * системе убить процесс. Блокировка сна (WakeLock) не даёт уснуть процессору:
@@ -39,11 +50,8 @@ import java.util.Locale
  * смерть, и по отдельности они выглядят исправными.
  *
  * WakeLock берётся на время прогона, а не на жизнь службы, и отпускается в
- * finally. Держать процессор без работы значит сжигать заряд впустую.
- *
- * ЗАПУСКАЕТ ТОЛЬКО ЧЕЛОВЕК. Служба сама ничего не начинает: прогон приходит
- * командой с экрана. После гибели процесса служба не перезапускается
- * (START_NOT_STICKY) — перезапуск начал бы работу без человека.
+ * finally. Держать процессор без работы значит сжигать заряд впустую: живая
+ * служба при погасшем экране спит вместе с процессором, и это верно.
  *
  * ДВЕ РАБОТЫ ЗА ОДИН ЗАПУСК, И УСЛОВИЯ У НИХ РАЗНЫЕ. Сначала ночной проход сна
  * (см. [DreamRunner]), потом разбор памяти судьёй. Сну не нужны ни модель, ни
@@ -62,7 +70,8 @@ import java.util.Locale
  * висит; различить это по одному факту «уведомление есть» нельзя.
  *
  * ЧЕГО НЕ УМЕЕТ.
- *  - Не переживает перезагрузку телефона и не запускается по расписанию.
+ *  - Не запускается по расписанию и не будит процессор: всё, что служба
+ *    делает сама, случается, когда телефон проснулся по своей причине.
  *  - Не спасает от прошивки, которая убивает фоновые приложения сама: на MIUI
  *    приложению нужны «Автозапуск» и батарея «Без ограничений».
  *  - На Android 13 и новее без разрешения на уведомления работает, но в шторке
@@ -78,9 +87,20 @@ class AgentService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
 
     /** Текст уведомления сейчас; им же служба отвечает на каждый повторный запуск. */
-    private var currentText = "Разбор памяти готовится"
+    private var currentText = LIVING_TEXT
+
+    /** Идёт разбор — от него зависит заголовок уведомления. */
+    private var working = false
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        // Отметка подъёма — до всего остального: если дальше что-то упадёт,
+        // счёт комы всё равно покажет, что служба пыталась жить.
+        AgentLife.recordStart(applicationContext)
+        _alive.value = true
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // startForeground обязан прозвучать сразу после каждого запуска службы,
@@ -95,25 +115,20 @@ class AgentService : Service() {
                     currentText = "Останавливаю разбор"
                     updateNotificationText()
                     job?.cancel()
-                } else {
-                    finish()
                 }
             // Второй запуск поверх идущего прогона идущий не трогает: ни его
             // состояние, ни уведомление.
             running -> Unit
-            else -> startRun(intent)
+            intent?.action == ACTION_JUDGE -> startRun(intent)
+            // Команда «жить», пустая команда подъёма после комы и любая
+            // незнакомая: служба просто живёт, ничего не начиная.
+            else -> Unit
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     /** Ночь целиком: сначала сон, потом — если условия позволяют — судья. */
-    private fun startRun(intent: Intent?) {
-        if (intent?.action != ACTION_JUDGE) {
-            _state.value = RunState.Finished("Служба получила неизвестную команду.")
-            finish()
-            return
-        }
-
+    private fun startRun(intent: Intent) {
         val objects = ProcessObjects.get(applicationContext)
         val modelIdentity = intent.getStringExtra(EXTRA_MODEL) ?: "модель неизвестна"
         val budgetMs = intent.getLongExtra(EXTRA_BUDGET_MS, 0L)
@@ -132,6 +147,7 @@ class AgentService : Service() {
 
             val startedAt = System.currentTimeMillis()
             _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null)
+            working = true
             showProgress(startedAt, done = 0, lastAt = null)
 
             acquireWakeLock(budgetMs)
@@ -153,6 +169,7 @@ class AgentService : Service() {
     }
 
     override fun onDestroy() {
+        _alive.value = false
         releaseWakeLock()
         // Служба уходит посреди прогона (её остановила система): экран не должен
         // навсегда остаться со словами «разбор идёт».
@@ -161,9 +178,11 @@ class AgentService : Service() {
         super.onDestroy()
     }
 
+    /** Прогон кончился: служба остаётся жить, уведомление возвращается к жизни. */
     private fun finish() {
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        working = false
+        currentText = LIVING_TEXT
+        updateNotificationText()
     }
 
     /**
@@ -206,9 +225,10 @@ class AgentService : Service() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE,
         )
+        val title = if (working) "Агент разбирает память" else "Агент жив"
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("Агент разбирает память")
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
@@ -224,6 +244,7 @@ class AgentService : Service() {
     }
 
     companion object {
+        private const val ACTION_LIVE = "com.uroboros.action.LIVE"
         private const val ACTION_JUDGE = "com.uroboros.action.JUDGE"
         private const val ACTION_STOP = "com.uroboros.action.STOP"
         private const val EXTRA_MODEL = "model"
@@ -231,8 +252,31 @@ class AgentService : Service() {
         private const val CHANNEL_ID = "agent_work"
         private const val NOTIFICATION_ID = 1
         private const val WAKE_LOCK_MARGIN_MS = 10L * 60 * 1000
+        private const val LIVING_TEXT = "Живу. Разбор памяти не идёт."
         private const val STOPPED_REPORT =
             "Разбор остановлен до конца. Разобранное сохранено, остальное достанется следующему прогону."
+
+        /**
+         * Жива ли служба в этом процессе. Верно только внутри процесса: после
+         * комы процесс новый, и здесь снова false, пока служба не поднимется.
+         */
+        private val _alive = MutableStateFlow(false)
+        val alive: StateFlow<Boolean> get() = _alive
+
+        /**
+         * Поднять тело агента. Повторный вызов у живой службы ничего не
+         * меняет. Возвращает null — команда отдана, или слова, почему система
+         * её не приняла: запуск службы переднего плана из фона Android
+         * запрещает, и зовущий должен это видеть, а не молча остаться без тела.
+         */
+        fun live(context: Context): String? = try {
+            context.startForegroundService(
+                Intent(context, AgentService::class.java).setAction(ACTION_LIVE)
+            )
+            null
+        } catch (t: Throwable) {
+            "${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}"
+        }
 
         private val _state = MutableStateFlow<RunState>(RunState.Idle)
         val state: StateFlow<RunState> get() = _state
