@@ -45,7 +45,7 @@ class DreamRunnerTest {
     fun `ночь без снов говорит, что ничего не приснилось`() {
         val text = DreamRunner.describe(row(dreams = 0, dreamers = 3))
         assertTrue(text, text.contains("ничего не приснилось"))
-        assertTrue(text, text.contains("Снилось записей: 3"))
+        assertTrue(text, text.contains("Участвовало записей: 3"))
     }
 
     @Test
