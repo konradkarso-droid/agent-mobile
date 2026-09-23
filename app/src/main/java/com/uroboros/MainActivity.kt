@@ -27,6 +27,7 @@ import androidx.lifecycle.lifecycleScope
 import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
+import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.CONTEXT_SIZE
@@ -72,6 +73,7 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
+    private lateinit var presenceLock: PresenceLock
     private lateinit var processObjects: ProcessObjects.Held
     private lateinit var mediator: TrustedMediator
     private lateinit var llmEngine: LlmEngine
@@ -3274,6 +3276,10 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        // Замок встаёт раньше всего остального: до первого кадра экрана.
+        // Стоп с экрана замка нажимает ту же кнопку, что и главный экран, —
+        // порядок «запрет, потом обрыв» живёт в одном месте, в её обработчике.
+        presenceLock = PresenceLock(this) { binding.buttonStop.performClick() }
         // Память, сторож и движок — одни на процесс, см. ProcessObjects. Экран,
         // созданный заново, получает те же объекты, а не заводит свои.
         processObjects = ProcessObjects.get(applicationContext)
@@ -4298,8 +4304,16 @@ class MainActivity : AppCompatActivity() {
      * Пустая лента не сохраняется: в ней нет ничего, кроме системной стены, а
      * её движок и так поднимает своим кэшем.
      */
+    override fun onStart() {
+        super.onStart()
+        presenceLock.onScreenShown()
+    }
+
     override fun onStop() {
         super.onStop()
+        // Первой строкой, до выхода по пустой ленте: замок встаёт при любом
+        // уходе с экрана, а не только когда есть что сохранять.
+        presenceLock.onScreenLeft()
         if (!::llmEngine.isInitialized || journal.isEmpty) return
 
         // lifecycleScope, а не свой: при уходе в фон активность не
@@ -4317,6 +4331,11 @@ class MainActivity : AppCompatActivity() {
             checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
             renderMetricsPanel()
         }
+    }
+
+    override fun onDestroy() {
+        presenceLock.release()
+        super.onDestroy()
     }
 
     companion object {
