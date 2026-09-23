@@ -21,9 +21,9 @@ import java.util.Locale
  * неотличимы от сегодняшних, а отсутствие прохода — от прохода без снов.
  *
  * МОЛЧАНИЕ СЧИТАЕТСЯ. Сон, у которого хоть одно звено скрыто на проверку,
- * отвергнуто или удалено, не показывается целиком: половина цепочки бессмысленна,
- * а мост через скрытую запись выдавал бы её содержание соседями. Но число таких
- * снов печатается — без него молчание экрана не отличить от поломки показа.
+ * отвергнуто или удалено, не показывается целиком — правило одно с подачей
+ * модели, см. [Dream.silences]. Но число таких снов печатается — без него
+ * молчание экрана не отличить от поломки показа.
  *
  * ВАРИАНТЫ ОДНОГО СНА СХЛОПЫВАЮТСЯ. Близкие по словам записи («Меркурий светит
  * белым / красным / алым на закате») образуют семью, и сны, отличающиеся только
@@ -70,13 +70,10 @@ class DreamView(
         val dreamt = mutableSetOf<Long>()
         var silent = 0
         for (row in rows) {
-            val ids = row.recordIds.split(",").mapNotNull { it.trim().toLongOrNull() }
+            val ids = row.ids()
             dreamt += ids
             val records = ids.map { byId[it] }
-            val silenced = records.any {
-                it == null || it.reviewPending || it.rejectedAt != null
-            }
-            if (silenced) {
+            if (records.any { Dream.silences(it) }) {
                 silent++
                 continue
             }
@@ -175,7 +172,10 @@ class DreamView(
             if (shown.isNotEmpty() && shown.size != night.dreams) {
                 append(" · различных: ").append(shown.size)
             }
-            append(" · снилось записей: ").append(night.dreamers)
+            // «Участвовало», а не «снилось»: это записи, прошедшие отбор сна, а
+            // не попавшие в сны. Сколько из них не связалось ни с чем — строкой
+            // ниже.
+            append(" · участвовало записей: ").append(night.dreamers)
             if (night.dreamersCold > 0) append(" · холодных ").append(night.dreamersCold)
             if (night.dreamersArchive > 0) append(" · из архива ").append(night.dreamersArchive)
             append("\n")
@@ -241,7 +241,8 @@ class DreamView(
             return if (flat.length <= MAX_TEXT) flat else flat.take(MAX_TEXT - 1).trimEnd() + "…"
         }
 
-        private fun moment(millis: Long): String =
+        /** Время ночи на экране и в приборе подачи — одним форматом. */
+        internal fun moment(millis: Long): String =
             SimpleDateFormat("dd.MM HH:mm", Locale.US).format(Date(millis))
     }
 }
