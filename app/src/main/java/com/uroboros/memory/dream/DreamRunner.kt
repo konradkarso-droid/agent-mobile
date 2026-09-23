@@ -73,7 +73,9 @@ object DreamRunner {
     fun describe(row: DreamNight): String = buildString {
         append(if (row.dreams == 0) "Сон: ничего не приснилось." else "Сон: снов ${row.dreams}.")
         append("\n")
-        append("Снилось записей: ").append(row.dreamers)
+        // «Участвовало», а не «снилось»: прошли отбор сна, но связаться могли не
+        // все. Сколько приснилось на деле, видно в разделе «Сны».
+        append("Участвовало записей: ").append(row.dreamers)
         if (row.dreamersCold > 0) append(", из них холодных ").append(row.dreamersCold)
         if (row.dreamersArchive > 0) append(", из архива ").append(row.dreamersArchive)
         append("\n")
