@@ -108,6 +108,23 @@ class SleepPressureTest {
         assertEquals(0, SleepPressure.measure(base, night, spaced).changed)
     }
 
+    @Test
+    fun `сны реки не читаются ушедшими`() {
+        val (night, rows) = nightOver(base)
+        val withRiver = rows + Dream(NIGHT, "1,2,3", DreamRiver.KIND)
+        assertEquals(0, SleepPressure.measure(base, night, withRiver).changed)
+    }
+
+    @Test
+    fun `вспомненный сон — приток, и это давление`() {
+        val (night, rows) = nightOver(base)
+        val recalled = rows.mapIndexed { i, d -> if (i == 0) d.copy(lastRecalledAt = 5L) else d }
+        val r = SleepPressure.measure(base, night, recalled)
+        assertEquals(1, r.tributaries)
+        assertEquals(1, r.changed)
+        assertTrue(SleepPressure.line(r), SleepPressure.line(r).contains("притоков реки 1"))
+    }
+
     private companion object {
         const val NIGHT = 1_000L
     }
