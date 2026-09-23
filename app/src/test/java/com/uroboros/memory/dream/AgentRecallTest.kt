@@ -78,6 +78,14 @@ class AgentRecallTest {
     }
 
     @Test
+    fun `сон вспомнен, если вспомнена принесённая им запись`() {
+        val withTowel = Dream(nightAt = 1, recordIds = "1,2", kind = "TIME") to listOf(towel, sunset)
+        val other = Dream(nightAt = 1, recordIds = "2,3", kind = "TIME") to listOf(sunset, rec(3, "Чай"))
+        val got = AgentRecall.recalledDreams(listOf(withTowel, other), setOf(1L))
+        assertEquals(listOf("1,2"), got.map { it.recordIds })
+    }
+
+    @Test
     fun `прибор молчит, только когда сон ничего не принёс`() {
         assertNull(AgentRecall.meter(0, AgentRecall.Outcome(0, 0)))
         assertEquals("Вспомнено агентом: 0 из принесённых снами 2", AgentRecall.meter(2, AgentRecall.Outcome(0, 0)))
