@@ -69,6 +69,7 @@ class JudgeUi(
         out.append(" · спорных: ").append(counters.disputes.toString()).append("\n")
         out.append("Просмотрено: ").append(counters.reviewed.toString())
         out.append(" · из них промахов судьи: ").append(counters.misses.toString()).append("\n")
+        appendRings(out, counters.byRing)
 
         if (pending.isEmpty()) {
             out.append(
@@ -99,6 +100,31 @@ class JudgeUi(
             out.append("\n")
         }
         return out
+    }
+
+    /**
+     * Счёт по кольцам сита — ради одного вопроса: находит ли внешнее кольцо
+     * хоть один спор, который человек подтвердил (см. JudgeSieve). Каждое
+     * кольцо — своей строкой: слитые в одну цифру, они этот ответ скрыли бы.
+     *
+     * Строка «вне колец» — только когда такие вердикты есть: это пары,
+     * судившиеся до сита, и ровно по ним видно, что сито потеряло бы на уже
+     * пройденной истории. Подтверждённый спор в этой строке — прямой довод,
+     * что граница сита неверна.
+     */
+    private fun appendRings(out: SpannableStringBuilder, rings: RingCounters) {
+        out.append("По кольцам сита (пар · спорных · подтверждено · промахов):\n")
+        appendRing(out, "внутреннее", rings.inner)
+        appendRing(out, "внешнее", rings.outer)
+        if (rings.outside.judged > 0) appendRing(out, "вне колец, до сита", rings.outside)
+    }
+
+    private fun appendRing(out: SpannableStringBuilder, name: String, tally: RingTally) {
+        out.append("  ").append(name).append(": ")
+        out.append(tally.judged.toString()).append(" · ")
+        out.append(tally.disputes.toString()).append(" · ")
+        out.append(tally.confirmed.toString()).append(" · ")
+        out.append(tally.misses.toString()).append("\n")
     }
 
     /**
