@@ -186,7 +186,8 @@ class ConversationJournal {
 
     /**
      * Реплика пользователя целиком: пометка об ответе без опоры (если
-     * нужна), процитированные записи, сказанное сверкой об их расхождениях
+     * нужна), строка состояния агента (если что-то изменилось),
+     * процитированные записи, сказанное сверкой об их расхождениях
      * (если нашлись), вопрос — блоки через пустую строку.
      *
      * ОТВЕТ БЕЗ ОПОРЫ. Если на прошлом ходе отбор не дал ни одной записи,
@@ -268,9 +269,15 @@ class ConversationJournal {
         records: List<String>,
         question: String,
         disputeNotice: String? = null,
+        selfState: String? = null,
     ): String {
-        val blocks = ArrayList<String>(4)
+        val blocks = ArrayList<String>(5)
         if (turns.lastOrNull()?.records?.isEmpty() == true) blocks += ANSWER_WITHOUT_SUPPORT
+        // Состояние агента — сразу за пометкой и до записей: оно о нём самом,
+        // а не о вопросе, и не должно стоять между записями и сверкой, чьё
+        // «ниже» указывает на вопрос. Когда и что в нём, решает тот, кто
+        // зовёт (SelfState); null — перемен нет, блока нет.
+        if (!selfState.isNullOrBlank()) blocks += selfState
         if (records.isNotEmpty()) blocks += records.joinToString("\n")
         // Пустая строка отбрасывается наравне с null: блок из одних пробелов
         // стоил бы двух переводов строки и не сказал бы ничего.
