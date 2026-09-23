@@ -13,6 +13,8 @@ import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.dream.NightStart
+import com.uroboros.memory.dream.SleepDecision
+import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
@@ -23,7 +25,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -37,8 +43,11 @@ import java.util.Locale
  * системой — поднимается снова сама (START_STICKY). Смерть службы — кома
  * агента; сколько раз она прерывалась, считает [AgentLife].
  *
- * САМА ЖИЗНЬ НИЧЕГО НЕ НАЧИНАЕТ. Поднявшаяся служба только держит процесс и
- * висит уведомлением. Разбор памяти приходит командой с экрана; служба,
+ * САМА СЛУЖБА НАЧИНАЕТ ТОЛЬКО СОН. Раз в минуту бодрствования она спрашивает,
+ * пора ли спать (правила и пороги — в [SleepDecision]), и если пора — проходит
+ * ночь сама, с отметкой «уснул сам». Сон не проходит через ворота действий и
+ * аварийным стопом не останавливается: он только читает записи и считает.
+ * Разбор памяти судьёй по-прежнему приходит только командой с экрана; служба,
  * поднятая заново после комы, прерванный прогон не продолжает — Android отдаёт
  * ей пустую команду, и она просто живёт. Выключить тело может только человек:
  * «Остановить» в настройках приложения Android.
@@ -71,7 +80,10 @@ import java.util.Locale
  *
  * ЧЕГО НЕ УМЕЕТ.
  *  - Не запускается по расписанию и не будит процессор: всё, что служба
- *    делает сама, случается, когда телефон проснулся по своей причине.
+ *    делает сама, случается, когда телефон проснулся по своей причине. Минута
+ *    между проверками сна — минута бодрствования процессора, а не часов на
+ *    стене: при погасшем экране проверка может ждать долго, и агент уснёт
+ *    позже, чем мог бы. Это промах в безвредную сторону.
  *  - Не спасает от прошивки, которая убивает фоновые приложения сама: на MIUI
  *    приложению нужны «Автозапуск» и батарея «Без ограничений».
  *  - На Android 13 и новее без разрешения на уведомления работает, но в шторке
@@ -92,6 +104,24 @@ class AgentService : Service() {
     /** Идёт разбор — от него зависит заголовок уведомления. */
     private var working = false
 
+    /** Когда поднялось это тело: от него считается тишина, если генераций не было. */
+    private var bodyStartedAt = 0L
+
+    /** Итог последней проверки сна словами — для уведомления. */
+    private var sleepLine = "Сон: первая проверка через минуту."
+
+    /**
+     * Последний сон, начатый самим агентом, словами. Живёт в памяти процесса;
+     * после комы его здесь нет, но ночь с отметкой «уснул сам» видна в «Снах».
+     */
+    private var lastSelfSleep: String? = null
+
+    /**
+     * Одна ночь за раз. Ручной разбор и самостоятельный сон идут в одной
+     * службе, и два прохода разом записали бы две ночи над одной памятью.
+     */
+    private val nightLock = Mutex()
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -99,8 +129,72 @@ class AgentService : Service() {
         // Отметка подъёма — до всего остального: если дальше что-то упадёт,
         // счёт комы всё равно покажет, что служба пыталась жить.
         AgentLife.recordStart(applicationContext)
+        bodyStartedAt = System.currentTimeMillis()
         _alive.value = true
+        scope.launch { sleepLoop() }
     }
+
+    /**
+     * Проверка сна раз в минуту бодрствования, пока живо тело. Сорвавшаяся
+     * проверка — строка в уведомлении, а не смерть цикла: следующая попытка
+     * через минуту.
+     */
+    private suspend fun sleepLoop() {
+        while (true) {
+            delay(SLEEP_CHECK_MS)
+            try {
+                checkSleep()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                showSleepLine("Проверка сна сорвалась: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}.")
+            }
+        }
+    }
+
+    private suspend fun checkSleep() {
+        if (working || job?.isActive == true) {
+            showSleepLine("Не сплю: идёт разбор памяти.")
+            return
+        }
+        val activity = ProcessObjects.get(applicationContext).llmEngine.activity
+        val now = System.currentTimeMillis()
+        val quietSince = maxOf(activity.lastEndedAtMs ?: 0L, bodyStartedAt)
+        SleepDecision.gate(now, activity.busy, quietSince)?.let {
+            showSleepLine(it)
+            return
+        }
+
+        val db = MemoryDatabase.getInstance(applicationContext)
+        val records = db.stickerDao().getAll()
+        val night = db.dreamDao().lastNight()
+        val rows = night?.let { db.dreamDao().ofNight(it.nightAt) } ?: emptyList()
+        // Пробное плетение — вне главного потока: при большой памяти это
+        // заметный счёт, а на главном он подвешивал бы экран.
+        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows) }
+        SleepDecision.decide(pressure.changed)?.let {
+            showSleepLine(it)
+            return
+        }
+
+        val report = nightLock.withLock { DreamRunner.run(db, NightStart.SELF) }
+        lastSelfSleep = "Уснул сам в ${clock(now)}: " + report.lineSequence().first()
+        showSleepLine("Выспался.")
+    }
+
+    /** Показать итог проверки сна; во время разбора уведомление не трогается. */
+    private fun showSleepLine(line: String) {
+        sleepLine = line
+        if (working) return
+        val text = livingText()
+        if (text == currentText) return
+        currentText = text
+        updateNotificationText()
+    }
+
+    /** Текст уведомления, пока разбор не идёт: жизнь, сон, последний сон сам. */
+    private fun livingText(): String =
+        LIVING_TEXT + "\n" + sleepLine + (lastSelfSleep?.let { "\n$it" } ?: "")
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // startForeground обязан прозвучать сразу после каждого запуска службы,
@@ -136,7 +230,9 @@ class AgentService : Service() {
         job = scope.launch {
             // Сон идёт без блокировки сна и без пометки "идёт разбор": это
             // миллисекунды счёта, а не прогон, который надо сторожить.
-            val dreamed = DreamRunner.run(MemoryDatabase.getInstance(applicationContext), NightStart.BUTTON)
+            val dreamed = nightLock.withLock {
+                DreamRunner.run(MemoryDatabase.getInstance(applicationContext), NightStart.BUTTON)
+            }
 
             val refusal = whyCannotStart(applicationContext)
             if (refusal != null) {
@@ -181,7 +277,7 @@ class AgentService : Service() {
     /** Прогон кончился: служба остаётся жить, уведомление возвращается к жизни. */
     private fun finish() {
         working = false
-        currentText = LIVING_TEXT
+        currentText = livingText()
         updateNotificationText()
     }
 
@@ -253,6 +349,9 @@ class AgentService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val WAKE_LOCK_MARGIN_MS = 10L * 60 * 1000
         private const val LIVING_TEXT = "Живу. Разбор памяти не идёт."
+
+        /** Между проверками сна — минута бодрствования, см. шапку класса. */
+        private const val SLEEP_CHECK_MS = 60_000L
         private const val STOPPED_REPORT =
             "Разбор остановлен до конца. Разобранное сохранено, остальное достанется следующему прогону."
 
