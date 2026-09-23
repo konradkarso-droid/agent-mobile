@@ -3880,6 +3880,13 @@ class MainActivity : AppCompatActivity() {
                         "вопрос ${userText.length} зн.$noteTail"
                 }
 
+                // Поле стирается здесь, когда реплика прошла все проверки и
+                // уходит в движок, а не по нажатию: на отказе выше («не
+                // влезет», «лента заполнена») набранное остаётся в поле, и
+                // перенабирать его не придётся. Сама реплика уже собрана из
+                // userText и от поля больше не зависит.
+                binding.editTextInput.text.clear()
+
                 val startMs = System.currentTimeMillis()
                 var firstTokenAtMs: Long? = null
                 var engineMetrics: DecodingMetrics? = null
