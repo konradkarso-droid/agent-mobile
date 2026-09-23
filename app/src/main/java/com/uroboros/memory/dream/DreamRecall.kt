@@ -212,6 +212,14 @@ class DreamRecall(
                         "${ProvenanceLabels.DREAM_FOR_MODEL}: ${p.records.joinToString(" → ") { ref(it) }}.",
                         listOf(p),
                     )
+                    // Сон реки — продолжение вспомненного сна (см. DreamRiver).
+                    // Для модели он такая же цепочка, как сюжет; пометка
+                    // говорит, что цепочка тянется из прошлой ночи.
+                    DreamRiver.KIND -> out += Line(
+                        "${ProvenanceLabels.DREAM_FOR_MODEL}: снова и дальше — " +
+                            "${p.records.joinToString(" → ") { ref(it) }}.",
+                        listOf(p),
+                    )
                     // Вид, о котором подача не знает, называется перечнем, а не
                     // прячется.
                     else -> out += Line(
