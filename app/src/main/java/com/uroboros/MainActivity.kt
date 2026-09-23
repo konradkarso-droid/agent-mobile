@@ -56,6 +56,7 @@ import com.uroboros.memory.clusterDisputes
 import com.uroboros.memory.dream.DreamRecall
 import com.uroboros.memory.dream.AgentRecall
 import com.uroboros.memory.dream.AgentRecaller
+import com.uroboros.memory.dream.DreamDoor
 import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
@@ -3692,7 +3693,15 @@ class MainActivity : AppCompatActivity() {
                     query = userText,
                     limit = 5
                 )
-                val stickers = contextResult.stickers
+                // Дверь сна: записи, принесённые снами последних ходов, видны
+                // отбору и из холодных слоёв, если вопрос их задевает (см.
+                // DreamDoor). Чтение по номеру ничего не греет. Сбой чтения
+                // одной записи закрывает для неё дверь на этот ход, а не ход.
+                val behindDoor = DreamDoor.openIds().mapNotNull { id ->
+                    runCatching { mediator.getRecord(id) }.getOrNull()
+                }
+                val doorRecords = DreamDoor.pick(behindDoor, contextResult.stickers, userText)
+                val stickers = contextResult.stickers + doorRecords
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
                 // хвост генерации). Причина — сказанным считается то, что
@@ -3747,7 +3756,9 @@ class MainActivity : AppCompatActivity() {
                 // Счётчик берётся из итога отбора, где он считался до обрезки.
                 val questionsFiltered = contextResult.questionsFiltered
                 recordsQuestionsLine = "Записей к ответу: ${stickers.size}" +
-                    if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else ""
+                    (if (doorRecords.isNotEmpty()) " (через дверь сна: ${doorRecords.size})" else "") +
+                    (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
+                    " · дверей открыто: ${behindDoor.size}"
                 renderMetricsPanel()
                 val disputeText = (notice as? DisputeNotice.Result.Found)?.text
 
@@ -4135,6 +4146,9 @@ class MainActivity : AppCompatActivity() {
                         val recalled = AgentRecall.recalled(brought, stickers, userText, answerText.toString())
                         val recallOutcome = agentRecaller.recall(recalled.map { it.id })
                         recallLine = AgentRecall.meter(brought.size, recallOutcome)
+                        // Ход состоялся: двери стареют на ход, принесённое
+                        // этим ходом получает свою (см. DreamDoor).
+                        DreamDoor.afterTurn(brought.map { it.id })
                         renderMetricsPanel()
                         // Ход закрыт — перерисовываем ленту целиком.
                         //
