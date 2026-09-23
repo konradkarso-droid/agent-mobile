@@ -85,6 +85,18 @@ object AgentRecall {
         return Prism.warmerLayer(layer)
     }
 
+    /**
+     * Какие из поданных снов вспомнены: хоть одна принесённая ими запись
+     * вошла во вспомненные. Запись, найденная к вопросу, сну не засчитывается —
+     * её агент знал и без сна.
+     *
+     * @param served поданные сны с их записями, как их подала [DreamRecall].
+     */
+    fun recalledDreams(served: List<Pair<Dream, List<Sticker>>>, recalledIds: Set<Long>): List<Dream> =
+        served.filter { (_, records) -> records.any { it.id in recalledIds } }
+            .map { it.first }
+            .distinctBy { it.nightAt to it.recordIds }
+
     /** Итог вспоминания на одном ходе: сколько вспомнено и сколько из них согрето. */
     data class Outcome(val recalled: Int, val warmed: Int)
 
@@ -135,5 +147,10 @@ class AgentRecaller(
             warmed++
         }
         return AgentRecall.Outcome(recalled, warmed)
+    }
+
+    /** Отметить сны вспомненными — они станут притоками реки (см. [DreamRiver]). */
+    suspend fun markDreams(dreams: List<Dream>, now: Long = System.currentTimeMillis()) {
+        for (dream in dreams) recall.markDreamRecalled(dream.nightAt, dream.recordIds, now)
     }
 }
