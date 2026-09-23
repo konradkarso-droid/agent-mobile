@@ -1,0 +1,197 @@
+package com.uroboros.memory.dream
+
+import com.uroboros.memory.FakeStickerDao
+import com.uroboros.memory.Sticker
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Отбор снов к ответу.
+ *
+ * ГЛАВНЫЕ ЗДЕСЬ — ПРОВЕРКИ НА МОЛЧАНИЕ: сон со скрытым звеном не подаётся; сон,
+ * не приносящий новой записи, не подаётся; отбор не трогает записи ничем, кроме
+ * чтения. Каждая закрепляет границу так, что случайная «починка» её сломает
+ * заметно.
+ *
+ * ЧЕГО ФАЙЛ НЕ ДОКАЗЫВАЕТ: что модель говорит о поданном сне «мне снилось».
+ * Это видно только в её ответах на устройстве.
+ */
+class DreamRecallTest {
+
+    private fun record(id: Long, hidden: Boolean = false, rejected: Boolean = false) = Sticker(
+        id = id,
+        content = "запись $id",
+        reviewPending = hidden,
+        rejectedAt = if (rejected) 1L else null,
+    )
+
+    private fun dream(vararg ids: Long, kind: DreamWeaver.Kind = DreamWeaver.Kind.TIME) =
+        Dream(nightAt = NIGHT, recordIds = ids.joinToString(","), kind = kind.name)
+
+    private fun pick(rows: List<Dream>, records: List<Sticker>, answer: Set<Long>, quota: Int = 2) =
+        DreamRecall.pick(NIGHT, rows, records.associateBy { it.id }, answer, quota)
+
+    private val live = (1L..11L).map { record(it) }
+
+    @Test
+    fun `сон без записей ответа не подаётся`() {
+        val offer = pick(listOf(dream(9, 10)), live, setOf(8))
+        assertTrue(offer.picked.isEmpty())
+        assertEquals(DreamRecall.Silence.NOTHING_FITS, offer.silence)
+    }
+
+    @Test
+    fun `сон со скрытым звеном молчит, но сосчитан`() {
+        val records = live.map { if (it.id == 9L) record(9, hidden = true) else it }
+        val offer = pick(listOf(dream(8, 9)), records, setOf(8))
+        assertTrue(offer.picked.isEmpty())
+        assertEquals(1, offer.silenced)
+    }
+
+    @Test
+    fun `сон с отвергнутым или исчезнувшим звеном молчит`() {
+        val rejected = live.map { if (it.id == 9L) record(9, rejected = true) else it }
+        assertTrue(pick(listOf(dream(8, 9)), rejected, setOf(8)).picked.isEmpty())
+        val gone = live.filter { it.id != 9L }
+        assertTrue(pick(listOf(dream(8, 9)), gone, setOf(8)).picked.isEmpty())
+    }
+
+    @Test
+    fun `сон целиком из записей ответа не подаётся`() {
+        val offer = pick(listOf(dream(8, 9)), live, setOf(8, 9))
+        assertTrue(offer.picked.isEmpty())
+        assertEquals(0, offer.fitting)
+    }
+
+    @Test
+    fun `пачка подряд не съедает квоту пересказами`() {
+        // Четыре записи, набранные подряд, снятся «все со всеми».
+        val rows = listOf(dream(8, 9), dream(8, 10), dream(8, 11), dream(9, 10), dream(9, 11), dream(10, 11))
+        val offer = pick(rows, live, setOf(8, 9))
+        // (8,9) ничего не приносит; остальные с 8 или 9 приносят 10 или 11.
+        assertEquals(4, offer.fitting)
+        assertEquals(2, offer.picked.size)
+        val brought = offer.picked.flatMap { it.dream.ids() }.filter { it !in setOf(8L, 9L) }.toSet()
+        assertEquals(setOf(10L, 11L), brought)
+    }
+
+    @Test
+    fun `следующий сон обязан принести новое`() {
+        val rows = listOf(dream(8, 10), dream(9, 10))
+        val offer = pick(rows, live, setOf(8, 9))
+        assertEquals(1, offer.picked.size)
+    }
+
+    @Test
+    fun `квота соблюдается`() {
+        val rows = listOf(dream(1, 2), dream(1, 3), dream(1, 4))
+        assertEquals(1, pick(rows, live, setOf(1), quota = 1).picked.size)
+    }
+
+    @Test
+    fun `отбор детерминирован и короткое раньше длинного`() {
+        val plot = dream(1, 5, 6, kind = DreamWeaver.Kind.PLOT)
+        val time = dream(1, 7)
+        val a = pick(listOf(plot, time), live, setOf(1), quota = 1)
+        val b = pick(listOf(time, plot), live, setOf(1), quota = 1)
+        assertEquals(time, a.picked.single().dream)
+        assertEquals(a, b)
+    }
+
+    @Test
+    fun `строка сна начинается с метки и узнаётся как сон`() {
+        val offer = pick(listOf(dream(8, 9)), live, setOf(8))
+        val line = DreamRecall.line(offer.picked.single())
+        assertTrue(line, line.startsWith("Тебе снилось: "))
+        assertTrue(line, line.contains("«запись 8»") && line.contains("«запись 9»"))
+        assertTrue(DreamRecall.isDreamLine(line))
+        assertFalse(DreamRecall.isDreamLine("Пользователь сказал: «Тебе снилось: нет»."))
+    }
+
+    @Test
+    fun `мост называет, через что связалось`() {
+        val bridge = dream(1, 2, 3, kind = DreamWeaver.Kind.BRIDGE)
+        val line = DreamRecall.line(pick(listOf(bridge), live, setOf(1)).picked.single())
+        assertEquals("Тебе снилось: «запись 1» и «запись 3» — связались через «запись 2».", line)
+    }
+
+    @Test
+    fun `прибор говорит при любом исходе`() {
+        val none = DreamRecall.Offer(nightAt = null, silence = DreamRecall.Silence.NO_NIGHT)
+        assertEquals("Снов: ночей ещё не было", DreamRecall.meter(none, 0))
+
+        val empty = DreamRecall.Offer(nightAt = NIGHT, silence = DreamRecall.Silence.NO_RECORDS)
+        assertTrue(DreamRecall.meter(empty, 0).contains("к ответу нет записей"))
+
+        val nothing = pick(listOf(dream(9, 10)), live, setOf(8))
+        val text = DreamRecall.meter(nothing, 0)
+        assertTrue(text, text.contains("не подошёл ни один") && text.contains("ночь 20.09"))
+    }
+
+    @Test
+    fun `прибор отделяет поданное от лежащего в ленте`() {
+        val offer = pick(listOf(dream(8, 9), dream(8, 10)), live, setOf(8))
+        val text = DreamRecall.meter(offer, alreadyInRibbon = 1)
+        assertTrue(text, text.contains("подходило 2 · подано 1 · уже в ленте 1"))
+    }
+
+    // --- Путь с базой: отбор только читает ---
+
+    private class FakeDreamDao(
+        private val night: DreamNight?,
+        private val rows: List<Dream>,
+    ) : DreamDao {
+        override suspend fun insertAll(dreams: List<Dream>) = error("отбор не пишет")
+        override suspend fun insertNight(night: DreamNight) = error("отбор не пишет")
+        override suspend fun lastNight(): DreamNight? = night
+        override suspend fun ofNight(nightAt: Long): List<Dream> = rows
+    }
+
+    private class FakeServedDao : DreamServedDao {
+        val marked = mutableListOf<Triple<Long, String, Long>>()
+        override suspend fun markServed(nightAt: Long, recordIds: String, at: Long): Int {
+            marked += Triple(nightAt, recordIds, at)
+            return 1
+        }
+    }
+
+    private fun night() = DreamNight(
+        nightAt = NIGHT, dreams = 1, dreamers = 2, dreamersCold = 0, dreamersArchive = 0,
+        coldDreams = 0, archiveDreams = 0, skippedHidden = 0, skippedQuestions = 0,
+        skippedAgentReports = 0, ceilingHit = false,
+    )
+
+    @Test
+    fun `отбор читает записи без отметки обращения и ничего не отмечает`() {
+        // Подделка записей падает на любом неподготовленном методе: прогрев
+        // (touchAccess) или любое другое обращение уронили бы тест с его именем.
+        val stickers = FakeStickerDao().apply { onGetAll = { live } }
+        val served = FakeServedDao()
+        val recall = DreamRecall(FakeDreamDao(night(), listOf(dream(8, 9))), served, stickers)
+        val offer = runBlocking { recall.offer(setOf(8)) }
+        assertEquals(1, offer.picked.size)
+        assertTrue(served.marked.isEmpty())
+    }
+
+    @Test
+    fun `без ночи база записей не читается вовсе`() {
+        val recall = DreamRecall(FakeDreamDao(null, emptyList()), FakeServedDao(), FakeStickerDao())
+        assertEquals(DreamRecall.Silence.NO_NIGHT, runBlocking { recall.offer(setOf(8)) }.silence)
+    }
+
+    @Test
+    fun `отметка ставится ровно на поданные`() {
+        val served = FakeServedDao()
+        val recall = DreamRecall(FakeDreamDao(night(), emptyList()), served, FakeStickerDao())
+        val p = DreamRecall.Picked(dream(8, 9), listOf(record(8), record(9)))
+        runBlocking { recall.markServed(listOf(p), at = 5L) }
+        assertEquals(listOf(Triple(NIGHT, "8,9", 5L)), served.marked)
+    }
+
+    private companion object {
+        const val NIGHT = 1_789_923_154_023L
+    }
+}
