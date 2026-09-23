@@ -58,6 +58,12 @@ data class JudgeRunReport(
      * шапке [JudgeRun]. Пустой список — таких нет.
      */
     val onlyQuestions: List<Long> = emptyList(),
+    /**
+     * Сколько пар пула не судится, потому что у записей нет ни одного общего
+     * значимого слова (см. [JudgeSieve]). Число, а не номера: таких пар
+     * большинство, и список из них никто не прочтёт.
+     */
+    val outsideSieve: Int = 0,
 )
 
 /**
@@ -78,10 +84,17 @@ data class JudgeRunReport(
  * на проект и живёт у RiskTrigger.bothAgentReports, там же и причина; здесь оно
  * только применяется.
  *
- * Порядок — от новых записей к старым, и это не украшение. Прогон почти всегда
- * обрывается на середине, и обрываться он должен на самом старом, а не на самом
- * свежем: свежая запись — та самая, которая только что могла опровергнуть
- * старую.
+ * Какие пары судятся — решает сито ([JudgeSieve]): пара без единого общего
+ * значимого слова не судится вовсе. Без сита ночь упиралась в потолок уже при
+ * четырёх десятках записей: пар растёт квадратом.
+ *
+ * Порядок — сначала внутреннее кольцо сита, потом внешнее; внутри кольца — от
+ * новых записей к старым. Ни то ни другое не украшение. Прогон может оборваться
+ * на середине, и обрываться он должен на наименее вероятном споре: внешнее
+ * кольцо — пары со слабым пересечением слов, и потому оно последнее. А внутри
+ * кольца — на самом старом, а не на самом свежем: свежая запись — та самая,
+ * которая только что могла опровергнуть старую. Кольцо старше свежести:
+ * пара внешнего кольца со свежей записью идёт после всех пар внутреннего.
  *
  * Записи из одних вопросов не судятся вовсе, ни в одной паре. Судья отвечает,
  * утверждают ли две записи несовместимое, а вопрос не утверждает ничего: пара с
@@ -156,6 +169,8 @@ class JudgeRun(
         val (sized, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
         val (pool, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }
 
+        val queue = queue(pool)
+
         var judged = 0
         var disputes = 0
         var unreadable = 0
@@ -164,53 +179,49 @@ class JudgeRun(
 
         try {
             engine.withDeterministicSampling {
-                outer@ for (i in pool.indices) {
-                    for (k in i + 1 until pool.size) {
-                        if (RiskTrigger.bothAgentReports(pool[i].source, pool[k].source)) continue
-                        val (first, second) = order(pool[i], pool[k])
-                        if (verdicts.judged(first.id, second.id, fingerprint) > 0) continue
-                        sawWork = true
+                outer@ for ((first, second) in queue.pairs) {
+                    if (verdicts.judged(first.id, second.id, fingerprint) > 0) continue
+                    sawWork = true
 
-                        if (System.currentTimeMillis() - startedAt >= budgetMs) {
-                            interruptedBy = REASON_BUDGET
-                            break@outer
-                        }
-
-                        val pairStartedAt = System.currentTimeMillis()
-                        val judgement = MemoryJudge.judge(llm, first.content, second.content)
-                        val spent = System.currentTimeMillis() - pairStartedAt
-
-                        val stoppedBy = watchdogStop()
-                        if (stoppedBy != null) {
-                            // Ответ, обрезанный часовым, — не ответ, и в хранилище он не
-                            // едет: пара останется неразобранной и достанется следующему
-                            // прогону целой.
-                            interruptedBy = stoppedBy
-                            break@outer
-                        }
-
-                        if (judgement.verdict == MemoryJudge.Verdict.UNREADABLE) {
-                            unreadable++
-                            onProgress(judged + unreadable)
-                            continue
-                        }
-
-                        verdicts.put(
-                            JudgeVerdict(
-                                firstId = first.id,
-                                secondId = second.id,
-                                loadFingerprint = fingerprint,
-                                forward = judgement.forward.toString(),
-                                backward = judgement.backward.toString(),
-                                verdict = judgement.verdict.name,
-                                judgedAt = System.currentTimeMillis(),
-                                spentMs = spent,
-                            )
-                        )
-                        judged++
-                        if (judgement.verdict == MemoryJudge.Verdict.DISPUTE) disputes++
-                        onProgress(judged + unreadable)
+                    if (System.currentTimeMillis() - startedAt >= budgetMs) {
+                        interruptedBy = REASON_BUDGET
+                        break@outer
                     }
+
+                    val pairStartedAt = System.currentTimeMillis()
+                    val judgement = MemoryJudge.judge(llm, first.content, second.content)
+                    val spent = System.currentTimeMillis() - pairStartedAt
+
+                    val stoppedBy = watchdogStop()
+                    if (stoppedBy != null) {
+                        // Ответ, обрезанный часовым, — не ответ, и в хранилище он не
+                        // едет: пара останется неразобранной и достанется следующему
+                        // прогону целой.
+                        interruptedBy = stoppedBy
+                        break@outer
+                    }
+
+                    if (judgement.verdict == MemoryJudge.Verdict.UNREADABLE) {
+                        unreadable++
+                        onProgress(judged + unreadable)
+                        continue
+                    }
+
+                    verdicts.put(
+                        JudgeVerdict(
+                            firstId = first.id,
+                            secondId = second.id,
+                            loadFingerprint = fingerprint,
+                            forward = judgement.forward.toString(),
+                            backward = judgement.backward.toString(),
+                            verdict = judgement.verdict.name,
+                            judgedAt = System.currentTimeMillis(),
+                            spentMs = spent,
+                        )
+                    )
+                    judged++
+                    if (judgement.verdict == MemoryJudge.Verdict.DISPUTE) disputes++
+                    onProgress(judged + unreadable)
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -232,12 +243,42 @@ class JudgeRun(
             judged = judged,
             disputes = disputes,
             unreadable = unreadable,
-            remaining = unjudgedPairs(pool, fingerprint),
+            remaining = unjudgedPairs(queue.pairs, fingerprint),
             spentMs = System.currentTimeMillis() - startedAt,
             interruptedBy = interruptedBy,
             tooLong = tooLong.map { it.id },
             onlyQuestions = onlyQuestions.map { it.id },
+            outsideSieve = queue.outsideSieve,
         )
+    }
+
+    /** Пары к суду в порядке суда и число пар, не прошедших сито. */
+    private class Queue(val pairs: List<Pair<Sticker, Sticker>>, val outsideSieve: Int)
+
+    /**
+     * Очередь пар одним обходом пула: кто судится (сито и правило «отчёт
+     * против отчёта») и в каком порядке (см. шапку класса). Одна на прогон и
+     * на подсчёт остатка, чтобы остаток считался по той же очереди, что и
+     * работа, а не по второй, своей.
+     *
+     * Основы слов считаются один раз на запись: пар квадрат, записей — нет.
+     */
+    private fun queue(pool: List<Sticker>): Queue {
+        val stems = pool.map { RiskTrigger.significantStems(it.content) }
+        val byRing = JudgeRing.entries.associateWith { mutableListOf<Pair<Sticker, Sticker>>() }
+        var outside = 0
+        for (i in pool.indices) {
+            for (k in i + 1 until pool.size) {
+                if (RiskTrigger.bothAgentReports(pool[i].source, pool[k].source)) continue
+                val ring = JudgeSieve.ring(stems[i], stems[k])
+                if (ring == null) {
+                    outside++
+                    continue
+                }
+                byRing.getValue(ring) += order(pool[i], pool[k])
+            }
+        }
+        return Queue(JudgeRing.entries.flatMap { byRing.getValue(it) }, outside)
     }
 
     /** Отчёт агента против отчёта агента — единственная пара, которую не судят. */
@@ -259,26 +300,17 @@ class JudgeRun(
     }
 
     /**
-     * Сколько пар нынешнего пула этот судья ещё не разбирал.
+     * Сколько пар очереди этот судья ещё не разбирал.
      *
      * Считается по самим парам, а не вычитанием числа вердиктов из числа пар:
      * вердикты остаются и у пар, выпавших из пула (запись остыла, ушла в
-     * очередь или оказалась вопросом), и вычитание занижало бы остаток на
-     * их число, вплоть до нуля при живой очереди. Обход тот же, что в
-     * основном цикле, поэтому и пары «отчёт против отчёта» пропускаются так
-     * же. Цена — по короткому запросу на пару, один раз в конце прогона.
+     * очередь или оказалась вопросом), и у пар, судившихся до сита, и
+     * вычитание занижало бы остаток на их число, вплоть до нуля при живой
+     * очереди. Очередь та же, что у основного цикла. Цена — по короткому
+     * запросу на пару, один раз в конце прогона.
      */
-    private suspend fun unjudgedPairs(pool: List<Sticker>, fingerprint: String): Int {
-        var left = 0
-        for (i in pool.indices) {
-            for (k in i + 1 until pool.size) {
-                if (RiskTrigger.bothAgentReports(pool[i].source, pool[k].source)) continue
-                val (first, second) = order(pool[i], pool[k])
-                if (verdicts.judged(first.id, second.id, fingerprint) == 0) left++
-            }
-        }
-        return left
-    }
+    private suspend fun unjudgedPairs(pairs: List<Pair<Sticker, Sticker>>, fingerprint: String): Int =
+        pairs.count { (first, second) -> verdicts.judged(first.id, second.id, fingerprint) == 0 }
 
     companion object {
         /**
