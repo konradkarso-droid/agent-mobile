@@ -12,6 +12,7 @@ import android.os.PowerManager
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
+import com.uroboros.memory.dream.NightStart
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
@@ -120,7 +121,7 @@ class AgentService : Service() {
         job = scope.launch {
             // Сон идёт без блокировки сна и без пометки "идёт разбор": это
             // миллисекунды счёта, а не прогон, который надо сторожить.
-            val dreamed = DreamRunner.run(MemoryDatabase.getInstance(applicationContext))
+            val dreamed = DreamRunner.run(MemoryDatabase.getInstance(applicationContext), NightStart.BUTTON)
 
             val refusal = whyCannotStart(applicationContext)
             if (refusal != null) {
