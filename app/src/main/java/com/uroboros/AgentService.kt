@@ -7,8 +7,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
+import androidx.documentfile.provider.DocumentFile
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
@@ -16,6 +18,7 @@ import com.uroboros.memory.dream.NightStart
 import com.uroboros.memory.dream.SleepDecision
 import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
+import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -43,14 +47,22 @@ import java.util.Locale
  * системой — поднимается снова сама (START_STICKY). Смерть службы — кома
  * агента; сколько раз она прерывалась, считает [AgentLife].
  *
- * САМА СЛУЖБА НАЧИНАЕТ ТОЛЬКО СОН. Раз в минуту бодрствования она спрашивает,
+ * САМА СЛУЖБА НАЧИНАЕТ СОН И СУД. Раз в минуту бодрствования она спрашивает,
  * пора ли спать (правила и пороги — в [SleepDecision]), и если пора — проходит
  * ночь сама, с отметкой «уснул сам». Сон не проходит через ворота действий и
  * аварийным стопом не останавливается: он только читает записи и считает.
- * Разбор памяти судьёй по-прежнему приходит только командой с экрана; служба,
- * поднятая заново после комы, прерванный прогон не продолжает — Android отдаёт
- * ей пустую команду, и она просто живёт. Выключить тело может только человек:
- * «Остановить» в настройках приложения Android.
+ *
+ * Следом, той же минутой, — пора ли судить (условия — в [SelfJudgeDecision]).
+ * Суд начинается строго: на зарядке, в тишине, когда есть что судить. Модели
+ * нет — служба загружает последнюю выбранную сама: после комы экран может не
+ * открыться до утра, а суд нужен именно ночью. Сняли с зарядки — суд
+ * останавливается; человек написал — суд уступает разговору ([yield]).
+ * Разобранное не теряется: прогон продолжаемый, пара без вердикта достанется
+ * следующему. Отчёт самостоятельного прогона — строка в уведомлении, а не
+ * итог на экране: экран в это время показывает разговор.
+ *
+ * Выключить тело может только человек: «Остановить» в настройках приложения
+ * Android.
  *
  * ДВЕ ЗАЩИТЫ, И ОНИ НЕ ЗАМЕНЯЮТ ДРУГ ДРУГА. Служба с уведомлением не даёт
  * системе убить процесс. Блокировка сна (WakeLock) не даёт уснуть процессору:
@@ -89,6 +101,8 @@ import java.util.Locale
  *  - На Android 13 и новее без разрешения на уведомления работает, но в шторке
  *    не видна. Разрешение здесь не спрашивается.
  *  - Цикл TOTE по-прежнему живёт на экране и обрывается вместе с ним.
+ *  - Суд, уступивший разговору, начнётся снова только после новой тишины —
+ *    на паузе живого разговора он не начинается.
  *  - Остановка во время сна (первые миллисекунды прогона) не даёт отчёта: сон
  *    так короток, что попасть в него нажатием почти нельзя.
  */
@@ -122,6 +136,30 @@ class AgentService : Service() {
      */
     private val nightLock = Mutex()
 
+    /** Итог последней проверки суда словами — для уведомления. */
+    private var judgeLine = "Суд: первая проверка через минуту."
+
+    /** Итог последнего самостоятельного прогона словами; после комы его нет. */
+    private var lastSelfJudge: String? = null
+
+    /** До какого момента суд отдыхает после прошлого прогона, мс. */
+    private var restUntil = 0L
+
+    /**
+     * Отпечаток памяти, при котором судить было нечего. Пока память та же,
+     * проверка очереди не повторяется: она перебирает пары и не бесплатна.
+     */
+    private var nothingToJudgeAt: String? = null
+
+    /** Идущий прогон начат самим агентом, а не кнопкой. */
+    private var selfRun = false
+
+    /** Идущий прогон обрывается, чтобы уступить разговору. */
+    private var yielding = false
+
+    /** Почему самостоятельный прогон оборван не по своим причинам; null — не оборван. */
+    private var stopNote: String? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -149,7 +187,84 @@ class AgentService : Service() {
             } catch (t: Throwable) {
                 showSleepLine("Проверка сна сорвалась: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}.")
             }
+            // Отдельной попыткой: сорвавшийся сон не должен отменять суд, и
+            // наоборот.
+            try {
+                checkJudge()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                showJudgeLine("Проверка суда сорвалась: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}.")
+            }
         }
+    }
+
+    /**
+     * Пора ли судить самому. Порядок — от дешёвого к дорогому: условия без
+     * чтения памяти ([SelfJudgeDecision]), затем «есть ли что судить» (чтение
+     * базы и перебор пар), и только потом загрузка модели.
+     */
+    private suspend fun checkJudge() {
+        val objects = ProcessObjects.get(applicationContext)
+        val engine = objects.llmEngine
+        val watchdog = objects.watchdog
+        val now = System.currentTimeMillis()
+        val quietSince = maxOf(engine.activity.lastEndedAtMs ?: 0L, bodyStartedAt)
+        val modelUri = ModelPrefs.lastModelUri(applicationContext)
+
+        SelfJudgeDecision.refusal(
+            SelfJudgeDecision.Inputs(
+                running = working || job?.isActive == true,
+                emergencyStop = EmergencyStop.isActive(),
+                powerKnown = watchdog.zoneObservation().powerLastAtMs != null,
+                charging = watchdog.power.value.charging,
+                watchdogRefusal = watchdog.longRunBlockReason(),
+                engineBusy = engine.activity.busy,
+                quietMs = now - quietSince,
+                restLeftMs = restUntil - now,
+                modelChosen = modelUri != null,
+            )
+        )?.let {
+            showJudgeLine("Не сужу: $it.")
+            return
+        }
+        modelUri ?: return
+
+        // Отпечаток грубый: число записей, последний номер, сколько на проверке
+        // и отвергнуто. Новая запись, выход из карантина и отказ его меняют;
+        // правка текста записи — нет, и тогда суд подождёт следующей перемены.
+        val records = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
+        val memoryPrint = "${records.size}:${records.maxOfOrNull { it.id }}:" +
+            "${records.count { it.reviewPending }}:${records.count { it.rejectedAt != null }}"
+        if (memoryPrint == nothingToJudgeAt) {
+            showJudgeLine("Не сужу: судить нечего — память с прошлой проверки не менялась.")
+            return
+        }
+        if (!JudgeLauncher(applicationContext, engine).hasPending(modelUri)) {
+            nothingToJudgeAt = memoryPrint
+            showJudgeLine("Не сужу: судить нечего — все пары разобраны.")
+            return
+        }
+
+        if (!engine.isLoaded) {
+            showJudgeLine("Загружаю модель, чтобы судить.")
+            val uri = Uri.parse(modelUri)
+            if (!engine.loadModelFromUri(uri)) {
+                restUntil = System.currentTimeMillis() + SelfJudgeDecision.REST_AFTER_RUN_MS
+                showJudgeLine("Не сужу: модель не загрузилась, следующая попытка через полчаса.")
+                return
+            }
+            objects.loadedModelName = DocumentFile.fromSingleUri(applicationContext, uri)?.name
+                ?: uri.lastPathSegment
+        }
+        // Загрузка шла десятки секунд: за это время могли снять с зарядки или
+        // заговорить с агентом. Переспрашиваются условия, которые могли
+        // измениться, — остальное проверит служба при старте прогона.
+        if (!watchdog.power.value.charging || engine.activity.busy || job?.isActive == true) {
+            showJudgeLine("Не сужу: пока грузилась модель, условия изменились.")
+            return
+        }
+        startNight(modelUri, SelfJudgeDecision.RUN_BUDGET_MS, dreamFirst = false, self = true)
     }
 
     private suspend fun checkSleep() {
@@ -196,9 +311,20 @@ class AgentService : Service() {
         updateNotificationText()
     }
 
-    /** Текст уведомления, пока разбор не идёт: жизнь, сон, последний сон сам. */
+    /** Показать итог проверки суда; во время разбора уведомление не трогается. */
+    private fun showJudgeLine(line: String) {
+        judgeLine = line
+        if (working) return
+        val text = livingText()
+        if (text == currentText) return
+        currentText = text
+        updateNotificationText()
+    }
+
+    /** Текст уведомления, пока разбор не идёт: жизнь, сон и суд, последние сами. */
     private fun livingText(): String =
-        LIVING_TEXT + "\n" + sleepLine + (lastSelfSleep?.let { "\n$it" } ?: "")
+        LIVING_TEXT + "\n" + sleepLine + (lastSelfSleep?.let { "\n$it" } ?: "") +
+            "\n" + judgeLine + (lastSelfJudge?.let { "\n$it" } ?: "")
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // startForeground обязан прозвучать сразу после каждого запуска службы,
@@ -214,10 +340,22 @@ class AgentService : Service() {
                     updateNotificationText()
                     job?.cancel()
                 }
+            intent?.action == ACTION_YIELD ->
+                if (running) {
+                    yielding = true
+                    currentText = "Уступаю разговору"
+                    updateNotificationText()
+                    job?.cancel()
+                }
             // Второй запуск поверх идущего прогона идущий не трогает: ни его
             // состояние, ни уведомление.
             running -> Unit
-            intent?.action == ACTION_JUDGE -> startRun(intent)
+            intent?.action == ACTION_JUDGE -> startNight(
+                modelIdentity = intent.getStringExtra(EXTRA_MODEL) ?: "модель неизвестна",
+                budgetMs = intent.getLongExtra(EXTRA_BUDGET_MS, 0L),
+                dreamFirst = true,
+                self = false,
+            )
             // Команда «жить», пустая команда подъёма после комы и любая
             // незнакомая: служба просто живёт, ничего не начиная.
             else -> Unit
@@ -225,47 +363,94 @@ class AgentService : Service() {
         return START_STICKY
     }
 
-    /** Ночь целиком: сначала сон, потом — если условия позволяют — судья. */
-    private fun startRun(intent: Intent) {
+    /**
+     * Прогон судьи в службе. С кнопки ([dreamFirst]) — ночь целиком: сначала
+     * сон, потом судья, если условия позволяют. Сам ([self]) — только судья:
+     * сон у агента свой, по давлению (см. шапку класса).
+     */
+    private fun startNight(modelIdentity: String, budgetMs: Long, dreamFirst: Boolean, self: Boolean) {
         val objects = ProcessObjects.get(applicationContext)
-        val modelIdentity = intent.getStringExtra(EXTRA_MODEL) ?: "модель неизвестна"
-        val budgetMs = intent.getLongExtra(EXTRA_BUDGET_MS, 0L)
+        selfRun = self
+        yielding = false
+        stopNote = null
 
         job = scope.launch {
             // Сон идёт без блокировки сна и без пометки "идёт разбор": это
             // миллисекунды счёта, а не прогон, который надо сторожить.
-            val dreamed = nightLock.withLock {
-                DreamRunner.run(MemoryDatabase.getInstance(applicationContext), NightStart.BUTTON)
+            val dreamed = if (dreamFirst) {
+                nightLock.withLock {
+                    DreamRunner.run(MemoryDatabase.getInstance(applicationContext), NightStart.BUTTON)
+                }
+            } else {
+                null
             }
 
             val refusal = whyCannotStart(applicationContext)
             if (refusal != null) {
-                _state.value = RunState.Finished(dreamed + "\n\n" + refusal)
-                finish()
+                end(listOfNotNull(dreamed, refusal).joinToString("\n\n"))
                 return@launch
             }
 
             val startedAt = System.currentTimeMillis()
-            _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null)
+            _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null, self = self)
             working = true
             showProgress(startedAt, done = 0, lastAt = null)
+
+            // Самостоятельный суд — только на зарядке, и не только на старте:
+            // сняли с зарядки посреди прогона — прогон останавливается.
+            val runner = coroutineContext[Job]
+            val unplugWatch = if (self) {
+                scope.launch {
+                    objects.watchdog.power.first { !it.charging }
+                    stopNote = "сняли с зарядки"
+                    runner?.cancel()
+                }
+            } else {
+                null
+            }
 
             acquireWakeLock(budgetMs)
             val report = try {
                 JudgeLauncher(applicationContext, objects.llmEngine)
                     .runAndReport(modelIdentity, budgetMs) { done ->
                         val now = System.currentTimeMillis()
-                        _state.value = RunState.Running(startedAt, done, now)
+                        _state.value = RunState.Running(startedAt, done, now, self)
                         showProgress(startedAt, done, now)
                     }
             } catch (cancelled: CancellationException) {
                 STOPPED_REPORT
             } finally {
+                unplugWatch?.cancel()
                 releaseWakeLock()
             }
-            _state.value = RunState.Finished(dreamed + "\n\n" + report)
-            finish()
+            end(listOfNotNull(dreamed, report).joinToString("\n\n"))
         }
+    }
+
+    /**
+     * Прогон кончился. Итог кнопочного прогона идёт на экран; самостоятельного
+     * и уступившего разговору — строкой в уведомление: экран в это время
+     * показывает разговор, и отчёт поверх него стёр бы его с глаз.
+     */
+    private fun end(report: String) {
+        val now = System.currentTimeMillis()
+        val headline = report.lineSequence().firstOrNull { it.isNotBlank() } ?: "без отчёта"
+        when {
+            yielding -> {
+                _state.value = RunState.Idle
+                lastSelfJudge = "Суд уступил разговору в ${clock(now)}: $headline"
+            }
+            selfRun -> {
+                _state.value = RunState.Idle
+                restUntil = now + SelfJudgeDecision.REST_AFTER_RUN_MS
+                lastSelfJudge = "Судил сам, кончил в ${clock(now)}" +
+                    (stopNote?.let { " ($it)" } ?: "") + ": $headline"
+            }
+            else -> _state.value = RunState.Finished(report)
+        }
+        yielding = false
+        selfRun = false
+        finish()
     }
 
     override fun onDestroy() {
@@ -339,7 +524,13 @@ class AgentService : Service() {
     /** Состояние прогона для экрана. Одно на процесс, как и служба. */
     sealed class RunState {
         object Idle : RunState()
-        data class Running(val startedAt: Long, val done: Int, val lastProgressAt: Long?) : RunState()
+        /** [self] — начат самим агентом: экран его ход не показывает, только уведомление. */
+        data class Running(
+            val startedAt: Long,
+            val done: Int,
+            val lastProgressAt: Long?,
+            val self: Boolean = false,
+        ) : RunState()
         data class Finished(val report: String) : RunState()
     }
 
@@ -347,6 +538,7 @@ class AgentService : Service() {
         private const val ACTION_LIVE = "com.uroboros.action.LIVE"
         private const val ACTION_JUDGE = "com.uroboros.action.JUDGE"
         private const val ACTION_STOP = "com.uroboros.action.STOP"
+        private const val ACTION_YIELD = "com.uroboros.action.YIELD"
         private const val EXTRA_MODEL = "model"
         private const val EXTRA_BUDGET_MS = "budget_ms"
         private const val CHANNEL_ID = "agent_work"
@@ -424,6 +616,19 @@ class AgentService : Service() {
          */
         fun acknowledgeFinished() {
             if (_state.value is RunState.Finished) _state.value = RunState.Idle
+        }
+
+        /**
+         * Человек написал агенту — идущий прогон уступает разговору: обрывается
+         * без аварийного стопа, итог уходит строкой в уведомление, экран не
+         * трогается. Разобранные пары остаются в хранилище. Дождаться конца
+         * прогона — забота зовущего: см. [state].
+         */
+        fun yieldToConversation(context: Context) {
+            if (state.value !is RunState.Running) return
+            context.startForegroundService(
+                Intent(context, AgentService::class.java).setAction(ACTION_YIELD)
+            )
         }
 
         /** Оборвать идущий прогон. Разобранные пары остаются в хранилище. */
