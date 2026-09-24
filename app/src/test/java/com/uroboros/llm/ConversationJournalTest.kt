@@ -277,4 +277,27 @@ class ConversationJournalTest {
             journal.composeUserContent(emptyList(), "Какое правило?", curiosityAsk = null),
         )
     }
+
+    /**
+     * Ход, начатый агентом («пишет первым»): вопрос пустой, реплика — служебная
+     * строка. Лента обязана принять такой ход и при закрытии, и при подъёме с
+     * диска, и отдать модели его реплику как есть. Хранилище на диске (Room)
+     * обычным тестом не достать — здесь закреплена память.
+     */
+    @Test
+    fun `ход с пустым вопросом ложится в ленту и поднимается`() {
+        val journal = ConversationJournal()
+        var appended: ConversationJournal.Turn? = null
+        journal.onTurnAppended = { _, turn -> appended = turn }
+
+        journal.appendTurn("Пользователь молчит больше часа.", "Как тебе тот сон?", question = "", records = emptyList())
+
+        assertEquals("", appended?.question)
+        assertEquals("Пользователь молчит больше часа.", journal.messagesFor("Сон был странный.")[0].second)
+
+        val raised = ConversationJournal()
+        assertTrue(raised.restore(journal.history()))
+        assertEquals("", raised.history().single().question)
+        assertEquals("Как тебе тот сон?", raised.messagesFor("x")[1].second)
+    }
 }

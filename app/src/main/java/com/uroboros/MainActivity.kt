@@ -31,6 +31,7 @@ import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.ConversationTurns
+import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.CONTEXT_SIZE
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.JournalStore
@@ -445,6 +446,9 @@ class MainActivity : AppCompatActivity() {
     /** Выход «спросить» в базе, см. CuriosityAsk. */
     private val curiosityAskMarker by lazy { CuriosityAskMarker(applicationContext) }
 
+    /** Когда владелец писал последним — на диске, см. ConversationTimes. */
+    private val conversationTimes by lazy { ConversationTimes(applicationContext) }
+
     /** Строка пружины любопытства — всегда, см. [curiosity]. */
     private fun curiosityLine(): String {
         val pickup = curiosityPickupFailure?.let { " · подхват не проверен — $it" } ?: ""
@@ -599,9 +603,17 @@ class MainActivity : AppCompatActivity() {
         fun addTurn(question: String, answer: String?, turn: ConversationJournal.Turn?, index: Int) {
             if (out.isNotEmpty()) out.append("\n\n")
             turnOffsets += out.length
-            out.append("Вы: ").append(question)
-            if (turn != null) addRecordsBlock(index, turn)
-            out.append("\n\n").append("Агент: ")
+            // Пустой вопрос — ход, начатый агентом (AgentService, «пишет
+            // первым»): владелец ничего не писал, и показывать от его имени
+            // нечего. Служебная строка, ушедшая модели вместо реплики, на
+            // экран не выводится, как и записи в обычной реплике; строки
+            // записей у такого хода тоже нет — отбора не было.
+            if (question.isNotEmpty()) {
+                out.append("Вы: ").append(question)
+                if (turn != null) addRecordsBlock(index, turn)
+                out.append("\n\n")
+            }
+            out.append("Агент: ")
             if (answer != null) out.append(answer)
         }
 
@@ -2279,19 +2291,26 @@ class MainActivity : AppCompatActivity() {
                     "Набранный текст в память НЕ записан: он никуда не ушёл, значит " +
                     "сказанным не считается. Нужно его запомнить — нажмите «Сохранить»."
             )
-            .setPositiveButton("Закрыть и начать заново") { _, _ ->
-                journal.clear()
-                expandedTurns.clear()
-                // Счёт автозаписи ведётся по разговору, значит кончается
-                // вместе с ним. Записи из памяти при этом никуда не деваются —
-                // обнуляется показание, а не память.
-                autoSavedCount = 0
-                autoSavedRepeats = 0
-                binding.textResults.text = ""
-                renderMetricsPanel()
-            }
+            .setPositiveButton("Закрыть и начать заново") { _, _ -> closeConversation() }
             .setNegativeButton("Отмена", null)
             .show()
+    }
+
+    /**
+     * Закрыть живой разговор: лента в памяти очищается, её ходы уходят в архив
+     * (это делает оповещение ленты, см. `journal.onCleared` в onCreate).
+     * Один путь закрытия для «Лента заполнена» и кнопки «Начать заново».
+     */
+    private fun closeConversation() {
+        journal.clear()
+        expandedTurns.clear()
+        // Счёт автозаписи ведётся по разговору, значит кончается
+        // вместе с ним. Записи из памяти при этом никуда не деваются —
+        // обнуляется показание, а не память.
+        autoSavedCount = 0
+        autoSavedRepeats = 0
+        binding.textResults.text = ""
+        renderMetricsPanel()
     }
 
     /**
@@ -2556,7 +2575,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), selfStateLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2727,6 +2746,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun setDetailsExpanded(expanded: Boolean) {
         binding.textMetrics.visibility = if (expanded) View.VISIBLE else View.GONE
+        binding.checkAutoContinue.visibility = if (expanded) View.VISIBLE else View.GONE
         binding.buttonDetails.text = if (expanded) "Свернуть ▴" else "Подробно ▾"
         prefs.edit().putBoolean(KEY_DETAILS_EXPANDED, expanded).apply()
     }
@@ -3095,6 +3115,22 @@ class MainActivity : AppCompatActivity() {
      */
     private fun maybeOfferRestore() {
         if (!journal.isEmpty) return
+        // Настройка «После комы продолжать разговор сам» (ConversationPrefs):
+        // диалога нет, лента поднимается тем же путём, что у тела агента.
+        if (ConversationPrefs.autoContinue(applicationContext)) {
+            lifecycleScope.launch {
+                journalRestoreLine = when (val result = turns.resumeSaved()) {
+                    is ConversationTurns.Resume.Raised -> "Разговор поднят с диска сам: ходов ${result.count}" +
+                        if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
+                    is ConversationTurns.Resume.Refused -> "Разговор: ${result.reason}"
+                    // Пусто на диске или ленту уже подняло тело агента —
+                    // прежняя строка остаётся.
+                    else -> journalRestoreLine
+                }
+                showRaisedJournal()
+            }
+            return
+        }
         lifecycleScope.launch {
             when (val result = turns.loadSaved()) {
                 is JournalStore.LoadResult.Empty -> Unit
@@ -3159,67 +3195,108 @@ class MainActivity : AppCompatActivity() {
                     "уйдут в архив на устройстве, но ни на экран, ни к агенту не вернутся."
             )
             .setPositiveButton("Продолжить разговор") { _, _ ->
-                if (turns.restore(saved, promptTokens)) {
-                    journalRestoreLine = "Разговор поднят с диска: ходов ${saved.size}" +
-                        if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
-                    binding.textResults.text = renderJournal()
-                    binding.scrollResults.post {
-                        binding.scrollResults.fullScroll(View.FOCUS_DOWN)
-                    }
-                    renderTurnNavVisibility()
-                    // ТОЧКА ПОДНИМАЕТСЯ ТОЛЬКО ЗДЕСЬ — следом за успешно
-                    // поднятой лентой и никогда сама по себе. Точка — состояние
-                    // движка для этой ленты; без ленты движок взял бы из неё
-                    // только общее с новым запросом начало (стену), а остальное
-                    // стёр бы, то есть подъём был бы чтением с диска впустую.
-                    // Ноля токенов подъём не грозит ни при какой ленте: движок
-                    // берёт из обсчитанного не больше запроса без одного токена
-                    // (reusable_prefix в gguf_lib.cpp).
-                    //
-                    // Отказ подъёма ничего не ломает: не поднялось — значит
-                    // работаем как раньше, с пересчётом. Поэтому исход не
-                    // проверяется ветвлением, а просто показывается.
-                    lifecycleScope.launch {
-                        llmEngine.restoreStateCheckpoint()
-                        checkpointActionLine = llmEngine.getStateCheckpointReport()
-                        checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
-                        renderMetricsPanel()
-                    }
-                } else {
-                    journalRestoreLine = "Разговор с диска не поднят: лента уже не пуста"
-                }
-                renderMetricsPanel()
-            }
-            .setNegativeButton("Начать заново") { _, _ ->
-                // Точка уходит вместе с лентой. Останься она — при следующем
-                // запуске она описывала бы разговор, которого больше нет, то
-                // есть обгоняла бы пустую ленту.
-                //
-                // Лента при этом не стирается, а уходит в архив: человек
-                // отказался ПРОДОЛЖАТЬ разговор, а не велел его уничтожить.
-                // Смешивать эти два решения нельзя — второго он не принимал.
-                journalRestoreLine = null
-                renderMetricsPanel()
+                // Лента и следом за ней точка движка — одним путём подъёма
+                // (ConversationTurns.raise); почему точка только следом — там.
                 lifecycleScope.launch {
-                    journalRestoreLine = when (val result = journalStore.archive()) {
-                        is JournalStore.ArchiveResult.Archived ->
-                            "Разговор закрыт: ${result.count} ходов ушли в архив"
-                        // Подъём только что прочитал с диска непустую ленту,
-                        // значит пустота здесь означает, что она исчезла между
-                        // двумя обращениями. Молчать об этом нельзя.
-                        is JournalStore.ArchiveResult.Empty ->
-                            "Разговор: закрывать было нечего, на диске уже пусто"
-                        is JournalStore.ArchiveResult.Refused -> result.reason
+                    journalRestoreLine = if (turns.raise(saved, promptTokens)) {
+                        "Разговор поднят с диска: ходов ${saved.size}" +
+                            if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
+                    } else {
+                        "Разговор с диска не поднят: лента уже не пуста"
                     }
-                    llmEngine.clearStateCheckpoint()
-                    checkpointActionLine = llmEngine.getStateCheckpointReport()
-                    checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
-                    // Перерисовку делает он же, последним действием.
-                    refreshJournalDiskLine()
+                    showRaisedJournal()
                 }
             }
+            .setNegativeButton("Начать заново") { _, _ -> archiveSavedConversation() }
             .setCancelable(false)
             .show()
+    }
+
+    /** Лента только что поднята с диска (или не поднята): показать её и исход точки. */
+    private fun showRaisedJournal() {
+        binding.textResults.text = renderJournal()
+        binding.scrollResults.post {
+            binding.scrollResults.fullScroll(View.FOCUS_DOWN)
+        }
+        renderTurnNavVisibility()
+        checkpointActionLine = llmEngine.getStateCheckpointReport()
+        checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
+        renderMetricsPanel()
+    }
+
+    /**
+     * Закрыть сохранённый, но не поднятый разговор: лента в памяти пуста, её
+     * ходы лежат только на диске и уходят в архив прямо оттуда. Один путь для
+     * «Начать заново» в диалоге «Сохранённый разговор» и одноимённой кнопки
+     * при пустой ленте.
+     */
+    private fun archiveSavedConversation() {
+        // Точка уходит вместе с лентой. Останься она — при следующем
+        // запуске она описывала бы разговор, которого больше нет, то
+        // есть обгоняла бы пустую ленту.
+        //
+        // Лента при этом не стирается, а уходит в архив: человек
+        // отказался ПРОДОЛЖАТЬ разговор, а не велел его уничтожить.
+        // Смешивать эти два решения нельзя — второго он не принимал.
+        journalRestoreLine = null
+        renderMetricsPanel()
+        lifecycleScope.launch {
+            journalRestoreLine = when (val result = journalStore.archive()) {
+                is JournalStore.ArchiveResult.Archived ->
+                    "Разговор закрыт: ${result.count} ходов ушли в архив"
+                // Из диалога: подъём только что прочитал с диска непустую
+                // ленту, значит пустота здесь означает, что она исчезла между
+                // двумя обращениями. С кнопки — что закрывать было нечего.
+                // Молчать об этом нельзя ни в том, ни в другом случае.
+                is JournalStore.ArchiveResult.Empty ->
+                    "Разговор: закрывать было нечего, на диске уже пусто"
+                is JournalStore.ArchiveResult.Refused -> result.reason
+            }
+            llmEngine.clearStateCheckpoint()
+            checkpointActionLine = llmEngine.getStateCheckpointReport()
+            checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
+            // Перерисовку делает он же, последним действием.
+            refreshJournalDiskLine()
+        }
+    }
+
+    /**
+     * Кнопка «Начать заново»: владелец по своей воле закрывает разговор и
+     * начинает с чистой ленты. Без неё при настройке «продолжать сам» чистую
+     * ленту было бы не получить: диалога после комы больше нет.
+     *
+     * Закрытие — тем же путём, что в диалогах: живая лента — [closeConversation],
+     * пустая в памяти, но лежащая на диске — [archiveSavedConversation]. Своего
+     * пути закрытия у кнопки нет.
+     *
+     * Посреди хода недоступно: реплика собрана под нынешнюю ленту, и закрыть
+     * ленту под ней значило бы положить ход в чужой разговор.
+     */
+    private fun showRestartDialog() {
+        if (restartBlocked()) return
+        AlertDialog.Builder(this)
+            .setTitle("Начать заново")
+            .setMessage("Разговор уйдёт в архив, агент начнёт с чистой ленты. Начать заново?")
+            .setPositiveButton("Начать заново") { _, _ ->
+                // Спрашивается ещё раз: пока диалог висел, мог начаться ход.
+                if (restartBlocked()) return@setPositiveButton
+                if (journal.isEmpty) archiveSavedConversation() else closeConversation()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /**
+     * Идёт ход — чей угодно. Замок хода ([ConversationTurns.busy]) держит сам
+     * ход; сборка реплики экраном идёт раньше замка, и её выдаёт погашенная
+     * кнопка «Генерировать» при загруженной модели. Говорится словами, а не
+     * молчанием.
+     */
+    private fun restartBlocked(): Boolean {
+        val busy = turns.busy.value ||
+            (llmEngine.isLoaded && !binding.buttonGenerate.isEnabled)
+        if (busy) Toast.makeText(this, "Идёт ход — начать заново можно, когда он кончится", Toast.LENGTH_SHORT).show()
+        return busy
     }
 
     /**
@@ -3522,6 +3599,20 @@ class MainActivity : AppCompatActivity() {
             scrollToTurn((from + 1).coerceAtMost(turnOffsets.size - 1))
         }
         binding.buttonDropTurn.setOnClickListener { showDropTurnDialog() }
+        binding.buttonRestart.setOnClickListener { showRestartDialog() }
+        // Гаснет на время любого хода — и экрана, и тела агента: замок хода
+        // один (см. restartBlocked).
+        lifecycleScope.launch {
+            turns.busy.collect { busy -> binding.buttonRestart.isEnabled = !busy }
+        }
+        binding.checkAutoContinue.isChecked = ConversationPrefs.autoContinue(applicationContext)
+        binding.checkAutoContinue.setOnCheckedChangeListener { _, on ->
+            ConversationPrefs.setAutoContinue(applicationContext, on)
+        }
+        // Строка «Первым:» приходит от тела агента (AgentService.initiativeLine).
+        lifecycleScope.launch {
+            AgentService.initiativeLine.collect { renderMetricsPanel() }
+        }
         lifecycleScope.launch {
             combine(watchdog.zone, watchdog.power) { _, _ -> Unit }
                 .collect { renderMetricsPanel() }
@@ -3540,6 +3631,17 @@ class MainActivity : AppCompatActivity() {
                 // диск, а не исход попытки. Показать после сбоя прежнее
                 // число значило бы утверждать, чего мы не проверяли.
                 refreshJournalDiskLine()
+                // Ход с пустым вопросом провело тело агента (написал первым),
+                // и экран о нём иначе не узнает. Свои ходы экран перерисовывает
+                // сам, закрыв их, — здесь их не трогать: к ленте он дописывает
+                // строки, которых в ней нет. И не посреди идущего хода: в
+                // поле дописываются токены, и перерисовка стёрла бы их.
+                val byAgent = journal.history().getOrNull(write.index)?.question?.isEmpty() == true
+                if (byAgent && !turns.busy.value) {
+                    binding.textResults.text = renderJournal()
+                    binding.scrollResults.post { binding.scrollResults.fullScroll(View.FOCUS_DOWN) }
+                    renderTurnNavVisibility()
+                }
             }
         }
         // Закрытая лента не должна оставаться в активной таблице: иначе
@@ -4052,12 +4154,15 @@ class MainActivity : AppCompatActivity() {
                     dreamRecall.markServed(servedDreams, System.currentTimeMillis())
 
                     // Реплика владельца ушла в движок — она снимает ожидание
-                    // ответа на прошлый вопрос (см. CuriosityAsk). Отметка
-                    // «спрошен» — там же и по той же мерке, что «подан», и
-                    // временем не раньше реплики: сама реплика с предложением
-                    // спросить ответом на него не считается.
+                    // ответа на прошлый вопрос и сообщение, написанное агентом
+                    // первым, и с неё считается молчание (см. ConversationTimes).
+                    // Отметка «спрошен» — там же и по той же мерке, что
+                    // «подан», и временем не раньше реплики: сама реплика с
+                    // предложением спросить ответом на него не считается.
+                    // Неудачная запись времени не срывает ход: чтение после
+                    // неё отказывает само, и оба выхода её назовут.
                     val repliedAt = System.currentTimeMillis()
-                    CuriosityAsk.ownerReplied(repliedAt)
+                    conversationTimes.noteOwnerReply(repliedAt)
                     askedLeader?.let { leader ->
                         runCatching { curiosityAskMarker.markAsked(leader, repliedAt) }
                             .onFailure { curiosityAskFailure = it.javaClass.simpleName }

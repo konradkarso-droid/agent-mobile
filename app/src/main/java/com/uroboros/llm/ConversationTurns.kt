@@ -6,7 +6,9 @@ import com.dark.gguf_lib.models.GenerationEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -26,8 +28,9 @@ import kotlinx.coroutines.sync.withLock
  *    были бы двумя очередями, то есть никакой;
  *  - запись каждого закрытого хода на диск — здесь, а не у экрана: иначе ход,
  *    закрытый без экрана, на диск бы не попал;
- *  - чтение сохранённой ленты с диска и подъём её в память ([loadSaved],
- *    [restore]). Решает, поднимать ли, по-прежнему вызывающий;
+ *  - чтение сохранённой ленты с диска и подъём её в память вместе с точкой
+ *    движка ([loadSaved], [raise], [resumeSaved]). Решает, поднимать ли,
+ *    по-прежнему вызывающий;
  *  - сам ход ([run]): обе проверки края, возврат движка после чужой работы,
  *    прогон, счёт токенов и закрытие хода в ленте.
  *
@@ -65,6 +68,24 @@ class ConversationTurns(
 
     private val lock = Mutex()
 
+    private val _busy = MutableStateFlow(false)
+
+    /**
+     * Замок хода занят: идёт ход или подъём ленты — чей угодно, экрана или
+     * службы. По нему экран гасит то, что нельзя делать посреди хода.
+     */
+    val busy: StateFlow<Boolean> = _busy
+
+    /** Под замком хода, с отметкой [busy]. */
+    private suspend inline fun <T> locked(block: () -> T): T = lock.withLock {
+        _busy.value = true
+        try {
+            block()
+        } finally {
+            _busy.value = false
+        }
+    }
+
     init {
         // Запись уходит в отдельную корутину: хранилище ходит в базу, а держать
         // на ней закрытие хода незачем. Плата названа прямо: если приложение
@@ -90,12 +111,70 @@ class ConversationTurns(
     suspend fun loadSaved(): JournalStore.LoadResult = store.load(engine.loadFingerprint)
 
     /**
-     * Поднять прочитанную ленту в память.
+     * Поднять прочитанную ленту в память, а следом за ней — точку движка.
+     * Единственный путь подъёма: и по выбору владельца в диалоге, и сам
+     * ([resumeSaved]).
+     *
+     * ТОЧКА ПОДНИМАЕТСЯ ТОЛЬКО СЛЕДОМ ЗА УСПЕШНО ПОДНЯТОЙ ЛЕНТОЙ и никогда сама
+     * по себе. Точка — состояние движка для этой ленты; без ленты движок взял
+     * бы из неё только общее с новым запросом начало (стену), а остальное
+     * стёр бы, то есть подъём был бы чтением с диска впустую. Ноля токенов
+     * подъём не грозит ни при какой ленте: движок берёт из обсчитанного не
+     * больше запроса без одного токена (reusable_prefix в gguf_lib.cpp).
+     *
+     * Отказ подъёма точки ничего не ломает: не поднялась — значит первый ход
+     * пересчитает ленту целиком. Поэтому исход точки не ветвит, а только
+     * показывается ([LlmEngine.getStateCheckpointReport]).
+     *
+     * @return false — лента не пуста, подъём поверх живого разговора сбил бы
+     *   нумерацию ходов; точка тогда не трогается.
+     */
+    suspend fun raise(saved: List<ConversationJournal.Turn>, promptTokens: Int): Boolean =
+        locked { raiseLocked(saved, promptTokens) }
+
+    private suspend fun raiseLocked(saved: List<ConversationJournal.Turn>, promptTokens: Int): Boolean {
+        if (!restore(saved, promptTokens)) return false
+        engine.restoreStateCheckpoint()
+        return true
+    }
+
+    /** Исход подъёма без спроса. */
+    sealed class Resume {
+        /** На диске пусто — поднимать нечего. */
+        object NothingSaved : Resume()
+
+        /** Лента в памяти уже не пуста — подниматься поверх нельзя. */
+        object AlreadyLive : Resume()
+
+        /** Поднято ходов [count]. */
+        data class Raised(val count: Int) : Resume()
+
+        /** Хранилище отказало; [reason] — его словами. */
+        data class Refused(val reason: String) : Resume()
+    }
+
+    /**
+     * Поднять сохранённую ленту без спроса — при включённой настройке «После
+     * комы продолжать разговор сам»; решает зовущий. Чтение и подъём — под
+     * одним замком: экран и служба, поднимающие разом, не поднимут дважды.
+     */
+    suspend fun resumeSaved(): Resume = locked {
+        if (!journal.isEmpty) return@locked Resume.AlreadyLive
+        when (val result = loadSaved()) {
+            is JournalStore.LoadResult.Empty -> Resume.NothingSaved
+            is JournalStore.LoadResult.Refused -> Resume.Refused(result.reason)
+            is JournalStore.LoadResult.Restored ->
+                if (raiseLocked(result.turns, result.promptTokens)) Resume.Raised(result.turns.size) else Resume.AlreadyLive
+        }
+    }
+
+    /**
+     * Лента в памяти.
      *
      * @return false — лента не пуста, подъём поверх живого разговора сбил бы
      *   нумерацию ходов.
      */
-    fun restore(saved: List<ConversationJournal.Turn>, promptTokens: Int): Boolean {
+    private fun restore(saved: List<ConversationJournal.Turn>, promptTokens: Int): Boolean {
         if (!journal.restore(saved)) return false
         // Через существующий вход, а не новый: величина та же самая, и второе
         // место, где она задаётся, разошлось бы с первым молча. Ноль вход
@@ -150,8 +229,8 @@ class ConversationTurns(
         onStarted: (at: Long, engineReturn: String?) -> Unit = { _, _ -> },
         onEvent: (GenerationEvent) -> Unit = {},
         afterSend: suspend () -> Unit = {},
-    ): Outcome = lock.withLock {
-        gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT)?.let { return@withLock it }
+    ): Outcome = locked {
+        gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT)?.let { return@locked it }
         val messages = journal.messagesFor(content)
         onAccepted()
 

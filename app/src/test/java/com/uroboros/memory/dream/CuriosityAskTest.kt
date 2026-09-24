@@ -100,7 +100,7 @@ class CuriosityAskTest {
     fun `ждёт ответа, пока после вопроса не было реплики`() {
         assertFalse("ни разу не спрашивали", CuriosityAsk.awaiting(lastAskedAt = null, lastOwnerReplyAt = null))
         assertFalse(CuriosityAsk.awaiting(lastAskedAt = null, lastOwnerReplyAt = 5))
-        assertTrue("после комы неизвестно — ждёт", CuriosityAsk.awaiting(lastAskedAt = 10, lastOwnerReplyAt = null))
+        assertTrue("реплики владельца на диске нет — ждёт", CuriosityAsk.awaiting(lastAskedAt = 10, lastOwnerReplyAt = null))
         assertTrue("реплика с самим предложением ответом не считается", CuriosityAsk.awaiting(10, 10))
         assertTrue(CuriosityAsk.awaiting(10, 9))
         assertFalse("реплика после вопроса снимает ожидание", CuriosityAsk.awaiting(10, 11))

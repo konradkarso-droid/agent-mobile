@@ -11,7 +11,18 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.documentfile.provider.DocumentFile
+import com.uroboros.initiative.CuriositySource
+import com.uroboros.initiative.InitiativeDecision
+import com.uroboros.initiative.InitiativeSource
+import com.uroboros.llm.ConversationTimes
+import com.uroboros.llm.ConversationTurns
+import com.uroboros.llm.GenerationEnd
+import com.uroboros.memory.ActionProvenance
+import com.uroboros.memory.ActionRequest
+import com.uroboros.memory.ActionType
 import com.uroboros.memory.EmergencyStop
+import com.uroboros.memory.GateResult
+import com.uroboros.memory.GatedAction
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.dream.NightStart
@@ -61,6 +72,15 @@ import java.util.Locale
  * следующему. Отчёт самостоятельного прогона — строка в уведомлении, а не
  * итог на экране: экран в это время показывает разговор.
  *
+ * САМА СЛУЖБА ЗАГОВАРИВАЕТ ПЕРВОЙ. Третьей проверкой той же минуты — пора ли
+ * написать владельцу самой (условия — в [InitiativeDecision], что сказать —
+ * у источника, [InitiativeSource]). Модель грузится так же, как для суда;
+ * при включённой настройке «После комы продолжать разговор сам» следом
+ * поднимается лента ([ConversationTurns.resumeSaved]). Ход — тот же
+ * [ConversationTurns.run], что у экрана; сообщение уходит уведомлением в
+ * отдельный канал через ворота действий. Итог — строка «Первым:» в шторке
+ * экрана ([initiativeLine]).
+ *
  * Выключить тело может только человек: «Остановить» в настройках приложения
  * Android.
  *
@@ -105,6 +125,8 @@ import java.util.Locale
  *    на паузе живого разговора он не начинается.
  *  - Остановка во время сна (первые миллисекунды прогона) не даёт отчёта: сон
  *    так короток, что попасть в него нажатием почти нельзя.
+ *  - Пока идёт ход первым, проверки сна и суда ждут: все три идут одним
+ *    циклом, одна за другой.
  */
 class AgentService : Service() {
 
@@ -160,6 +182,30 @@ class AgentService : Service() {
     /** Почему самостоятельный прогон оборван не по своим причинам; null — не оборван. */
     private var stopNote: String? = null
 
+    /** Повод заговорить первым. Источник пока один — см. [InitiativeSource]. */
+    private val initiativeSource: InitiativeSource by lazy { CuriositySource(applicationContext) }
+
+    private val conversationTimes by lazy { ConversationTimes(applicationContext) }
+
+    /**
+     * Модель, которая не загрузилась, чтобы написать первым. Пока выбрана она
+     * же, служба ради сообщения грузить её снова не пытается: загрузка —
+     * гигабайты и десятки секунд, и повторять её раз в минуту значило бы греть
+     * телефон впустую. Живёт в памяти процесса: выбор другой модели или кома
+     * снимают запрет.
+     */
+    private var initiativeFailedUri: String? = null
+
+    /**
+     * Приписка о доставке последнего сообщения первым: когда написано и что не
+     * так с уведомлением. Живёт в памяти процесса — после комы сообщение в
+     * ленте, а судьба уведомления уже не важна.
+     */
+    private var deliveryNote: Pair<Long, String>? = null
+
+    /** Блокировка сна на время хода первым; у разбора своя, см. [acquireWakeLock]. */
+    private var turnWakeLock: PowerManager.WakeLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -196,7 +242,263 @@ class AgentService : Service() {
             } catch (t: Throwable) {
                 showJudgeLine("Проверка суда сорвалась: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}.")
             }
+            try {
+                checkInitiative()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _initiativeLine.value = "Первым: не пишу — проверка сорвалась: " +
+                    "${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}"
+            }
         }
+    }
+
+    /** Всё, из чего решается «написать первым»: входы, повод и прочитанные времена. */
+    private class InitiativeCheck(
+        val inputs: InitiativeDecision.Inputs,
+        val offer: InitiativeSource.Offer,
+        val times: ConversationTimes.Snapshot?,
+    ) {
+        val refusal: String? = InitiativeDecision.refusal(inputs)
+    }
+
+    private suspend fun initiativeCheck(): InitiativeCheck {
+        val objects = ProcessObjects.get(applicationContext)
+        val engine = objects.llmEngine
+        val watchdog = objects.watchdog
+        val turns = objects.turns
+        val times = runCatching { conversationTimes.read() }
+        // Диск спрашивается только при пустой ленте в памяти: непустая заведомо
+        // поднята. Счёт не прочитался — лента считается неподнятой: сомнение
+        // решается в сторону молчания.
+        val journalNotRaised = turns.journal.isEmpty && (turns.store.counts()?.active ?: 1) > 0
+        val offer = runCatching { initiativeSource.offer() }.getOrElse {
+            InitiativeSource.Offer.Silent("не прочиталось, что сказать (${it.javaClass.simpleName})")
+        }
+        val snapshot = times.getOrNull()
+        return InitiativeCheck(
+            InitiativeDecision.Inputs(
+                running = working || job?.isActive == true || nightLock.isLocked,
+                emergencyStop = EmergencyStop.isActive(),
+                powerKnown = watchdog.zoneObservation().powerLastAtMs != null,
+                zoneNormal = watchdog.zone.value == SafetyZone.COMFORT,
+                watchdogRefusal = watchdog.longRunBlockReason(),
+                // Замок хода — тоже занятость: экран может вести ход или
+                // поднимать ленту, ещё не дойдя до движка.
+                engineBusy = engine.activity.busy || turns.busy.value,
+                journalNotRaised = journalNotRaised,
+                autoContinue = ConversationPrefs.autoContinue(applicationContext),
+                timesUnreadable = times.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName },
+                ownerReplyAt = snapshot?.ownerReplyAt,
+                lastInitiativeAt = snapshot?.initiative?.at,
+                now = System.currentTimeMillis(),
+                sourceRefusal = (offer as? InitiativeSource.Offer.Silent)?.reason,
+                modelChosen = ModelPrefs.lastModelUri(applicationContext) != null,
+            ),
+            offer,
+            snapshot,
+        )
+    }
+
+    /** Показать строку «Первым:» по итогу проверки. */
+    private fun showInitiative(refusal: String?, times: ConversationTimes.Snapshot?) {
+        val last = times?.initiative
+        _initiativeLine.value = InitiativeDecision.meter(
+            refusal = refusal,
+            lastInitiativeAt = last?.at,
+            what = last?.what,
+            ownerReplyAt = times?.ownerReplyAt,
+            note = deliveryNote?.takeIf { it.first == last?.at }?.second,
+        )
+    }
+
+    /**
+     * Пора ли написать первым. Порядок — как у суда: условия, загрузка модели,
+     * подъём ленты, и после них условия спрашиваются заново: загрузка шла
+     * десятки секунд, и за это время владелец мог заговорить.
+     */
+    private suspend fun checkInitiative() {
+        val first = initiativeCheck()
+        first.refusal?.let {
+            showInitiative(it, first.times)
+            return
+        }
+        val modelUri = ModelPrefs.lastModelUri(applicationContext) ?: return
+        val objects = ProcessObjects.get(applicationContext)
+        val engine = objects.llmEngine
+
+        if (!engine.isLoaded) {
+            if (modelUri == initiativeFailedUri) {
+                showInitiative("модель не загрузилась — снова попробую после выбора модели или комы", first.times)
+                return
+            }
+            _initiativeLine.value = "Первым: загружаю модель, чтобы написать"
+            val uri = Uri.parse(modelUri)
+            if (!engine.loadModelFromUri(uri)) {
+                initiativeFailedUri = modelUri
+                showInitiative("модель не загрузилась", first.times)
+                return
+            }
+            objects.loadedModelName = DocumentFile.fromSingleUri(applicationContext, uri)?.name
+                ?: uri.lastPathSegment
+        }
+
+        // Лента поднимается следом за моделью: без загруженной модели
+        // сохранённую ленту не с чем сверить (отпечаток загрузки). Настройка
+        // выключена — решает владелец, и неподнятая лента уже названа отказом.
+        if (objects.turns.journal.isEmpty && ConversationPrefs.autoContinue(applicationContext)) {
+            val resumed = objects.turns.resumeSaved()
+            if (resumed is ConversationTurns.Resume.Refused) {
+                showInitiative("разговор с диска не поднят: ${resumed.reason}", first.times)
+                return
+            }
+        }
+
+        val second = initiativeCheck()
+        second.refusal?.let {
+            showInitiative(it, second.times)
+            return
+        }
+        val say = second.offer as? InitiativeSource.Offer.Say ?: return
+        speak(say, objects)
+    }
+
+    /**
+     * Ход первым: строка источника вместо реплики владельца, пустой вопрос,
+     * ответ — сообщение агента. Ход — только через [ConversationTurns.run].
+     *
+     * Время реплики владельца здесь НЕ ставится: реплики владельца не было, и
+     * отметка сняла бы ожидание ответа сразу после вопроса. Автозаписи в
+     * память у служебной строки тоже нет: это не речь владельца.
+     */
+    private suspend fun speak(say: InitiativeSource.Offer.Say, objects: ProcessObjects.Held) {
+        _initiativeLine.value = "Первым: пишу — ${say.what}"
+        var sentAt: Long? = null
+        var sentFailure: String? = null
+        acquireTurnWakeLock()
+        val outcome = try {
+            objects.turns.run(
+                content = say.line,
+                question = "",
+                records = emptyList(),
+                afterSend = {
+                    val at = System.currentTimeMillis()
+                    sentAt = at
+                    runCatching { say.onSent(at) }.onFailure { sentFailure = it.javaClass.simpleName }
+                },
+            )
+        } finally {
+            releaseTurnWakeLock()
+        }
+
+        val ran = when (outcome) {
+            ConversationTurns.Outcome.JournalFull -> {
+                showInitiative("лента заполнена — закрыть её может только владелец", null)
+                return
+            }
+            is ConversationTurns.Outcome.TooLong -> {
+                showInitiative("строка не влезает в остаток ленты: ${outcome.contentChars} зн. из ${outcome.maxChars}", null)
+                return
+            }
+            is ConversationTurns.Outcome.Ran -> outcome
+        }
+        if (!ran.appended) {
+            showInitiative(
+                "модель не выдала ни знака" + (ran.failure?.let { " (сбой: ${it.javaClass.simpleName})" } ?: ""),
+                null,
+            )
+            return
+        }
+
+        val at = sentAt ?: System.currentTimeMillis()
+        conversationTimes.noteInitiative(at, say.what)
+        val appendFailure = runCatching { say.onAppended() }.exceptionOrNull()?.javaClass?.simpleName
+        // Оборванное сообщение в ленте остаётся, как у экрана, но уведомлением
+        // не уходит: обрывок, присланный на телефон, читался бы как целое.
+        val delivery = if (ran.failure == null && ran.generationEnd == GenerationEnd.COMPLETED) {
+            deliver(ran.answer)
+        } else {
+            "уведомления нет: ${objects.llmEngine.getGenerationEndReport()} Сообщение в ленте"
+        }
+        deliveryNote = listOfNotNull(
+            delivery,
+            sentFailure?.let { "отметка «спрошен» не записана — $it" },
+            appendFailure?.let { "подхват ответа не настроен — $it" },
+        ).takeIf { it.isNotEmpty() }?.let { at to it.joinToString(" · ") }
+        showInitiative(null, runCatching { conversationTimes.read() }.getOrNull())
+    }
+
+    /**
+     * Уведомление с сообщением агента — через ворота действий, чтобы в журнале
+     * действий остался след: и разрешённого, и отказанного.
+     *
+     * Поля запроса задаёт код, а не текст модели: сообщение локальное (граница
+     * устройства не пересекается), показанное уведомление не отменить
+     * (необратимо), текст — вывод модели. Аварийный стоп ворота проверяют
+     * первыми.
+     *
+     * @return приписка для прибора, если уведомление не ушло; null — ушло.
+     */
+    private suspend fun deliver(text: String): String? {
+        val verdict = GatedAction.evaluate(
+            applicationContext,
+            ActionRequest(
+                type = ActionType.SEND_MESSAGE,
+                requestedBy = "AgentService: пишет первым",
+                provenance = ActionProvenance.MODEL_OUTPUT,
+                crossesDeviceBoundary = false,
+                isReversible = false,
+            ),
+        )
+        if (verdict.result != GateResult.ALLOW) return "уведомление не отправлено: ${verdict.reason}"
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (!nm.areNotificationsEnabled()) return "уведомления приложения выключены в системе — сообщение в ленте"
+        return runCatching { nm.notify(FIRST_NOTIFICATION_ID, firstNotification(text)) }
+            .exceptionOrNull()?.let { "уведомление не отправлено: ${it.javaClass.simpleName}" }
+    }
+
+    /**
+     * Своё уведомление в своём канале, а не строка в «Работе агента»: там
+     * сообщение утонуло бы в строках о сне и суде. Нажатие открывает экран с
+     * лентой, где сообщение уже лежит.
+     */
+    private fun firstNotification(text: String): Notification {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.getNotificationChannel(FIRST_CHANNEL_ID) == null) {
+            nm.createNotificationChannel(
+                NotificationChannel(FIRST_CHANNEL_ID, "Агент пишет первым", NotificationManager.IMPORTANCE_DEFAULT)
+            )
+        }
+        val open = PendingIntent.getActivity(
+            this, FIRST_NOTIFICATION_ID,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Builder(this, FIRST_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle("Агент")
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+    }
+
+    /**
+     * Ход при погасшем экране без блокировки сна стоял бы: процессор уснул бы
+     * посреди выдачи. Срок — страховка на случай, если finally не отработает.
+     */
+    private fun acquireTurnWakeLock() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        turnWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "uroboros:agent-first").apply {
+            setReferenceCounted(false)
+            acquire(WAKE_LOCK_MARGIN_MS)
+        }
+    }
+
+    private fun releaseTurnWakeLock() {
+        turnWakeLock?.let { if (it.isHeld) it.release() }
+        turnWakeLock = null
     }
 
     /**
@@ -456,6 +758,7 @@ class AgentService : Service() {
     override fun onDestroy() {
         _alive.value = false
         releaseWakeLock()
+        releaseTurnWakeLock()
         // Служба уходит посреди прогона (её остановила система): экран не должен
         // навсегда остаться со словами «разбор идёт».
         if (_state.value is RunState.Running) _state.value = RunState.Finished(STOPPED_REPORT)
@@ -543,6 +846,8 @@ class AgentService : Service() {
         private const val EXTRA_BUDGET_MS = "budget_ms"
         private const val CHANNEL_ID = "agent_work"
         private const val NOTIFICATION_ID = 1
+        private const val FIRST_CHANNEL_ID = "agent_first"
+        private const val FIRST_NOTIFICATION_ID = 2
         private const val WAKE_LOCK_MARGIN_MS = 10L * 60 * 1000
         private const val LIVING_TEXT = "Живу. Разбор памяти не идёт."
 
@@ -575,6 +880,14 @@ class AgentService : Service() {
 
         private val _state = MutableStateFlow<RunState>(RunState.Idle)
         val state: StateFlow<RunState> get() = _state
+
+        private val _initiativeLine = MutableStateFlow("Первым: не пишу — первая проверка через минуту")
+
+        /**
+         * Строка «Первым:» для шторки экрана — итог последней проверки. Верна
+         * внутри процесса: после комы — снова «первая проверка».
+         */
+        val initiativeLine: StateFlow<String> get() = _initiativeLine
 
         /**
          * Почему СУДЬЯ сейчас не может начать, словами для экрана; null — может.
