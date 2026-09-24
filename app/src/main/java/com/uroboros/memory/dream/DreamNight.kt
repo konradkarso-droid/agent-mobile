@@ -62,6 +62,12 @@ data class DreamNight(
      */
     val riverTributaries: Int? = null,
     val riverDreams: Int? = null,
+    /**
+     * Сколько записей из одних просьб не снилось (RiskTrigger.isOnlyRequests).
+     * null — ночь прошла раньше, чем просьбы стали узнаваться: тогда они
+     * снились наравне с утверждениями, и ноль здесь был бы неправдой.
+     */
+    val skippedRequests: Int? = null,
 ) {
     companion object {
         fun of(nightAt: Long, night: DreamWeaver.Night) = DreamNight(
@@ -74,6 +80,7 @@ data class DreamNight(
             archiveDreams = night.archiveDreams,
             skippedHidden = night.skippedHidden,
             skippedQuestions = night.skippedQuestions,
+            skippedRequests = night.skippedRequests,
             skippedAgentReports = night.skippedAgentReports,
             ceilingHit = night.ceilingHit,
         )
