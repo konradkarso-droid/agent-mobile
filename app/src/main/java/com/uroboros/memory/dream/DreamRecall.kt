@@ -234,12 +234,16 @@ class DreamRecall(
                 val anchors = group.first().records.filter { it.id in answerIds }
                 val added = group.flatMap { p -> p.records.filter { it.id !in answerIds } }
                     .distinctBy { it.id }
-                val near = anchors.joinToString(" и ") { "«${anchor(it.content)}»" }
-                Line(
-                    "${ProvenanceLabels.DREAM_FOR_MODEL}, что рядом с $near было: " +
-                        added.joinToString(", ") { "«${it.content}»" } + ".",
-                    group,
-                )
+                val list = added.joinToString(", ") { "«${it.content}»" }
+                // Без записей ответа (так сон подаёт выход любопытства, см.
+                // CuriosityAsk.line) — нейтральный перечень, без «рядом»: к
+                // ответу такой сон не отбирается, и сослаться не на что.
+                if (anchors.isEmpty()) {
+                    Line("${ProvenanceLabels.DREAM_FOR_MODEL}: $list.", group)
+                } else {
+                    val near = anchors.joinToString(" и ") { "«${anchor(it.content)}»" }
+                    Line("${ProvenanceLabels.DREAM_FOR_MODEL}, что рядом с $near было: $list.", group)
+                }
             }
             return time + out
         }

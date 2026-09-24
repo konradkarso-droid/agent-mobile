@@ -195,6 +195,7 @@ class DreamRecallTest {
         override suspend fun lastNight(): DreamNight? = night
         override suspend fun ofNight(nightAt: Long): List<Dream> = rows
         override suspend fun stirredSince(since: Long): List<Dream> = error("отбор не читает пружину")
+        override suspend fun lastAskedAt(): Long? = error("отбор не читает выход любопытства")
     }
 
     private class FakeServedDao : DreamServedDao {
@@ -205,6 +206,12 @@ class DreamRecallTest {
         }
         override suspend fun markPickedUp(nightAt: Long, recordIds: String, at: Long) =
             error("отбор не отмечает подхват")
+        override suspend fun askedAt(nightAt: Long, recordIds: String): Long? =
+            error("отбор не читает вопрос")
+        override suspend fun markAsked(nightAt: Long, recordIds: String, at: Long): Int =
+            error("отбор не спрашивает")
+        override suspend fun markAnswered(nightAt: Long, recordIds: String, at: Long) =
+            error("отбор не отмечает ответ")
     }
 
     private fun night() = DreamNight(

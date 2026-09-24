@@ -33,10 +33,20 @@ interface DreamDao {
     suspend fun ofNight(nightAt: Long): List<Dream>
 
     /**
-     * Сны не старше [since], которые хоть раз подхвачены или вспомнены, — только
-     * они и могут сжать пружину любопытства (см. [CuriosityPressure]). Остальные
-     * дали бы ноль, и читать их незачем.
+     * Сны не старше [since], которые хоть раз подхвачены, вспомнены или
+     * получили ответ, — только они и могут сжать пружину любопытства (см.
+     * [CuriosityPressure]). Остальные дали бы ноль, и читать их незачем.
      */
-    @Query("SELECT * FROM dreams WHERE nightAt >= :since AND (pickedUpCount > 0 OR recalledCount > 0)")
+    @Query(
+        "SELECT * FROM dreams WHERE nightAt >= :since " +
+            "AND (pickedUpCount > 0 OR recalledCount > 0 OR answeredCount > 0)"
+    )
     suspend fun stirredSince(since: Long): List<Dream>
+
+    /**
+     * Когда владельцу в последний раз предложено спросить о сне; null — ни
+     * разу. Нужно, чтобы знать, ждёт ли вопрос ответа (см. [CuriosityAsk]).
+     */
+    @Query("SELECT MAX(askedAt) FROM dreams")
+    suspend fun lastAskedAt(): Long?
 }

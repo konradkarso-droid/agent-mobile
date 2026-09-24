@@ -25,6 +25,13 @@ import com.uroboros.memory.StickerDao
  * перепроверять по прибору — строка «в этом ходе подхвачен сон …» при
  * репликах, где владелец о сне не говорил.
  *
+ * СПРОШЕННЫЙ СОН — НЕ ПОДХВАТ, А ОТВЕТ. Если о сне агенту было предложено
+ * спросить ([CuriosityAsk]), та же совпавшая реплика отмечается ответом
+ * ([Dream.answeredCount]), а не подхватом: почему — у [Dream.askedAt].
+ * Правило сопоставления одно, различается только отметка. Спрошен ли сон,
+ * читается из базы в момент отметки ([DreamPickupMarker]), а не из снимка,
+ * снятого при подаче: снимок мог быть снят до вопроса.
+ *
  * ТОЛЬКО ВЕС. Подхват не греет записи, ничего не пишет в память и
  * подтверждением факта не считается: совпадение слов — не согласие.
  *
@@ -107,15 +114,35 @@ class DreamPickupMarker(
         MemoryDatabase.getInstance(context).stickerDao(),
     )
 
-    /** @return подхваченные сны с их записями; уже отмечены в базе. */
+    /**
+     * Что поймала реплика: подхваченные сны и спрошенные сны, о которых она
+     * ответила. Порознь — см. «СПРОШЕННЫЙ СОН» у [DreamPickup].
+     */
+    data class Caught(
+        val pickedUp: List<Pair<Dream, List<Sticker>>>,
+        val answered: List<Pair<Dream, List<Sticker>>>,
+    )
+
+    /** @return пойманные сны с их записями; уже отмечены в базе. */
     suspend fun pickUp(
         previous: DreamPickup.Previous,
         reply: String,
         now: Long = System.currentTimeMillis(),
-    ): List<Pair<Dream, List<Sticker>>> {
+    ): Caught {
         val withRecords = previous.dreams.map { dream -> dream to dream.ids().map { stickers.getById(it) } }
         val caught = DreamPickup.pickedUp(withRecords, previous.question, reply)
-        for ((dream, _) in caught) served.markPickedUp(dream.nightAt, dream.recordIds, now)
-        return caught
+        val pickedUp = mutableListOf<Pair<Dream, List<Sticker>>>()
+        val answered = mutableListOf<Pair<Dream, List<Sticker>>>()
+        for (pair in caught) {
+            val dream = pair.first
+            if (served.askedAt(dream.nightAt, dream.recordIds) != null) {
+                served.markAnswered(dream.nightAt, dream.recordIds, now)
+                answered += pair
+            } else {
+                served.markPickedUp(dream.nightAt, dream.recordIds, now)
+                pickedUp += pair
+            }
+        }
+        return Caught(pickedUp, answered)
     }
 }
