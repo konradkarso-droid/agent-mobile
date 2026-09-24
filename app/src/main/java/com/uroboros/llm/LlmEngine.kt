@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
@@ -575,7 +577,19 @@ class LlmEngine(
             "отброшено ещё $dropped событий." + clockTail
     }
 
-    suspend fun loadModel(modelPath: String): Boolean {
+    /**
+     * Одна загрузка за раз. Модель грузят двое: экран при запуске и тело
+     * агента, когда само берётся судить (AgentService). Без замка экран,
+     * открытый посреди загрузки телом, видел бы «не загружена» и начинал
+     * вторую — ещё два гигабайта поверх первых.
+     */
+    private val loadLock = Mutex()
+
+    /** Откуда загружена нынешняя модель; null — не загружена. */
+    @Volatile
+    private var loadedSource: String? = null
+
+    suspend fun loadModel(modelPath: String): Boolean = loadLock.withLock {
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
         val ok = engine.load(
@@ -591,6 +605,7 @@ class LlmEngine(
         )
         if (ok) {
             val file = File(modelPath)
+            loadedSource = modelPath
             configureAfterLoad(
                 sourceIdentity = file.name + ":" + file.length(),
                 loadIdentity = loadIdentity(
@@ -602,10 +617,16 @@ class LlmEngine(
                 ),
             )
         }
-        return ok
+        if (!ok) loadedSource = null
+        ok
     }
 
-    suspend fun loadModelFromUri(uri: Uri): Boolean {
+    /**
+     * Та же модель, уже загруженная, второй раз не грузится: второй зовущий,
+     * дождавшись замка, получает готовую. См. [loadLock].
+     */
+    suspend fun loadModelFromUri(uri: Uri): Boolean = loadLock.withLock {
+        if (engine.isLoaded && loadedSource == uri.toString()) return@withLock true
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
         val ok = engine.load(
@@ -621,6 +642,7 @@ class LlmEngine(
             cacheTypeV = KV_CACHE_TYPE,
         )
         if (ok) {
+            loadedSource = uri.toString()
             configureAfterLoad(
                 sourceIdentity = uri.toString(),
                 loadIdentity = loadIdentity(
@@ -632,7 +654,8 @@ class LlmEngine(
                 ),
             )
         }
-        return ok
+        if (!ok) loadedSource = null
+        ok
     }
 
     /**
