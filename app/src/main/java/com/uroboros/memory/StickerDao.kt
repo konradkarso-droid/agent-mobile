@@ -12,9 +12,10 @@ import androidx.room.Update
  * которому строки trace в HourglassMemory несут идентификаторы, а не содержимое:
  * список пересекает границу слоя памяти, и дальше им распоряжается вызывающий.
  *
- * Слой здесь обязателен. Видимый путь отбрасывает RED и неразрешённые слои НЕ в
- * SQL, а в Kotlin (см. searchByWords), поэтому и скрытые обязаны фильтроваться
- * теми же двумя строками — иначе запись из архива попала бы в счёт, а такая же
+ * Слой здесь обязателен. Слои окна отсекаются уже в SQL (параметр layers у
+ * обоих поисков), а в Kotlin стоит второй забор теми же двумя строками, что у
+ * видимого пути (см. searchByWords): отбросить RED и чужие слои. Разойдись
+ * видимый и скрытый в слоях — запись из архива попала бы в счёт, а такая же
  * видимая не попала бы, и два числа мерили бы разные множества.
  */
 data class HiddenRow(
@@ -106,9 +107,16 @@ interface StickerDao {
      *
      * Два LIKE вместо одного полный скан не удваивают: скан и так один, просто
      * на каждой строке проверяются два условия вместо одного.
+     *
+     * СЛОИ — В САМОМ ЗАПРОСЕ, а не после него. Лимит режет по createdAt, самые
+     * новые первыми, а холодные записи по определению самые старые. Если
+     * слои отсекать после лимита, частое слово, набравшее limit горячих
+     * записей, вытесняло бы холодную всегда, и окно холода говорило бы
+     * «искал — пусто» при живой записи. С условием на слой каждое окно
+     * набирает кандидатов только из своих слоёв.
      */
     @Query(
-        "SELECT * FROM stickers WHERE reviewPending = 0 " +
+        "SELECT * FROM stickers WHERE reviewPending = 0 AND layer IN (:layers) " +
             "AND (content LIKE '%' || :query || '%' " +
             "OR content LIKE '%' || :queryCapitalized || '%') " +
             "ORDER BY createdAt DESC LIMIT :limit"
@@ -116,7 +124,8 @@ interface StickerDao {
     suspend fun searchAnyCase(
         query: String,
         queryCapitalized: String,
-        limit: Int
+        limit: Int,
+        layers: List<String>
     ): List<Sticker>
 
     /**
@@ -141,11 +150,14 @@ interface StickerDao {
      * бы давать разные числа. Прибор, показания которого дрожат сами по себе,
      * хуже грубого.
      *
-     * Фильтра по слоям здесь нет намеренно — он живёт в Kotlin, теми же строками,
-     * что и у видимого пути. См. KDoc у HiddenRow.
+     * Условие на слои — то же, что у видимого пути, и по той же причине (см.
+     * KDoc searchAnyCase): иначе лимит отрезал бы скрытые записи холода раньше
+     * фильтра, и счёт скрытых описывал бы другое множество, чем видимый поиск.
+     * См. KDoc у HiddenRow.
      */
     @Query(
         "SELECT id, layer FROM stickers WHERE reviewPending = 1 AND rejectedAt IS NULL " +
+            "AND layer IN (:layers) " +
             "AND (content LIKE '%' || :query || '%' " +
             "OR content LIKE '%' || :queryCapitalized || '%') " +
             "ORDER BY createdAt DESC LIMIT :limit"
@@ -153,7 +165,8 @@ interface StickerDao {
     suspend fun searchHiddenAnyCase(
         query: String,
         queryCapitalized: String,
-        limit: Int
+        limit: Int,
+        layers: List<String>
     ): List<HiddenRow>
 
     /**

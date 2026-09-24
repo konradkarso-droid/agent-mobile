@@ -77,13 +77,9 @@ enum class RetrievalPurpose {
  * Android — затем и вынесена, чтобы правило можно было закрепить тестом.
  *
  * Правил здесь два, и оба должны быть видны с одного взгляда. Засчитывается только
- * при ANSWERING_USER, и только тем, кто нашёлся по словам вопроса: принципы приезжают
- * из getRanked по слою, ни с какими словами не совпадали, и платить им было бы за
- * попадание в выдачу, а попаданием распоряжается сортировка по важности — вышла бы
- * обратная связь, снятая с собственного выхода.
- *
- * Запись, попавшая и в принципы, и в совпадения, отметку получает: она действительно
- * совпала, а порядок сборки списка к этому отношения не имеет.
+ * при ANSWERING_USER, и только тем, кто нашёлся по словам вопроса: запись из окна
+ * темы с вопросом не совпадала, она совпала с прошлыми репликами, и платить ей было
+ * бы за попадание в выдачу, а не за уместность к вопросу.
  *
  * Чего эта функция НЕ проверяет: она не знает, правда ли matched собран по словам
  * вопроса и доходит ли отметка до базы. Тест закрепляет правило, а не проводку.
@@ -168,6 +164,39 @@ internal val STOP_WORDS = setOf(
     "моего", "моему", "моих", "моим", "твоего", "твоему",
     "своего", "своему", "своих", "своим"
 )
+
+/** Потолок числа слов, по которым идёт поиск, — на одну реплику. */
+internal const val MAX_SEARCH_WORDS = 6
+
+/**
+ * Слова реплики, по которым имеет смысл искать.
+ *
+ * Три отсева, каждый по своей причине:
+ *  - короткие слова: предлоги и частицы, совпадут с чем угодно;
+ *  - список служебных слов: "сколько", "должно", "будет" — длинные, но
+ *    встречаются в любом вопросе и тащат за собой случайные записи. Список
+ *    заведомо неполон и пополняется по мере того, как мусор себя покажет;
+ *  - потолок числа слов: длинный вопрос иначе даёт десятки обращений к базе
+ *    и вычерпывает всю память подряд, возвращая нас к тому же результату.
+ *
+ * Окончания здесь БОЛЬШЕ НЕ ОТРЕЗАЮТСЯ. Прежде слово от семи букв теряло
+ * две последние, и это давало ровно один вариант поиска — либо угаданный,
+ * либо промах без второй попытки. Теперь слово отдаётся целиком, а
+ * укорачиванием ведает лестница ступеней (см. ladder), которая спускается
+ * от точного к грубому и останавливается на первом, что нашлось.
+ *
+ * Список этих слов задаёт знаменатель "доли вопроса" в searchByWords, так
+ * что каждое добавленное служебное слово заодно смягчает порог отсева.
+ *
+ * На верхнем уровне, а не в классе: те же слова берёт окно темы из прошлых
+ * реплик (DolmenCircle.themeWords), и определение у них обязано быть одно.
+ */
+internal fun meaningfulWords(query: String): List<String> =
+    query.lowercase()
+        .split(Regex("[^\\p{L}\\p{N}]+"))
+        .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
+        .distinct()
+        .take(MAX_SEARCH_WORDS)
 
 /**
  * Меры кандидата вместе с вердиктом по нему.
@@ -259,16 +288,6 @@ internal sealed class SelectionSummary {
     object NoQuery : SelectionSummary() {
         override val text =
             "Отбор не выполнялся: вопроса не было — показан срез памяти по рангу."
-    }
-
-    /**
-     * Место в выдаче целиком заняли принципы, на поиск не осталось ни одного
-     * места. Отдельное состояние, а не "ничего не нашли": лечится оно лимитом
-     * выдачи, а не порогами отбора, и спутать эти два лечения дорого.
-     */
-    object NoRoom : SelectionSummary() {
-        override val text =
-            "Отбор не выполнялся: всю выдачу заняли принципы — увеличьте лимит."
     }
 
     /** В вопросе не осталось слов, по которым можно искать. */
@@ -377,17 +396,28 @@ data class ContextResult(
      * либо вывалить на экран несколько десятков служебных строк, либо, при
      * обрезке, потерять сам разбор — то есть ровно то, ради чего он собирается.
      *
-     * Границы. Это отчёт ОДНОЙ ТОЛЬКО лестницы: в нём нет ни канала принципов,
-     * ни того, что поиск не нашёл. Пустой список означает "поиск не запускался",
-     * а не "ничего не происходило". Содержимого записей строки не несут — только
-     * идентификаторы, счёт слов и длины; это важно, потому что список пересекает
-     * границу слоя памяти и дальше им распоряжается вызывающий.
+     * Границы. Это отчёт лестниц окон, по заголовку на окно: в нём нет того,
+     * что поиск не нашёл. Пустой список означает "поиск не запускался", а не
+     * "ничего не происходило". Слова вопроса и темы в строках есть; содержимого
+     * записей — нет, только идентификаторы, счёт слов и длины; это важно, потому
+     * что список пересекает границу слоя памяти и дальше им распоряжается
+     * вызывающий.
      */
     val trace: List<String>,
-    /** Сколько записей-вопросов отсеяно при отборе для ответа. */
+    /**
+     * Сколько записей-вопросов отсеяно при отборе для ответа. Считает только
+     * окно вопроса — как и [summary], которая описывает его же.
+     */
     val questionsFiltered: Int = 0,
     /** Сколько записей-просьб отсеяно там же; отдельно от вопросов. */
     val requestsFiltered: Int = 0,
+    /** Строка прибора «Круг:» — чем кончилось каждое окно (см. DolmenCircle.meter). */
+    val circle: String = DolmenCircle.NOT_GATHERED,
+    /**
+     * Какие из отданных записей пришли из холодного окна. Нужно после ответа:
+     * холод греется только тем, что агент использовал (см. getContextWithSummary).
+     */
+    val coldIds: Set<Long> = emptySet(),
 )
 
 /**
@@ -456,7 +486,7 @@ internal fun scoreCandidate(
  *
  * 2. getContext() больше не вызывает dao.getAll() (раньше — дважды за вызов).
  *    Отбор по слоям, отсев reviewPending, ранжирование и лимит выполняются в SQL
- *    (StickerDao.getRanked + Prism.layersFor). Результат тот же: слой-выборка
+ *    (StickerDao.getRanked + список слоёв). Результат тот же: слой-выборка
  *    ограничивается сверху тем же limit'ом, а запись, не вошедшая в топ-limit
  *    своей выборки, не могла бы войти и в итоговый топ-limit — её уже обгоняют
  *    limit других.
@@ -524,13 +554,22 @@ class HourglassMemory(
 ) {
 
     /**
-     * Остальные слои — те, из которых запись в выдачу уже не попадает по
-     * умолчанию. Нужны ровно одному месту: чтобы отличить "спора нет" от
-     * "противник остыл и вышел из горячего пула". Проверка на противоречие
-     * сюда не заглядывает и заглядывать не должна — она работает по
-     * [HOT_LAYERS].
+     * Остальные слои — те, из которых запись в выдачу попадает только через
+     * холодное окно круга. Нужны двум местам: холодному окну (порядок здесь —
+     * его порядок: синий раньше фиолетового) и показу спора, чтобы отличить
+     * "спора нет" от "противник остыл и вышел из горячего пула". Проверка на
+     * противоречие сюда не заглядывает и заглядывать не должна — она работает
+     * по [HOT_LAYERS].
      */
     private val COLD_LAYERS = listOf(Layer.BLUE.name, Layer.PURPLE.name)
+
+    /**
+     * Слои, в которых ищут окна вопроса и темы. Это [HOT_LAYERS] без красного,
+     * и отдельным списком, а не вычитанием на месте: красный не ищется ни
+     * одним окном, и где он подаётся модели вместо этого — в KDoc
+     * [DolmenCircle]. HOT_LAYERS не трогается: им пользуется судья.
+     */
+    private val SEARCH_HOT_LAYERS = listOf(Layer.ORANGE.name, Layer.YELLOW.name, Layer.GREEN.name)
 
     /**
      * Довести слои просроченных записей до текущего часа.
@@ -653,14 +692,11 @@ class HourglassMemory(
      * Достать записи под запрос.
      *
      * Польза засчитывается только при purpose = ANSWERING_USER и только тем записям,
-     * которые нашлись ПО СЛОВАМ вопроса. Принципы приезжают из getRanked по слою и ни
-     * с какими словами не совпадали, поэтому им не засчитывается ничего: иначе платой
-     * была бы не уместность, а сам факт попадания в выдачу, а попаданием распоряжается
-     * сортировка по важности — и получилась бы обратная связь, снятая с собственного
-     * выхода.
+     * которые нашлись ПО СЛОВАМ вопроса — почему, см. [usefulnessMarks].
      *
      * Прогрев слоя и accessCount работают как раньше, для всех целей обращения. Это
-     * другая ось: она про давность, а не про пользу, и сливать их нельзя.
+     * другая ось: она про давность, а не про пользу, и сливать их нельзя. Исключение
+     * одно — холодное окно, см. getContextWithSummary.
      *
      * Прежний контракт сохранён: этот вызов отдаёт только записи. Кому нужно ещё и
      * состояние отбора — зовёт getContextWithSummary. Тело у них общее, второго
@@ -686,41 +722,85 @@ class HourglassMemory(
     suspend fun getContextWithSummary(
         purpose: RetrievalPurpose,
         query: String?,
-        limit: Int
+        limit: Int,
+        /**
+         * Реплики владельца из ленты, от старых к новым, — источник окна темы
+         * (см. DolmenCircle.themeWords). Пустой список — темы нет: так зовёт
+         * просмотр памяти, у которого ленты нет.
+         */
+        recentQuestions: List<String> = emptyList(),
     ): ContextResult {
         migrateExpired()
-
-        val layers = Prism.layersFor(query)
 
         if (query.isNullOrBlank()) {
             // Прежнее поведение сохранено: пустой запрос отдаёт срез памяти по рангу
             // и НЕ считается обращением — ни accessCount, ни прогрев не трогаются.
             // Польза тем более: слов не было, значит совпадать было нечему.
             return ContextResult(
-                stickers = dao.getRanked(layers, limit),
+                stickers = dao.getRanked(Prism.ALL_LAYERS, limit),
                 summary = SelectionSummary.NoQuery.text,
                 trace = emptyList()
             )
         }
 
-        // Два канала, намеренно НЕ сливаемые в один рейтинг (разделённая
-        // непрерывность). Каждый отвечает за своё, и свежесть одного не может
-        // вытеснить уместность другого.
-        val principles = dao.getRanked(listOf(Layer.RED.name), PRINCIPLE_LIMIT)
+        // Три окна круга дольменов — зачем окна и как делятся места, в KDoc
+        // DolmenCircle. Красного среди слоёв нет ни у одного окна, и это
+        // намеренно: красный подаётся модели стеной, а не местами в ответе
+        // (там же). Канала, клавшего красный в каждый отбор, больше нет —
+        // не возвращать.
+        //
+        // Каждое окно ищет своими словами и по своему правилу, и слова разных
+        // окон в один запрос не сливаются: доля вопроса упала бы, и отсев
+        // выбросил бы годное молча.
+        val trace = mutableListOf<String>()
+        val questionWords = meaningfulWords(query)
+        val themeWords = DolmenCircle.themeWords(recentQuestions, questionWords)
 
-        val roomLeft = (limit - principles.size).coerceAtLeast(0)
-        val selection =
-            if (roomLeft == 0) SelectionResult(emptyList(), emptyList(), SelectionSummary.NoRoom)
-            else searchByWords(query, roomLeft, layers, purpose)
-        val matches = selection.stickers
+        val question =
+            if (questionWords.isEmpty()) null
+            else searchByWords(questionWords, limit, SEARCH_HOT_LAYERS, purpose, ::scoreCandidate)
+        question?.let { trace += "окно вопроса:"; trace += it.trace }
 
-        val result = (principles + matches).distinctBy { it.id }.take(limit)
+        val theme =
+            if (themeWords.isEmpty()) null
+            else searchByWords(themeWords, limit, SEARCH_HOT_LAYERS, purpose, ::scoreThemeCandidate)
+        theme?.let { trace += "окно темы:"; trace += it.trace }
+
+        // Холод смотрит всегда, волшебные слова вроде «архив» ему не нужны.
+        // Пустоту слоя проверяем раньше поиска: пока холодных записей нет,
+        // лестница по ним — пустая работа, а «слой пуст» и «искал — пусто»
+        // для человека разные показания. Правило берётся по словам: слова
+        // вопроса — правило вопроса, слова темы — правило темы.
+        val coldEmpty = dao.getRanked(COLD_LAYERS, 1).isEmpty()
+        val coldByTheme = questionWords.isEmpty()
+        val coldWords = if (coldByTheme) themeWords else questionWords
+        val cold =
+            if (coldEmpty || coldWords.isEmpty()) null
+            else searchByWords(
+                coldWords, limit, COLD_LAYERS, purpose,
+                if (coldByTheme) ::scoreThemeCandidate else ::scoreCandidate,
+                // Синий раньше фиолетового: больше из свежего, меньше из старого.
+                firstBy = { COLD_LAYERS.indexOf(it.layer) },
+            )
+        cold?.let { trace += "окно холода:"; trace += it.trace }
+
+        val seating = DolmenCircle.seat(
+            limit,
+            question?.stickers.orEmpty(),
+            theme?.stickers.orEmpty(),
+            cold?.stickers.orEmpty(),
+        )
+        val result = seating.all
+        val coldIds = seating.cold.mapTo(HashSet()) { it.id }
 
         // Кому засчитывается польза — решает usefulnessMarks, там же и объяснение.
+        // Холод, искавший по словам вопроса, с вопросом совпал; по словам темы — нет.
+        val matchedByQuestion = seating.question.map { it.id } +
+            if (coldByTheme) emptyList() else seating.cold.map { it.id }
         val toMark = usefulnessMarks(
             purpose = purpose,
             returned = result.map { it.id },
-            matched = matches.map { it.id }.toSet()
+            matched = matchedByQuestion.toSet()
         )
 
         val now = System.currentTimeMillis()
@@ -731,7 +811,14 @@ class HourglassMemory(
             val currentLayer = Layer.valueOf(sticker.layer)
             val debounce = Prism.warmDebounce(currentLayer)
             val warmer = Prism.warmerLayer(currentLayer)
-            val shouldWarm = (isFirstAccess || timeSinceLastAccess >= debounce) && warmer != currentLayer
+            // ХОЛОД НЕ ГРЕЕТСЯ ЗА ТО, ЧТО ВСПЛЫЛ. Холодное окно смотрит на каждый
+            // вопрос, и прогрев за попадание поднимал бы архив наверх от любого
+            // общего слова — храповик. Холодная запись поднимается, только если
+            // агент её использовал в ответе: это решает экран после ответа, тем
+            // же путём, что вспоминание снов (AgentRecall, AgentRecaller).
+            // Обращение и польза при этом считаются как у всех: это другая ось.
+            val shouldWarm = sticker.id !in coldIds &&
+                (isFirstAccess || timeSinceLastAccess >= debounce) && warmer != currentLayer
 
             dao.touchAccess(sticker.id, now)
 
@@ -759,18 +846,40 @@ class HourglassMemory(
             }
         }
 
-        val (qFiltered, rFiltered) = when (val summary = selection.summary) {
-            is SelectionSummary.Weighed -> summary.questionsFiltered to summary.requestsFiltered
-            is SelectionSummary.OnlyQuestionsFound -> summary.questions to summary.requests
+        val circle = DolmenCircle.meter(
+            question = windowOf(question, seating.question.size),
+            theme = windowOf(theme, seating.theme.size),
+            themeWords = themeWords,
+            cold = if (coldEmpty) DolmenCircle.Window.LayerEmpty else windowOf(cold, seating.cold.size),
+            coldByTheme = coldByTheme,
+            red = dao.countInLayer(Layer.RED.name),
+        )
+
+        // Строка итога и счёт отсеянных — по окну вопроса, как и прежде: она
+        // отвечает, что стало со словами вопроса. Остальные окна — в круге.
+        val questionSummary = question?.summary ?: SelectionSummary.NoSearchableWords
+        val (qFiltered, rFiltered) = when (questionSummary) {
+            is SelectionSummary.Weighed -> questionSummary.questionsFiltered to questionSummary.requestsFiltered
+            is SelectionSummary.OnlyQuestionsFound -> questionSummary.questions to questionSummary.requests
             else -> 0 to 0
         }
         return ContextResult(
             stickers = touched,
-            summary = selection.summary.text,
-            trace = selection.trace,
+            summary = questionSummary.text,
+            trace = trace,
             questionsFiltered = qFiltered,
             requestsFiltered = rFiltered,
+            circle = circle,
+            coldIds = coldIds,
         )
+    }
+
+    /** Показание окна для прибора: null — окну нечем было искать. */
+    private fun windowOf(selection: SelectionResult?, seated: Int): DolmenCircle.Window {
+        if (selection == null) return DolmenCircle.Window.NoWords
+        val passed = (selection.summary as? SelectionSummary.Weighed)?.passed ?: 0
+        return if (passed == 0) DolmenCircle.Window.SearchedEmpty
+        else DolmenCircle.Window.Found(passed, seated)
     }
 
     /** Запись-кандидат вместе с мерами, по которым решается её судьба. */
@@ -804,7 +913,7 @@ class HourglassMemory(
     )
 
     /**
-     * Переменный канал: записи, действительно связанные с ВОПРОСОМ.
+     * Поиск одного окна круга: записи, действительно связанные со словами окна.
      *
      * Зачем понадобилось (26.08.2026). Прежний dao.search(query, limit) искал
      * весь вопрос ЦЕЛИКОМ как подстроку содержимого — `content LIKE '%<весь
@@ -820,12 +929,17 @@ class HourglassMemory(
      * получается несколько, но это обращения к локальной базе — миллисекунды;
      * платим мы не за поиск, а за то, что попадёт в запрос к модели.
      *
-     * Слои. dao.search не ограничен слоями вообще и заглянул бы в архив, чего
-     * замысел Призмы не допускает без явной просьбы. Поэтому найденное
-     * фильтруется по тем же слоям, что вернул Prism.layersFor — BLUE и PURPLE
-     * попадают в список, только если в вопросе есть слова вроде "архив" или
-     * "старое". RED отсеивается: принципы уже пришли постоянным каналом, и
-     * второй раз занимать ими место незачем.
+     * Слои. Поиск в базе спрашивает только слои окна (allowedLayers): горячие
+     * у окон вопроса и темы, холодные у холодного окна (см. DolmenCircle).
+     * Условие стоит в самом запросе, до лимита, — почему, см. KDoc
+     * searchAnyCase. В Kotlin ниже тот же фильтр повторён вторым забором, и
+     * RED отсеивается там отдельной строкой, независимо от списка слоёв:
+     * красный не ищется ни одним окном.
+     *
+     * Слова и правило прохождения приходят снаружи: окно вопроса ищет словами
+     * вопроса по [scoreCandidate], окно темы — словами темы по
+     * [scoreThemeCandidate]. Лестница, отсев вопросов и просьб, карантин и
+     * сортировка у всех окон одни.
      *
      * Пустой результат — нормальный исход, а не сбой. Лучше "не знаю", чем
      * уверенная чушь из чужой записи.
@@ -945,10 +1059,16 @@ class HourglassMemory(
      * починки — в KDoc searchAnyCase (StickerDao.kt).
      */
     private suspend fun searchByWords(
-        query: String,
+        words: List<String>,
         limit: Int,
         allowedLayers: List<String>,
         purpose: RetrievalPurpose,
+        rule: (matched: Map<String, Int>, totalWords: Int, contentLength: Int) -> CandidateScore,
+        /**
+         * Первый ключ сортировки, раньше мер уместности. У горячих окон его нет;
+         * холодное ставит так синий раньше фиолетового.
+         */
+        firstBy: (Sticker) -> Int = { 0 },
     ): SelectionResult {
         // Объяснение копится строками и уезжает вызывающему вместе с результатом.
         // Пустой список записей при непустом trace — это "искали и не нашли";
@@ -956,7 +1076,6 @@ class HourglassMemory(
         // выглядели одинаково.
         val trace = mutableListOf<String>()
 
-        val words = meaningfulWords(query)
         if (words.isEmpty()) {
             return SelectionResult(emptyList(), trace, SelectionSummary.NoSearchableWords)
         }
@@ -978,7 +1097,7 @@ class HourglassMemory(
                 val prefix = word.take(prefixLength)
                 val prefixCapitalized = prefix.replaceFirstChar { it.uppercaseChar() }
                 var foundHere = 0
-                for (sticker in dao.searchAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT)) {
+                for (sticker in dao.searchAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT, allowedLayers)) {
                     if (sticker.layer == Layer.RED.name) continue
                     if (sticker.layer !in allowedLayers) continue
                     candidates[sticker.id] = sticker
@@ -996,7 +1115,7 @@ class HourglassMemory(
                 // видимыми находками, останавливает и счёт скрытых. Оба числа
                 // обязаны описывать ОДИН поиск, иначе их нельзя ставить рядом.
                 var hiddenHere = 0
-                for (row in dao.searchHiddenAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT)) {
+                for (row in dao.searchHiddenAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT, allowedLayers)) {
                     if (row.layer == Layer.RED.name) continue
                     if (row.layer !in allowedLayers) continue
                     hidden.add(row.id)
@@ -1054,7 +1173,7 @@ class HourglassMemory(
             }
 
             val matched = hits[sticker.id].orEmpty()
-            val score = scoreCandidate(matched, totalWords, sticker.content.length)
+            val score = rule(matched, totalWords, sticker.content.length)
 
             trace += "id=${sticker.id} слов ${score.matchedWords}/$totalWords " +
                 "(${(score.coverage * 100).toInt()}%) · точность " +
@@ -1075,7 +1194,8 @@ class HourglassMemory(
 
         val stickers = passed
             .sortedWith(
-                compareByDescending<Scored> { it.score.matchedWords }
+                compareBy<Scored> { firstBy(it.sticker) }
+                    .thenByDescending { it.score.matchedWords }
                     .thenByDescending { it.score.precision }
                     .thenBy { it.score.charsPerMatch }
                     .thenByDescending { importanceRank(it.sticker.importance) }
@@ -1137,33 +1257,6 @@ class HourglassMemory(
             .filter { it in MIN_PREFIX..word.length }
             .distinct()
             .sortedDescending()
-
-    /**
-     * Слова вопроса, по которым имеет смысл искать.
-     *
-     * Три отсева, каждый по своей причине:
-     *  - короткие слова: предлоги и частицы, совпадут с чем угодно;
-     *  - список служебных слов: "сколько", "должно", "будет" — длинные, но
-     *    встречаются в любом вопросе и тащат за собой случайные записи. Список
-     *    заведомо неполон и пополняется по мере того, как мусор себя покажет;
-     *  - потолок числа слов: длинный вопрос иначе даёт десятки обращений к базе
-     *    и вычерпывает всю память подряд, возвращая нас к тому же результату.
-     *
-     * Окончания здесь БОЛЬШЕ НЕ ОТРЕЗАЮТСЯ. Прежде слово от семи букв теряло
-     * две последние, и это давало ровно один вариант поиска — либо угаданный,
-     * либо промах без второй попытки. Теперь слово отдаётся целиком, а
-     * укорачиванием ведает лестница ступеней (см. ladder), которая спускается
-     * от точного к грубому и останавливается на первом, что нашлось.
-     *
-     * Список этих слов задаёт знаменатель "доли вопроса" в searchByWords, так
-     * что каждое добавленное служебное слово заодно смягчает порог отсева.
-     */
-    private fun meaningfulWords(query: String): List<String> =
-        query.lowercase()
-            .split(Regex("[^\\p{L}\\p{N}]+"))
-            .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
-            .distinct()
-            .take(MAX_SEARCH_WORDS)
 
     /**
      * Чем кончилось сохранение.
@@ -1695,30 +1788,6 @@ class HourglassMemory(
          */
         const val HISTORICAL_TOTE_PREFIX = "[TOTE]"
 
-        /**
-         * Сколько записей из RED постоянный канал кладёт в контекст.
-         *
-         * Имя историческое: канал задумывался под принципы, а в RED теперь
-         * лежит идентичность — вход только по явной метке, см. Prism.classify.
-         *
-         * Чего канал не умеет. «Постоянный» здесь значит «отбирается под каждый
-         * вопрос», а не «виден модели в каждом ответе»: в ленту разговора
-         * запись ложится один раз и дальше отсеивается как уже лежащая (см.
-         * ConversationJournal.unseenRecords), так что к двадцатому ходу она
-         * далеко позади. И приходит она цитатой памяти, наравне с остальными
-         * записями, без пометки, что это RED.
-         *
-         * Потолок, а не "сколько есть": со временем записей в RED станет
-         * больше, чем помещается в бюджет запроса. Предел
-         * поставлен заранее, пока в него ничего не упирается: это граница, а не
-         * догадка о поведении, и выводить её снизу нечему.
-         *
-         * Когда RED перерастёт этот предел, отбор ВНУТРИ принципов придётся
-         * задать явно — сейчас берутся первые по рангу, то есть по важности и
-         * свежести, и это временное решение, а не осмысленный выбор.
-         */
-        const val PRINCIPLE_LIMIT = 3
-
         /** Нижняя ступень лестницы: короче искать бессмысленно (см. ladder). */
         const val MIN_PREFIX = 4
 
@@ -1749,9 +1818,6 @@ class HourglassMemory(
          * память всю таблицу.
          */
         const val CANDIDATE_LIMIT = 20
-
-        /** Потолок числа слов, по которым идёт поиск. */
-        const val MAX_SEARCH_WORDS = 6
 
         // MIN_COVERAGE и MAX_CHARS_PER_MATCH переехали на верхний уровень файла,
         // к scoreCandidate — единственному месту, которое их читает.

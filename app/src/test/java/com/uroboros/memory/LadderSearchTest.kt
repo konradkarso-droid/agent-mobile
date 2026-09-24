@@ -61,13 +61,14 @@ class LadderSearchTest {
      * тесте, какой из двух поисков он подменяет.
      */
     private fun emptyDao(
-        found: (String, String, Int) -> List<Sticker> = { _, _, _ -> emptyList() },
-        hidden: (String, String, Int) -> List<HiddenRow> = { _, _, _ -> emptyList() }
+        found: (String, String, Int, List<String>) -> List<Sticker> = { _, _, _, _ -> emptyList() },
+        hidden: (String, String, Int, List<String>) -> List<HiddenRow> = { _, _, _, _ -> emptyList() }
     ) = FakeStickerDao().apply {
         onGetExpired = { emptyList() }
         onGetRanked = { _, _ -> emptyList() }
         onSearchAnyCase = found
         onSearchHiddenAnyCase = hidden
+        onCountInLayer = { 0 }
     }
 
     // --- Ступени ---
@@ -133,7 +134,7 @@ class LadderSearchTest {
      */
     @Test
     fun `спуск останавливается на ступени с тремя находками`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ ->
+        val dao = emptyDao(found = { _, _, _, _ ->
             listOf(sticker(1), sticker(2), sticker(3))
         })
         HourglassMemory(dao).getContextWithSummary(
@@ -147,7 +148,7 @@ class LadderSearchTest {
     /** Двух находок для остановки мало — спуск идёт до конца лестницы. */
     @Test
     fun `двух находок для остановки спуска мало`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ -> listOf(sticker(1), sticker(2)) })
+        val dao = emptyDao(found = { _, _, _, _ -> listOf(sticker(1), sticker(2)) })
         HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -159,12 +160,12 @@ class LadderSearchTest {
     // --- Что отбрасывается до взвешивания ---
 
     /**
-     * Запись из RED в кандидаты не попадает: принципы приезжают своим каналом,
-     * и попасть в выдачу дважды они не должны.
+     * Запись из RED в кандидаты не попадает: красный не ищется ни одним окном
+     * (почему — в KDoc DolmenCircle).
      */
     @Test
     fun `запись из RED не становится кандидатом`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ -> listOf(sticker(1, layer = Layer.RED)) })
+        val dao = emptyDao(found = { _, _, _, _ -> listOf(sticker(1, layer = Layer.RED)) })
         val result = HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -175,12 +176,13 @@ class LadderSearchTest {
     }
 
     /**
-     * Запись из слоя, не разрешённого для этого запроса, тоже не кандидат.
-     * BLUE открывается только словами вроде "старое" или "прошлое".
+     * Запись из холодного слоя не кандидат окна вопроса: холод ищет своё окно,
+     * а здесь оно видит пустой слой (getRanked подделки пуст) и не ищет вовсе.
+     * Итог отбора описывает окно вопроса — в нём записи нет.
      */
     @Test
-    fun `запись из неразрешённого слоя не становится кандидатом`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ -> listOf(sticker(1, layer = Layer.BLUE)) })
+    fun `запись из холодного слоя не становится кандидатом окна вопроса`() = runBlocking {
+        val dao = emptyDao(found = { _, _, _, _ -> listOf(sticker(1, layer = Layer.BLUE)) })
         val result = HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -190,24 +192,22 @@ class LadderSearchTest {
         assertTrue(result.summary.contains("не нашлось ни одной записи"))
     }
 
-    // --- Второй канал ---
+    // --- Канала принципов нет ---
 
     /**
-     * Принципы запрашиваются отдельным обращением — по одному слою и своим
-     * лимитом, не общим. Два канала намеренно не сливаются в один рейтинг, и
-     * тест закрепляет, что запросов действительно два разных.
+     * Красный не запрашивается никаким отдельным каналом: единственное
+     * обращение по слоям — проверка, пуст ли холод. Проверка на молчание:
+     * канал принципов убран сознательно, и тест упадёт, если его вернут.
      */
     @Test
-    fun `принципы запрашиваются отдельным каналом`() = runBlocking {
+    fun `красный не запрашивается отдельным каналом`() = runBlocking {
         val dao = emptyDao()
         HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
             limit = 5
         )
-        assertEquals(1, dao.rankedCalls.size)
-        assertEquals(listOf(Layer.RED.name), dao.rankedCalls[0].layers)
-        assertEquals(3, dao.rankedCalls[0].limit)
+        assertTrue(dao.rankedCalls.none { Layer.RED.name in it.layers })
     }
 
     // --- Итог сходится с выдачей ---
@@ -219,7 +219,7 @@ class LadderSearchTest {
      */
     @Test
     fun `число в итоге совпадает с числом отданных записей`() = runBlocking {
-        val dao = emptyDao(found = { prefix, _, _ ->
+        val dao = emptyDao(found = { prefix, _, _, _ ->
             if (prefix == "рубанка") listOf(sticker(1, content = "рубанок с колодкой"))
             else emptyList()
         })
@@ -263,7 +263,7 @@ class LadderSearchTest {
      */
     @Test
     fun `скрытые не останавливают спуск по лестнице`() = runBlocking {
-        val dao = emptyDao(hidden = { _, _, _ ->
+        val dao = emptyDao(hidden = { _, _, _, _ ->
             listOf(hiddenRow(1), hiddenRow(2), hiddenRow(3))
         })
         HourglassMemory(dao).getContextWithSummary(
@@ -282,7 +282,7 @@ class LadderSearchTest {
      */
     @Test
     fun `скрытая запись считается один раз при нескольких совпадениях`() = runBlocking {
-        val dao = emptyDao(hidden = { _, _, _ -> listOf(hiddenRow(1)) })
+        val dao = emptyDao(hidden = { _, _, _, _ -> listOf(hiddenRow(1)) })
         val result = HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка колодка",
@@ -293,12 +293,12 @@ class LadderSearchTest {
 
     /**
      * Скрытые фильтруются по слоям теми же двумя правилами, что и видимые.
-     * Разойдись фильтры — запись из архива попала бы в счёт, а такая же видимая
-     * нет, и два числа мерили бы разные множества.
+     * Разойдись фильтры — запись из архива попала бы в счёт окна вопроса, а
+     * такая же видимая нет, и два числа мерили бы разные множества.
      */
     @Test
     fun `скрытая запись из RED и неразрешённого слоя не считается`() = runBlocking {
-        val red = emptyDao(hidden = { _, _, _ -> listOf(hiddenRow(1, layer = Layer.RED)) })
+        val red = emptyDao(hidden = { _, _, _, _ -> listOf(hiddenRow(1, layer = Layer.RED)) })
         val redResult = HourglassMemory(red).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -306,7 +306,7 @@ class LadderSearchTest {
         )
         assertTrue(redResult.summary.contains("скрыто карантином 0"))
 
-        val blue = emptyDao(hidden = { _, _, _ -> listOf(hiddenRow(1, layer = Layer.BLUE)) })
+        val blue = emptyDao(hidden = { _, _, _, _ -> listOf(hiddenRow(1, layer = Layer.BLUE)) })
         val blueResult = HourglassMemory(blue).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",

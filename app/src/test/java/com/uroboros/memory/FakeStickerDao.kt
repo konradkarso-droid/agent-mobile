@@ -58,23 +58,30 @@ class FakeStickerDao : StickerDao {
     /** Ответ на getRanked(layers, limit). */
     var onGetRanked: ((layers: List<String>, limit: Int) -> List<Sticker>)? = null
 
-    /** Ответ на searchAnyCase(query, queryCapitalized, limit). */
-    var onSearchAnyCase: ((query: String, queryCapitalized: String, limit: Int) -> List<Sticker>)? = null
+    /**
+     * Ответ на searchAnyCase(query, queryCapitalized, limit, layers). Слои
+     * приходят лямбде, но подделка по ним НЕ фильтрует — как и LIKE, это
+     * свойство SQL; тест, которому нужен отсев по слою, делает его сам.
+     */
+    var onSearchAnyCase: ((query: String, queryCapitalized: String, limit: Int, layers: List<String>) -> List<Sticker>)? = null
 
     /**
-     * Ответ на searchHiddenAnyCase(query, queryCapitalized, limit) — записи в
+     * Ответ на searchHiddenAnyCase(query, queryCapitalized, limit, layers) — записи в
      * карантине. Лямбда СВОЯ, а не общая с onSearchAnyCase: тест обязан иметь
      * возможность задать разные ответы видимому и скрытому поиску, иначе
      * случай "нашлось ноль, а трое скрыты" — ради которого счётчик и заведён —
      * выразить было бы нечем.
      */
-    var onSearchHiddenAnyCase: ((query: String, queryCapitalized: String, limit: Int) -> List<HiddenRow>)? = null
+    var onSearchHiddenAnyCase: ((query: String, queryCapitalized: String, limit: Int, layers: List<String>) -> List<HiddenRow>)? = null
 
     /** Ответ на getAll() — всю таблицу целиком читает ночной показ снов. */
     var onGetAll: (() -> List<Sticker>)? = null
 
     /** Ответ на getById(id) — записи сна по номеру читает подхват. */
     var onGetById: ((id: Long) -> Sticker?)? = null
+
+    /** Ответ на countInLayer(layer) — число записей в красном печатает прибор круга. */
+    var onCountInLayer: ((layer: String) -> Int)? = null
 
     /** Ответ на getExpired(now) — путь чтения зовёт его первым, через migrateExpired. */
     var onGetExpired: ((now: Long) -> List<Sticker>)? = null
@@ -103,7 +110,7 @@ class FakeStickerDao : StickerDao {
 
     // --- Что записалось (читает тест) ---
 
-    data class SearchCall(val query: String, val queryCapitalized: String, val limit: Int)
+    data class SearchCall(val query: String, val queryCapitalized: String, val limit: Int, val layers: List<String>)
     data class RankedCall(val layers: List<String>, val limit: Int)
     data class LayerUpdate(val id: Long, val layer: String, val expiryTime: Long?)
 
@@ -153,21 +160,23 @@ class FakeStickerDao : StickerDao {
     override suspend fun searchAnyCase(
         query: String,
         queryCapitalized: String,
-        limit: Int
+        limit: Int,
+        layers: List<String>
     ): List<Sticker> {
-        searchCalls += SearchCall(query, queryCapitalized, limit)
+        searchCalls += SearchCall(query, queryCapitalized, limit, layers)
         val answer = onSearchAnyCase ?: unprepared("searchAnyCase")
-        return answer(query, queryCapitalized, limit)
+        return answer(query, queryCapitalized, limit, layers)
     }
 
     override suspend fun searchHiddenAnyCase(
         query: String,
         queryCapitalized: String,
-        limit: Int
+        limit: Int,
+        layers: List<String>
     ): List<HiddenRow> {
-        hiddenSearchCalls += SearchCall(query, queryCapitalized, limit)
+        hiddenSearchCalls += SearchCall(query, queryCapitalized, limit, layers)
         val answer = onSearchHiddenAnyCase ?: unprepared("searchHiddenAnyCase")
-        return answer(query, queryCapitalized, limit)
+        return answer(query, queryCapitalized, limit, layers)
     }
 
     override suspend fun getRanked(layers: List<String>, limit: Int): List<Sticker> {
@@ -236,7 +245,10 @@ class FakeStickerDao : StickerDao {
 
     override suspend fun count(): Int = unprepared("count")
     override suspend fun countExpired(now: Long): Int = unprepared("countExpired")
-    override suspend fun countInLayer(layer: String): Int = unprepared("countInLayer")
+    override suspend fun countInLayer(layer: String): Int {
+        val answer = onCountInLayer ?: unprepared("countInLayer")
+        return answer(layer)
+    }
     override suspend fun countPendingReview(): Int = unprepared("countPendingReview")
     override suspend fun oldestExpiredAt(now: Long): Long? = unprepared("oldestExpiredAt")
     override suspend fun nextExpiryAt(now: Long): Long? = unprepared("nextExpiryAt")

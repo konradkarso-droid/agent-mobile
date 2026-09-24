@@ -38,11 +38,12 @@ class QuestionFilterTest {
             onGetRanked = { layers, limit ->
                 records.filter { it.layer in layers }.sortedByDescending { it.createdAt }.take(limit)
             }
-            onSearchAnyCase = { q, qCap, limit ->
+            onSearchAnyCase = { q, qCap, limit, _ ->
                 records.filter { !it.reviewPending && (it.content.contains(q) || it.content.contains(qCap)) }
                     .sortedByDescending { it.createdAt }.take(limit)
             }
-            onSearchHiddenAnyCase = { _, _, _ -> emptyList() }
+            onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
+            onCountInLayer = { layer -> records.count { it.layer == layer } }
         }
         return HourglassMemory(dao)
     }
