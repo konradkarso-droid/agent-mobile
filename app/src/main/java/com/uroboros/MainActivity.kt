@@ -3926,6 +3926,21 @@ class MainActivity : AppCompatActivity() {
                 // userText и от поля больше не зависит.
                 binding.editTextInput.text.clear()
 
+                // Движок брал кто-то другой — разбор памяти или цикл, — и
+                // разговора в нём нет. Точка, записанная движком перед той
+                // работой, поднимается здесь, в паре с лентой. Зачем и чего не
+                // умеет — у LlmEngine.conversationDisplaced. До секундомера:
+                // подъём — не часть ответа, у него своя строка.
+                if (!journal.isEmpty && llmEngine.conversationDisplaced) {
+                    val restoreStartedAt = System.currentTimeMillis()
+                    llmEngine.restoreStateCheckpoint()
+                    val restoreMs = System.currentTimeMillis() - restoreStartedAt
+                    checkpointActionLine = "Возврат движка: " +
+                        (llmEngine.borrowReport?.let { "перед чужой работой — $it; " } ?: "") +
+                        "перед ответом — ${llmEngine.getStateCheckpointReport()} " +
+                        "(${"%.1f".format(restoreMs / 1000.0)} с)"
+                }
+
                 val startMs = System.currentTimeMillis()
                 var firstTokenAtMs: Long? = null
                 var engineMetrics: DecodingMetrics? = null
