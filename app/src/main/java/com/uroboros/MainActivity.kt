@@ -59,6 +59,8 @@ import com.uroboros.memory.dream.DreamRecall
 import com.uroboros.memory.dream.AgentRecall
 import com.uroboros.memory.dream.AgentRecaller
 import com.uroboros.memory.dream.DreamDoor
+import com.uroboros.memory.dream.CuriosityAsk
+import com.uroboros.memory.dream.CuriosityAskMarker
 import com.uroboros.memory.dream.CuriosityGauge
 import com.uroboros.memory.dream.CuriosityPressure
 import com.uroboros.memory.dream.DreamPickup
@@ -263,6 +265,15 @@ class MainActivity : AppCompatActivity() {
     private var curiosityFailure: String? = null
     private var curiosityPickupFailure: String? = null
     private var curiosityPickedThisTurn: List<CuriosityPressure.Brief> = emptyList()
+    private var curiosityAnsweredThisTurn: List<CuriosityPressure.Brief> = emptyList()
+
+    /**
+     * Выход «спросить» на этом ходе (см. CuriosityAsk): строка прибора и
+     * отказ отметки «спрошен». Живут один ход; null в строке — решение ещё
+     * не принималось.
+     */
+    private var curiosityAskLine: String? = null
+    private var curiosityAskFailure: String? = null
 
     /** Строка состояния агента на последнем ходе, как её увидела модель (см. SelfState). */
     private var selfStateLine: String? = null
@@ -430,12 +441,21 @@ class MainActivity : AppCompatActivity() {
     /** Давление пружины любопытства, см. CuriosityPressure. */
     private val curiosityGauge by lazy { CuriosityGauge(applicationContext) }
 
+    /** Выход «спросить» в базе, см. CuriosityAsk. */
+    private val curiosityAskMarker by lazy { CuriosityAskMarker(applicationContext) }
+
     /** Строка пружины любопытства — всегда, см. [curiosity]. */
     private fun curiosityLine(): String {
         val pickup = curiosityPickupFailure?.let { " · подхват не проверен — $it" } ?: ""
         curiosityFailure?.let { return "Любопытство: не прочиталось — $it$pickup" }
         val result = curiosity ?: return "Любопытство: ещё не прочитано$pickup"
-        return CuriosityPressure.meter(result, curiosityPickedThisTurn) + pickup
+        return CuriosityPressure.meter(result, curiosityPickedThisTurn, curiosityAnsweredThisTurn) + pickup
+    }
+
+    /** Строка выхода «спросить» — всегда, см. [curiosityAskLine]. */
+    private fun curiosityAskMeter(): String {
+        val line = curiosityAskLine ?: "Спросить: на этом ходе ещё не решалось"
+        return line + (curiosityAskFailure?.let { " · отметка «спрошен» не записана — $it" } ?: "")
     }
 
     /**
@@ -2535,7 +2555,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, curiosityLine(), selfStateLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2735,7 +2755,10 @@ class MainActivity : AppCompatActivity() {
         dreamsLine = null
         recallLine = null
         curiosityPickedThisTurn = emptyList()
+        curiosityAnsweredThisTurn = emptyList()
         curiosityPickupFailure = null
+        curiosityAskLine = null
+        curiosityAskFailure = null
         selfStateLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
@@ -3150,10 +3173,13 @@ class MainActivity : AppCompatActivity() {
                     }
                     renderTurnNavVisibility()
                     // ТОЧКА ПОДНИМАЕТСЯ ТОЛЬКО ЗДЕСЬ — следом за успешно
-                    // поднятой лентой и никогда сама по себе. Поднять её к
-                    // пустой ленте значило бы, что следующий короткий вопрос
-                    // окажется целиком внутри поднятого состояния: движку
-                    // нечего будет обсчитывать, и он вернёт ноль токенов.
+                    // поднятой лентой и никогда сама по себе. Точка — состояние
+                    // движка для этой ленты; без ленты движок взял бы из неё
+                    // только общее с новым запросом начало (стену), а остальное
+                    // стёр бы, то есть подъём был бы чтением с диска впустую.
+                    // Ноля токенов подъём не грозит ни при какой ленте: движок
+                    // берёт из обсчитанного не больше запроса без одного токена
+                    // (reusable_prefix в gguf_lib.cpp).
                     //
                     // Отказ подъёма ничего не ломает: не поднялось — значит
                     // работаем как раньше, с пересчётом. Поэтому исход не
@@ -3257,10 +3283,14 @@ class MainActivity : AppCompatActivity() {
                             renderTurnNavVisibility()
                             // Лента стала короче — значит точка теперь знает
                             // ход, которого в ленте нет, то есть обгоняет её.
-                            // Следующий запуск подал бы движку запрос, целиком
-                            // лежащий внутри поднятого состояния, и получил бы
-                            // ноль токенов на пустом месте. Стереть дешевле:
-                            // цена — один пересчёт.
+                            // Ноля токенов это не даёт: движок берёт из
+                            // обсчитанного только общее с запросом начало и не
+                            // больше запроса без одного токена (reusable_prefix
+                            // в gguf_lib.cpp), так что обгоняющая точка годилась
+                            // бы на всё, что в ленте осталось. Стирается она,
+                            // чтобы на диске не лежало состояние разговора,
+                            // которого больше нет; цена — один пересчёт ленты
+                            // на следующем запуске.
                             llmEngine.clearStateCheckpoint()
                             checkpointActionLine = llmEngine.getStateCheckpointReport()
                             checkpointDiskLine = llmEngine.getStateCheckpointDiskReport()
@@ -3883,8 +3913,26 @@ class MainActivity : AppCompatActivity() {
                     selfLine == null -> "О себе сейчас: без перемен"
                     else -> "О себе сейчас: $selfLine"
                 }
+                // Выход пружины любопытства (см. CuriosityAsk): давление
+                // перечитывается к этой реплике. Сбой чтения — не спрашивать:
+                // выход терминальный, и сомнение решается в сторону молчания.
+                refreshCuriosity()
+                val pressure = curiosity
+                val askDecision = if (pressure == null) {
+                    CuriosityAsk.Decision.Refuse("давление не прочиталось")
+                } else {
+                    runCatching { CuriosityAsk.decide(pressure, curiosityAskMarker.awaiting()) }
+                        .getOrElse {
+                            CuriosityAsk.Decision.Refuse(
+                                "не прочиталось, ждёт ли прошлый вопрос ответа (${it.javaClass.simpleName})"
+                            )
+                        }
+                }
+                curiosityAskLine = CuriosityAsk.meter(askDecision)
+                val askedLeader = (askDecision as? CuriosityAsk.Decision.Ask)?.leader
                 val userContent = journal.composeUserContent(
                     newRecords + newDreamLines, userText, disputeText, selfLine,
+                    askedLeader?.let { CuriosityAsk.line(it) },
                 )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
@@ -4122,6 +4170,9 @@ class MainActivity : AppCompatActivity() {
                     // ступень «нужно/не нужно» снята сознательно, её работа за
                     // фоновым разбором памяти. Нет и различения вопроса от
                     // утверждения — в память идёт речь целиком, как сказана.
+                    // Речь — это набранное (userText), а не собранная реплика:
+                    // строки состояния, снов и выхода любопытства в память не
+                    // попадают.
                     val autoSaved = mediator.saveEvent(
                         content = userText,
                         source = SourceKind.USER_STATED,
@@ -4136,6 +4187,18 @@ class MainActivity : AppCompatActivity() {
                     // повторной отправке отметится ещё раз.
                     dreamRecall.markServed(servedDreams, System.currentTimeMillis())
 
+                    // Реплика владельца ушла в движок — она снимает ожидание
+                    // ответа на прошлый вопрос (см. CuriosityAsk). Отметка
+                    // «спрошен» — там же и по той же мерке, что «подан», и
+                    // временем не раньше реплики: сама реплика с предложением
+                    // спросить ответом на него не считается.
+                    val repliedAt = System.currentTimeMillis()
+                    CuriosityAsk.ownerReplied(repliedAt)
+                    askedLeader?.let { leader ->
+                        runCatching { curiosityAskMarker.markAsked(leader, repliedAt) }
+                            .onFailure { curiosityAskFailure = it.javaClass.simpleName }
+                    }
+
                     // Подхват сна владельцем — там же и по той же мерке: реплика
                     // сказана, когда ушла в движок. Сверяется со снами,
                     // поданными на предыдущем ходе; проверка тратится одна на
@@ -4144,7 +4207,10 @@ class MainActivity : AppCompatActivity() {
                     DreamPickup.take()?.let { previous ->
                         runCatching { dreamPickupMarker.pickUp(previous, userText) }
                             .onSuccess { caught ->
-                                curiosityPickedThisTurn = caught.map { (dream, records) ->
+                                curiosityPickedThisTurn = caught.pickedUp.map { (dream, records) ->
+                                    CuriosityPressure.Brief(dream.kind, records.map { it.content })
+                                }
+                                curiosityAnsweredThisTurn = caught.answered.map { (dream, records) ->
                                     CuriosityPressure.Brief(dream.kind, records.map { it.content })
                                 }
                             }
@@ -4293,9 +4359,14 @@ class MainActivity : AppCompatActivity() {
                         )
                         recallLine = AgentRecall.meter(brought.size, recallOutcome)
                         // Ход закрыт: поданное на нём владелец может подхватить
-                        // следующей репликой (см. DreamPickup). Давление
-                        // перечитывается — вспоминание только что его сжало.
-                        DreamPickup.afterTurn(userText, servedDreams.map { it.dream })
+                        // следующей репликой (см. DreamPickup). Спрошенный сон
+                        // идёт туда же: следующая реплика проверит, ответил ли
+                        // о нём владелец. Давление перечитывается —
+                        // вспоминание только что его сжало.
+                        DreamPickup.afterTurn(
+                            userText,
+                            servedDreams.map { it.dream } + listOfNotNull(askedLeader?.dream),
+                        )
                         refreshCuriosity()
                         // Ход состоялся: двери стареют на ход, принесённое
                         // этим ходом получает свою (см. DreamDoor).

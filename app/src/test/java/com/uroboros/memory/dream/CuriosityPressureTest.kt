@@ -11,7 +11,8 @@ import org.junit.Test
  * Пружина любопытства.
  *
  * ГЛАВНЫЕ ЗДЕСЬ — ПРОВЕРКИ НА МОЛЧАНИЕ: пустая память, старые сны, поданные,
- * но не тронутые сны и молчащие сны не сжимают пружину ничем.
+ * но не тронутые сны, молчащие сны и спрошенные сны без ответа не сжимают
+ * пружину ничем.
  *
  * ЧЕГО ФАЙЛ НЕ ДОКАЗЫВАЕТ: что веса верны. Они объявлены; настоящие — из
  * замеров по прибору на устройстве.
@@ -32,6 +33,8 @@ class CuriosityPressureTest {
         picked: Int = 0,
         recalled: Int = 0,
         served: Int = 0,
+        askedAt: Long? = null,
+        answered: Int = 0,
     ) = Dream(
         nightAt = nightAt,
         recordIds = ids.joinToString(","),
@@ -39,6 +42,8 @@ class CuriosityPressureTest {
         servedCount = served,
         recalledCount = recalled,
         pickedUpCount = picked,
+        askedAt = askedAt,
+        answeredCount = answered,
     )
 
     private fun measure(dreams: List<Dream>, records: Map<Long, Sticker> = live) =
@@ -133,7 +138,7 @@ class CuriosityPressureTest {
         val line = CuriosityPressure.meter(measure(emptyList()))
         assertEquals(
             "Любопытство: давление 0 — подхвачено 0 (×3), вспомнено 0 (×2), " +
-                "своё 0 (×1, источника пока нет) · за 3 ночи",
+                "своё 0 (×1) · за 3 ночи",
             line,
         )
     }
@@ -151,5 +156,53 @@ class CuriosityPressureTest {
         assertTrue(rows[0].contains("в этом ходе подхвачен сон «по времени: Кот спит → Дождь идёт»"))
         assertTrue(rows[1].contains("вклад 3"))
         assertFalse(rows[0].contains("вклад"))
+    }
+
+    @Test
+    fun `спрошенный сон с ненулевыми счетами даёт только своё`() {
+        val got = measure(listOf(dream(1, 2, picked = 3, recalled = 2, askedAt = now - 1, answered = 1)))
+        assertEquals(0, got.pickedUp)
+        assertEquals(0, got.recalled)
+        assertEquals(1, got.own)
+        assertEquals("ответ весит ×1", 1, got.pressure)
+    }
+
+    @Test
+    fun `спрошенный сон не становится лидером`() {
+        val got = measure(
+            listOf(
+                dream(1, 2, picked = 9, askedAt = now - 1, answered = 5),
+                dream(3, 4, recalled = 1),
+            )
+        )
+        assertEquals(2, got.leader?.contribution)
+        assertEquals(live.getValue(3).content, got.leader?.brief?.texts?.first())
+
+        val alone = measure(listOf(dream(1, 2, picked = 9, askedAt = now - 1, answered = 5)))
+        assertNull("кроме спрошенного сжимать некому — лидера нет", alone.leader)
+    }
+
+    @Test
+    fun `молчащий спрошенный сон не даёт ничего`() {
+        val silentAnswer = measure(listOf(dream(1, 2, picked = 3, askedAt = now - 1)))
+        assertEquals("спрошен, но не ответили — ноль", 0, silentAnswer.pressure)
+
+        val hidden = live + (2L to record(2, hidden = true))
+        val got = measure(listOf(dream(1, 2, askedAt = now - 1, answered = 4)), hidden)
+        assertEquals("скрытое звено глушит и ответы", 0, got.pressure)
+        assertEquals(0, got.own)
+    }
+
+    @Test
+    fun `в строке прибора своё без оговорки и ответ этого хода`() {
+        val result = measure(listOf(dream(1, 2, askedAt = now - 1, answered = 2)))
+        val line = CuriosityPressure.meter(
+            result,
+            answeredThisTurn = listOf(CuriosityPressure.Brief(DreamWeaver.Kind.TIME.name, listOf("Кот спит", "Дождь идёт"))),
+        )
+        assertTrue(line.contains("своё 2 (×1)"))
+        assertFalse(line.contains("источника"))
+        assertTrue(line.contains("в этом ходе ответ о спрошенном сне «по времени: Кот спит → Дождь идёт»"))
+        assertFalse("ответ не выдаётся за подхват", line.contains("подхвачен сон"))
     }
 }

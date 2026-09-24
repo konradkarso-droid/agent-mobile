@@ -270,14 +270,19 @@ class ConversationJournal {
         question: String,
         disputeNotice: String? = null,
         selfState: String? = null,
+        curiosityAsk: String? = null,
     ): String {
-        val blocks = ArrayList<String>(5)
+        val blocks = ArrayList<String>(6)
         if (turns.lastOrNull()?.records?.isEmpty() == true) blocks += ANSWER_WITHOUT_SUPPORT
         // Состояние агента — сразу за пометкой и до записей: оно о нём самом,
         // а не о вопросе, и не должно стоять между записями и сверкой, чьё
         // «ниже» указывает на вопрос. Когда и что в нём, решает тот, кто
         // зовёт (SelfState); null — перемен нет, блока нет.
         if (!selfState.isNullOrBlank()) blocks += selfState
+        // Предложение спросить о сне — рядом с состоянием и по той же
+        // причине: оно агенту о нём самом, а не о вопросе (см.
+        // dream.CuriosityAsk). null — предлагать нечего, блока нет.
+        if (!curiosityAsk.isNullOrBlank()) blocks += curiosityAsk
         if (records.isNotEmpty()) blocks += records.joinToString("\n")
         // Пустая строка отбрасывается наравне с null: блок из одних пробелов
         // стоил бы двух переводов строки и не сказал бы ничего.

@@ -252,4 +252,29 @@ class ConversationJournalTest {
 
         assertEquals(note + "\n\n" + "следующий вопрос", content)
     }
+
+    @Test
+    fun `предложение спросить стоит за состоянием и до записей, вопрос — последним`() {
+        val journal = ConversationJournal()
+
+        val content = journal.composeUserContent(
+            listOf("Пользователь сказал: «Правило есть.»"),
+            "Какое правило?",
+            selfState = "Ты поспал в 03:00: снов 2.",
+            curiosityAsk = "Этот сон возвращался в разговоре.",
+        )
+
+        assertEquals(
+            "Ты поспал в 03:00: снов 2." + "\n\n" +
+                "Этот сон возвращался в разговоре." + "\n\n" +
+                "Пользователь сказал: «Правило есть.»" + "\n\n" +
+                "Какое правило?",
+            content,
+        )
+        assertEquals(
+            "без предложения блока нет",
+            "Какое правило?",
+            journal.composeUserContent(emptyList(), "Какое правило?", curiosityAsk = null),
+        )
+    }
 }
