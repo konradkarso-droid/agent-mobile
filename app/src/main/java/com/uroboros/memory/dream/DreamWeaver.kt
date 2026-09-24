@@ -50,6 +50,9 @@ import com.uroboros.memory.Sticker
  *  - запись на проверке — сон обходил бы карантин;
  *  - запись из одних вопросов — вопрос ничего не утверждает, и тем же
  *    признаком его снимает судья (RiskTrigger.isOnlyQuestions);
+ *  - запись из одних просьб — по той же причине (RiskTrigger.isOnlyRequests).
+ *    Короткая просьба к тому же идеальный мост: «Расскажи про правило»
+ *    связывала всё со всем. Считаются отдельно от вопросов;
  *  - отчёт агента о своей работе. В отчётах куски кода и десятки слов, и через
  *    них как через мост связывается всё со всем: на живой памяти это дало сотни
  *    снов за ночь вместо единиц.
@@ -85,6 +88,7 @@ object DreamWeaver {
         val dreamers: Int,
         val skippedHidden: Int,
         val skippedQuestions: Int,
+        val skippedRequests: Int,
         val skippedAgentReports: Int,
         /** Из участвовавших — сколько в холодном слое (BLUE) и в архиве (PURPLE). */
         val dreamersCold: Int,
@@ -103,12 +107,14 @@ object DreamWeaver {
     fun weave(records: List<Sticker>): Night {
         var hidden = 0
         var questions = 0
+        var requests = 0
         var reports = 0
         val dreamers = mutableListOf<Sticker>()
         for (record in records.sortedBy { it.id }) {
             when {
                 record.reviewPending -> hidden++
                 RiskTrigger.isOnlyQuestions(record.content) -> questions++
+                RiskTrigger.isOnlyRequests(record.content) -> requests++
                 record.source == SourceKind.AGENT_INFERRED.name -> reports++
                 else -> dreamers += record
             }
@@ -175,6 +181,7 @@ object DreamWeaver {
             dreamers = dreamers.size,
             skippedHidden = hidden,
             skippedQuestions = questions,
+            skippedRequests = requests,
             skippedAgentReports = reports,
             dreamersCold = dreamers.count { it.layer == Layer.BLUE.name },
             dreamersArchive = dreamers.count { it.layer == Layer.PURPLE.name },
