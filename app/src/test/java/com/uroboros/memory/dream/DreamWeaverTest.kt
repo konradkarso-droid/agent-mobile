@@ -58,6 +58,23 @@ class DreamWeaverTest {
         assertEquals(1, night.skippedAgentReports)
     }
 
+    @Test
+    fun `просьба не снится и сосчитана отдельно от вопросов`() {
+        // Из живой памяти: короткая просьба служила мостом между всем подряд.
+        val night = DreamWeaver.weave(
+            listOf(
+                rec(1, "Алеет солнце на закате", at = 0),
+                rec(2, "Расскажи про правило", at = minute),
+                rec(3, "Какого ты пола?", at = 2 * minute),
+            )
+        )
+        assertTrue("снам не с кем связаться", night.dreams.isEmpty())
+        assertEquals(1, night.dreamers)
+        assertEquals(1, night.skippedQuestions)
+        assertEquals(1, night.skippedRequests)
+        assertEquals(1, DreamNight.of(1L, night).skippedRequests)
+    }
+
     // --- По времени ---
 
     @Test
