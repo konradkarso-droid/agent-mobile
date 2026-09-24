@@ -93,6 +93,38 @@
 
     </LinearLayout>
 
+    <!-- «Начать заново» — под «Стоп», в том же дальнем правом верхнем углу:
+         жмут её редко, а промах стоит всего разговора (он уходит в архив и в
+         ленту не возвращается). Подтверждение всё равно спрашивается — в
+         отличие от «Стоп», тут секунда ничего не решает.
+
+         Вид взят у «Убрать ход», а не у «Стоп»: белая, красный текст. Красная
+         заливка в приложении означает одно — остановить то, что идёт прямо
+         сейчас; эта кнопка правит уже записанное. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/buttonRestart"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:minWidth="0dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:textSize="12sp"
+            android:textAllCaps="false"
+            android:textColor="#D6453E"
+            android:backgroundTint="#FFFFFF"
+            android:text="Начать заново"/>
+
+    </LinearLayout>
+
     <!-- Строка модели. Съехала из верхней строки сюда, потому что там теперь
          три кнопки. Осталась однострочной с многоточием: имена файлов моделей
          длинные, а перенос в два этажа возвращал бы ту самую тесноту, ради
@@ -164,6 +196,21 @@
         android:fontFamily="monospace"
         android:lineSpacingExtra="2dp"
         android:visibility="gone"/>
+
+    <!-- Настройка «После комы продолжать разговор сам» — в шторке, у правого
+         края. Меняют её раз в жизни, поэтому она не стоит на виду рядом с
+         тем, что жмут часто, и за раскрытием шторки случайно не задевается.
+         Видимость — вместе со шторкой (setDetailsExpanded). -->
+    <CheckBox
+        android:id="@+id/checkAutoContinue"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:layout_marginTop="4dp"
+        android:textSize="12sp"
+        android:textColor="#3A6470"
+        android:visibility="gone"
+        android:text="После комы продолжать разговор сам"/>
 
     <!-- Причина срабатывания стопа. Скрыт, пока стоп не взведён. Показывается
          из MainActivity вместе с кнопкой сброса (следующий шаг). -->
