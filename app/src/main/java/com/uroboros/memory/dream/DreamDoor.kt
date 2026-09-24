@@ -63,7 +63,8 @@ object DreamDoor {
 
     /**
      * Какие из записей за открытыми дверями войдут в найденные к этому
-     * вопросу. Скрытые, отвергнутые, вопросы и уже найденные пропускаются.
+     * вопросу. Скрытые, отвергнутые, вопросы, просьбы и уже найденные
+     * пропускаются.
      */
     fun pick(behindDoor: List<Sticker>, found: List<Sticker>, question: String): List<Sticker> {
         val asked = RiskTrigger.significantStems(question)
@@ -72,7 +73,7 @@ object DreamDoor {
         return behindDoor.asSequence()
             .filter { it.id !in foundIds }
             .filter { !it.reviewPending && it.rejectedAt == null }
-            .filter { !RiskTrigger.isOnlyQuestions(it.content) }
+            .filter { !RiskTrigger.assertsNothing(it.content) }
             .filter { RiskTrigger.significantStems(it.content).any { stem -> stem in asked } }
             .take(MAX_PER_TURN)
             .toList()
