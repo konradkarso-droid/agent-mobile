@@ -30,6 +30,7 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
+import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.CONTEXT_SIZE
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.JournalStore
@@ -119,15 +120,15 @@ class MainActivity : AppCompatActivity() {
      */
     private val journal = ConversationJournal.shared
 
+    /** Ход разговора, лента и её хранилище — одни на процесс, см. ConversationTurns. */
+    private val turns get() = processObjects.turns
+
     /**
-     * Сохранение ленты на диск. Заводится лениво: база открывается при
-     * первом обращении, а не при каждом создании активности.
-     *
-     * Лента о хранилище не знает — связка живёт в [onCreate] через
-     * оповещения журнала. Так рядом с каждым `appendTurn` не нужно помнить
-     * о сохранении, а забытое место молчало бы до первого перезапуска.
+     * Хранилище ленты на диске — одно на процесс (см. ConversationTurns). Ходы
+     * на диск пишет оно само; экран через него только читает счёт, отрезает
+     * ход и закрывает разговор.
      */
-    private val journalStore by lazy { JournalStore(applicationContext) }
+    private val journalStore get() = turns.store
 
     // Ссылка на корутину идущего TOTE-цикла. Нужна ровно для одного:
     // аварийный стоп должен прервать уже начатую работу, а не только запретить
@@ -3095,7 +3096,7 @@ class MainActivity : AppCompatActivity() {
     private fun maybeOfferRestore() {
         if (!journal.isEmpty) return
         lifecycleScope.launch {
-            when (val result = journalStore.load(llmEngine.loadFingerprint)) {
+            when (val result = turns.loadSaved()) {
                 is JournalStore.LoadResult.Empty -> Unit
                 is JournalStore.LoadResult.Refused -> {
                     journalRestoreLine = "Разговор: ${result.reason}"
@@ -3158,13 +3159,7 @@ class MainActivity : AppCompatActivity() {
                     "уйдут в архив на устройстве, но ни на экран, ни к агенту не вернутся."
             )
             .setPositiveButton("Продолжить разговор") { _, _ ->
-                if (journal.restore(saved)) {
-                    // Через существующий вход, а не новый: величина та же
-                    // самая, и второе место, где она задаётся, разошлось бы
-                    // с первым молча. Ноль вход отбрасывает сам — значит
-                    // "не измерено" остаётся "не измерено", а не становится
-                    // измеренным нулём.
-                    journal.notePromptTokens(promptTokens)
+                if (turns.restore(saved, promptTokens)) {
                     journalRestoreLine = "Разговор поднят с диска: ходов ${saved.size}" +
                         if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
                     binding.textResults.text = renderJournal()
@@ -3532,25 +3527,13 @@ class MainActivity : AppCompatActivity() {
                 .collect { renderMetricsPanel() }
         }
 
-        // Лента одна на процесс, активность пересоздаётся — поэтому
-        // оповещения переустанавливаются при каждом создании, и пишет на
-        // диск всегда живая активность, а не мёртвая.
-        //
-        // Запись уходит в отдельную корутину: функции хранилища
-        // блокирующие, а держать на них главный поток нельзя. Плата
-        // названа прямо: если приложение убьют ровно между закрытием хода
-        // и записью, ход останется только в памяти. Следующий запуск
-        // увидит дыру в нумерации и откажет в подъёме — то есть промах
-        // будет назван, а не проглочен.
-        journal.onTurnAppended = { index, turn ->
-            val fingerprint = if (::llmEngine.isInitialized) llmEngine.loadFingerprint else null
-            // Оба числа снимаются ЗДЕСЬ, а не внутри корутины: пока запись
-            // идёт на диск, мог бы пройти следующий ход, и в строку легло
-            // бы чужое значение.
-            val tokens = journal.lastPromptTokens
-            lifecycleScope.launch {
-                if (!journalStore.append(index, turn, tokens, fingerprint)) {
-                    journalRestoreLine = "Разговор: ход ${index + 1} на диск не записался"
+        // Ходы на диск пишет ConversationTurns сам, и без экрана тоже. Экран
+        // только показывает исход: отказ записи — словами, и после любого
+        // исхода перечитывает счёт на диске.
+        lifecycleScope.launch {
+            turns.diskEvents.collect { write ->
+                if (!write.ok) {
+                    journalRestoreLine = "Разговор: ход ${write.index + 1} на диск не записался"
                     renderMetricsPanel()
                 }
                 // Перечитывается и после неудачи тоже: строка описывает
@@ -3942,41 +3925,6 @@ class MainActivity : AppCompatActivity() {
                 lastComposedContent = userContent
                 renderMetricsPanel()
 
-                // Проверка края ДО отправки. Движок при переполнении молча
-                // выбрасывает половину ленты посреди генерации, поэтому
-                // упереться незаметно нельзя — останавливаемся явно.
-                //
-                // ПРОВЕРОК ДВЕ, И ПОРЯДОК У НИХ НЕ СЛУЧАЕН. Сперва «влезет ли
-                // сюда хоть что-нибудь»: если не помещается даже короткий
-                // вопрос, укорачивать бесполезно, и совет укоротить был бы
-                // советом в никуда. Только потом — «влезает ли этот текст».
-                // Лечения у них разные и противоположные по цене: первое
-                // закрывает разговор, второе просит сократить одно сообщение.
-                if (journal.roomLeft(CONTEXT_SIZE, ANSWER_TOKEN_LIMIT) <= 0) {
-                    binding.buttonGenerate.isEnabled = true
-                    showProgress(null)
-                    showJournalFullDialog()
-                    return@launch
-                }
-
-                // Меряется вся реплика, а не набранный вопрос: в движок
-                // уходит userContent вместе с подложенными записями.
-                val maxChars = journal.maxContentChars(CONTEXT_SIZE, ANSWER_TOKEN_LIMIT)
-                if (userContent.length > maxChars) {
-                    binding.buttonGenerate.isEnabled = true
-                    showProgress(null)
-                    showQuestionTooLongDialog(userContent.length, maxChars)
-                    return@launch
-                }
-
-                val messages = journal.messagesFor(userContent)
-
-                // Экран показывает всю ленту плюс начатый ход. Поле НЕ
-                // очищается: разговор копится, а не заменяется. Токены ниже
-                // дописываются в конец, поэтому последней строкой стоит
-                // пустой "Агент: ".
-                binding.textResults.text = renderJournal(pendingQuestion = userText)
-
                 // Состав запроса, показанный человеку. Причина появления
                 // (26.08.2026): счётчик "Токенов: запрос" давал числа, которые не
                 // сходились ни с одной версией происходящего — 1075 утром и 485-495
@@ -4046,94 +3994,10 @@ class MainActivity : AppCompatActivity() {
                         "вопрос ${userText.length} зн.$noteTail"
                 }
 
-                // Поле стирается здесь, когда реплика прошла все проверки и
-                // уходит в движок, а не по нажатию: на отказе выше («не
-                // влезет», «лента заполнена») набранное остаётся в поле, и
-                // перенабирать его не придётся. Сама реплика уже собрана из
-                // userText и от поля больше не зависит.
-                binding.editTextInput.text.clear()
-
-                // Движок брал кто-то другой — разбор памяти или цикл, — и
-                // разговора в нём нет. Точка, записанная движком перед той
-                // работой, поднимается здесь, в паре с лентой. Зачем и чего не
-                // умеет — у LlmEngine.conversationDisplaced. До секундомера:
-                // подъём — не часть ответа, у него своя строка.
-                if (!journal.isEmpty && llmEngine.conversationDisplaced) {
-                    val restoreStartedAt = System.currentTimeMillis()
-                    llmEngine.restoreStateCheckpoint()
-                    val restoreMs = System.currentTimeMillis() - restoreStartedAt
-                    engineReturnLine = "Возврат движка: " +
-                        (llmEngine.borrowReport?.let { "перед чужой работой — $it; " } ?: "") +
-                        "перед ответом — ${llmEngine.getStateCheckpointReport()} " +
-                        "(${"%.1f".format(restoreMs / 1000.0)} с)"
-                }
-
-                val startMs = System.currentTimeMillis()
-                var firstTokenAtMs: Long? = null
-                var engineMetrics: DecodingMetrics? = null
-                // Мгновенная зона в конце прогона соврала бы: устройство может
-                // уйти в утомление на середине генерации и остыть к концу.
-                // Запоминаем худшее из виденного.
-                var worstZone: SafetyZone = watchdog.zone.value
-                // Хвост 19: считаем выданные токены сами, а не спрашиваем
-                // движок. Метрики он присылает не всегда, а факт "на экране не
-                // появилось ни знака" надо назвать при любом исходе.
-                var tokensSeen = 0
-                // Ответ копится ОТДЕЛЬНО от того, что видно на экране.
-                // Правило дословности: в ленту должно лечь ровно то, что
-                // выдал движок. Собирать текст обратно с экрана нельзя —
-                // там он смешан с прошлыми ходами и подписями, и любое
-                // расхождение на один знак оборвало бы совпадение с
-                // обсчитанным началом. Признаком была бы только выросшая
-                // строка "до 1-го токена", то есть поломка, о которой ничто
-                // не сообщит.
-                val answerText = StringBuilder()
-
-                try {
-                    llmEngine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
-                        val nowZone = watchdog.zone.value
-                        if (nowZone.ordinal > worstZone.ordinal) worstZone = nowZone
-
-                        when (event) {
-                            is GenerationEvent.Token -> {
-                                if (firstTokenAtMs == null) {
-                                    firstTokenAtMs = System.currentTimeMillis() - startMs
-                                    showProgress(null)
-                                }
-                                tokensSeen++
-                                answerText.append(event.text)
-                                binding.textResults.append(event.text)
-                                autoScrollIfAtBottom()
-                            }
-                            is GenerationEvent.Progress -> {
-                                // Это обсчёт запроса (prefill) — ровно та часть,
-                                // которую секундомером от нажатия до ответа
-                                // невозможно было отделить от генерации.
-                                showProgress(
-                                    "Обсчёт запроса: ${(event.progress * 100).toInt()}%"
-                                )
-                            }
-                            is GenerationEvent.Metrics -> {
-                                engineMetrics = event.metrics
-                            }
-                            is GenerationEvent.Error -> {
-                                binding.textResults.append("\n\n[Ошибка: ${event.message}]")
-                            }
-                            else -> {
-                                // Done и VLM-события. Done намеренно НЕ
-                                // обрабатывается здесь: библиотека не обещает,
-                                // что метрики придут до него, поэтому отчёт
-                                // собирается после выхода из collect.
-                            }
-                        }
-                    }
-                } finally {
-                    // Причина читается ПЕРВОЙ строкой хвоста: движок хранит её
-                    // до начала следующего прогона, и всё, что ниже, вправе на
-                    // неё опираться. Своё завершение поток уже записал — его
-                    // finally отрабатывает раньше, чем сбор здесь закончится.
-                    val generationEnd = llmEngine.lastGenerationEnd
-
+                // Всё, что экран делает, когда реплика ушла в движок: зовётся
+                // ходом (ConversationTurns.run) после выдачи и до закрытия хода
+                // в ленте — то же место, где это стояло, пока ход жил здесь.
+                suspend fun afterSent() {
                     // АВТОЗАПИСЬ РЕПЛИКИ. Место выбрано по определению
                     // сказанного: сказано то, что дошло до собеседника.
                     // Сюда попадают только ходы, пережившие обе проверки
@@ -4218,214 +4082,284 @@ class MainActivity : AppCompatActivity() {
                     }
                     refreshCuriosity()
 
-                    // finally, а не ветка Done: раньше кнопка включалась только
-                    // если поток закончился ожидаемым событием, и любой другой
-                    // выход оставлял её навсегда серой.
+                    // Здесь, в конце хода при любом его исходе, а не по событию
+                    // Done: раньше кнопка включалась только если поток
+                    // закончился ожидаемым событием, и любой другой выход
+                    // оставлял её навсегда серой.
                     binding.buttonGenerate.isEnabled = true
                     showProgress(null)
-
-                    // Хвост 19 (27.08.2026): движок отдаёт ноль токенов при
-                    // ТОЧНОМ, до последнего знака, повторе предыдущего запроса.
-                    // На экране при этом не появлялось ничего: пустая область
-                    // ответа и секундомер 0.0 с. Дважды принято за "кнопка не
-                    // работает", оба раза стоило перезапуска и потерянного
-                    // замера.
-                    //
-                    // Сказано ПОСЛЕ прогона, по факту, а не предсказано до
-                    // него. Причину пустого ответа мы знаем по наблюдениям, а
-                    // не из кода библиотеки; предупреждать заранее значило бы
-                    // выдавать свою догадку за знание — ровно та ошибка, на
-                    // которой мы уже обожглись с кэшем.
-                    //
-                    // ПРИЧИН У НУЛЯ НЕ ОДНА, И РАНЬШЕ НАЗЫВАЛАСЬ ТОЛЬКО ОДНА.
-                    // Вторая наблюдалась: запрос, не поместившийся в окно, даёт
-                    // тот же ноль и то же пустое место на экране. Разница
-                    // существенная — повтор лечится дописанным знаком, а
-                    // непоместившийся запрос от этого лечения не меняется
-                    // вовсе, и человек по прежней подсказке лечил не ту
-                    // болезнь.
-                    //
-                    // Различитель точный и дармовой: реплика предыдущего хода
-                    // лежит в ленте ДОСЛОВНО (см. `JournalTurn`), поэтому
-                    // повтор проверяется сравнением строк. Ход с нулём в ленту
-                    // не пошёл, лента между попытками не выросла, значит
-                    // совпадение последней реплики означает совпадение всего
-                    // запроса.
-                    //
-                    // Это НЕ предсказание: сравнение делается после отказа,
-                    // чтобы назвать причину, а не до отправки, чтобы её
-                    // предугадать. Прежнее решение не отменяется.
-                    if (tokensSeen == 0) {
-                        // Ход не состоялся, в ленту он не идёт: ноль токенов
-                        // это отказ движка, а не реплика разговора. Записи,
-                        // подобранные под этот вопрос, тоже НЕ помечаются
-                        // уложенными — они никуда не ушли.
-                        val sameAsPrevious =
-                            journal.history().lastOrNull()?.userContent == userContent
-                        // Числа только измеренные. Занятость — отчёт движка,
-                        // длина вопроса — сосчитанные знаки. Вес вопроса в
-                        // токенах не называется: измерить его нечем, движок
-                        // отдаёт это число лишь по итогам прогона, а прогона
-                        // не было. Названная оценка попала бы на экран
-                        // наравне с замером.
-                        // ПОРЯДОК ВЕТОК ЗДЕСЬ РЕШАЕТ. Обе догадки ниже — про
-                        // запрос: повтор или переполнение окна. Но ноль знаков
-                        // бывает и оттого, что прогон оборвали, и тогда с
-                        // запросом всё в порядке, а человека посылают лечить
-                        // здоровое. Поэтому названная причина завершения
-                        // перебивает обе догадки, и неназванная тоже: сказать
-                        // "не знаю, чем кончилось" честнее, чем уверенно
-                        // указать не на то.
-                        val explanation = if (generationEnd != GenerationEnd.COMPLETED) {
-                            llmEngine.getGenerationEndReport() + "\n\n" +
-                                "Ход прервался, не начавшись, поэтому о самом запросе " +
-                                "по этому нулю судить нельзя — ни о повторе, ни о " +
-                                "переполнении окна."
-                        } else if (sameAsPrevious) {
-                            // Следствие названо прямо, потому что оно неприятное:
-                            // лента не выросла, значит повтор того же вопроса даст
-                            // тот же запрос до последнего знака и тот же ноль.
-                            // Дописать знак за человека нельзя — тогда в движок
-                            // уйдёт не то, что он набрал.
-                            "Запрос совпал с предыдущим до последнего знака — сверено " +
-                                "дословно. Допишите любой знак в САМЫЙ КОНЕЦ текста и " +
-                                "нажмите снова: этого хватает, и уже обсчитанное начало " +
-                                "запроса при этом не теряется."
-                        } else {
-                            "Это не повтор: запрос сверен с предыдущим дословно и " +
-                                "отличается. Значит совет «допишите знак» здесь не " +
-                                "поможет.\n\n" +
-                                "Занято ${journal.lastPromptTokens} из $CONTEXT_SIZE токенов, " +
-                                "вопрос — ${userText.length} зн. Сколько токенов весит сам " +
-                                "вопрос, измерить нечем. Известно другое: запрос, не " +
-                                "поместившийся в окно, даёт такой же ноль. Проверяется это " +
-                                "одним способом — задать вопрос заметно короче."
-                        }
-                        // Собирается через SpannableStringBuilder, а не
-                        // сложением строк: лента теперь несёт кликабельные
-                        // участки, и обычное сложение их бы потеряло.
-                        binding.textResults.text = SpannableStringBuilder(renderJournal()).apply {
-                            if (!journal.isEmpty) append("\n\n")
-                            append(
-                                "Модель не выдала ни одного знака.\n\n" + explanation +
-                                    "\n\nХод в ленту не записан, записи не помечены " +
-                                    "уложенными: разговор остался таким же, каким был до " +
-                                    "нажатия."
-                            )
-                        }
-                    } else {
-                        // ВСЕ найденные отбором, а не только новые. Новизну
-                        // журнал считает сам по своему отображению: если
-                        // считать её в двух местах, экран однажды разойдётся
-                        // с тем, что ушло в модель. Уже лежавшие записи от
-                        // этого не задваиваются — их номер хода в журнале
-                        // остаётся прежним.
-                        // Размер запроса берём у движка, а не считаем сами:
-                        // пересчёт знаков в токены завышает на треть, замерено
-                        // 28.08 на тексте стены.
-                        //
-                        // Стоит ДО закрытия хода намеренно: закрытие хода
-                        // уводит его на диск вместе с этим числом. Обнови
-                        // счётчик после — и в строку ушло бы значение
-                        // предыдущего хода, расхождение на один ход, которое
-                        // ничем себя не выдаёт.
-                        engineMetrics?.let { journal.notePromptTokens(it.tokensEvaluated) }
-                        journal.appendTurn(
-                            userContent = userContent,
-                            agentContent = answerText.toString(),
-                            question = userText,
-                            // Сны кладутся в ход вместе с записями: по этому
-                            // списку лента отсеивает повторы, и сон без него
-                            // подавался бы заново на каждом ходе. Показ хода
-                            // считает их отдельно (DreamRecall.isDreamLine).
-                            records = allRecords + dreamLines,
-                        )
-                        // Вспомнил ли агент принесённое сном — по готовому
-                        // ответу, после закрытия хода: вспоминание греет
-                        // записи, и греть их за ответ, который не лёг в ленту,
-                        // было бы нечестно. Правила — в AgentRecall.
-                        val brought = servedDreams.flatMap { it.records }
-                            .filter { it.id !in answerIds }
-                            .distinctBy { it.id }
-                        val recalled = AgentRecall.recalled(brought, stickers, userText, answerText.toString())
-                        val recallOutcome = agentRecaller.recall(recalled.map { it.id })
-                        // Сны, чьё принесённое вспомнено, — притоки реки на
-                        // следующую ночь (см. DreamRiver).
-                        agentRecaller.markDreams(
-                            AgentRecall.recalledDreams(
-                                servedDreams.map { it.dream to it.records },
-                                recalled.mapTo(HashSet()) { it.id },
-                            )
-                        )
-                        recallLine = AgentRecall.meter(brought.size, recallOutcome)
-                        // Ход закрыт: поданное на нём владелец может подхватить
-                        // следующей репликой (см. DreamPickup). Спрошенный сон
-                        // идёт туда же: следующая реплика проверит, ответил ли
-                        // о нём владелец. Давление перечитывается —
-                        // вспоминание только что его сжало.
-                        DreamPickup.afterTurn(
-                            userText,
-                            servedDreams.map { it.dream } + listOfNotNull(askedLeader?.dream),
-                        )
-                        refreshCuriosity()
-                        // Ход состоялся: двери стареют на ход, принесённое
-                        // этим ходом получает свою (см. DreamDoor).
-                        DreamDoor.afterTurn(brought.map { it.id })
-                        // Состояние показано: ход лёг в ленту вместе с ним.
-                        selfSnapshot.getOrNull()?.let { SelfState.markShown(it) }
-                        renderMetricsPanel()
-                        // Ход закрыт — перерисовываем ленту целиком.
-                        //
-                        // Во время генерации ход рисовался как начатый
-                        // (turn = null), то есть БЕЗ строки записей: пока
-                        // ответа нет, отбор не считается уложенным. Без
-                        // перерисовки здесь строка появлялась бы только при
-                        // следующей отрисовке, то есть на следующем ходе, и
-                        // человек читал бы свежий ответ, не видя, была ли под
-                        // ним опора, — то есть в тот момент, когда признак
-                        // нужнее всего.
-                        //
-                        // Тем же движением возвращаются кликабельные участки:
-                        // в тексте, дописанном по токенам, их нет, и записи
-                        // только что закрытого хода иначе не развернуть.
-                        binding.textResults.text = renderJournal()
-                    }
-                    // Ход закрыт: ходов стало больше, кнопки хода могли
-                    // впервые понадобиться. Смещения уже пересчитаны — обе
-                    // ветки выше перерисовывают ленту.
-                    renderTurnNavVisibility()
-                    // Читается сразу после завершения: движок хранит разбивку
-                    // ПОСЛЕДНЕЙ генерации, и следующий запуск её затрёт.
-                    val breakdown = runCatching { llmEngine.getLastDecodeBreakdown() }.getOrNull()
-                    // Тем же моментом и по той же причине: строка собирается из
-                    // хвоста лога движка, и следующий запрос её вытеснит. Но
-                    // только если генерация точно дошла до обсчёта — иначе
-                    // последним в логе окажется ПРОШЛЫЙ запрос, и его числа
-                    // показались бы как числа этого.
-                    val reuseLine = if (engineMetrics != null || tokensSeen > 0) {
-                        llmEngine.promptReuseReport()
-                    } else {
-                        "Стена: не известно — генерация не дошла до ответа"
-                    }
-                    // Перечитываем после генерации: запись кэша делает сама
-                    // библиотека по ходу обсчёта, и на ПЕРВОМ холодном запуске
-                    // строка меняется с "пуст" на размер файла именно здесь.
-                    // Если она осталась пустой — кэш не пишется, и это надо
-                    // видеть сразу, а не через сутки по неизменившемуся времени.
-                    promptCacheLine = llmEngine.getPromptCacheReport()
-                    lastMetricsLine = metricsReport(
-                        metrics = engineMetrics,
-                        breakdown = breakdown,
-                        wallMs = System.currentTimeMillis() - startMs,
-                        firstTokenAtMs = firstTokenAtMs,
-                        worstZone = worstZone,
-                        generationEnd = generationEnd,
-                        tokenLimit = ANSWER_TOKEN_LIMIT,
-                        promptShape = promptShape,
-                        reuseLine = reuseLine
-                    )
-                    renderMetricsPanel()
                 }
+
+                // Мгновенная зона в конце прогона соврала бы: устройство может
+                // уйти в утомление на середине генерации и остыть к концу.
+                // Запоминаем худшее из виденного.
+                var worstZone: SafetyZone = watchdog.zone.value
+                var startMs = System.currentTimeMillis()
+                var firstTokenShown = false
+                val outcome = turns.run(
+                    content = userContent,
+                    question = userText,
+                    // ВСЕ найденные отбором, а не только новые. Новизну журнал
+                    // считает сам по своему отображению: если считать её в двух
+                    // местах, экран однажды разойдётся с тем, что ушло в модель.
+                    // Уже лежавшие записи от этого не задваиваются — их номер хода
+                    // в журнале остаётся прежним.
+                    //
+                    // Сны кладутся в ход вместе с записями: по этому списку лента
+                    // отсеивает повторы, и сон без него подавался бы заново на
+                    // каждом ходе. Показ хода считает их отдельно
+                    // (DreamRecall.isDreamLine).
+                    records = allRecords + dreamLines,
+                    onAccepted = {
+                        // Экран показывает всю ленту плюс начатый ход. Поле НЕ
+                        // очищается: разговор копится, а не заменяется. Токены ниже
+                        // дописываются в конец, поэтому последней строкой стоит
+                        // пустой "Агент: ".
+                        binding.textResults.text = renderJournal(pendingQuestion = userText)
+
+                        // Поле стирается здесь, когда реплика прошла все проверки и
+                        // уходит в движок, а не по нажатию: на отказе выше («не
+                        // влезет», «лента заполнена») набранное остаётся в поле, и
+                        // перенабирать его не придётся. Сама реплика уже собрана из
+                        // userText и от поля больше не зависит.
+                        binding.editTextInput.text.clear()
+                    },
+                    onStarted = { at, engineReturn ->
+                        startMs = at
+                        worstZone = watchdog.zone.value
+                        // Возврат движка после чужой работы — своя строка (см.
+                        // ConversationTurns.run); не было возврата — прежняя.
+                        engineReturn?.let { engineReturnLine = it }
+                    },
+                    onEvent = { event ->
+                        val nowZone = watchdog.zone.value
+                        if (nowZone.ordinal > worstZone.ordinal) worstZone = nowZone
+                        when (event) {
+                            is GenerationEvent.Token -> {
+                                if (!firstTokenShown) {
+                                    firstTokenShown = true
+                                    showProgress(null)
+                                }
+                                binding.textResults.append(event.text)
+                                autoScrollIfAtBottom()
+                            }
+                            is GenerationEvent.Progress -> {
+                                // Это обсчёт запроса (prefill) — ровно та часть,
+                                // которую секундомером от нажатия до ответа
+                                // невозможно было отделить от генерации.
+                                showProgress(
+                                    "Обсчёт запроса: ${(event.progress * 100).toInt()}%"
+                                )
+                            }
+                            is GenerationEvent.Error -> {
+                                binding.textResults.append("\n\n[Ошибка: ${event.message}]")
+                            }
+                            // Метрики и ответ копит сам ход; Done и VLM-события
+                            // экрану не нужны.
+                            else -> Unit
+                        }
+                    },
+                    afterSend = { afterSent() },
+                )
+                val ran = when (outcome) {
+                    ConversationTurns.Outcome.JournalFull -> {
+                        binding.buttonGenerate.isEnabled = true
+                        showProgress(null)
+                        showJournalFullDialog()
+                        return@launch
+                    }
+                    is ConversationTurns.Outcome.TooLong -> {
+                        binding.buttonGenerate.isEnabled = true
+                        showProgress(null)
+                        showQuestionTooLongDialog(outcome.contentChars, outcome.maxChars)
+                        return@launch
+                    }
+                    is ConversationTurns.Outcome.Ran -> outcome
+                }
+                val generationEnd = ran.generationEnd
+                val tokensSeen = ran.tokensSeen
+                val engineMetrics = ran.metrics
+                val firstTokenAtMs = ran.firstTokenAtMs
+                val answerText = ran.answer
+
+                // Хвост 19 (27.08.2026): движок отдаёт ноль токенов при
+                // ТОЧНОМ, до последнего знака, повторе предыдущего запроса.
+                // На экране при этом не появлялось ничего: пустая область
+                // ответа и секундомер 0.0 с. Дважды принято за "кнопка не
+                // работает", оба раза стоило перезапуска и потерянного
+                // замера.
+                //
+                // Сказано ПОСЛЕ прогона, по факту, а не предсказано до
+                // него. Причину пустого ответа мы знаем по наблюдениям, а
+                // не из кода библиотеки; предупреждать заранее значило бы
+                // выдавать свою догадку за знание — ровно та ошибка, на
+                // которой мы уже обожглись с кэшем.
+                //
+                // ПРИЧИН У НУЛЯ НЕ ОДНА, И РАНЬШЕ НАЗЫВАЛАСЬ ТОЛЬКО ОДНА.
+                // Вторая наблюдалась: запрос, не поместившийся в окно, даёт
+                // тот же ноль и то же пустое место на экране. Разница
+                // существенная — повтор лечится дописанным знаком, а
+                // непоместившийся запрос от этого лечения не меняется
+                // вовсе, и человек по прежней подсказке лечил не ту
+                // болезнь.
+                //
+                // Различитель точный и дармовой: реплика предыдущего хода
+                // лежит в ленте ДОСЛОВНО (см. `JournalTurn`), поэтому
+                // повтор проверяется сравнением строк. Ход с нулём в ленту
+                // не пошёл, лента между попытками не выросла, значит
+                // совпадение последней реплики означает совпадение всего
+                // запроса.
+                //
+                // Это НЕ предсказание: сравнение делается после отказа,
+                // чтобы назвать причину, а не до отправки, чтобы её
+                // предугадать. Прежнее решение не отменяется.
+                if (tokensSeen == 0) {
+                    // Ход не состоялся, в ленту он не идёт: ноль токенов
+                    // это отказ движка, а не реплика разговора. Записи,
+                    // подобранные под этот вопрос, тоже НЕ помечаются
+                    // уложенными — они никуда не ушли.
+                    val sameAsPrevious =
+                        journal.history().lastOrNull()?.userContent == userContent
+                    // Числа только измеренные. Занятость — отчёт движка,
+                    // длина вопроса — сосчитанные знаки. Вес вопроса в
+                    // токенах не называется: измерить его нечем, движок
+                    // отдаёт это число лишь по итогам прогона, а прогона
+                    // не было. Названная оценка попала бы на экран
+                    // наравне с замером.
+                    // ПОРЯДОК ВЕТОК ЗДЕСЬ РЕШАЕТ. Обе догадки ниже — про
+                    // запрос: повтор или переполнение окна. Но ноль знаков
+                    // бывает и оттого, что прогон оборвали, и тогда с
+                    // запросом всё в порядке, а человека посылают лечить
+                    // здоровое. Поэтому названная причина завершения
+                    // перебивает обе догадки, и неназванная тоже: сказать
+                    // "не знаю, чем кончилось" честнее, чем уверенно
+                    // указать не на то.
+                    val explanation = if (generationEnd != GenerationEnd.COMPLETED) {
+                        llmEngine.getGenerationEndReport() + "\n\n" +
+                            "Ход прервался, не начавшись, поэтому о самом запросе " +
+                            "по этому нулю судить нельзя — ни о повторе, ни о " +
+                            "переполнении окна."
+                    } else if (sameAsPrevious) {
+                        // Следствие названо прямо, потому что оно неприятное:
+                        // лента не выросла, значит повтор того же вопроса даст
+                        // тот же запрос до последнего знака и тот же ноль.
+                        // Дописать знак за человека нельзя — тогда в движок
+                        // уйдёт не то, что он набрал.
+                        "Запрос совпал с предыдущим до последнего знака — сверено " +
+                            "дословно. Допишите любой знак в САМЫЙ КОНЕЦ текста и " +
+                            "нажмите снова: этого хватает, и уже обсчитанное начало " +
+                            "запроса при этом не теряется."
+                    } else {
+                        "Это не повтор: запрос сверен с предыдущим дословно и " +
+                            "отличается. Значит совет «допишите знак» здесь не " +
+                            "поможет.\n\n" +
+                            "Занято ${journal.lastPromptTokens} из $CONTEXT_SIZE токенов, " +
+                            "вопрос — ${userText.length} зн. Сколько токенов весит сам " +
+                            "вопрос, измерить нечем. Известно другое: запрос, не " +
+                            "поместившийся в окно, даёт такой же ноль. Проверяется это " +
+                            "одним способом — задать вопрос заметно короче."
+                    }
+                    // Собирается через SpannableStringBuilder, а не
+                    // сложением строк: лента теперь несёт кликабельные
+                    // участки, и обычное сложение их бы потеряло.
+                    binding.textResults.text = SpannableStringBuilder(renderJournal()).apply {
+                        if (!journal.isEmpty) append("\n\n")
+                        append(
+                            "Модель не выдала ни одного знака.\n\n" + explanation +
+                                "\n\nХод в ленту не записан, записи не помечены " +
+                                "уложенными: разговор остался таким же, каким был до " +
+                                "нажатия."
+                        )
+                    }
+                } else {
+                    // Вспомнил ли агент принесённое сном — по готовому
+                    // ответу, после закрытия хода: вспоминание греет
+                    // записи, и греть их за ответ, который не лёг в ленту,
+                    // было бы нечестно. Правила — в AgentRecall.
+                    val brought = servedDreams.flatMap { it.records }
+                        .filter { it.id !in answerIds }
+                        .distinctBy { it.id }
+                    val recalled = AgentRecall.recalled(brought, stickers, userText, answerText.toString())
+                    val recallOutcome = agentRecaller.recall(recalled.map { it.id })
+                    // Сны, чьё принесённое вспомнено, — притоки реки на
+                    // следующую ночь (см. DreamRiver).
+                    agentRecaller.markDreams(
+                        AgentRecall.recalledDreams(
+                            servedDreams.map { it.dream to it.records },
+                            recalled.mapTo(HashSet()) { it.id },
+                        )
+                    )
+                    recallLine = AgentRecall.meter(brought.size, recallOutcome)
+                    // Ход закрыт: поданное на нём владелец может подхватить
+                    // следующей репликой (см. DreamPickup). Спрошенный сон
+                    // идёт туда же: следующая реплика проверит, ответил ли
+                    // о нём владелец. Давление перечитывается —
+                    // вспоминание только что его сжало.
+                    DreamPickup.afterTurn(
+                        userText,
+                        servedDreams.map { it.dream } + listOfNotNull(askedLeader?.dream),
+                    )
+                    refreshCuriosity()
+                    // Ход состоялся: двери стареют на ход, принесённое
+                    // этим ходом получает свою (см. DreamDoor).
+                    DreamDoor.afterTurn(brought.map { it.id })
+                    // Состояние показано: ход лёг в ленту вместе с ним.
+                    selfSnapshot.getOrNull()?.let { SelfState.markShown(it) }
+                    renderMetricsPanel()
+                    // Ход закрыт — перерисовываем ленту целиком.
+                    //
+                    // Во время генерации ход рисовался как начатый
+                    // (turn = null), то есть БЕЗ строки записей: пока
+                    // ответа нет, отбор не считается уложенным. Без
+                    // перерисовки здесь строка появлялась бы только при
+                    // следующей отрисовке, то есть на следующем ходе, и
+                    // человек читал бы свежий ответ, не видя, была ли под
+                    // ним опора, — то есть в тот момент, когда признак
+                    // нужнее всего.
+                    //
+                    // Тем же движением возвращаются кликабельные участки:
+                    // в тексте, дописанном по токенам, их нет, и записи
+                    // только что закрытого хода иначе не развернуть.
+                    binding.textResults.text = renderJournal()
+                }
+                // Ход закрыт: ходов стало больше, кнопки хода могли
+                // впервые понадобиться. Смещения уже пересчитаны — обе
+                // ветки выше перерисовывают ленту.
+                renderTurnNavVisibility()
+                // Читается сразу после завершения: движок хранит разбивку
+                // ПОСЛЕДНЕЙ генерации, и следующий запуск её затрёт.
+                val breakdown = runCatching { llmEngine.getLastDecodeBreakdown() }.getOrNull()
+                // Тем же моментом и по той же причине: строка собирается из
+                // хвоста лога движка, и следующий запрос её вытеснит. Но
+                // только если генерация точно дошла до обсчёта — иначе
+                // последним в логе окажется ПРОШЛЫЙ запрос, и его числа
+                // показались бы как числа этого.
+                val reuseLine = if (engineMetrics != null || tokensSeen > 0) {
+                    llmEngine.promptReuseReport()
+                } else {
+                    "Стена: не известно — генерация не дошла до ответа"
+                }
+                // Перечитываем после генерации: запись кэша делает сама
+                // библиотека по ходу обсчёта, и на ПЕРВОМ холодном запуске
+                // строка меняется с "пуст" на размер файла именно здесь.
+                // Если она осталась пустой — кэш не пишется, и это надо
+                // видеть сразу, а не через сутки по неизменившемуся времени.
+                promptCacheLine = llmEngine.getPromptCacheReport()
+                lastMetricsLine = metricsReport(
+                    metrics = engineMetrics,
+                    breakdown = breakdown,
+                    wallMs = System.currentTimeMillis() - startMs,
+                    firstTokenAtMs = firstTokenAtMs,
+                    worstZone = worstZone,
+                    generationEnd = generationEnd,
+                    tokenLimit = ConversationTurns.ANSWER_TOKEN_LIMIT,
+                    promptShape = promptShape,
+                    reuseLine = reuseLine
+                )
+                renderMetricsPanel()
+                // Сбой посреди выдачи бросается после всех дел экрана — там же,
+                // где его бросил бы ход, пока жил здесь.
+                ran.failure?.let { throw it }
             }
         }
 
@@ -4670,32 +4604,6 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
         private const val KEY_PROVENANCE_REPAIR_DONE = "provenance_repair_done_2026_08_24"
         private const val KEY_DETAILS_EXPANDED = "details_expanded"
-
-        /**
-         * Потолок длины ответа для обычного вопроса с экрана.
-         *
-         * Раньше здесь не стояло ничего и потолок брался из умолчания
-         * [LlmEngine.generateFlow]. Названо явно по двум причинам: чтобы смена
-         * умолчания в движке не поменяла нам поведение молча, и чтобы отчёт о
-         * генерации мог СРАВНИТЬ с этим числом длину ответа и сказать, что
-         * ответ обрезан.
-         *
-         * Наблюдалось живьём 26.08.2026: `Токенов: ответ 512`, текст кончается
-         * посреди фразы словом «Стоит», и на экране об этом ни строки.
-         *
-         * ЭТО ЧИСЛО НЕ ТОЛЬКО ПОТОЛОК ГЕНЕРАЦИИ: от него же считается бюджет
-         * ленты (см. оба вызова `journal` перед отправкой). Поднимая его,
-         * отнимаешь у разговора столько же токенов общего окна — лента
-         * кончается раньше, и длинные вопросы перестают приниматься. Поэтому
-         * оно не поднимается «на всякий случай» и не остаётся поднятым.
-         *
-         * Пятиминутный потолок непрерывной работы в стороже штатным ответом
-         * этой длины недостижим: при наблюдавшихся 160–210 мс на токен 512
-         * токенов укладываются в полторы минуты. Чтобы наблюдать обрыв по
-         * потолку, число временно поднимают до 2000 и задают счётный вопрос;
-         * после замера возвращают, потому что бюджет ленты считается отсюда же.
-         */
-        private const val ANSWER_TOKEN_LIMIT = 512
 
         /**
          * С какого числа ходов показывать кнопки хода. Наименьшее, при

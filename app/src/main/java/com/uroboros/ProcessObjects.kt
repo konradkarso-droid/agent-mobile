@@ -1,6 +1,8 @@
 package com.uroboros
 
 import android.content.Context
+import com.uroboros.llm.ConversationTurns
+import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.safety.DeviceSafetyWatchdog
@@ -32,7 +34,8 @@ import kotlinx.coroutines.SupervisorJob
  *    обрывается вместе с экраном, даже если объекты, которыми она пользуется,
  *    живы. Сюда переехало владение, а не долгие прогоны.
  *
- * Здесь только то, что обязано быть одним на процесс: память, сторож, движок.
+ * Здесь только то, что обязано быть одним на процесс: память, сторож, движок,
+ * ход разговора с лентой.
  * Остальное (задача цикла, компилятор, очередь вопросов) держит в себе ссылки
  * на экран и пока создаётся экраном.
  */
@@ -42,6 +45,8 @@ object ProcessObjects {
         val mediator: TrustedMediator,
         val watchdog: DeviceSafetyWatchdog,
         val llmEngine: LlmEngine,
+        /** Ход разговора и лента с её хранилищем — см. [ConversationTurns]. */
+        val turns: ConversationTurns,
     ) {
         /**
          * Имя модели, загруженной в [llmEngine], для строки на экране.
@@ -76,10 +81,12 @@ object ProcessObjects {
 
     private fun create(app: Context): Held {
         val watchdog = DeviceSafetyWatchdog(app, processScope)
+        val llmEngine = LlmEngine(app, watchdog)
         return Held(
             mediator = TrustedMediator(app),
             watchdog = watchdog,
-            llmEngine = LlmEngine(app, watchdog),
+            llmEngine = llmEngine,
+            turns = ConversationTurns(llmEngine, JournalStore(app), processScope),
         )
     }
 }
