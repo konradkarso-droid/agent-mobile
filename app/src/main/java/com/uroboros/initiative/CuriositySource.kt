@@ -11,8 +11,10 @@ import com.uroboros.memory.dream.DreamView
  * Источник «спросить о сне»: тот же выход пружины любопытства, что в реплике
  * владельца (CuriosityAsk), только без реплики — владелец молчит.
  *
- * Решение и строка — CuriosityAsk, без своих порогов. Отличия от пути в
- * реплике — только в том, что вокруг хода:
+ * Решение и строка — CuriosityAsk, без своих порогов. Строка своя только
+ * последней фразой: просит спросить прямо, без «если к месту» (почему — у
+ * CuriosityAsk.lineFirst). Остальные отличия от пути в реплике — в том, что
+ * вокруг хода:
  *  - сон отмечается спрошенным, когда строка ушла в движок (та же мерка);
  *  - ход с вопросом идёт в подхват с ПУСТЫМ вопросом: исключать из слов сна
  *    нечего, и следующая реплика владельца о сне засчитается ответом
@@ -31,7 +33,7 @@ class CuriositySource(context: Context) : InitiativeSource {
             is CuriosityAsk.Decision.Ask -> decision.leader
         }
         return InitiativeSource.Offer.Say(
-            line = InitiativeDecision.SILENCE_WORDS + " " + CuriosityAsk.line(leader),
+            line = InitiativeDecision.SILENCE_WORDS + " " + CuriosityAsk.lineFirst(leader),
             what = "сон «${DreamView.brief(leader.brief.kind, leader.brief.texts)}»",
             onSent = { at -> marker.markAsked(leader, at) },
             onAppended = { DreamPickup.afterTurn("", listOf(leader.dream)) },

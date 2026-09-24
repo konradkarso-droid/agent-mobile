@@ -66,6 +66,17 @@ class ConversationTurns(
      */
     val diskEvents: SharedFlow<DiskWrite> = diskWrites.asSharedFlow()
 
+    private val closes = MutableSharedFlow<Int>(extraBufferCapacity = 64)
+
+    /**
+     * Ходы, легшие в ленту: номер хода. Событие уходит ПОСЛЕ того, как замок
+     * хода отпущен, — в отличие от [diskEvents]: запись на диск идёт отдельной
+     * корутиной, запущенной изнутри хода, и может кончиться раньше, чем ход
+     * отпустит замок. Кто ждёт конца хода, чтобы перерисовать ленту (экран —
+     * ход тела агента), ждёт этого события, а не записи на диск.
+     */
+    val closedEvents: SharedFlow<Int> = closes.asSharedFlow()
+
     private val lock = Mutex()
 
     private val _busy = MutableStateFlow(false)
@@ -229,8 +240,30 @@ class ConversationTurns(
         onStarted: (at: Long, engineReturn: String?) -> Unit = { _, _ -> },
         onEvent: (GenerationEvent) -> Unit = {},
         afterSend: suspend () -> Unit = {},
-    ): Outcome = locked {
-        gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT)?.let { return@locked it }
+    ): Outcome {
+        var closedIndex: Int? = null
+        val outcome = locked {
+            runLocked(content, question, records, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
+        }
+        // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
+        closedIndex?.let {
+            if (!closes.tryEmit(it)) Log.w(TAG, "событие закрытия хода ${it + 1} потеряно: очередь полна")
+        }
+        return outcome
+    }
+
+    /** Тело [run], под замком. [onClosed] — номер хода, если он лёг в ленту. */
+    private suspend fun runLocked(
+        content: String,
+        question: String,
+        records: List<String>,
+        onAccepted: () -> Unit,
+        onStarted: (at: Long, engineReturn: String?) -> Unit,
+        onEvent: (GenerationEvent) -> Unit,
+        afterSend: suspend () -> Unit,
+        onClosed: (Int) -> Unit,
+    ): Outcome {
+        gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT)?.let { return it }
         val messages = journal.messagesFor(content)
         onAccepted()
 
@@ -313,9 +346,10 @@ class ConversationTurns(
                     records = records,
                 )
                 appended = true
+                onClosed(journal.history().lastIndex)
             }
         }
-        Outcome.Ran(
+        return Outcome.Ran(
             answer = answer.toString(),
             tokensSeen = tokensSeen,
             firstTokenAtMs = firstTokenAtMs,
