@@ -127,11 +127,12 @@ class CuriosityAskTest {
     fun `строка для модели — сон целиком, с меткой сна, без слова «интересно»`() {
         val leader = (decide(dream(1, 2, picked = 2)) as CuriosityAsk.Decision.Ask).leader
         assertEquals(
-            "Этот сон возвращался в разговоре. Тебе снилось, что рядом по времени было: " +
+            "Этот сон возвращался в разговоре. Тебе снилось: " +
                 "«Запись номер 1 лежит в памяти», «Запись номер 2 лежит в памяти». " +
                 "Если к месту — спроси пользователя о нём, одним вопросом.",
             CuriosityAsk.line(leader),
         )
         assertFalse(CuriosityAsk.line(leader).contains("интерес"))
+        assertFalse("без записей ответа слова «рядом» нет", CuriosityAsk.line(leader).contains("рядом"))
     }
 }
