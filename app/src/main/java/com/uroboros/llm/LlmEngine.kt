@@ -657,6 +657,8 @@ class LlmEngine(
     private fun configureAfterLoad(sourceIdentity: String, loadIdentity: String) {
         // Свежая модель пуста: записывать как точку разговора нечего.
         stateIsConversation = false
+        checkpointFresh = false
+        borrowReport = null
         loadPrint = shortHash(
             (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
         )
@@ -1003,6 +1005,52 @@ class LlmEngine(
     @Volatile
     private var stateIsConversation: Boolean = false
 
+    /**
+     * Лежит ли на диске точка, в точности совпадающая с разговором в движке:
+     * после неё разговор не продолжался. Сбрасывается каждым запросом разговора,
+     * ставится удачной записью или подъёмом точки. Нужна одному месту —
+     * возврату движка (см. [conversationDisplaced]): без неё каждый чужой запрос
+     * писал бы на диск десятки мегабайт, уже лежащих там.
+     */
+    @Volatile
+    private var checkpointFresh: Boolean = false
+
+    /** Итог записи точки перед чужой работой; null — такой записи не было. */
+    @Volatile
+    var borrowReport: String? = null
+        private set
+
+    /**
+     * ВОЗВРАТ ДВИЖКА. Движок один на всех: разговор, судья памяти, цикл. Кто бы
+     * его ни взял, после него в движке чужое состояние, и следующий ответ
+     * пересчитывает всю ленту заново — на полной ленте это минуты (случай
+     * 23.09: четыре минуты после «Разбора памяти», «совпало 3 из 2277»).
+     *
+     * Как решается, в двух половинах:
+     *  - ПЕРЕД чужой работой движок сам пишет точку разговора на диск — в
+     *    [guardedFlow], на первом запросе не-разговора после разговора, если
+     *    точка на диске не свежая. Одно место для всех, кто берёт движок:
+     *    судья, цикл и любой будущий, — никто не обязан помнить об этом сам;
+     *  - ПЕРЕД следующим ответом экран, видя [conversationDisplaced], поднимает
+     *    точку. Поднимает экран, а не движок: точка имеет смысл только в паре с
+     *    лентой, а лента у экрана (см. [restoreStateCheckpoint]).
+     *
+     * Почему подъём безопасен, даже если лента с тех пор ушла вперёд или
+     * укоротилась: движок сверяет запрос с поднятыми токенами и берёт лишь
+     * совпавшее начало, причём не больше, чем длина запроса без одного токена
+     * (`reusable_prefix` в `gguf_lib.cpp`). Несовпавшая точка стоит только
+     * чтения с диска — не хуже нынешнего пересчёта.
+     *
+     * ЧЕГО НЕ УМЕЕТ:
+     *  - если запись перед чужой работой не удалась, поднимется прежняя точка —
+     *    от последнего ухода с экрана; совпадёт её начало, хвост пересчитается;
+     *  - запись занимает секунды и достаётся первому чужому запросу: судья
+     *    начинает чуть позже;
+     *  - точка одна: разговор, прерванный циклом, и цикл, прерванный
+     *    разговором, не хранят каждый своё.
+     */
+    val conversationDisplaced: Boolean get() = !stateIsConversation && hasStateCheckpoint
+
     /** Строка о последней попытке сохранить или поднять контрольную точку. */
     fun getStateCheckpointReport(): String = checkpointReport
 
@@ -1179,6 +1227,7 @@ class LlmEngine(
         }
 
         checkpointReport = "Точка: сохранена, ${humanBytes(target.length())} · $note"
+        checkpointFresh = true
         true
     }
 
@@ -1219,6 +1268,7 @@ class LlmEngine(
         // Поднятая точка — состояние разговора; неудачный подъём оставляет
         // движок пустым.
         stateIsConversation = ok
+        checkpointFresh = ok
         if (ok) {
             val note = lastEngineLogLine(STATE_LOAD_OK_FRAGMENT) ?: "лог молчит"
             checkpointReport = "Точка: поднята · $note"
@@ -1377,9 +1427,16 @@ class LlmEngine(
         maxTokens: Int,
         conversation: Boolean,
     ): Flow<GenerationEvent> = channelFlow {
+        // Движок уходит от разговора к чужой работе — сперва точка разговора
+        // на диск. Зачем и чего не умеет — у [conversationDisplaced].
+        if (!conversation && stateIsConversation && !checkpointFresh) {
+            saveStateCheckpoint()
+            borrowReport = checkpointReport
+        }
         // Первым делом, до всякой работы движка: с этого момента состояние в
         // нём принадлежит этому запросу, как бы он ни кончился.
         stateIsConversation = conversation
+        if (conversation) checkpointFresh = false
         // Перевод иероглифов в скобках — только разговору: судье скобка
         // сломала бы цифры вердикта, циклу — код. Ставится на каждый запрос,
         // а не один раз, потому что запросы разных хозяев идут вперемешку.
