@@ -1732,8 +1732,18 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetSystemPrompt(
         JNIEnv * env, jobject, jstring jprompt) {
     std::lock_guard<std::mutex> lock(g_state.gen_mutex);
     const char * prompt = env->GetStringUTFChars(jprompt, nullptr);
-    g_state.system_prompt = prompt;
+    std::string next(prompt);
     env->ReleaseStringUTFChars(jprompt, prompt);
+    // Смена стены на лету: защищённая при сдвиге окна длина (n_keep в
+    // try_context_shift) описывает прежнюю стену. Сброс заставляет следующий
+    // многоходовой запрос пересчитать её — условие перед строкой лога
+    // «System prompt: … (protected during shifts)» срабатывает и при частичном
+    // совпадении начала. prev_prompt_tokens НЕ трогаются: на них держится
+    // переиспользование совпавшего начала, ради которого смена и идёт на лету.
+    if (next != g_state.system_prompt) {
+        g_state.n_system_tokens = 0;
+    }
+    g_state.system_prompt = std::move(next);
     LOGI("System prompt set (%zu chars)", g_state.system_prompt.size());
 }
 
@@ -2162,8 +2172,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     // придёт полный пересчёт. Если первым целиком обсчитан запрос со своим
     // системным сообщением (судья памяти), а следом пошёл разговор с
     // частичным совпадением, счётчик останется длиной того сообщения, и при
-    // сдвиге окна стена разговора будет защищена не целиком. Та же граница
-    // встанет при смене стены на лету.
+    // сдвиге окна стена разговора будет защищена не целиком. Граница смены
+    // стены на лету закрыта сбросом счётчика в nativeSetSystemPrompt; граница
+    // судьи остаётся.
     if ((g_state.n_past == 0 || g_state.n_system_tokens == 0)
             && !messages.empty() && messages[0].role == "system") {
         try {

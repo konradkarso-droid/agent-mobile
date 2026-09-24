@@ -80,6 +80,7 @@ import com.uroboros.will.ToteResult
 import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.delay
@@ -2571,7 +2572,7 @@ class MainActivity : AppCompatActivity() {
             // она описывает разговор целиком и живёт столько же, сколько он.
             autoSaveLine(),
         )
-        group(engineParamsLine, promptCacheLine, buildSelfLine)
+        group(engineParamsLine, promptCacheLine, buildSelfLine, turns.wallChangeLine)
         // Числа прогона — своя группа: после ответа их приходит больше десятка
         // строк, и слитые с параметрами движка они превращали шторку в
         // простыню. Параметры отвечают на "с чем запущено", прогон — на "как
@@ -2770,6 +2771,7 @@ class MainActivity : AppCompatActivity() {
     private fun setDetailsExpanded(expanded: Boolean) {
         binding.textMetrics.visibility = if (expanded) View.VISIBLE else View.GONE
         binding.checkAutoContinue.visibility = if (expanded) View.VISIBLE else View.GONE
+        binding.checkWallProbe.visibility = if (expanded) View.VISIBLE else View.GONE
         binding.buttonDetails.text = if (expanded) "Свернуть ▴" else "Подробно ▾"
         prefs.edit().putBoolean(KEY_DETAILS_EXPANDED, expanded).apply()
     }
@@ -3632,6 +3634,17 @@ class MainActivity : AppCompatActivity() {
         binding.checkAutoContinue.isChecked = ConversationPrefs.autoContinue(applicationContext)
         binding.checkAutoContinue.setOnCheckedChangeListener { _, on ->
             ConversationPrefs.setAutoContinue(applicationContext, on)
+        }
+        // ВРЕМЕННЫЙ флажок — см. ConversationPrefs.wallProbe. Строка встаёт в
+        // стену со следующего ответа (LlmEngine.applyWall). Просьба — не на
+        // главном потоке: она может подождать идущую запись точки.
+        binding.checkWallProbe.isChecked = ConversationPrefs.wallProbe(applicationContext)
+        binding.checkWallProbe.setOnCheckedChangeListener { _, on ->
+            ConversationPrefs.setWallProbe(applicationContext, on)
+            if (::llmEngine.isInitialized) {
+                val engine = llmEngine
+                lifecycleScope.launch(Dispatchers.IO) { engine.requestWall(engine.wallFor(on)) }
+            }
         }
         // Строка «Первым:» приходит от тела агента (AgentService.initiativeLine).
         lifecycleScope.launch {

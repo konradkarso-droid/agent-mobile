@@ -79,6 +79,17 @@ class ConversationTurns(
 
     private val lock = Mutex()
 
+    /**
+     * Строка шва для «Подробно»: стена сменилась на лету перед таким-то ходом
+     * и что в ней добавилось или убралось (см. [BuildSelfDescription.changeLine]),
+     * либо почему ожидающая стена не встала. Номер хода знает лента, поэтому
+     * строка собирается здесь, а не в движке. null — смены в этом процессе не
+     * было. Живёт в памяти процесса: после перезапуска её нет.
+     */
+    @Volatile
+    var wallChangeLine: String? = null
+        private set
+
     private val _busy = MutableStateFlow(false)
 
     /**
@@ -283,6 +294,9 @@ class ConversationTurns(
                 "(${"%.1f".format(restoreMs / 1000.0)} с)"
         }
 
+        // Номер хода, перед которым может встать ожидающая стена: ход ещё не лёг.
+        val turnNumber = journal.history().size + 1
+
         val startMs = System.currentTimeMillis()
         onStarted(startMs, engineReturn)
         var firstTokenAtMs: Long? = null
@@ -348,6 +362,15 @@ class ConversationTurns(
                 appended = true
                 onClosed(journal.history().lastIndex)
             }
+        }
+        // Стена ставится в начале запроса разговора (LlmEngine.applyWall), то
+        // есть уже случилась или не случилась к этому месту.
+        val wallChange = engine.takeAppliedWallChange()
+        if (wallChange != null) {
+            wallChangeLine = BuildSelfDescription.changeLine(turnNumber, wallChange.first, wallChange.second)
+        } else if (engine.wallDeferredBusy) {
+            wallChangeLine = "Стена ждёт: перед ходом $turnNumber движок был занят другой " +
+                "работой, встанет со следующего хода"
         }
         return Outcome.Ran(
             answer = answer.toString(),
