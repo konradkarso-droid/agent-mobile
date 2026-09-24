@@ -292,10 +292,15 @@ internal sealed class SelectionSummary {
      * ответ не годится. Лечится не поиском и не порогами, а самим вопросом —
      * именно он вытащил формулировки себя самого из памяти.
      */
-    data class OnlyQuestionsFound(val questions: Int) : SelectionSummary() {
+    data class OnlyQuestionsFound(val questions: Int, val requests: Int = 0) : SelectionSummary() {
         override val text =
-            "Отбор: найдено записей $questions, но все — только вопросы; " +
-                "для ответа взять нечего."
+            if (requests == 0) {
+                "Отбор: найдено записей $questions, но все — только вопросы; " +
+                    "для ответа взять нечего."
+            } else {
+                "Отбор: найдено записей ${questions + requests}, но ни одна ничего не " +
+                    "утверждает — вопросов $questions, просьб $requests; для ответа взять нечего."
+            }
     }
 
     data class NothingFound(val words: Int, val hidden: Int) : SelectionSummary() {
@@ -323,7 +328,9 @@ internal sealed class SelectionSummary {
         /** Сколько записей карантина содержат слова вопроса. См. KDoc SelectionSummary. */
         val hidden: Int,
         /** Сколько записей отсеяно как «только вопросы» на пути ANSWERING_USER. */
-        val questionsFiltered: Int = 0
+        val questionsFiltered: Int = 0,
+        /** Сколько отсеяно как «только просьбы» там же (RiskTrigger.isOnlyRequests). */
+        val requestsFiltered: Int = 0,
     ) : SelectionSummary() {
 
         val rejected: Int get() = tooNarrow + tooExpensive + tooBoth
@@ -342,8 +349,9 @@ internal sealed class SelectionSummary {
                         if (tooExpensive > 0) "дорого $tooExpensive" else null,
                         if (tooBoth > 0) "узко и дорого $tooBoth" else null
                     ).joinToString(", ")
-                val filtered = if (questionsFiltered > 0)
-                    " · отсеяно вопросов $questionsFiltered" else ""
+                val filtered = (if (questionsFiltered > 0)
+                    " · отсеяно вопросов $questionsFiltered" else "") +
+                    (if (requestsFiltered > 0) " · отсеяно просьб $requestsFiltered" else "")
                 return head + trim + why + filtered + " · скрыто карантином $hidden"
             }
     }
@@ -378,6 +386,8 @@ data class ContextResult(
     val trace: List<String>,
     /** Сколько записей-вопросов отсеяно при отборе для ответа. */
     val questionsFiltered: Int = 0,
+    /** Сколько записей-просьб отсеяно там же; отдельно от вопросов. */
+    val requestsFiltered: Int = 0,
 )
 
 /**
@@ -749,15 +759,17 @@ class HourglassMemory(
             }
         }
 
-        val qFiltered = (selection.summary as? SelectionSummary.Weighed)?.questionsFiltered
-            ?: if (selection.summary is SelectionSummary.OnlyQuestionsFound)
-                (selection.summary as SelectionSummary.OnlyQuestionsFound).questions
-            else 0
+        val (qFiltered, rFiltered) = when (val summary = selection.summary) {
+            is SelectionSummary.Weighed -> summary.questionsFiltered to summary.requestsFiltered
+            is SelectionSummary.OnlyQuestionsFound -> summary.questions to summary.requests
+            else -> 0 to 0
+        }
         return ContextResult(
             stickers = touched,
             summary = selection.summary.text,
             trace = selection.trace,
-            questionsFiltered = qFiltered
+            questionsFiltered = qFiltered,
+            requestsFiltered = rFiltered,
         )
     }
 
@@ -1015,9 +1027,13 @@ class HourglassMemory(
         // свою запись-вопрос. Цель — не стереть вопросы из памяти, а убрать
         // их с пути к ответу: там они занимают место сведений, не неся их.
         //
+        // Просьбы снимаются тем же путём и считаются отдельно; что считается
+        // просьбой — у RiskTrigger.isOnlyRequests.
+        //
         // ЧЕГО НЕ УМЕЕТ: вопрос без знака считается утверждением. Запись,
-        // в которой вопрос смешан с фактом, проходит целиком.
+        // в которой вопрос или просьба смешаны с фактом, проходит целиком.
         var questionsFiltered = 0
+        var requestsFiltered = 0
         val totalWords = words.size
 
         val passed = mutableListOf<Scored>()
@@ -1026,11 +1042,15 @@ class HourglassMemory(
         var tooBoth = 0
 
         for (sticker in candidates.values) {
-            if (purpose == RetrievalPurpose.ANSWERING_USER &&
-                RiskTrigger.isOnlyQuestions(sticker.content)
-            ) {
-                questionsFiltered++
-                continue
+            if (purpose == RetrievalPurpose.ANSWERING_USER) {
+                if (RiskTrigger.isOnlyQuestions(sticker.content)) {
+                    questionsFiltered++
+                    continue
+                }
+                if (RiskTrigger.isOnlyRequests(sticker.content)) {
+                    requestsFiltered++
+                    continue
+                }
             }
 
             val matched = hits[sticker.id].orEmpty()
@@ -1064,14 +1084,14 @@ class HourglassMemory(
             .take(limit)
             .map { it.sticker }
 
-        // Нашлись кандидаты, но все оказались вопросами и были отсеяны.
-        // Проверяется здесь, а не до цикла: до цикла questionsFiltered = 0
+        // Нашлись кандидаты, но все оказались вопросами или просьбами и были
+        // отсеяны. Проверяется здесь, а не до цикла: до цикла счётчики = 0
         // и условие никогда не выполнилось бы.
-        if (stickers.isEmpty() && questionsFiltered > 0) {
+        if (stickers.isEmpty() && questionsFiltered + requestsFiltered > 0) {
             return SelectionResult(
                 emptyList(),
                 trace,
-                SelectionSummary.OnlyQuestionsFound(questionsFiltered)
+                SelectionSummary.OnlyQuestionsFound(questionsFiltered, requestsFiltered)
             )
         }
 
@@ -1089,7 +1109,8 @@ class HourglassMemory(
                 tooExpensive = tooExpensive,
                 tooBoth = tooBoth,
                 hidden = hidden.size,
-                questionsFiltered = questionsFiltered
+                questionsFiltered = questionsFiltered,
+                requestsFiltered = requestsFiltered,
             )
         )
     }
