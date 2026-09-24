@@ -202,8 +202,8 @@ class SelectionRuleTest {
     fun `пять состояний отбора называются по-разному`() {
         val texts = listOf(
             SelectionSummary.NoQuery.text,
-            SelectionSummary.NoRoom.text,
             SelectionSummary.NoSearchableWords.text,
+            SelectionSummary.OnlyQuestionsFound(questions = 2).text,
             SelectionSummary.NothingFound(words = 4, hidden = 0).text,
             SelectionSummary.Weighed(
                 words = 4, candidates = 12, passed = 3, shown = 3,

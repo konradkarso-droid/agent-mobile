@@ -56,31 +56,19 @@ object Prism {
     const val IDENTITY_TAG = "identity"
 
     /**
-     * Дыра №4, вторая половина (2026-08-21): какие слои вообще участвуют в выборке
-     * для данного запроса. Вынесено отдельной функцией, чтобы отбор по слоям делался
-     * в SQL (StickerDao.getRanked), а не полным сканом таблицы с последующей
-     * фильтрацией в Kotlin.
+     * Все слои — срез памяти по рангу при пустом запросе (просмотр без слов).
      *
-     * Логика повторяет прежнюю filter() один в один: горячие слои всегда, BLUE и
-     * PURPLE — только по тем же ключевым словам. Пустой запрос = вся память
-     * (прежний путь брал getAll() без ограничения по слоям).
+     * Раньше здесь стояла функция, выбиравшая слои по словам запроса: BLUE и
+     * PURPLE открывались словами вроде «старое» или «архив». Теперь слои для
+     * поиска по словам задают окна круга (HourglassMemory, DolmenCircle), и
+     * холодное окно смотрит всегда, без волшебных слов. Единственным
+     * читателем остался пустой запрос, которому нужна вся память, — поэтому
+     * функция стала списком.
      *
      * split()/filter() ниже оставлены нетронутыми: они чистые функции, могут быть
      * покрыты тестами и ещё пригодиться — просто больше не стоят в горячем пути.
      */
-    fun layersFor(query: String?): List<String> {
-        if (query.isNullOrBlank()) return LAYERS_ORDER.map { it.name }
-
-        val layers = mutableListOf(Layer.RED, Layer.ORANGE, Layer.YELLOW, Layer.GREEN)
-        val q = query.lowercase()
-        if ("старое" in q || "прошлое" in q) {
-            layers += Layer.BLUE
-        }
-        if ("архив" in q || "забытое" in q) {
-            layers += Layer.PURPLE
-        }
-        return layers.map { it.name }
-    }
+    val ALL_LAYERS: List<String> = LAYERS_ORDER.map { it.name }
 
     fun split(stickers: List<Sticker>): Map<Layer, List<Sticker>> =
         LAYERS_ORDER.associateWith { layer -> stickers.filter { it.layer == layer.name } }

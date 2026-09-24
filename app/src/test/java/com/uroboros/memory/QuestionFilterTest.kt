@@ -43,6 +43,7 @@ class QuestionFilterTest {
                     .sortedByDescending { it.createdAt }.take(limit)
             }
             onSearchHiddenAnyCase = { _, _, _ -> emptyList() }
+            onCountInLayer = { layer -> records.count { it.layer == layer } }
         }
         return HourglassMemory(dao)
     }

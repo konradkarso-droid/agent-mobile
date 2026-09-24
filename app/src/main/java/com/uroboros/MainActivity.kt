@@ -41,6 +41,7 @@ import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.memory.DisputeCluster
 import com.uroboros.memory.DisputeNotice
+import com.uroboros.memory.DolmenCircle
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.ProvenanceLabels
@@ -237,6 +238,15 @@ class MainActivity : AppCompatActivity() {
      * null прячет строку: отбора на этом ходе не было.
      */
     private var recordsQuestionsLine: String? = null
+
+    /**
+     * Круг дольменов к последнему ответу: чем кончилось каждое окно отбора, а
+     * после ответа — сколько холода агент использовал (см. DolmenCircle.meter).
+     * Отдельно от «Записей к ответу»: та считает итог, эта — откуда он.
+     *
+     * null прячет строку: отбора на этом ходе не было.
+     */
+    private var circleLine: String? = null
 
     /**
      * Сны к последнему ответу: сколько подходило, сколько подано, а если ноль —
@@ -1186,7 +1196,8 @@ class MainActivity : AppCompatActivity() {
                 val shown = if (lookupId != null) null else mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.BROWSING,
                     query = query,
-                    limit = 20
+                    limit = 20,
+                    recentQuestions = emptyList(),
                 )
                 // Построчный разбор отбора печатает ЭТОТ слой, а не память:
                 // класс уровня памяти не зовёт android.util.Log, иначе его не
@@ -1262,8 +1273,11 @@ class MainActivity : AppCompatActivity() {
                     rules += (witnessStart + witnessBreak + 1) to out.length
                 }
                 blocks += witnessStart to out.length
+                // Строка круга — рядом с итогом отбора: просмотр идёт тем же
+                // кругом, что и ответ, только без темы (ленты здесь нет), —
+                // иначе прибор показывал бы отбор, который в ответ не идёт.
                 section(
-                    shown?.summary
+                    shown?.let { it.summary + "\n" + it.circle }
                         ?: "Запись по номеру №$lookupId. Поиска по словам не было, " +
                             "и обращением к записи просмотр не считается.",
                     headed = false
@@ -2575,7 +2589,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, circleLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2772,6 +2786,7 @@ class MainActivity : AppCompatActivity() {
         disputeNoticeLine = null
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
+        circleLine = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
@@ -3902,11 +3917,17 @@ class MainActivity : AppCompatActivity() {
                 if (judgeRunning) awaitJudgeYield()
                 // Записи уйдут в промпт и будут участвовать в ответе — это
                 // единственное обращение, за которое засчитывается польза.
+                //
+                // Реплики владельца из ленты — источник окна темы (см.
+                // DolmenCircle): короткое «да, давай» находит записи по тому,
+                // о чём говорили последние ходы.
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
-                    limit = 5
+                    limit = 5,
+                    recentQuestions = journal.history().map { it.question },
                 )
+                circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
                 // отбору и из холодных слоёв, если вопрос их задевает (см.
                 // DreamDoor). Чтение по номеру ничего не греет. Сбой чтения
@@ -3927,8 +3948,11 @@ class MainActivity : AppCompatActivity() {
                 // не находится отбором на своём же ходе и утверждение не
                 // уезжает в модель дважды — репликой и цитатой рядом с ней.
 
+                // Строка записи — кто, когда и что; одно место на все подписи
+                // для модели, там же и чего подпись времени не умеет.
+                val recordsAt = System.currentTimeMillis()
                 val allRecords = stickers.map { sticker ->
-                    "${ProvenanceLabels.forModel(sticker.source)}: «${sticker.content}»."
+                    ProvenanceLabels.recordForModel(sticker, recordsAt)
                 }
                 // Сны всплывают через записи этого ответа (см. DreamRecall).
                 // Отбор только читает: ни записи, ни сны здесь не меняются, а
@@ -4404,6 +4428,23 @@ class MainActivity : AppCompatActivity() {
                         )
                     )
                     recallLine = AgentRecall.meter(brought.size, recallOutcome)
+                    // Холод греется, только если агент его использовал: теми же
+                    // правилами и тем же путём, что сны, но счёт отдельный —
+                    // слитый со снами, он скрыл бы, чьё это вспоминание.
+                    // Остальные записи хода вычитаются: их слова агент знал и
+                    // без холода.
+                    val coldRecords = stickers.filter { it.id in contextResult.coldIds }
+                    if (coldRecords.isNotEmpty()) {
+                        val coldUsed = AgentRecall.recalled(
+                            coldRecords,
+                            stickers.filter { it.id !in contextResult.coldIds },
+                            userText,
+                            answerText.toString(),
+                        )
+                        val coldOutcome = agentRecaller.recall(coldUsed.map { it.id })
+                        DolmenCircle.coldUse(coldRecords.size, coldOutcome.recalled, coldOutcome.warmed)
+                            ?.let { circleLine = contextResult.circle + " · " + it }
+                    }
                     // Ход закрыт: поданное на нём владелец может подхватить
                     // следующей репликой (см. DreamPickup). Спрошенный сон
                     // идёт туда же: следующая реплика проверит, ответил ли

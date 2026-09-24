@@ -21,7 +21,7 @@ import org.junit.Test
  */
 class UsefulnessMarksTest {
 
-    // Выдача из трёх записей: 1 — принцип, приехавший по слою; 2 и 3 нашлись по словам.
+    // Выдача из трёх записей: 1 — из окна темы, с вопросом не совпадала; 2 и 3 нашлись по словам.
     private val returned = listOf(1L, 2L, 3L)
     private val matched = setOf(2L, 3L)
 
@@ -50,7 +50,7 @@ class UsefulnessMarksTest {
     }
 
     @Test
-    fun `запись, попавшая и в принципы, и в совпадения, отметку получает`() {
+    fun `отметка зависит от совпадения, а не от места в выдаче`() {
         assertEquals(
             setOf(1L),
             usefulnessMarks(RetrievalPurpose.ANSWERING_USER, listOf(1L, 2L), setOf(1L))

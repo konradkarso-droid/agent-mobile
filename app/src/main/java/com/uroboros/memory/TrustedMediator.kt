@@ -273,9 +273,10 @@ class TrustedMediator(context: Context) {
     suspend fun getContextWithSummary(
         purpose: RetrievalPurpose,
         query: String? = null,
-        limit: Int = 10
+        limit: Int = 10,
+        recentQuestions: List<String> = emptyList(),
     ): ContextResult {
-        return hourglass.getContextWithSummary(purpose, query, limit)
+        return hourglass.getContextWithSummary(purpose, query, limit, recentQuestions)
     }
 
     suspend fun totalStickers(): Int = dao.count()

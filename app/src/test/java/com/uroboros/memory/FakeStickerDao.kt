@@ -76,6 +76,9 @@ class FakeStickerDao : StickerDao {
     /** Ответ на getById(id) — записи сна по номеру читает подхват. */
     var onGetById: ((id: Long) -> Sticker?)? = null
 
+    /** Ответ на countInLayer(layer) — число записей в красном печатает прибор круга. */
+    var onCountInLayer: ((layer: String) -> Int)? = null
+
     /** Ответ на getExpired(now) — путь чтения зовёт его первым, через migrateExpired. */
     var onGetExpired: ((now: Long) -> List<Sticker>)? = null
 
@@ -236,7 +239,10 @@ class FakeStickerDao : StickerDao {
 
     override suspend fun count(): Int = unprepared("count")
     override suspend fun countExpired(now: Long): Int = unprepared("countExpired")
-    override suspend fun countInLayer(layer: String): Int = unprepared("countInLayer")
+    override suspend fun countInLayer(layer: String): Int {
+        val answer = onCountInLayer ?: unprepared("countInLayer")
+        return answer(layer)
+    }
     override suspend fun countPendingReview(): Int = unprepared("countPendingReview")
     override suspend fun oldestExpiredAt(now: Long): Long? = unprepared("oldestExpiredAt")
     override suspend fun nextExpiryAt(now: Long): Long? = unprepared("nextExpiryAt")
