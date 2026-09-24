@@ -61,8 +61,8 @@ class LadderSearchTest {
      * тесте, какой из двух поисков он подменяет.
      */
     private fun emptyDao(
-        found: (String, String, Int) -> List<Sticker> = { _, _, _ -> emptyList() },
-        hidden: (String, String, Int) -> List<HiddenRow> = { _, _, _ -> emptyList() }
+        found: (String, String, Int, List<String>) -> List<Sticker> = { _, _, _, _ -> emptyList() },
+        hidden: (String, String, Int, List<String>) -> List<HiddenRow> = { _, _, _, _ -> emptyList() }
     ) = FakeStickerDao().apply {
         onGetExpired = { emptyList() }
         onGetRanked = { _, _ -> emptyList() }
@@ -134,7 +134,7 @@ class LadderSearchTest {
      */
     @Test
     fun `спуск останавливается на ступени с тремя находками`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ ->
+        val dao = emptyDao(found = { _, _, _, _ ->
             listOf(sticker(1), sticker(2), sticker(3))
         })
         HourglassMemory(dao).getContextWithSummary(
@@ -148,7 +148,7 @@ class LadderSearchTest {
     /** Двух находок для остановки мало — спуск идёт до конца лестницы. */
     @Test
     fun `двух находок для остановки спуска мало`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ -> listOf(sticker(1), sticker(2)) })
+        val dao = emptyDao(found = { _, _, _, _ -> listOf(sticker(1), sticker(2)) })
         HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -165,7 +165,7 @@ class LadderSearchTest {
      */
     @Test
     fun `запись из RED не становится кандидатом`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ -> listOf(sticker(1, layer = Layer.RED)) })
+        val dao = emptyDao(found = { _, _, _, _ -> listOf(sticker(1, layer = Layer.RED)) })
         val result = HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -182,7 +182,7 @@ class LadderSearchTest {
      */
     @Test
     fun `запись из холодного слоя не становится кандидатом окна вопроса`() = runBlocking {
-        val dao = emptyDao(found = { _, _, _ -> listOf(sticker(1, layer = Layer.BLUE)) })
+        val dao = emptyDao(found = { _, _, _, _ -> listOf(sticker(1, layer = Layer.BLUE)) })
         val result = HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -219,7 +219,7 @@ class LadderSearchTest {
      */
     @Test
     fun `число в итоге совпадает с числом отданных записей`() = runBlocking {
-        val dao = emptyDao(found = { prefix, _, _ ->
+        val dao = emptyDao(found = { prefix, _, _, _ ->
             if (prefix == "рубанка") listOf(sticker(1, content = "рубанок с колодкой"))
             else emptyList()
         })
@@ -263,7 +263,7 @@ class LadderSearchTest {
      */
     @Test
     fun `скрытые не останавливают спуск по лестнице`() = runBlocking {
-        val dao = emptyDao(hidden = { _, _, _ ->
+        val dao = emptyDao(hidden = { _, _, _, _ ->
             listOf(hiddenRow(1), hiddenRow(2), hiddenRow(3))
         })
         HourglassMemory(dao).getContextWithSummary(
@@ -282,7 +282,7 @@ class LadderSearchTest {
      */
     @Test
     fun `скрытая запись считается один раз при нескольких совпадениях`() = runBlocking {
-        val dao = emptyDao(hidden = { _, _, _ -> listOf(hiddenRow(1)) })
+        val dao = emptyDao(hidden = { _, _, _, _ -> listOf(hiddenRow(1)) })
         val result = HourglassMemory(dao).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка колодка",
@@ -298,7 +298,7 @@ class LadderSearchTest {
      */
     @Test
     fun `скрытая запись из RED и неразрешённого слоя не считается`() = runBlocking {
-        val red = emptyDao(hidden = { _, _, _ -> listOf(hiddenRow(1, layer = Layer.RED)) })
+        val red = emptyDao(hidden = { _, _, _, _ -> listOf(hiddenRow(1, layer = Layer.RED)) })
         val redResult = HourglassMemory(red).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",
@@ -306,7 +306,7 @@ class LadderSearchTest {
         )
         assertTrue(redResult.summary.contains("скрыто карантином 0"))
 
-        val blue = emptyDao(hidden = { _, _, _ -> listOf(hiddenRow(1, layer = Layer.BLUE)) })
+        val blue = emptyDao(hidden = { _, _, _, _ -> listOf(hiddenRow(1, layer = Layer.BLUE)) })
         val blueResult = HourglassMemory(blue).getContextWithSummary(
             purpose = RetrievalPurpose.BROWSING,
             query = "рубанка",

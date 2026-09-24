@@ -929,10 +929,12 @@ class HourglassMemory(
      * получается несколько, но это обращения к локальной базе — миллисекунды;
      * платим мы не за поиск, а за то, что попадёт в запрос к модели.
      *
-     * Слои. Поиск в базе не ограничен слоями, поэтому найденное фильтруется
-     * по слоям окна (allowedLayers): горячим у окон вопроса и темы, холодным у
-     * холодного окна (см. DolmenCircle). RED отсеивается всегда, отдельной
-     * строкой, независимо от списка слоёв: красный не ищется ни одним окном.
+     * Слои. Поиск в базе спрашивает только слои окна (allowedLayers): горячие
+     * у окон вопроса и темы, холодные у холодного окна (см. DolmenCircle).
+     * Условие стоит в самом запросе, до лимита, — почему, см. KDoc
+     * searchAnyCase. В Kotlin ниже тот же фильтр повторён вторым забором, и
+     * RED отсеивается там отдельной строкой, независимо от списка слоёв:
+     * красный не ищется ни одним окном.
      *
      * Слова и правило прохождения приходят снаружи: окно вопроса ищет словами
      * вопроса по [scoreCandidate], окно темы — словами темы по
@@ -1095,7 +1097,7 @@ class HourglassMemory(
                 val prefix = word.take(prefixLength)
                 val prefixCapitalized = prefix.replaceFirstChar { it.uppercaseChar() }
                 var foundHere = 0
-                for (sticker in dao.searchAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT)) {
+                for (sticker in dao.searchAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT, allowedLayers)) {
                     if (sticker.layer == Layer.RED.name) continue
                     if (sticker.layer !in allowedLayers) continue
                     candidates[sticker.id] = sticker
@@ -1113,7 +1115,7 @@ class HourglassMemory(
                 // видимыми находками, останавливает и счёт скрытых. Оба числа
                 // обязаны описывать ОДИН поиск, иначе их нельзя ставить рядом.
                 var hiddenHere = 0
-                for (row in dao.searchHiddenAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT)) {
+                for (row in dao.searchHiddenAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT, allowedLayers)) {
                     if (row.layer == Layer.RED.name) continue
                     if (row.layer !in allowedLayers) continue
                     hidden.add(row.id)

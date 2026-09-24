@@ -29,11 +29,13 @@ class CircleSelectionTest {
         onGetRanked = { layers, limit ->
             records.filter { it.layer in layers && !it.reviewPending }.sortedByDescending { it.createdAt }.take(limit)
         }
-        onSearchAnyCase = { q, qCap, limit ->
-            records.filter { !it.reviewPending && (it.content.contains(q) || it.content.contains(qCap)) }
-                .sortedByDescending { it.createdAt }.take(limit)
+        // Как SQL: сперва слой и слова, потом самые новые, потом лимит.
+        onSearchAnyCase = { q, qCap, limit, layers ->
+            records.filter {
+                !it.reviewPending && it.layer in layers && (it.content.contains(q) || it.content.contains(qCap))
+            }.sortedByDescending { it.createdAt }.take(limit)
         }
-        onSearchHiddenAnyCase = { _, _, _ -> emptyList() }
+        onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
         onCountInLayer = { layer -> records.count { it.layer == layer } }
     }
 
@@ -76,6 +78,37 @@ class CircleSelectionTest {
         assertEquals(Layer.BLUE.name, result.stickers.single { it.id == blue.id }.layer)
         assertTrue("горячее греется", dao.layerUpdates.any { it.id == green.id && it.layer == Layer.YELLOW.name })
         assertTrue(result.circle.contains("холод — нашёл 1, мест 1"))
+    }
+
+    /**
+     * Холод не делит кандидатов с горячими. Лимит базы режет самые новые
+     * первыми, а холодная запись самая старая: если бы слой отсекался после
+     * лимита, двадцать пять горячих с тем же словом вытеснили бы её всегда.
+     */
+    @Test
+    fun `холодная запись находится и при двадцати с лишним горячих с тем же словом`() = runBlocking {
+        val blue = sticker(1, "рубанок старый", Layer.BLUE)
+        val hot = (2L..26L).map { sticker(it, "рубанок $it", Layer.GREEN) }
+        val dao = dao(blue, *hot.toTypedArray())
+        val result = HourglassMemory(dao).getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "рубанок", 5)
+
+        assertEquals(setOf(blue.id), result.coldIds)
+        assertTrue(blue.id in result.stickers.map { it.id })
+        assertTrue(result.circle.contains("холод — нашёл 1, мест 1"))
+    }
+
+    /** Каждое окно спрашивает базу только о своих слоях, и красного среди них нет. */
+    @Test
+    fun `поиск в базе спрашивает слои окна, без красного`() = runBlocking {
+        val dao = dao(sticker(1, "рубанок из клёна", Layer.BLUE), sticker(2, "рубанок из дуба", Layer.GREEN))
+        HourglassMemory(dao).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5, recentQuestions = listOf("колодка берёза"),
+        )
+        val hot = listOf(Layer.ORANGE.name, Layer.YELLOW.name, Layer.GREEN.name)
+        val cold = listOf(Layer.BLUE.name, Layer.PURPLE.name)
+        val asked = (dao.searchCalls + dao.hiddenSearchCalls).map { it.layers }.toSet()
+        assertEquals(setOf(hot, cold), asked)
+        assertTrue(asked.none { Layer.RED.name in it })
     }
 
     @Test
