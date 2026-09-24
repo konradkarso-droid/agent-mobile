@@ -59,9 +59,15 @@ class FakeStickerDao : StickerDao {
     var onGetRanked: ((layers: List<String>, limit: Int) -> List<Sticker>)? = null
 
     /**
-     * Ответ на searchAnyCase(query, queryCapitalized, limit, layers). Слои
+     * Ответ на searchAnyCase(query, queryCapitalized, limit, layers, excluded). Слои
      * приходят лямбде, но подделка по ним НЕ фильтрует — как и LIKE, это
      * свойство SQL; тест, которому нужен отсев по слою, делает его сам.
+     *
+     * Условие `content NOT IN (:excluded)` подделка ставит сама, на ответ
+     * лямбды, — то же условие, что в запросе. Но ставит ПОСЛЕ лямбды, а в SQL
+     * оно стоит до лимита. Тест, которому важен этот порядок (реплики ленты не
+     * должны вытеснять живую запись лимитом), берёт список исключений из
+     * searchCalls.last() внутри своей лямбды и отсекает до лимита сам.
      */
     var onSearchAnyCase: ((query: String, queryCapitalized: String, limit: Int, layers: List<String>) -> List<Sticker>)? = null
 
@@ -110,7 +116,14 @@ class FakeStickerDao : StickerDao {
 
     // --- Что записалось (читает тест) ---
 
-    data class SearchCall(val query: String, val queryCapitalized: String, val limit: Int, val layers: List<String>)
+    data class SearchCall(
+        val query: String,
+        val queryCapitalized: String,
+        val limit: Int,
+        val layers: List<String>,
+        /** Исключённые тексты; у карантинного поиска их нет — пусто. */
+        val excluded: List<String> = emptyList(),
+    )
     data class RankedCall(val layers: List<String>, val limit: Int)
     data class LayerUpdate(val id: Long, val layer: String, val expiryTime: Long?)
 
@@ -161,11 +174,12 @@ class FakeStickerDao : StickerDao {
         query: String,
         queryCapitalized: String,
         limit: Int,
-        layers: List<String>
+        layers: List<String>,
+        excluded: List<String>
     ): List<Sticker> {
-        searchCalls += SearchCall(query, queryCapitalized, limit, layers)
+        searchCalls += SearchCall(query, queryCapitalized, limit, layers, excluded)
         val answer = onSearchAnyCase ?: unprepared("searchAnyCase")
-        return answer(query, queryCapitalized, limit, layers)
+        return answer(query, queryCapitalized, limit, layers).filter { it.content !in excluded }
     }
 
     override suspend fun searchHiddenAnyCase(

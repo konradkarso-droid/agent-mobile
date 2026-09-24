@@ -162,7 +162,14 @@ internal val STOP_WORDS = setOf(
     "очень", "просто", "только", "ещё", "уже", "тоже", "также",
     "твой", "твоя", "свой", "своя", "мой", "моя",
     "моего", "моему", "моих", "моим", "твоего", "твоему",
-    "своего", "своему", "своих", "своим"
+    "своего", "своему", "своих", "своим",
+    // Разговорные связки, не несущие темы: окно темы искало по «сейчас,
+    // кстати, вообще», окно вопроса — по «давай» из «да, давай». Добавка
+    // объявленная, не подобранная, и действует на всех читателей списка —
+    // поиск, тему, сны, судью, правило противоречия: для каждого из них эти
+    // слова тоже пустые, и ожидаемое действие одно — меньше случайных связей.
+    "сейчас", "кстати", "вообще", "давай", "вроде", "ладно", "конечно",
+    "короче", "значит", "наверное"
 )
 
 /** Потолок числа слов, по которым идёт поиск, — на одну реплику. */
@@ -729,6 +736,27 @@ class HourglassMemory(
          * просмотр памяти, у которого ленты нет.
          */
         recentQuestions: List<String> = emptyList(),
+        /**
+         * Реплики владельца, которые модель видит в этом же запросе: вся лента
+         * и текущая реплика. Записи того же текста не берёт ни одно окно — они
+         * дали бы модели одну реплику дважды, в ленте и «воспоминанием».
+         *
+         * Отдельный параметр, а не вывод из [recentQuestions] и [query]: просмотр
+         * памяти зовёт отбор с запросом человека, и там совпадающую запись
+         * исключать нельзя — человек ищет именно её. Пустой список — не
+         * исключать ничего; так зовут все, кроме пути ответа.
+         *
+         * ИСКЛЮЧЕНИЕ, А НЕ УДАЛЕНИЕ. Запись остаётся в базе нетронутой: когда
+         * лента закроется и реплика уйдёт из неё, запись снова станет обычным
+         * воспоминанием. Промах здесь восстановим, поэтому и выбрано
+         * исключение.
+         *
+         * ЧЕГО НЕ УМЕЕТ. Сравнивается текст, а не смысл: пересказ реплики в
+         * памяти не исключится. И пока лента открыта, повторённая фраза теряет
+         * «ты это говорил и раньше» — старая запись того же текста тоже
+         * исключена. Цена принята: лента закроется — запись вернётся.
+         */
+        excludedTexts: List<String> = emptyList(),
     ): ContextResult {
         migrateExpired()
 
@@ -755,15 +783,19 @@ class HourglassMemory(
         val trace = mutableListOf<String>()
         val questionWords = meaningfulWords(query)
         val themeWords = DolmenCircle.themeWords(recentQuestions, questionWords)
+        // Исключение идёт внутри поиска каждого окна, а не после него — почему,
+        // см. searchByWords и KDoc StickerDao.searchAnyCase.
+        val excludedRaw = excludedTexts.filter { it.isNotBlank() }.distinct()
+        val excluded = Excluded(excludedRaw, excludedRaw.mapTo(HashSet()) { normalizeExact(it) })
 
         val question =
             if (questionWords.isEmpty()) null
-            else searchByWords(questionWords, limit, SEARCH_HOT_LAYERS, purpose, ::scoreCandidate)
+            else searchByWords(questionWords, limit, SEARCH_HOT_LAYERS, purpose, ::scoreCandidate, excluded)
         question?.let { trace += "окно вопроса:"; trace += it.trace }
 
         val theme =
             if (themeWords.isEmpty()) null
-            else searchByWords(themeWords, limit, SEARCH_HOT_LAYERS, purpose, ::scoreThemeCandidate)
+            else searchByWords(themeWords, limit, SEARCH_HOT_LAYERS, purpose, ::scoreThemeCandidate, excluded)
         theme?.let { trace += "окно темы:"; trace += it.trace }
 
         // Холод смотрит всегда, волшебные слова вроде «архив» ему не нужны.
@@ -779,6 +811,7 @@ class HourglassMemory(
             else searchByWords(
                 coldWords, limit, COLD_LAYERS, purpose,
                 if (coldByTheme) ::scoreThemeCandidate else ::scoreCandidate,
+                excluded,
                 // Синий раньше фиолетового: больше из свежего, меньше из старого.
                 firstBy = { COLD_LAYERS.indexOf(it.layer) },
             )
@@ -853,6 +886,7 @@ class HourglassMemory(
             cold = if (coldEmpty) DolmenCircle.Window.LayerEmpty else windowOf(cold, seating.cold.size),
             coldByTheme = coldByTheme,
             red = dao.countInLayer(Layer.RED.name),
+            ribbonExcluded = excluded.texts.size,
         )
 
         // Строка итога и счёт отсеянных — по окну вопроса, как и прежде: она
@@ -872,6 +906,14 @@ class HourglassMemory(
             circle = circle,
             coldIds = coldIds,
         )
+    }
+
+    /**
+     * Реплики к исключению из отбора: как пришли — для условия в запросе, и в
+     * мерке точного повтора ([normalizeExact]) — для второго забора в лестнице.
+     */
+    private class Excluded(val texts: List<String>, private val exact: Set<String>) {
+        fun matches(normalized: String): Boolean = normalized.isNotEmpty() && normalized in exact
     }
 
     /** Показание окна для прибора: null — окну нечем было искать. */
@@ -934,7 +976,9 @@ class HourglassMemory(
      * Условие стоит в самом запросе, до лимита, — почему, см. KDoc
      * searchAnyCase. В Kotlin ниже тот же фильтр повторён вторым забором, и
      * RED отсеивается там отдельной строкой, независимо от списка слоёв:
-     * красный не ищется ни одним окном.
+     * красный не ищется ни одним окном. Реплики, которые модель видит в этом
+     * запросе, исключаются так же — условием в запросе и вторым забором в
+     * цикле (см. KDoc searchAnyCase).
      *
      * Слова и правило прохождения приходят снаружи: окно вопроса ищет словами
      * вопроса по [scoreCandidate], окно темы — словами темы по
@@ -1064,6 +1108,8 @@ class HourglassMemory(
         allowedLayers: List<String>,
         purpose: RetrievalPurpose,
         rule: (matched: Map<String, Int>, totalWords: Int, contentLength: Int) -> CandidateScore,
+        /** Реплики, которые модель видит в этом запросе, — см. getContextWithSummary. */
+        excluded: Excluded,
         /**
          * Первый ключ сортировки, раньше мер уместности. У горячих окон его нет;
          * холодное ставит так синий раньше фиолетового.
@@ -1097,9 +1143,18 @@ class HourglassMemory(
                 val prefix = word.take(prefixLength)
                 val prefixCapitalized = prefix.replaceFirstChar { it.uppercaseChar() }
                 var foundHere = 0
-                for (sticker in dao.searchAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT, allowedLayers)) {
+                for (sticker in dao.searchAnyCase(prefix, prefixCapitalized, CANDIDATE_LIMIT, allowedLayers, excluded.texts)) {
                     if (sticker.layer == Layer.RED.name) continue
                     if (sticker.layer !in allowedLayers) continue
+                    // Реплика, которую модель видит в этом запросе, — второй
+                    // забор после условия в запросе. Запрос ловит ровно текст
+                    // автозаписи; здесь ловится старая запись того же текста в
+                    // другой форме (заглавная, знак в конце), той же меркой, что
+                    // отсев точных повторов при записи. Такая запись одна на
+                    // реплику и вытеснить лимит не может, поэтому в запрос её не
+                    // тянем. Стоит до счёта находок: исключённая запись не должна
+                    // останавливать спуск по лестнице.
+                    if (excluded.matches(normalizeExact(sticker.content))) continue
                     candidates[sticker.id] = sticker
                     hits.getOrPut(sticker.id) { HashMap() }.putIfAbsent(word, prefixLength)
                     foundForWord.add(sticker.id)

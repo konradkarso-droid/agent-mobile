@@ -151,6 +151,10 @@ object DolmenCircle {
      * «искал — пусто» лечатся разным — временем, словами, порогами.
      *
      * @param coldByTheme холод искал по словам темы, потому что у вопроса слов не было.
+     * @param ribbonExcluded сколько различных реплик (лента и текущая) передано
+     *        в исключение. Сколько записей срезал сам запрос, не считается —
+     *        честно не посчитать. Ноль при непустой ленте значит «не передано»,
+     *        то есть сломано; печатается при N > 0.
      */
     fun meter(
         question: Window,
@@ -159,11 +163,14 @@ object DolmenCircle {
         cold: Window,
         coldByTheme: Boolean,
         red: Int,
+        ribbonExcluded: Int = 0,
     ): String {
         val themeName = if (themeWords.isEmpty()) "тема" else "тема (${themeWords.joinToString(", ")})"
         val coldName = if (coldByTheme && cold !is Window.LayerEmpty) "холод по словам темы" else "холод"
+        val excludedPart = if (ribbonExcluded > 0) " · реплик ленты в исключении $ribbonExcluded" else ""
         return "Круг: вопрос — ${say(question)} · $themeName — ${say(theme)} · " +
-            "$coldName — ${say(cold)} · красный: $red — в ответ не идут, ждут стенной части"
+            "$coldName — ${say(cold)} · красный: $red — в ответ не идут, ждут стенной части" +
+            excludedPart
     }
 
     /** Строка круга, когда вопроса не было: отбор не собирался. */
