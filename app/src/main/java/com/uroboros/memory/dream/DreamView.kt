@@ -198,6 +198,9 @@ class DreamView(
             val notDreamt = buildList {
                 if (night.skippedHidden > 0) add("скрытых ${night.skippedHidden}")
                 if (night.skippedQuestions > 0) add("вопросов ${night.skippedQuestions}")
+                // null — ночь до признака просьб: тогда они снились, и молчание
+                // здесь правдивее нуля.
+                night.skippedRequests?.let { if (it > 0) add("просьб $it") }
                 if (night.skippedAgentReports > 0) {
                     add("отчётов агента ${night.skippedAgentReports}")
                 }
