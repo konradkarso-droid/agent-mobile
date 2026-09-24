@@ -1,6 +1,7 @@
 package com.uroboros.memory.dream
 
 import androidx.room.Entity
+import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.Sticker
 
 /**
@@ -67,15 +68,22 @@ data class Dream(
 
     companion object {
         /**
-         * Молчит ли сон из-за этого звена: записи нет, она на проверке или
-         * отвергнута. Одно правило для показа и для подачи — сон, замолчавший на
-         * экране, не должен говорить модели, и наоборот.
+         * Молчит ли сон из-за этого звена: записи нет, она на проверке, отвергнута
+         * или ничего не утверждает (одни вопросы или просьбы,
+         * RiskTrigger.assertsNothing). Одно правило для показа и для подачи — сон,
+         * замолчавший на экране, не должен говорить модели, и наоборот.
          *
          * Почему молчит весь сон, а не одно звено: половина цепочки
          * бессмысленна, а мост через скрытую запись выдавал бы её содержание
          * соседями.
+         *
+         * Зачем проверять «ничего не утверждает», раз такие записи и так не
+         * снятся: сны хранятся, а признак меняется. Сны, сплетённые до того, как
+         * признак узнал запись, иначе продолжали бы подаваться со звеном, которое
+         * новому плетению уже не досталось бы.
          */
         fun silences(record: Sticker?): Boolean =
-            record == null || record.reviewPending || record.rejectedAt != null
+            record == null || record.reviewPending || record.rejectedAt != null ||
+                RiskTrigger.assertsNothing(record.content)
     }
 }
