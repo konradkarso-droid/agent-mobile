@@ -30,6 +30,7 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
+import com.uroboros.llm.EchoCheck
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.CONTEXT_SIZE
@@ -1198,6 +1199,9 @@ class MainActivity : AppCompatActivity() {
                     query = query,
                     limit = 20,
                     recentQuestions = emptyList(),
+                    // Просмотр ленты не знает: человек ищет запись по своим
+                    // словам, и совпадающую с репликой исключать нельзя.
+                    excludedTexts = emptyList(),
                 )
                 // Построчный разбор отбора печатает ЭТОТ слой, а не память:
                 // класс уровня памяти не зовёт android.util.Log, иначе его не
@@ -2589,7 +2593,12 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, circleLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
+        // Эхо — сразу за кругом, но своей строкой: круг говорит о том, что
+        // подано модели, эхо — о том, что она ответила. Считается по ленте при
+        // каждой отрисовке, как строка ленты, — второго места, где оно может
+        // разойтись с лентой, нет (см. EchoCheck).
+        val echoLine = EchoCheck.meter(EchoCheck.ofLast(journal.history()))
+        group(disputeNoticeLine, recordsQuestionsLine, circleLine, echoLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -3921,11 +3930,19 @@ class MainActivity : AppCompatActivity() {
                 // Реплики владельца из ленты — источник окна темы (см.
                 // DolmenCircle): короткое «да, давай» находит записи по тому,
                 // о чём говорили последние ходы.
+                //
+                // Реплики, которые модель увидит в этом запросе — вся лента и
+                // текущая, — в исключении: запись того же текста дала бы одну
+                // реплику дважды (см. excludedTexts у getContextWithSummary).
+                // Текущая нужна отдельно: в ленте её ещё нет, а старая запись
+                // того же текста нашлась бы окном вопроса первой.
+                val ribbonQuestions = journal.history().map { it.question }
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
                     limit = 5,
-                    recentQuestions = journal.history().map { it.question },
+                    recentQuestions = ribbonQuestions,
+                    excludedTexts = ribbonQuestions + userText,
                 )
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны

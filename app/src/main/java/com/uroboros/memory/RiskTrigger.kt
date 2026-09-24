@@ -487,6 +487,19 @@ object RiskTrigger {
     fun significantStems(text: String): Set<String> = significantByStem(text).keys
 
     /**
+     * Основы слов текста для детекторов эха (llm.EchoCheck): то же разбиение и
+     * та же основа, что у [significantStems], отсев коротких слов тот же, но
+     * БЕЗ отсева по STOP_WORDS (зачем тот список — его KDoc в HourglassMemory).
+     * Детектору нужны не слова темы, а слова, которые модель повторила:
+     * «сейчас» темы не несёт, но несёт эхо. Со списком каждое его пополнение
+     * ради поиска молча слепило бы детектор.
+     */
+    fun echoStems(text: String): Set<String> =
+        tokenize(text)
+            .filter { it.length >= MIN_WORD_LENGTH }
+            .mapTo(HashSet()) { stem(it) }
+
+    /**
      * Значимые слова текста: основа — ключ, написанные формы — значение.
      *
      * Два уровня по той же причине, что у чисел: сравнивать надо основы

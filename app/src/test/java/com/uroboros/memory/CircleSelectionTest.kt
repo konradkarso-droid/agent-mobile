@@ -29,10 +29,14 @@ class CircleSelectionTest {
         onGetRanked = { layers, limit ->
             records.filter { it.layer in layers && !it.reviewPending }.sortedByDescending { it.createdAt }.take(limit)
         }
-        // Как SQL: сперва слой и слова, потом самые новые, потом лимит.
+        // Как SQL: сперва слой, слова и исключённые тексты, потом самые новые,
+        // потом лимит. Исключённые подделка отдаёт через записанный вызов — см.
+        // KDoc onSearchAnyCase.
         onSearchAnyCase = { q, qCap, limit, layers ->
+            val excluded = searchCalls.last().excluded
             records.filter {
-                !it.reviewPending && it.layer in layers && (it.content.contains(q) || it.content.contains(qCap))
+                !it.reviewPending && it.layer in layers && it.content !in excluded &&
+                    (it.content.contains(q) || it.content.contains(qCap))
             }.sortedByDescending { it.createdAt }.take(limit)
         }
         onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
@@ -180,5 +184,70 @@ class CircleSelectionTest {
         )
         assertEquals(DolmenCircle.NOT_GATHERED, result.circle)
         assertFalse(result.stickers.isEmpty())
+    }
+
+    // --- Реплики, которые модель видит в этом запросе ---
+
+    @Test
+    fun `реплика ленты и текущая реплика не попадают ни в одно окно`() = runBlocking {
+        val ribbonReply = sticker(3, "Мой рубанок с деревянной колодкой", Layer.GREEN)
+        val currentReply = sticker(2, "Рубанок у меня старый", Layer.GREEN)
+        val live = sticker(1, "рубанок с колодкой из берёзы", Layer.GREEN)
+        val coldReply = sticker(4, "Мой рубанок с деревянной колодкой", Layer.BLUE)
+        val dao = dao(live, currentReply, ribbonReply, coldReply)
+        val excluded = listOf("Мой рубанок с деревянной колодкой", "Рубанок у меня старый")
+        val result = HourglassMemory(dao).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "Рубанок у меня старый", 5,
+            recentQuestions = listOf("Мой рубанок с деревянной колодкой"),
+            excludedTexts = excluded,
+        )
+        assertEquals(listOf(live.id), result.stickers.map { it.id })
+        // Список дошёл до запроса каждого окна, а не только до одного.
+        assertTrue(dao.searchCalls.isNotEmpty())
+        assertTrue(dao.searchCalls.all { it.excluded == excluded })
+        assertTrue(result.circle.contains("реплик ленты в исключении 2"))
+    }
+
+    /** Запись того же текста другой формы запрос не ловит — ловит второй забор. */
+    @Test
+    fun `запись реплики с другой заглавной и знаком в конце тоже исключена`() = runBlocking {
+        val oldForm = sticker(2, "мой рубанок с деревянной колодкой.", Layer.GREEN)
+        val live = sticker(1, "рубанок с колодкой из берёзы", Layer.GREEN)
+        val result = HourglassMemory(dao(live, oldForm)).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "Мой рубанок с деревянной колодкой", 5,
+            excludedTexts = listOf("Мой рубанок с деревянной колодкой"),
+        )
+        assertEquals(listOf(live.id), result.stickers.map { it.id })
+    }
+
+    /** Просмотр ленты не знает: человек ищет запись по своим словам и находит её. */
+    @Test
+    fun `просмотр с пустым списком находит ту же запись`() = runBlocking {
+        val reply = sticker(1, "Мой рубанок с деревянной колодкой", Layer.GREEN)
+        val result = HourglassMemory(dao(reply)).getContextWithSummary(
+            RetrievalPurpose.BROWSING, "Мой рубанок с деревянной колодкой", 20,
+        )
+        assertEquals(listOf(reply.id), result.stickers.map { it.id })
+        assertFalse(result.circle.contains("в исключении"))
+    }
+
+    /**
+     * Исключение внутри поиска, а не после: двадцать с лишним самых новых
+     * записей по слову — реплики ленты, и лимит базы, отсекай их после него,
+     * вытеснил бы живую запись; окно сказало бы «пусто».
+     */
+    @Test
+    fun `реплики ленты не вытесняют лимитом старую живую запись`() = runBlocking {
+        val live = sticker(1, "рубанок с колодкой из берёзы", Layer.GREEN)
+        val replies = (2L..26L).map { sticker(it, "рубанок $it мой", Layer.GREEN) }
+        val dao = dao(live, *replies.toTypedArray())
+        val result = HourglassMemory(dao).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5,
+            recentQuestions = replies.map { it.content },
+            excludedTexts = replies.map { it.content } + "рубанок",
+        )
+        assertEquals(listOf(live.id), result.stickers.map { it.id })
+        assertTrue(result.circle.contains("вопрос — нашёл 1, мест 1"))
+        assertTrue(result.circle.contains("реплик ленты в исключении 26"))
     }
 }
