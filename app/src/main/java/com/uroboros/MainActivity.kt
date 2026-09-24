@@ -215,8 +215,8 @@ class MainActivity : AppCompatActivity() {
      * в отборе ограничены, а занимают их и те, что лежат в ленте с прошлых
      * ходов.
      *
-     * Просьбы (RiskTrigger.isOnlyRequests) пока не отсеиваются, а только
-     * считаются среди записей ответа: сколько мест в отборе они заняли.
+     * Просьбы (RiskTrigger.isOnlyRequests) отсеиваются там же и считаются
+     * отдельно от вопросов.
      *
      * ЧЕГО НЕ УМЕЕТ: вопрос узнаётся только по знаку, тем же признаком, что у
      * судьи (RiskTrigger.isOnlyQuestions), со всеми его промахами. Вопрос без
@@ -3766,11 +3766,11 @@ class MainActivity : AppCompatActivity() {
                 // поэтому count { isOnlyQuestions } давал бы постоянный ноль.
                 // Счётчик берётся из итога отбора, где он считался до обрезки.
                 val questionsFiltered = contextResult.questionsFiltered
-                val requestsKept = stickers.count { RiskTrigger.isOnlyRequests(it.content) }
+                val requestsFiltered = contextResult.requestsFiltered
                 recordsQuestionsLine = "Записей к ответу: ${stickers.size}" +
                     (if (doorRecords.isNotEmpty()) " (через дверь сна: ${doorRecords.size})" else "") +
                     (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
-                    (if (requestsKept > 0) " · просьб среди них: $requestsKept (пока не отсеиваются)" else "") +
+                    (if (requestsFiltered > 0) " · отсеяно просьб: $requestsFiltered" else "") +
                     " · дверей открыто: ${behindDoor.size}"
                 renderMetricsPanel()
                 val disputeText = (notice as? DisputeNotice.Result.Found)?.text
