@@ -98,10 +98,24 @@ object CuriosityAsk {
      * собеседника в метках записей (ProvenanceLabels), второе имя для того же
      * человека было бы для неё третьим лицом в разговоре.
      */
-    fun line(leader: CuriosityPressure.Leader): String {
+    fun line(leader: CuriosityPressure.Leader): String =
+        "${about(leader)} Если к месту — спроси пользователя о нём, одним вопросом."
+
+    /**
+     * Строка для пути «агент пишет первым» (initiative.CuriositySource).
+     * Отличается от [line] только последней фразой: там владелец спросил о
+     * своём, и модель решает, уместен ли вопрос о сне; здесь владелец молчит,
+     * других дел у хода нет, и «если к месту» оставляло бы модели лазейку
+     * прислать рассуждение вместо вопроса.
+     */
+    fun lineFirst(leader: CuriosityPressure.Leader): String =
+        "${about(leader)} Спроси пользователя о нём, одним вопросом."
+
+    /** Общая часть обеих строк: что сон возвращался и сам сон. */
+    private fun about(leader: CuriosityPressure.Leader): String {
         val dream = DreamRecall.lines(listOf(DreamRecall.Picked(leader.dream, leader.records)), emptySet())
             .joinToString(" ") { it.text }
-        return "Этот сон возвращался в разговоре. $dream Если к месту — спроси пользователя о нём, одним вопросом."
+        return "Этот сон возвращался в разговоре. $dream"
     }
 
     /** Строка прибора. Печатается всегда: молчащий выход неотличим от сломанного. */

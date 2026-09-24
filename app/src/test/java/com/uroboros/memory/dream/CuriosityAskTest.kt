@@ -135,4 +135,17 @@ class CuriosityAskTest {
         assertFalse(CuriosityAsk.line(leader).contains("интерес"))
         assertFalse("без записей ответа слова «рядом» нет", CuriosityAsk.line(leader).contains("рядом"))
     }
+
+    @Test
+    fun `строка для пути «первым» — тот же сон, просьба спросить прямо`() {
+        val leader = (decide(dream(1, 2, picked = 2)) as CuriosityAsk.Decision.Ask).leader
+        assertEquals(
+            "Этот сон возвращался в разговоре. Тебе снилось: " +
+                "«Запись номер 1 лежит в памяти», «Запись номер 2 лежит в памяти». " +
+                "Спроси пользователя о нём, одним вопросом.",
+            CuriosityAsk.lineFirst(leader),
+        )
+        assertFalse("без «если к месту»", CuriosityAsk.lineFirst(leader).contains("Если к месту"))
+        assertFalse(CuriosityAsk.lineFirst(leader).contains("интерес"))
+    }
 }
