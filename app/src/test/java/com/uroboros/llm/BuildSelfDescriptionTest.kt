@@ -2,6 +2,7 @@ package com.uroboros.llm
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -36,5 +37,69 @@ class BuildSelfDescriptionTest {
     fun `стена — текст человека, за ним строки сборки`() {
         assertEquals("стена\nа\nб", BuildSelfDescription.compose("стена", listOf("а", "б")))
         assertEquals("стена", BuildSelfDescription.compose("стена", emptyList()))
+    }
+
+    @Test
+    fun `порядок частей — человек, сборка, нажитое, проверочная в конце`() {
+        assertEquals(
+            "стена\nа\nб\nнажито\nпроба",
+            BuildSelfDescription.compose("стена", listOf("а", "б"), listOf("нажито"), "проба"),
+        )
+        val withProbe = BuildSelfDescription.compose("стена", listOf("а"), probe = BuildSelfDescription.PROBE_LINE)
+        assertTrue(withProbe.endsWith("\n" + BuildSelfDescription.PROBE_LINE))
+    }
+
+    @Test
+    fun `пустые части не дают пустых строк`() {
+        assertEquals("стена", BuildSelfDescription.compose("стена", emptyList(), emptyList(), null))
+        assertEquals("стена\nпроба", BuildSelfDescription.compose("стена", emptyList(), listOf(""), "проба"))
+        assertFalse(BuildSelfDescription.compose("стена", listOf("а"), listOf("б"), null).contains("\n\n"))
+    }
+
+    @Test
+    fun `разница строк — добавлено`() {
+        val d = BuildSelfDescription.diff("стена\nа", "стена\nа\nпроба")
+        assertEquals(listOf("проба"), d.added)
+        assertEquals(emptyList<String>(), d.removed)
+        assertEquals(
+            "Стена сменилась на лету перед ходом 3: добавлено «проба»",
+            BuildSelfDescription.changeLine(3, "стена\nа", "стена\nа\nпроба"),
+        )
+    }
+
+    @Test
+    fun `разница строк — убрано`() {
+        val d = BuildSelfDescription.diff("стена\nа\nпроба", "стена\nа")
+        assertEquals(emptyList<String>(), d.added)
+        assertEquals(listOf("проба"), d.removed)
+        assertEquals(
+            "Стена сменилась на лету перед ходом 4: убрано «проба»",
+            BuildSelfDescription.changeLine(4, "стена\nа\nпроба", "стена\nа"),
+        )
+    }
+
+    @Test
+    fun `разница строк — ничего`() {
+        val d = BuildSelfDescription.diff("стена\nа", "стена\nа")
+        assertTrue(d.added.isEmpty() && d.removed.isEmpty())
+        assertEquals(
+            "Стена сменилась на лету перед ходом 1: строки те же, сменился порядок",
+            BuildSelfDescription.changeLine(1, "стена\nа\nб", "стена\nб\nа"),
+        )
+    }
+
+    @Test
+    fun `та же стена ничего не ожидает`() {
+        assertNull(BuildSelfDescription.pendingAfter("стена", "стена"))
+    }
+
+    @Test
+    fun `другая стена ожидает`() {
+        assertEquals("стена\nпроба", BuildSelfDescription.pendingAfter("стена", "стена\nпроба"))
+    }
+
+    @Test
+    fun `без стоящей стены ждать нечего — загрузка соберёт сама`() {
+        assertNull(BuildSelfDescription.pendingAfter(null, "стена"))
     }
 }

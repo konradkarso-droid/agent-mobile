@@ -37,8 +37,9 @@ package com.uroboros.llm
  *
  * ЧЕГО НЕ УМЕЕТ. Строка только сообщает модели факт — это толчок, а не
  * рычаг: модель может ею пренебречь. Правда строки держится на состоянии
- * механизма при ЭТОЙ загрузке; стена ставится после загрузки и до следующей
- * не меняется, поэтому разойтись им негде. Модель 3B склонна брать готовые
+ * механизма при ЭТОЙ загрузке: строки сборки считаются при загрузке, а смена
+ * стены на лету (см. LlmEngine.applyWall) берёт их оттуда же, не пересчитывая,
+ * поэтому разойтись им негде. Модель 3B склонна брать готовые
  * фразы стены дословно (см. BibleSoftWall, v3), так что строка может
  * всплыть не к месту — это мерится на первом ответе свежего разговора.
  */
@@ -103,8 +104,78 @@ object BuildSelfDescription {
         if (scriptBanState == SCRIPT_BAN_ON) add(SCRIPT_BAN_LINE)
     }
 
-    /** Стена целиком: текст человека, за ним строки сборки. */
-    fun compose(humanWall: String, buildLines: List<String>): String =
-        if (buildLines.isEmpty()) humanWall
-        else humanWall + "\n" + buildLines.joinToString("\n")
+    /**
+     * ПРОВЕРОЧНАЯ СТРОКА — ВРЕМЕННАЯ. Встаёт в самый конец стены по флажку
+     * «Проверочная строка в стене» и нужна только затем, чтобы проверить смену
+     * стены на лету и путь загрузки с той же сборкой. Уберётся вместе с
+     * флажком, когда в стене появится нажитое о себе.
+     */
+    const val PROBE_LINE = "Я проверяю, как меняется моя стена."
+
+    /**
+     * Стена целиком — единственное место её сборки, и для загрузки, и для
+     * смены на лету.
+     *
+     * Порядок — от постоянного к меняющемуся: текст человека, строки сборки,
+     * нажитое о себе, проверочная строка. Движок переиспользует совпавшее
+     * начало запроса, поэтому правка ближе к концу стоит пересчёта меньшего
+     * хвоста (см. BibleSoftWall, «ПОЧЕМУ РАЗДЕЛ ПОСЛЕДНИЙ»).
+     *
+     * Пустые части пропускаются целиком: пустая строка в стене — лишний токен
+     * в каждом запросе и разница, которой никто не хотел.
+     *
+     * @param learned нажитое о себе — строки, подтверждённые человеком. Пока
+     *        их нет, приходит пустой список.
+     * @param probe проверочная строка ([PROBE_LINE]) или null.
+     */
+    fun compose(
+        humanWall: String,
+        buildLines: List<String>,
+        learned: List<String> = emptyList(),
+        probe: String? = null,
+    ): String =
+        (listOf(humanWall) + buildLines + learned + listOfNotNull(probe))
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+
+    /**
+     * Какую стену ждать после просьбы поставить [requested], если сейчас
+     * стоит [standing]. null — ждать нечего.
+     *
+     * Та же стена ничего не ожидает: применение стоит пересчёта хвоста стены
+     * и разговора за ним, и платить его зря незачем. По той же причине
+     * просьба вернуть стоящую стену снимает ожидающую — флажок, включённый и
+     * выключенный до следующего хода, не стоит ничего. Пока стены нет вовсе
+     * (модель не загружена), ждать тоже нечего: загрузка соберёт стену сама.
+     */
+    fun pendingAfter(standing: String?, requested: String): String? =
+        if (standing == null || requested == standing) null else requested
+
+    /** Разница двух стен по строкам: чего не было и чего не стало. */
+    data class Diff(val added: List<String>, val removed: List<String>)
+
+    fun diff(old: String, new: String): Diff {
+        val oldLines = old.lines()
+        val newLines = new.lines()
+        return Diff(
+            added = newLines.filter { it !in oldLines },
+            removed = oldLines.filter { it !in newLines },
+        )
+    }
+
+    /**
+     * Строка шва для «Подробно»: стена сменилась на лету перед ходом [turn].
+     * Номер хода даёт тот, кто знает ленту.
+     */
+    fun changeLine(turn: Int, old: String, new: String): String {
+        val d = diff(old, new)
+        val parts = listOfNotNull(
+            d.added.takeIf { it.isNotEmpty() }?.let { "добавлено " + quoted(it) },
+            d.removed.takeIf { it.isNotEmpty() }?.let { "убрано " + quoted(it) },
+        )
+        val what = if (parts.isEmpty()) "строки те же, сменился порядок" else parts.joinToString(" / ")
+        return "Стена сменилась на лету перед ходом $turn: $what"
+    }
+
+    private fun quoted(lines: List<String>): String = lines.joinToString(", ") { "«$it»" }
 }

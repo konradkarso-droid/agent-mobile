@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.GenerationEvent
+import com.uroboros.ConversationPrefs
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
@@ -229,7 +230,11 @@ class LlmEngine(
      */
     val stateSizeBytes: Long get() = engine.getStateSize()
 
-    /** Папка кэша системного промпта для текущей модели, либо null — если создать не удалось. */
+    /**
+     * Папка кэша системного промпта для текущей модели, либо null — если создать не удалось.
+     * Пишется под [wallLock], читается и без него (экранные отчёты), отсюда @Volatile.
+     */
+    @Volatile
     private var promptCacheDir: File? = null
 
     /**
@@ -282,7 +287,8 @@ class LlmEngine(
     /**
      * Сменилась ли системная стена с прошлой загрузки той же модели с теми
      * же параметрами. Решается в [applyPromptCache]: рядом нашлась папка
-     * кэша этой же загрузки, но под другой стеной.
+     * кэша этой же загрузки, но под другой стеной. Ставится только загрузкой;
+     * смена стены на лету его не трогает (см. [applyWall]).
      *
      * Нужно экрану. Поднятый разговор продолжится под новой стеной, и это
      * шов, который человек должен видеть: прежние ответы агента писались при
@@ -585,6 +591,48 @@ class LlmEngine(
      */
     private val loadLock = Mutex()
 
+    /**
+     * Замок папки кэша: файлы контрольной точки и установка стены.
+     *
+     * ЗАЧЕМ. Установка стены ([applyWall]) удаляет прежнюю папку кэша вместе с
+     * точкой ([applyPromptCache], [checkpointFile]). Запись точки идёт не
+     * только из [guardedFlow], но и при уходе экрана в фон, и в очередь с ходом
+     * не встаёт. Без замка запись могла выбрать путь в прежней папке, а смена
+     * стены на лету — удалить эту папку у неё из-под рук: запись отказала бы
+     * или воскресила ничью папку. Под замком стоят запись, подъём и стирание
+     * точки (вместе с выбором пути к ней) и установка стены целиком.
+     *
+     * ПОЧЕМУ `synchronized`, А НЕ КОРУТИННЫЙ ЗАМОК. Повторный вход не вешает
+     * поток ([applyWall] зовётся и из-под замка, и без него), и [applyWall] не
+     * приходится делать приостанавливаемой. Главное: компилятор Kotlin не
+     * пропускает точку приостановки внутри `synchronized`, так что правило
+     * «внутри замка не приостанавливаться» держит сборка, а не аккуратность.
+     *
+     * ПОРЯДОК ЗАМКОВ ОДИН: [loadLock] снаружи, этот внутри, никогда наоборот.
+     * Загрузка ставит стену под [loadLock]; взять [loadLock] из-под этого
+     * замка значит завести взаимную блокировку.
+     *
+     * ЧЕГО ПОД ЗАМКОМ НЕТ:
+     *  - генерации. Это отдельная работа со своим замком внутри библиотеки.
+     *    Одновременную генерацию разговора и судьи замок не разводит: узкое
+     *    окно на старте (судья проверил, что модель свободна, пока ход с
+     *    экрана ещё подбирал записи) остаётся. Стену под идущей генерацией
+     *    не даёт сменить отдельная проверка в [applyPendingWall];
+     *  - чтений для экрана ([hasStateCheckpoint], [getStateCheckpointDiskReport],
+     *    [conversationDisplaced]). Запись держит замок долго — библиотека
+     *    сперва ждёт конца идущей генерации, потом пишет файл до полутора сотен
+     *    мегабайт, — и экран под замком замирал бы на это время. Цена чтения
+     *    без замка — на мгновение увидеть прежнюю папку.
+     *
+     * Держатель замка может ждать собственного замка библиотеки (запись,
+     * подъём и `setSystemPrompt` берут его), поэтому смена на лету, запись и
+     * подъём берут этот замок не на главном потоке. Исключение одно — загрузка
+     * ([configureAfterLoad]) ставит стену на том потоке, где идёт сама, как и
+     * до замка; ждать ей там почти нечего: пока модель грузится, точку
+     * писать некому.
+     */
+    private val wallLock = Any()
+
     /** Откуда загружена нынешняя модель; null — не загружена. */
     @Volatile
     private var loadedSource: String? = null
@@ -692,8 +740,96 @@ class LlmEngine(
         val banState = engine.getLastDecodeBreakdown().banState
         scriptBanStateAtLoad = banState
         buildSelfLines = BuildSelfDescription.lines(banState)
-        applyWall(BuildSelfDescription.compose(BibleSoftWall.TEXT, buildSelfLines))
+        synchronized(wallLock) {
+            // Ожидающая стена прежней загрузки к этой не относится: загрузка
+            // собирает стену сама, из тех же настроек.
+            pendingWall = null
+            appliedWallChange = null
+            wallDeferredBusy = false
+            wallChangedAtLoad = applyWall(wallFor(ConversationPrefs.wallProbe(context)))
+        }
         applyStreamingLatency()
+    }
+
+    /**
+     * Стена, собранная из нынешних частей, — и для загрузки, и для смены на
+     * лету. Строки сборки берутся от загрузки ([buildSelfLines]), нажитого о
+     * себе пока нет.
+     *
+     * @param probe включена ли проверочная строка ([BuildSelfDescription.PROBE_LINE]).
+     */
+    fun wallFor(probe: Boolean): String = BuildSelfDescription.compose(
+        humanWall = BibleSoftWall.TEXT,
+        buildLines = buildSelfLines,
+        learned = emptyList(),
+        probe = if (probe) BuildSelfDescription.PROBE_LINE else null,
+    )
+
+    /** Стена, стоящая в движке; null — модель не загружена. Под [wallLock]. */
+    private var currentWall: String? = null
+
+    /** Стена, ждущая начала следующего запроса разговора; null — не ждёт. Под [wallLock]. */
+    private var pendingWall: String? = null
+
+    /** Смена на лету, случившаяся в запросе разговора и ещё не забранная: прежняя и новая стена. */
+    @Volatile
+    private var appliedWallChange: Pair<String, String>? = null
+
+    /**
+     * Ожидающая стена не встала в последнем запросе разговора, потому что
+     * движок был занят чужой генерацией (см. [applyPendingWall]). Сбрасывается
+     * установкой, новой просьбой и загрузкой.
+     */
+    @Volatile
+    var wallDeferredBusy: Boolean = false
+        private set
+
+    /**
+     * Попросить сменить стену на лету. Встанет в начале следующего запроса
+     * разговора, см. [applyWall]. Та же стена ничего не ожидает
+     * ([BuildSelfDescription.pendingAfter]).
+     *
+     * Берёт [wallLock] ненадолго, но может подождать идущую запись точки,
+     * поэтому звать не с главного потока.
+     */
+    fun requestWall(wall: String) {
+        synchronized(wallLock) {
+            pendingWall = BuildSelfDescription.pendingAfter(currentWall, wall)
+            wallDeferredBusy = false
+        }
+    }
+
+    /**
+     * Забрать смену стены на лету, случившуюся с прошлого раза: прежняя и
+     * новая стена, либо null. Забирает тот, кто знает ленту и номер хода.
+     */
+    fun takeAppliedWallChange(): Pair<String, String>? {
+        val change = appliedWallChange
+        appliedWallChange = null
+        return change
+    }
+
+    /**
+     * Поставить ожидающую стену. Зовётся только из [guardedFlow] в начале
+     * запроса разговора — почему там, у [applyWall].
+     *
+     * Если движок в этот момент занят чужой генерацией (узкое окно с судьёй,
+     * см. [wallLock]), стена не ставится и ждёт следующего запроса разговора:
+     * менять стену и удалять папку под идущей работой незачем.
+     */
+    private fun applyPendingWall() {
+        synchronized(wallLock) {
+            val wall = pendingWall ?: return
+            if (activity.busy) {
+                wallDeferredBusy = true
+                return
+            }
+            pendingWall = null
+            wallDeferredBusy = false
+            val old = currentWall
+            applyWall(wall)
+            if (old != null) appliedWallChange = old to wall
+        }
     }
 
     /**
@@ -732,21 +868,48 @@ class LlmEngine(
     /**
      * Единственная точка, через которую ставится системная стена.
      *
-     * Стена — это текст человека и строки сборки ([BuildSelfDescription]),
-     * склеенные в [configureAfterLoad]. Сюда приходит уже склеенная.
+     * Стена собирается в одном месте ([wallFor], [BuildSelfDescription.compose]);
+     * сюда приходит уже собранная.
      *
      * Текст берётся ОДНОЙ переменной и для имени папки кэша, и для движка.
      * Будь это два обращения к [BibleSoftWall.TEXT] в двух местах, они
      * разошлись бы при первой же правке одного из них: папка называлась бы
      * по одной стене, а движок считал бы другую, и на экране это не видно.
      *
-     * Вынесена отдельно, чтобы стену можно было ставить не только при
-     * загрузке. Сегодня её зовёт один [configureAfterLoad]; других
-     * вызывающих нет, и смена стены в работающем приложении НЕ ПРОВЕРЕНА.
-     * Там есть граница, которой здесь не видно: библиотека запоминает длину
-     * стены один раз (`n_system_tokens` в `gguf_lib.cpp`) и защищает ровно
-     * столько при сдвиге окна, так что после смены на более длинную конец
-     * новой стены окажется без защиты, пока счётчик не сброшен.
+     * КОГДА СТАВИТСЯ. При загрузке ([configureAfterLoad]) и на лету — по
+     * просьбе [requestWall], в начале следующего запроса разговора
+     * ([applyPendingWall] из [guardedFlow], до любой работы движка). Запросы
+     * судьи и цикла ожидающую стену не ставят: у судьи своё системное
+     * сообщение, стена ему не нужна. Модель при смене не перезагружается:
+     * движок переиспользует совпавшее начало запроса (`reusable_prefix` в
+     * `gguf_lib.cpp`), и правка в конце стены стоит пересчёта её хвоста и
+     * разговора за ним. Отсюда порядок частей стены — меняющееся в конце.
+     *
+     * ПОЧЕМУ В НАЧАЛЕ ЗАПРОСА РАЗГОВОРА, А НЕ СРАЗУ. Установка удаляет прежнюю
+     * папку кэша вместе с контрольной точкой разговора ([applyPromptCache],
+     * [checkpointFile]). Перед ответом ход сперва поднимает точку, если движок
+     * брала чужая работа (ConversationTurns, [conversationDisplaced]), и лишь
+     * потом начинается запрос, — значит прежняя точка успевает пригодиться, и
+     * после работы судьи пересчитывается только хвост стены и лента за ним.
+     * Запись точки и установку стены разводит [wallLock].
+     *
+     * ЧТО ЭТО ЗНАЧИТ ДЛЯ КЭША, и почему это приемлемо:
+     *  - прежняя папка удаляется той же уборкой, что при загрузке; второй
+     *    уборки нет;
+     *  - точки разговора под новую стену ещё нет, пока её не запишет уход в фон
+     *    или чужая работа. Убьют приложение раньше — следующий запуск
+     *    пересчитает ленту целиком, один раз;
+     *  - дисковый кэш стены библиотека пишет только при полном пересчёте
+     *    запроса (`n_common == 0` перед `save_prompt_cache`). После смены на
+     *    лету совпадение частичное, и файл не ляжет: следующий запуск
+     *    приложения посчитает стену один раз с нуля. Не чинится, названо;
+     *  - признак «под новой стеной» ([wallChangedAtLoad]) смена на лету не
+     *    трогает: у него смысл «при загрузке». Следующая загрузка ложного
+     *    «под новой стеной» не покажет — папка к тому времени уже новая.
+     *
+     * Длину защищаемой при сдвиге окна стены библиотека считает сама и
+     * сбрасывает, когда текст стены сменился (`nativeSetSystemPrompt` в
+     * `gguf_lib.cpp`); новую длину покажет строка «Стена:» ([promptReuseReport]).
      *
      * Запрос со СВОИМ системным сообщением (судья памяти) дисковым кэшем
      * стены не пользуется и в него не пишет: библиотека сверяет, начался ли
@@ -754,12 +917,19 @@ class LlmEngine(
      * сверки такой запрос, оказавшись первым в свежей папке, лёг бы на диск
      * под именем стены. Если испорченный файл всё же окажется на диске, его
      * покажет строка «Стена:» в отчёте хода, см. [promptReuseReport].
+     *
+     * Под [wallLock]: повторный вход разрешён, звать можно и из-под него.
+     *
+     * @return рядом нашлась папка прежней стены той же загрузки — нужно
+     *         только загрузке, см. [wallChangedAtLoad].
      */
-    private fun applyWall(wall: String) {
-        applyPromptCache(wall)
+    private fun applyWall(wall: String): Boolean = synchronized(wallLock) {
+        val hadOtherWall = applyPromptCache(wall)
         engine.setSystemPrompt(wall)
+        currentWall = wall
         // Длина прежней стены к новой не относится; см. [promptReuseReport].
         wallTokens = null
+        hadOtherWall
     }
 
     /**
@@ -862,22 +1032,25 @@ class LlmEngine(
      * Не `cacheDir`, а `filesDir` — намеренно. Содержимое `cacheDir` система
      * вправе стереть при нехватке места; кэш то работал бы, то нет, без всякого
      * следа. `filesDir` система сама не трогает.
+     *
+     * Зовётся только из [applyWall], под [wallLock].
+     *
+     * @return рядом нашлась папка этой же загрузки под другой стеной.
      */
-    private fun applyPromptCache(wall: String) {
+    private fun applyPromptCache(wall: String): Boolean {
         promptCacheDir = null
         promptCacheAcknowledged = false
-        wallChangedAtLoad = false
 
-        val print = loadPrint ?: return
+        val print = loadPrint ?: return false
         val name = print + "-" + shortHash(wall)
         val root = File(context.filesDir, PROMPT_CACHE_ROOT)
         val dir = File(root, name)
 
         // Смотрится ДО уборки: после неё прежней папки уже не будет.
-        wallChangedAtLoad = !dir.isDirectory &&
+        val hadOtherWall = !dir.isDirectory &&
             (root.listFiles()?.any { it.isDirectory && it.name.startsWith("$print-") } == true)
 
-        if (!dir.isDirectory && !dir.mkdirs()) return
+        if (!dir.isDirectory && !dir.mkdirs()) return hadOtherWall
 
         // Папки других моделей и других стен больше не нужны.
         root.listFiles()?.forEach { old ->
@@ -890,6 +1063,7 @@ class LlmEngine(
         // Спрашиваем немедленно: строка только что напечатана и лежит в хвосте
         // лога. Через сотню-другую ходов её там уже не будет.
         promptCacheAcknowledged = lastEngineLogLine(PROMPT_CACHE_LOG_MARKER) != null
+        return hadOtherWall
     }
 
     /**
@@ -1102,6 +1276,10 @@ class LlmEngine(
      * Папку здесь НЕ создаём: функция отвечает на вопрос, а не действует. Её
      * зовёт и запись, и отчёт о состоянии диска, а отчёт, оставляющий после
      * себя папку, — это прибор, меняющий то, что измеряет.
+     *
+     * Запись, подъём и стирание точки зовут её под [wallLock], вместе с
+     * работой над файлом: путь выбран и использован при одной и той же стене.
+     * Чтения для экрана зовут без замка — почему, у [wallLock].
      */
     private fun checkpointFile(): File? {
         val dir = promptCacheDir ?: return null
@@ -1156,7 +1334,7 @@ class LlmEngine(
      * Поэтому стирание точки здесь дешевле любой сверки: цена — один пересчёт,
      * а не молчащий экран.
      */
-    suspend fun clearStateCheckpoint(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun clearStateCheckpoint(): Boolean = withContext(Dispatchers.IO) { synchronized(wallLock) {
         val target = checkpointFile()
         if (target == null) {
             checkpointReport = "Точка: стирать нечего — папка кэша не создана"
@@ -1169,7 +1347,7 @@ class LlmEngine(
             if (removed) "Точка: стёрта вместе с лентой"
             else "Точка: ОТКАЗ — файл не стирается"
         removed
-    }
+    } }
 
     /**
      * Записать обсчитанное состояние движка на диск.
@@ -1202,7 +1380,7 @@ class LlmEngine(
      *
      * @return получилось ли. Причина неудачи — в [getStateCheckpointReport].
      */
-    suspend fun saveStateCheckpoint(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun saveStateCheckpoint(): Boolean = withContext(Dispatchers.IO) { synchronized(wallLock) {
         if (!engine.isLoaded) {
             checkpointReport = "Точка: ОТКАЗ — модель не загружена"
             return@withContext false
@@ -1252,7 +1430,7 @@ class LlmEngine(
         checkpointReport = "Точка: сохранена, ${humanBytes(target.length())} · $note"
         checkpointFresh = true
         true
-    }
+    } }
 
     /**
      * Поднять состояние движка с диска.
@@ -1270,7 +1448,7 @@ class LlmEngine(
      *
      * @return получилось ли. Подробность — в [getStateCheckpointReport].
      */
-    suspend fun restoreStateCheckpoint(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun restoreStateCheckpoint(): Boolean = withContext(Dispatchers.IO) { synchronized(wallLock) {
         if (!engine.isLoaded) {
             checkpointReport = "Точка: ОТКАЗ — модель не загружена"
             return@withContext false
@@ -1300,7 +1478,7 @@ class LlmEngine(
             checkpointReport = "Точка: ОТКАЗ при подъёме · $why"
         }
         ok
-    }
+    } }
 
     /** Размер файла словами, которые читаются с экрана без пересчёта в уме. */
     private fun humanBytes(bytes: Long): String =
@@ -1456,6 +1634,11 @@ class LlmEngine(
             saveStateCheckpoint()
             borrowReport = checkpointReport
         }
+        // Ожидающая стена — только в запрос разговора и до всякой работы
+        // движка; почему здесь — у [applyWall]. На IO: ход с экрана собирается
+        // на главном потоке, а установка удаляет папку, ждёт [wallLock] и замок
+        // библиотеки. Переход — вне замка, внутри замка приостановок нет.
+        if (conversation) withContext(Dispatchers.IO) { applyPendingWall() }
         // Первым делом, до всякой работы движка: с этого момента состояние в
         // нём принадлежит этому запросу, как бы он ни кончился.
         stateIsConversation = conversation
@@ -1755,8 +1938,9 @@ class LlmEngine(
      *   причина одна: файл назван по этой стене, а начинается не с неё;
      * - из памяти процесса, не меньше стены — обычный ход;
      * - из памяти процесса, меньше стены — перед этим к модели ходил запрос
-     *   с другим началом (разбор памяти), и стену пришлось считать заново.
-     *   Кэш при этом цел;
+     *   с другим началом (разбор памяти) или стена сменилась на лету (совпало
+     *   начало до места правки, хвост новый, см. [applyWall]), и стену
+     *   пришлось досчитать. Кэш при этом цел;
      * - совпадения нет — готовой стены на диске не нашлось, посчитана с нуля.
      *   Нормально для первого запроса в свежей папке.
      *
@@ -1806,7 +1990,7 @@ class LlmEngine(
                     wall == null -> "Стена: взята из этого запуска, длина стены не известна $numbers"
                     reused >= wall -> "Стена: взята готовой из этого запуска $numbers"
                     else -> "Стена посчитана заново: перед этим к модели ходил другой " +
-                        "запрос (например, разбор памяти). Кэш цел $numbers"
+                        "запрос (например, разбор памяти) или стена сменилась на лету. Кэш цел $numbers"
                 }
             }
             NO_REUSE_RE.find(line)?.let {

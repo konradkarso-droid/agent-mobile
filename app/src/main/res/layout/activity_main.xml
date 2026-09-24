@@ -212,6 +212,18 @@
         android:visibility="gone"
         android:text="После комы продолжать разговор сам"/>
 
+    <!-- ВРЕМЕННЫЙ флажок проверки смены стены на лету (ConversationPrefs.wallProbe).
+         Рядом с настройкой выше и так же в шторке. -->
+    <CheckBox
+        android:id="@+id/checkWallProbe"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:textSize="12sp"
+        android:textColor="#3A6470"
+        android:visibility="gone"
+        android:text="Проверочная строка в стене"/>
+
     <!-- Причина срабатывания стопа. Скрыт, пока стоп не взведён. Показывается
          из MainActivity вместе с кнопкой сброса (следующий шаг). -->
     <TextView
