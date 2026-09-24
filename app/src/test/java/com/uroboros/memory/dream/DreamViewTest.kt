@@ -169,6 +169,7 @@ class DreamViewTest {
         override suspend fun insertNight(night: DreamNight) = error("показ не пишет")
         override suspend fun lastNight(): DreamNight? = night
         override suspend fun ofNight(nightAt: Long): List<Dream> = rows
+        override suspend fun stirredSince(since: Long): List<Dream> = error("показ не читает пружину")
     }
 
     private fun record(id: Long, hidden: Boolean = false, rejected: Boolean = false) = Sticker(
