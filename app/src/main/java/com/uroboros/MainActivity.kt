@@ -45,6 +45,7 @@ import com.uroboros.memory.ProvenanceLabels
 import com.uroboros.memory.RecordNumber
 import com.uroboros.memory.RejectOutcome
 import com.uroboros.memory.RejectPath
+import com.uroboros.memory.RequestCensus
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.SaveResult
@@ -213,6 +214,9 @@ class MainActivity : AppCompatActivity() {
      * Считается весь отбор, а не только записи, впервые ушедшие в ленту: места
      * в отборе ограничены, а занимают их и те, что лежат в ленте с прошлых
      * ходов.
+     *
+     * Просьбы (RiskTrigger.isOnlyRequests) пока не отсеиваются, а только
+     * считаются среди записей ответа: сколько мест в отборе они заняли.
      *
      * ЧЕГО НЕ УМЕЕТ: вопрос узнаётся только по знаку, тем же признаком, что у
      * судьи (RiskTrigger.isOnlyQuestions), со всеми его промахами. Вопрос без
@@ -1184,6 +1188,9 @@ class MainActivity : AppCompatActivity() {
                 // строки: сон ничего не утверждает, соглашаться с ним нечем.
                 // Почему не рядом со спорными парами — в шапке DreamView.
                 section(dreamView.section(), headed = true)
+                // Просьбы — отдельным разделом: это память, а не сны. Зачем тексты,
+                // а не число, — в шапке RequestCensus.
+                section(RequestCensus.section(applicationContext), headed = true)
                 if (lookupId != null) {
                     appendLookedUpRecord(out, lookupId, blocks, rules)
                 } else if (shown == null || shown.stickers.isEmpty()) {
@@ -3759,9 +3766,11 @@ class MainActivity : AppCompatActivity() {
                 // поэтому count { isOnlyQuestions } давал бы постоянный ноль.
                 // Счётчик берётся из итога отбора, где он считался до обрезки.
                 val questionsFiltered = contextResult.questionsFiltered
+                val requestsKept = stickers.count { RiskTrigger.isOnlyRequests(it.content) }
                 recordsQuestionsLine = "Записей к ответу: ${stickers.size}" +
                     (if (doorRecords.isNotEmpty()) " (через дверь сна: ${doorRecords.size})" else "") +
                     (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
+                    (if (requestsKept > 0) " · просьб среди них: $requestsKept (пока не отсеиваются)" else "") +
                     " · дверей открыто: ${behindDoor.size}"
                 renderMetricsPanel()
                 val disputeText = (notice as? DisputeNotice.Result.Found)?.text
