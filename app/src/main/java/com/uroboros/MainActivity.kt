@@ -59,6 +59,10 @@ import com.uroboros.memory.dream.DreamRecall
 import com.uroboros.memory.dream.AgentRecall
 import com.uroboros.memory.dream.AgentRecaller
 import com.uroboros.memory.dream.DreamDoor
+import com.uroboros.memory.dream.CuriosityGauge
+import com.uroboros.memory.dream.CuriosityPressure
+import com.uroboros.memory.dream.DreamPickup
+import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
@@ -247,6 +251,19 @@ class MainActivity : AppCompatActivity() {
      */
     private var recallLine: String? = null
 
+    /**
+     * Пружина любопытства (см. CuriosityPressure): последнее прочитанное
+     * давление и сны, подхваченные репликой последнего хода.
+     *
+     * Давление описывает базу, а не ход, поэтому в [clearRunMetrics] не
+     * стирается — стирается только подхват этого хода. Строка печатается
+     * всегда: до первого чтения и при сбое она говорит об этом словами.
+     */
+    private var curiosity: CuriosityPressure.Result? = null
+    private var curiosityFailure: String? = null
+    private var curiosityPickupFailure: String? = null
+    private var curiosityPickedThisTurn: List<CuriosityPressure.Brief> = emptyList()
+
     /** Строка состояния агента на последнем ходе, как её увидела модель (см. SelfState). */
     private var selfStateLine: String? = null
 
@@ -406,6 +423,30 @@ class MainActivity : AppCompatActivity() {
 
     /** Вспоминание агентом того, что принёс сон, см. AgentRecall. */
     private val agentRecaller by lazy { AgentRecaller(applicationContext) }
+
+    /** Подхват сна владельцем, см. DreamPickup. */
+    private val dreamPickupMarker by lazy { DreamPickupMarker(applicationContext) }
+
+    /** Давление пружины любопытства, см. CuriosityPressure. */
+    private val curiosityGauge by lazy { CuriosityGauge(applicationContext) }
+
+    /** Строка пружины любопытства — всегда, см. [curiosity]. */
+    private fun curiosityLine(): String {
+        val pickup = curiosityPickupFailure?.let { " · подхват не проверен — $it" } ?: ""
+        curiosityFailure?.let { return "Любопытство: не прочиталось — $it$pickup" }
+        val result = curiosity ?: return "Любопытство: ещё не прочитано$pickup"
+        return CuriosityPressure.meter(result, curiosityPickedThisTurn) + pickup
+    }
+
+    /**
+     * Перечитать давление. Сбой чтения не срывает ход: строка называет его, а
+     * прежнее число не показывается — его свежесть уже неизвестна.
+     */
+    private suspend fun refreshCuriosity() {
+        runCatching { curiosityGauge.read() }
+            .onSuccess { curiosity = it; curiosityFailure = null }
+            .onFailure { curiosity = null; curiosityFailure = it.javaClass.simpleName }
+    }
 
     private val judgeUi by lazy {
         JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id ->
@@ -2494,7 +2535,7 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, selfStateLine, lastMetricsLine, composedLine)
+        group(disputeNoticeLine, recordsQuestionsLine, dreamsLine, recallLine, curiosityLine(), selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2693,6 +2734,8 @@ class MainActivity : AppCompatActivity() {
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
+        curiosityPickedThisTurn = emptyList()
+        curiosityPickupFailure = null
         selfStateLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
@@ -3409,6 +3452,13 @@ class MainActivity : AppCompatActivity() {
         // не задним числом при следующем отчёте.
         renderMetricsPanel()
 
+        // Давление любопытства — с запуска, а не с первого ответа: строка
+        // печатается всегда, и до первого хода в ней должно быть число.
+        lifecycleScope.launch {
+            refreshCuriosity()
+            renderMetricsPanel()
+        }
+
         // Лента переживает пересоздание активности (она одна на процесс), а
         // поле результата — нет: оно создаётся заново и приходит пустым.
         // Поэтому разговор надо отрисовать здесь, иначе после поворота
@@ -3491,6 +3541,8 @@ class MainActivity : AppCompatActivity() {
         // сохраняло бы пустоту.
         journal.onCleared = {
             journalRestoreLine = null
+            // Новый разговор: подхватывать поданное в закрытом нечего.
+            DreamPickup.forget()
             renderMetricsPanel()
             lifecycleScope.launch {
                 journalRestoreLine = when (val result = journalStore.archive()) {
@@ -4084,6 +4136,22 @@ class MainActivity : AppCompatActivity() {
                     // повторной отправке отметится ещё раз.
                     dreamRecall.markServed(servedDreams, System.currentTimeMillis())
 
+                    // Подхват сна владельцем — там же и по той же мерке: реплика
+                    // сказана, когда ушла в движок. Сверяется со снами,
+                    // поданными на предыдущем ходе; проверка тратится одна на
+                    // ход (см. DreamPickup). Сбой не срывает ход — строка
+                    // любопытства называет его.
+                    DreamPickup.take()?.let { previous ->
+                        runCatching { dreamPickupMarker.pickUp(previous, userText) }
+                            .onSuccess { caught ->
+                                curiosityPickedThisTurn = caught.map { (dream, records) ->
+                                    CuriosityPressure.Brief(dream.kind, records.map { it.content })
+                                }
+                            }
+                            .onFailure { curiosityPickupFailure = it.javaClass.simpleName }
+                    }
+                    refreshCuriosity()
+
                     // finally, а не ветка Done: раньше кнопка включалась только
                     // если поток закончился ожидаемым событием, и любой другой
                     // выход оставлял её навсегда серой.
@@ -4224,6 +4292,11 @@ class MainActivity : AppCompatActivity() {
                             )
                         )
                         recallLine = AgentRecall.meter(brought.size, recallOutcome)
+                        // Ход закрыт: поданное на нём владелец может подхватить
+                        // следующей репликой (см. DreamPickup). Давление
+                        // перечитывается — вспоминание только что его сжало.
+                        DreamPickup.afterTurn(userText, servedDreams.map { it.dream })
+                        refreshCuriosity()
                         // Ход состоялся: двери стареют на ход, принесённое
                         // этим ходом получает свою (см. DreamDoor).
                         DreamDoor.afterTurn(brought.map { it.id })

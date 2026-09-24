@@ -239,8 +239,7 @@ class DreamView(
                 return@buildString
             }
             for (dream in shown) {
-                append("\n").append(label(dream.kind)).append(": ")
-                append(dream.texts.joinToString(" → ") { short(it) })
+                append("\n").append(brief(dream.kind, dream.texts))
                 append("\n")
                 if (dream.variants.isNotEmpty()) {
                     // Варианты названы текстами, а не числом: склейка по
@@ -264,6 +263,14 @@ class DreamView(
             // Имя как есть — по той же причине, что у вида сна ниже.
             else -> name
         }
+
+        /**
+         * Сон одной строкой: вид и звенья через стрелку, длинные обрезаны. Этим
+         * же видом сон называется в приборе любопытства (см. [CuriosityPressure]),
+         * чтобы владелец узнавал на экране тот же сон.
+         */
+        internal fun brief(kind: String, texts: List<String>): String =
+            label(kind) + ": " + texts.joinToString(" → ") { short(it) }
 
         private fun label(kind: String): String = when (kind) {
             DreamWeaver.Kind.BRIDGE.name -> "мост"

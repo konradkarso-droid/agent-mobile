@@ -194,6 +194,7 @@ class DreamRecallTest {
         override suspend fun insertNight(night: DreamNight) = error("отбор не пишет")
         override suspend fun lastNight(): DreamNight? = night
         override suspend fun ofNight(nightAt: Long): List<Dream> = rows
+        override suspend fun stirredSince(since: Long): List<Dream> = error("отбор не читает пружину")
     }
 
     private class FakeServedDao : DreamServedDao {
@@ -202,6 +203,8 @@ class DreamRecallTest {
             marked += Triple(nightAt, recordIds, at)
             return 1
         }
+        override suspend fun markPickedUp(nightAt: Long, recordIds: String, at: Long) =
+            error("отбор не отмечает подхват")
     }
 
     private fun night() = DreamNight(

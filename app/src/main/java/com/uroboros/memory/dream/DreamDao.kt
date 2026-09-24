@@ -31,4 +31,12 @@ interface DreamDao {
 
     @Query("SELECT * FROM dreams WHERE nightAt = :nightAt")
     suspend fun ofNight(nightAt: Long): List<Dream>
+
+    /**
+     * Сны не старше [since], которые хоть раз подхвачены или вспомнены, — только
+     * они и могут сжать пружину любопытства (см. [CuriosityPressure]). Остальные
+     * дали бы ноль, и читать их незачем.
+     */
+    @Query("SELECT * FROM dreams WHERE nightAt >= :since AND (pickedUpCount > 0 OR recalledCount > 0)")
+    suspend fun stirredSince(since: Long): List<Dream>
 }
