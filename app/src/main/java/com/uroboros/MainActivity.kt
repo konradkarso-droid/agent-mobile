@@ -46,6 +46,7 @@ import com.uroboros.memory.RecordNumber
 import com.uroboros.memory.RejectOutcome
 import com.uroboros.memory.RejectPath
 import com.uroboros.memory.RequestCensus
+import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.SaveResult
@@ -71,8 +72,11 @@ import com.uroboros.will.tasks.KotlinCodingTask
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -317,6 +321,13 @@ class MainActivity : AppCompatActivity() {
     private var checkpointDiskLine: String? = null
     private var checkpointActionLine: String? = null
 
+    /**
+     * Возврат движка после чужой работы (см. LlmEngine.conversationDisplaced).
+     * Своя строка, а не третья доля строки точки: запись при уходе с экрана
+     * затирала бы её раньше, чем человек её прочтёт.
+     */
+    private var engineReturnLine: String? = null
+
     // Палитра совпадает с activity_main.xml. Смысл цвета, а не украшение:
     // бирюзовый = обычное главное действие, фиолетовый = канал речи агента
     // (тем же цветом помечен блок "Ответ агента"). Красный нигде, кроме
@@ -324,7 +335,7 @@ class MainActivity : AppCompatActivity() {
     private val colorIdle = ColorStateList.valueOf(Color.parseColor("#17697B"))
     private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#5B4B9E"))
 
-    private val prefs by lazy { getSharedPreferences("uroboros_prefs", Context.MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences(ModelPrefs.NAME, Context.MODE_PRIVATE) }
 
     /**
      * Смещения в тексте [renderJournal], с которых начинается каждая
@@ -2456,7 +2467,7 @@ class MainActivity : AppCompatActivity() {
         }
         group(
             journalLine(), journalDiskLine, journalRestoreLine,
-            checkpointDiskLine, checkpointActionLine,
+            checkpointDiskLine, checkpointActionLine, engineReturnLine,
             // Автозапись стоит в одной группе с лентой, а не с числами прогона:
             // она описывает разговор целиком и живёт столько же, сколько он.
             autoSaveLine(),
@@ -2621,6 +2632,20 @@ class MainActivity : AppCompatActivity() {
      * null прячет строку целиком: пустая строка занимала бы место и читалась
      * бы как «что-то сломалось и не написало».
      */
+    /**
+     * Дождаться, пока разбор уступит разговору и отпустит модель. По пределу
+     * [JUDGE_YIELD_WAIT_MS] ответ идёт как есть: ждать дольше потолка сторожа
+     * значит, что прогон завис, и ответ не должен висеть вместе с ним.
+     */
+    private suspend fun awaitJudgeYield() {
+        showProgress("Разбор памяти уступает разговору…")
+        withTimeoutOrNull(JUDGE_YIELD_WAIT_MS) {
+            AgentService.state.first { it !is AgentService.RunState.Running }
+            while (llmEngine.activity.busy) delay(200)
+        }
+        showProgress("Идёт генерация...")
+    }
+
     private fun showProgress(text: String?) {
         if (text == null) {
             binding.textProgress.visibility = View.GONE
@@ -3663,12 +3688,13 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            // Модель одна: вопрос поверх разбора памяти сбил бы разбору его
-            // повторяемые настройки выдачи, а ответу — разговорные.
-            if (AgentService.state.value is AgentService.RunState.Running) {
-                Toast.makeText(this, JUDGE_BUSY, Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
+            // Модель одна, и разговор важнее суда: идущий разбор уступает, а
+            // ответ ждёт, пока он отпустит модель (awaitJudgeYield). Вопрос
+            // поверх идущего разбора сбил бы разбору его повторяемые настройки
+            // выдачи, а ответу — разговорные, поэтому именно ждёт, а не идёт
+            // рядом.
+            val judgeRunning = AgentService.state.value is AgentService.RunState.Running
+            if (judgeRunning) AgentService.yieldToConversation(applicationContext)
 
             if (isToteRunning) {
                 // Ёмкость канала к циклу — ОДИН вопрос (см.
@@ -3697,6 +3723,7 @@ class MainActivity : AppCompatActivity() {
             showProgress("Идёт генерация...")
 
             lifecycleScope.launch {
+                if (judgeRunning) awaitJudgeYield()
                 // Записи уйдут в промпт и будут участвовать в ответе — это
                 // единственное обращение, за которое засчитывается польза.
                 val contextResult = mediator.getContextWithSummary(
@@ -3935,7 +3962,7 @@ class MainActivity : AppCompatActivity() {
                     val restoreStartedAt = System.currentTimeMillis()
                     llmEngine.restoreStateCheckpoint()
                     val restoreMs = System.currentTimeMillis() - restoreStartedAt
-                    checkpointActionLine = "Возврат движка: " +
+                    engineReturnLine = "Возврат движка: " +
                         (llmEngine.borrowReport?.let { "перед чужой работой — $it; " } ?: "") +
                         "перед ответом — ${llmEngine.getStateCheckpointReport()} " +
                         "(${"%.1f".format(restoreMs / 1000.0)} с)"
@@ -4286,7 +4313,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             AgentService.state.collect { st ->
                 when (st) {
-                    is AgentService.RunState.Running -> {
+                    // Свой прогон агент ведёт в уведомлении: экран в это время
+                    // показывает разговор, и ход суда поверх стёр бы его.
+                    is AgentService.RunState.Running -> if (!st.self) {
                         val last = st.lastProgressAt?.let {
                             ", последняя в " + SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it))
                         } ?: ", первая пара ещё идёт"
@@ -4479,13 +4508,20 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val KEY_MODEL_FOLDER_URI = "model_folder_uri"
-        private const val KEY_LAST_MODEL_URI = "last_model_uri"
+        private const val KEY_LAST_MODEL_URI = ModelPrefs.KEY_LAST_MODEL_URI
 
         // Семь часов: столько человек отдаёт судье за ночь. Это его число, а не
         // подбор. Прогон кончается либо на нём, либо раньше, если пары
         // кончились или часовой остановил по нагреву; остаток пар достаётся
         // следующему запуску.
-        private const val JUDGE_BUDGET_MS = 7L * 60 * 60 * 1000
+        private const val JUDGE_BUDGET_MS = SelfJudgeDecision.RUN_BUDGET_MS
+
+        /**
+         * Сколько ответ ждёт, пока разбор уступит разговору. Пара судьи
+         * обрывается не мгновенно; потолок одного обращения к модели — пять
+         * минут (сторож), дольше ждать нечего.
+         */
+        private const val JUDGE_YIELD_WAIT_MS = 5L * 60 * 1000
         private const val JUDGE_BUSY = "Идёт разбор памяти — модель занята"
         private const val KEY_LAYER_REPAIR_DONE = "layer_repair_done_2026_08_22"
         private const val KEY_PROVENANCE_REPAIR_DONE = "provenance_repair_done_2026_08_24"
