@@ -162,19 +162,9 @@ class JudgeRun(
         // комплект, а не по комплекту на каждого судью, которого пробовали.
         verdicts.forgetOtherJudges(fingerprint)
 
-        // Пары отбираются по слою, а слой без уборки отстаёт от часов: записи,
-        // которые по времени уже остыли, судились бы как горячие, и прогон
-        // тратил бы нагрев на то, чего модель в ответах уже не видит. Пул
-        // снимается один раз, в начале; запись, остывшая за время прогона,
-        // досуживается в нём — прогон от этого только длиннее, не неверней.
-        HourglassMemory(stickers).migrateExpired()
-        val candidates = stickers.getAll()
-            .filter { it.layer in HOT_LAYERS }
-            .filter { !it.reviewPending }
-            .sortedByDescending { it.createdAt }
-        val (sized, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
-        val (asserting, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }
-        val (pool, onlyRequests) = asserting.partition { !RiskTrigger.isOnlyRequests(it.content) }
+        // Как и почему собирается пул — у collectPool().
+        val (pool, dropped) = collectPool()
+        val (tooLong, onlyQuestions, onlyRequests) = dropped
 
         val queue = queue(pool)
 
@@ -258,6 +248,50 @@ class JudgeRun(
             onlyRequests = onlyRequests.map { it.id },
             outsideSieve = queue.outsideSieve,
         )
+    }
+
+    /**
+     * Есть ли у судьи с отпечатком [fingerprint] хоть одна неразобранная пара.
+     * Тот же пул и та же очередь, что у [run], но без модели: по ответу тело
+     * агента решает, стоит ли загружать модель ради суда. Останавливается на
+     * первой неразобранной паре; полный перебор — только когда разобрано всё.
+     */
+    suspend fun hasPending(fingerprint: String): Boolean {
+        val (pool, _) = collectPool()
+        return queue(pool).pairs.any { (first, second) ->
+            verdicts.judged(first.id, second.id, fingerprint) == 0
+        }
+    }
+
+    /** Выпавшие из пула записи — длинные, одни вопросы, одни просьбы. */
+    private data class Dropped(
+        val tooLong: List<Sticker>,
+        val onlyQuestions: List<Sticker>,
+        val onlyRequests: List<Sticker>,
+    )
+
+    /**
+     * Пул суда: горячие записи не на проверке, не длиннее [MAX_RECORD_CHARS],
+     * что-то утверждающие. Одно место для [run] и [hasPending] — разойдись они,
+     * тело агента грузило бы модель ради пар, которых прогон не возьмёт.
+     *
+     * Пары отбираются по слою, а слой без уборки отстаёт от часов: записи,
+     * которые по времени уже остыли, судились бы как горячие, и прогон
+     * тратил бы нагрев на то, чего модель в ответах уже не видит. Поэтому
+     * уборка слоёв идёт первой. Пул снимается один раз, в начале; запись,
+     * остывшая за время прогона, досуживается в нём — прогон от этого только
+     * длиннее, не неверней.
+     */
+    private suspend fun collectPool(): Pair<List<Sticker>, Dropped> {
+        HourglassMemory(stickers).migrateExpired()
+        val candidates = stickers.getAll()
+            .filter { it.layer in HOT_LAYERS }
+            .filter { !it.reviewPending }
+            .sortedByDescending { it.createdAt }
+        val (sized, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
+        val (asserting, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }
+        val (pool, onlyRequests) = asserting.partition { !RiskTrigger.isOnlyRequests(it.content) }
+        return pool to Dropped(tooLong, onlyQuestions, onlyRequests)
     }
 
     /** Пары к суду в порядке суда и число пар, не прошедших сито. */
