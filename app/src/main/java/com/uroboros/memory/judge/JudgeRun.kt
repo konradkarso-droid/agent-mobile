@@ -59,6 +59,11 @@ data class JudgeRunReport(
      */
     val onlyQuestions: List<Long> = emptyList(),
     /**
+     * Номера записей из одних просьб — не судились вовсе по той же причине,
+     * что вопросы; считаются отдельно от них (RiskTrigger.isOnlyRequests).
+     */
+    val onlyRequests: List<Long> = emptyList(),
+    /**
      * Сколько пар пула не судится, потому что у записей нет ни одного общего
      * значимого слова (см. [JudgeSieve]). Число, а не номера: таких пар
      * большинство, и список из них никто не прочтёт.
@@ -104,7 +109,8 @@ data class JudgeRunReport(
  * пары вопросов, а все найденные им «споры» были такими парами. Признак вопроса
  * — общий с правилом противоречия (RiskTrigger.isOnlyQuestions), и его
  * промахи те же: риторический вопрос со скрытым утверждением судье больше не
- * попадёт, вопрос без знака судится как раньше. Запись при этом не меняется и
+ * попадёт, вопрос без знака судится как раньше. Записи из одних просьб не
+ * судятся по той же причине (RiskTrigger.isOnlyRequests). Запись при этом не меняется и
  * из памяти не уходит; её номер называется в отчёте каждого прогона.
  *
  * Слишком длинные записи не судятся вовсе, ни в одной паре, — см.
@@ -167,7 +173,8 @@ class JudgeRun(
             .filter { !it.reviewPending }
             .sortedByDescending { it.createdAt }
         val (sized, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
-        val (pool, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }
+        val (asserting, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }
+        val (pool, onlyRequests) = asserting.partition { !RiskTrigger.isOnlyRequests(it.content) }
 
         val queue = queue(pool)
 
@@ -248,6 +255,7 @@ class JudgeRun(
             interruptedBy = interruptedBy,
             tooLong = tooLong.map { it.id },
             onlyQuestions = onlyQuestions.map { it.id },
+            onlyRequests = onlyRequests.map { it.id },
             outsideSieve = queue.outsideSieve,
         )
     }
