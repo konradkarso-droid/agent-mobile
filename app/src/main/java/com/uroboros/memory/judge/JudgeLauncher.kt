@@ -210,6 +210,15 @@ class JudgeLauncher(
                 if (report.onlyQuestions.size > SHOWN_IDS) append(", …")
                 append(")\n")
             }
+            if (report.onlyRequests.isNotEmpty()) {
+                // Отдельной строкой от вопросов: ложное срабатывание признака
+                // просьб не должно прятаться в числе вопросов.
+                append("Не судятся — одни просьбы: ").append(report.onlyRequests.size)
+                append(" зап. (")
+                append(report.onlyRequests.take(SHOWN_IDS).joinToString(", ") { "№$it" })
+                if (report.onlyRequests.size > SHOWN_IDS) append(", …")
+                append(")\n")
+            }
             if (report.outsideSieve > 0) {
                 // Число, а не номера: таких пар большинство. Строка нужна,
                 // чтобы «осталось 0» не читалось как «все пары разобраны».
