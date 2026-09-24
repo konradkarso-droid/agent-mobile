@@ -96,6 +96,9 @@ class JudgeLauncher(
     ): String =
         describe(run.run(fingerprint(modelIdentity), budgetMs, onProgress))
 
+    /** Есть ли что судить судье этой модели — без модели. См. JudgeRun.hasPending. */
+    suspend fun hasPending(modelIdentity: String): Boolean = run.hasPending(fingerprint(modelIdentity))
+
     suspend fun counters(modelIdentity: String): JudgeCounters {
         val print = fingerprint(modelIdentity)
         return JudgeCounters(
