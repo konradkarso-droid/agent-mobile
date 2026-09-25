@@ -29,25 +29,31 @@ import java.util.Locale
  * «Подробно»; строка ничего не считает сама. Иначе агент и экран разошлись бы,
  * и не было бы видно, кто из них врёт.
  *
- * ВО ВТОРОМ ЛИЦЕ, как пометка «прошлый ответ без записей»: строка стоит в
- * реплике собеседника, и в собственных репликах модели её нет — подражать
- * нечему.
+ * ОТ ПЕРВОГО ЛИЦА, РЕЧЬЮ АГЕНТА — как подписи записей (memory.ProvenanceLabels)
+ * и строка любопытства (dream.CuriosityAsk). Модель переписывает служебные
+ * строки в ответ дословно. Строка во втором лице, переписанная так, обращается
+ * уже к собеседнику: «ты очнулся в 17:22» выходит «Проснёшься в 17:22», «у
+ * тебя накопилось» — «Обсуди, что накопилось». Строка от первого лица,
+ * переписанная в ответ, остаётся правдой об агенте.
+ *
+ * СНЫ НЕ НАЗЫВАЮТСЯ — ни число, ни продолжения: сны в разговор не подаются ни
+ * в каком виде, днём действуют только их результаты. Говорится лишь, что агент
+ * спал и когда.
  *
  * ЧЕГО НЕ УМЕЕТ:
  *  - сведения, а не рычаг: узнав, что накопилось на сон, агент уснуть не
  *    может — спит служба по своим порогам;
  *  - что показано, помнится в памяти процесса. После комы первая строка
  *    говорит всё, что сейчас правда, — прошлый показ неизвестен;
- *  - пороги ленты — объявленные числа.
+ *  - пороги ленты — объявленные числа;
+ *  - строка стоит в реплике собеседника, и «я» в ней модель может принять за
+ *    его слова — та же цена, что у подписей записей.
  */
 object SelfState {
 
     data class Snapshot(
         /** Последняя ночь, мс; null — ночей не было. */
         val nightAt: Long?,
-        val nightDreams: Int,
-        /** Снов реки в последней ночи; null — ночь до реки. */
-        val riverDreams: Int?,
         /** Подъёмов тела с установки (см. [AgentLife.Record.starts]). */
         val starts: Int,
         /** Когда поднялось нынешнее тело, мс. */
@@ -72,19 +78,17 @@ object SelfState {
         val parts = ArrayList<String>(4)
         val revived = if (prev == null) now.starts > 1 else now.starts != prev.starts
         if (revived && now.aliveSince != null) {
-            parts += "Перед этим был перерыв в твоей жизни: ты очнулся в ${clock(now.aliveSince)}."
+            parts += "Перед этим у меня был перерыв в жизни: я очнулся в ${clock(now.aliveSince)}."
         }
         if (now.nightAt != null && now.nightAt != prev?.nightAt) {
-            val river = now.riverDreams ?: 0
-            parts += "Ты поспал в ${clock(now.nightAt)}: снов ${now.nightDreams}" +
-                (if (river > 0) ", из них продолжений вчерашнего $river" else "") + "."
+            parts += "Я поспал в ${clock(now.nightAt)}."
         }
         if (now.sleepPressure > 0 && (prev == null || prev.sleepPressure == 0)) {
-            parts += "С последнего сна у тебя накопилось, что обдумать во сне."
+            parts += "С последнего сна у меня накопилось, что обдумать."
         }
         val nowBand = band(now.ribbonPercent)
         if (nowBand > 0 && nowBand > (prev?.let { band(it.ribbonPercent) } ?: 0)) {
-            parts += "Разговор длинный: он занял ${RIBBON_BANDS[nowBand - 1]} % твоего места для разговора."
+            parts += "Наш разговор длинный: он занял ${RIBBON_BANDS[nowBand - 1]} % моего места для разговора."
         }
         return if (parts.isEmpty()) null else parts.joinToString(" ")
     }
@@ -113,8 +117,6 @@ object SelfState {
         val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows) }
         return Snapshot(
             nightAt = night?.nightAt,
-            nightDreams = night?.dreams ?: 0,
-            riverDreams = night?.riverDreams,
             starts = life.starts,
             aliveSince = life.lastStartAt,
             sleepPressure = pressure.changed,
