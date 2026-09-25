@@ -74,6 +74,7 @@ import com.uroboros.memory.dream.CuriosityPressure
 import com.uroboros.memory.dream.DreamPickup
 import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
+import com.uroboros.memory.dream.ConclusionView
 import com.uroboros.memory.dream.MirrorChecker
 import com.uroboros.memory.dream.MirrorView
 import com.uroboros.memory.dream.UnpromptedLeaderGauge
@@ -508,6 +509,21 @@ class MainActivity : AppCompatActivity() {
         mirrorLine = runCatching { mirrorView.meter() }
             .getOrElse { "Зеркало: не прочиталось — ${it.javaClass.simpleName}" } +
             (mirrorCheckFailure?.let { " · последняя реплика не сверена — $it" } ?: "")
+    }
+
+    /** Раздел «Выводы» в «Показать» и строка «Выводы:». Только чтение, см. ConclusionView. */
+    private val conclusionView by lazy { ConclusionView(applicationContext) }
+
+    /**
+     * Строка «Выводы:», прочитанная из базы при последнем показе; null — ещё
+     * не читалась. Считается из базы (см. ConclusionView), поле — только место.
+     */
+    private var conclusionsLine: String? = null
+
+    /** Перечитать строку «Выводы:». Сбой чтения называется в самой строке. */
+    private suspend fun refreshConclusions() {
+        conclusionsLine = runCatching { conclusionView.meter() }
+            .getOrElse { "Выводы: не прочиталось — ${it.javaClass.simpleName}" }
     }
 
     /**
@@ -1372,6 +1388,9 @@ class MainActivity : AppCompatActivity() {
                 // варианты сочинила модель, и рядом со снами видно, что это не
                 // сны (см. MirrorVariant).
                 section(mirrorView.section(), headed = true)
+                // Выводы — сразу за зеркалом и тоже без кнопок: их сочинила
+                // модель, и они никуда не подаются (см. ConclusionRow).
+                section(conclusionView.section(), headed = true)
                 // Просьбы — отдельным разделом: это память, а не сны. Зачем тексты,
                 // а не число, — в шапке RequestCensus.
                 section(RequestCensus.section(applicationContext), headed = true)
@@ -2734,10 +2753,11 @@ class MainActivity : AppCompatActivity() {
         // Нажитое о себе — сразу за касаниями: из них оно и считается.
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
+        val conclusions = conclusionsLine ?: "Выводы: ещё не прочитано"
         group("Память", recordsQuestionsLine, circleLine, touchesLine, selfLeader)
         group(
             "Сны, любопытство, зеркало",
-            dreamsLine, recallLine, mirror, curiosityLine(), curiosityAskMeter(),
+            dreamsLine, recallLine, mirror, conclusions, curiosityLine(), curiosityAskMeter(),
             AgentService.initiativeLine.value, selfStateLine,
         )
         group("Ход", lastMetricsLine, echoLine, disputeNoticeLine, composedLine)
@@ -3663,6 +3683,7 @@ class MainActivity : AppCompatActivity() {
                 lifecycleScope.launch {
                     refreshSelfLeader()
                     refreshMirror()
+                    refreshConclusions()
                     renderMetricsPanel()
                 }
             }
@@ -3706,6 +3727,7 @@ class MainActivity : AppCompatActivity() {
             refreshCuriosity()
             refreshSelfLeader()
             refreshMirror()
+            refreshConclusions()
             renderMetricsPanel()
         }
 
@@ -4624,6 +4646,7 @@ class MainActivity : AppCompatActivity() {
                     refreshSelfLeader()
                     // Реплика этого хода могла сбыть вариант зеркала.
                     refreshMirror()
+                    refreshConclusions()
                     // Ход состоялся: двери стареют на ход, принесённое
                     // этим ходом получает свою (см. DreamDoor).
                     DreamDoor.afterTurn(brought.map { it.id })

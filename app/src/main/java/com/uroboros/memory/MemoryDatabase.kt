@@ -7,6 +7,8 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.uroboros.memory.dream.AgentRecallDao
+import com.uroboros.memory.dream.ConclusionDao
+import com.uroboros.memory.dream.ConclusionRow
 import com.uroboros.memory.dream.Dream
 import com.uroboros.memory.dream.DreamDao
 import com.uroboros.memory.dream.DreamNight
@@ -19,9 +21,9 @@ import com.uroboros.memory.judge.JudgeVerdictDao
 @Database(
     entities = [
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
-        Dream::class, DreamNight::class, MirrorVariant::class,
+        Dream::class, DreamNight::class, MirrorVariant::class, ConclusionRow::class,
     ],
-    version = 25,
+    version = 26,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -33,6 +35,7 @@ abstract class MemoryDatabase : RoomDatabase() {
     abstract fun dreamServedDao(): DreamServedDao
     abstract fun agentRecallDao(): AgentRecallDao
     abstract fun mirrorDao(): MirrorDao
+    abstract fun conclusionDao(): ConclusionDao
 
     companion object {
         // Item 6b/8 (2026-08-17): новая таблица для снимка последнего стабильного
@@ -317,6 +320,29 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Выводы из снов (см. dream.ConclusionRow) — новая таблица, и итог шага
+        // выводов в строку ночи (DreamNight.conclusionsOutcome). Таблица пустая,
+        // и это правда: прежним снам выводов не выдумывается. У прежних ночей
+        // итог NULL — шага выводов не было.
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `conclusions` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `nightAt` INTEGER NOT NULL,
+                        `dreamNightAt` INTEGER NOT NULL,
+                        `dreamRecordIds` TEXT NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `accepted` INTEGER NOT NULL,
+                        `reason` TEXT
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("ALTER TABLE nights ADD COLUMN conclusionsOutcome TEXT")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -343,7 +369,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
                  .build().also { INSTANCE = it }
             }
         }
