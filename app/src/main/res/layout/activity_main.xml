@@ -234,8 +234,8 @@
              Шторка встаёт НА МЕСТО ЛЕНТЫ, на ту же высоту, и прокручивается
              своей прокруткой: иначе, раскрытая под лентой, она выталкивала за
              край экрана и ленту, и собственные флажки. Лента в это время только
-             спрятана (см. setDetailsExpanded). Флажки — в начале шторки, чтобы
-             их было видно сразу, без прокрутки.
+             спрятана (см. setDetailsExpanded). Флажок — в начале шторки, чтобы
+             его было видно сразу, без прокрутки.
 
              Почему это вообще прячется. Раскрытая панель занимала десяток строк
              и отъедала высоту у области ответа — той самой, ради которой экран
@@ -270,17 +270,6 @@
                     android:textSize="12sp"
                     android:textColor="#3A6470"
                     android:text="После комы продолжать разговор сам"/>
-
-                <!-- ВРЕМЕННЫЙ флажок проверки смены стены на лету (ConversationPrefs.wallProbe).
-                     Рядом с настройкой выше и так же в шторке. -->
-                <CheckBox
-                    android:id="@+id/checkWallProbe"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="end"
-                    android:textSize="12sp"
-                    android:textColor="#3A6470"
-                    android:text="Проверочная строка в стене"/>
 
                 <TextView
                     android:id="@+id/textMetrics"
@@ -396,9 +385,12 @@
 
     <!-- Строка мелких кнопок над полем ввода. Действия над приложением, в
          отличие от строки хода выше, где действия над ходами разговора.
-         Кнопки мелкие и в одну строку: высота нужна ленте. Ширина — по
-         подписи, остаток делится поровну, чтобы «Разбор памяти» не резался
-         на узком экране.
+         Кнопки мелкие и в одну строку: высота нужна ленте. Ширина у всех
+         равная, а шрифт подписи уменьшается сам (autoSize), пока подпись не
+         влезет. Ширина по подписи не годилась: при крупном системном шрифте
+         сумма подписей шире экрана, и резались все, а длинная «Разбор памяти»
+         забирала больше всех. Разрядка букв кнопок по умолчанию снята: на
+         мелкой подписи она съедала знак-другой.
 
          У «Разбора памяти» короткое нажатие показывает уже найденное, долгое
          запускает разбор. Разбор это часы работы и нагрева, а удержание —
@@ -412,7 +404,7 @@
 
         <Button
             android:id="@+id/buttonShow"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
             android:minWidth="0dp"
@@ -421,6 +413,11 @@
             android:insetTop="0dp"
             android:insetBottom="0dp"
             android:maxLines="1"
+            android:letterSpacing="0"
+            android:autoSizeTextType="uniform"
+            android:autoSizeMinTextSize="7sp"
+            android:autoSizeMaxTextSize="11sp"
+            android:autoSizeStepGranularity="1sp"
             android:textSize="11sp"
             android:textAllCaps="false"
             android:textColor="#123540"
@@ -429,7 +426,7 @@
 
         <Button
             android:id="@+id/buttonSave"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
             android:minWidth="0dp"
@@ -438,6 +435,11 @@
             android:insetTop="0dp"
             android:insetBottom="0dp"
             android:maxLines="1"
+            android:letterSpacing="0"
+            android:autoSizeTextType="uniform"
+            android:autoSizeMinTextSize="7sp"
+            android:autoSizeMaxTextSize="11sp"
+            android:autoSizeStepGranularity="1sp"
             android:textSize="11sp"
             android:textAllCaps="false"
             android:textColor="#123540"
@@ -447,7 +449,7 @@
 
         <Button
             android:id="@+id/buttonLoadModel"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
             android:minWidth="0dp"
@@ -456,6 +458,11 @@
             android:insetTop="0dp"
             android:insetBottom="0dp"
             android:maxLines="1"
+            android:letterSpacing="0"
+            android:autoSizeTextType="uniform"
+            android:autoSizeMinTextSize="7sp"
+            android:autoSizeMaxTextSize="11sp"
+            android:autoSizeStepGranularity="1sp"
             android:textSize="11sp"
             android:textAllCaps="false"
             android:textColor="#123540"
@@ -465,7 +472,7 @@
 
         <Button
             android:id="@+id/buttonJudge"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
             android:minWidth="0dp"
@@ -474,6 +481,11 @@
             android:insetTop="0dp"
             android:insetBottom="0dp"
             android:maxLines="1"
+            android:letterSpacing="0"
+            android:autoSizeTextType="uniform"
+            android:autoSizeMinTextSize="7sp"
+            android:autoSizeMaxTextSize="11sp"
+            android:autoSizeStepGranularity="1sp"
             android:textSize="11sp"
             android:textAllCaps="false"
             android:textColor="#123540"
