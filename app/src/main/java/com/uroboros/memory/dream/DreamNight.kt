@@ -89,6 +89,13 @@ data class DreamNight(
      * позже сна, и ночь к тому времени уже записана.
      */
     val selfLineOutcome: String? = null,
+    /**
+     * Итог зеркала этой ночи — та же строка, что в отчёте ночи (см.
+     * [MirrorStep]). null — зеркала не было: ночь без кнопки или ночь прошла
+     * раньше, чем зеркало появилось. Пишется тем же отдельным обновлением, что
+     * [selfLineOutcome], и по той же причине.
+     */
+    val mirrorOutcome: String? = null,
 ) {
     companion object {
         fun of(nightAt: Long, night: DreamWeaver.Night) = DreamNight(

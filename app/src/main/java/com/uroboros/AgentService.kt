@@ -25,6 +25,8 @@ import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
+import com.uroboros.memory.dream.Mirror
+import com.uroboros.memory.dream.MirrorStep
 import com.uroboros.memory.dream.NightStart
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.memory.dream.SelfLineStep
@@ -104,7 +106,8 @@ import java.util.Locale
  *
  * С кнопки за судьёй идёт третий шаг — строка о себе ([SelfLineStep]). Условия
  * у него те же, что у судьи, кроме «разбор уже идёт» ([whyModelCannotRun]); не
- * стартовал судья — нет и шага. Итог шага дописывается в строку ночи.
+ * стартовал судья — нет и шага. Итог шага дописывается в строку ночи. Следом
+ * за ним, при тех же условиях, — зеркало ([MirrorStep]).
  *
  * Отказ судьи не теряется: он приходит на экран итогом прогона вместе с тем,
  * что приснилось. Экран поэтому сам условия судьи не спрашивает — иначе ночь
@@ -703,7 +706,13 @@ class AgentService : Service() {
                 } else {
                     null
                 }
-                end(listOfNotNull(dreamed, refusal, selfLine).joinToString("\n\n"))
+                // И зеркала нет — по той же причине.
+                val mirror = if (dreamFirst) {
+                    noteMirror(db, nightAt, Mirror.silentOutcome(refusal))
+                } else {
+                    null
+                }
+                end(listOfNotNull(dreamed, refusal, selfLine, mirror).joinToString("\n\n"))
                 return@launch
             }
 
@@ -744,7 +753,19 @@ class AgentService : Service() {
                 } else {
                     null
                 }
-                listOfNotNull(judged, selfLine).joinToString("\n\n")
+                // Зеркало — там же и при тех же условиях, после строки о себе
+                // (см. MirrorStep). Лента читается здесь, на главном потоке:
+                // ход ложится в неё на нём же (ConversationTurns.run), так что
+                // копия снимается без замка хода и без ожидания.
+                val mirror = if (dreamFirst) {
+                    val outcome = MirrorStep.run(db, objects.llmEngine, nightAt, objects.turns.journal.history()) {
+                        whyModelCannotRun(applicationContext)
+                    }
+                    noteMirror(db, nightAt, outcome)
+                } else {
+                    null
+                }
+                listOfNotNull(judged, selfLine, mirror).joinToString("\n\n")
             } catch (cancelled: CancellationException) {
                 STOPPED_REPORT
             } finally {
@@ -764,6 +785,20 @@ class AgentService : Service() {
     private suspend fun noteSelfLine(db: MemoryDatabase, nightAt: Long, outcome: String): String =
         try {
             db.dreamDao().setSelfLineOutcome(nightAt, outcome)
+            outcome
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            "$outcome\n(в строку ночи не записано: ${t.javaClass.simpleName})"
+        }
+
+    /**
+     * Дописать итог зеркала в строку ночи [nightAt] и вернуть его для отчёта —
+     * тем же способом и с той же оговоркой о сбое, что [noteSelfLine].
+     */
+    private suspend fun noteMirror(db: MemoryDatabase, nightAt: Long, outcome: String): String =
+        try {
+            db.dreamDao().setMirrorOutcome(nightAt, outcome)
             outcome
         } catch (cancelled: CancellationException) {
             throw cancelled

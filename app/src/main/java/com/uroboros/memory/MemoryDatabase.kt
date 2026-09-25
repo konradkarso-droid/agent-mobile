@@ -11,15 +11,17 @@ import com.uroboros.memory.dream.Dream
 import com.uroboros.memory.dream.DreamDao
 import com.uroboros.memory.dream.DreamNight
 import com.uroboros.memory.dream.DreamServedDao
+import com.uroboros.memory.dream.MirrorDao
+import com.uroboros.memory.dream.MirrorVariant
 import com.uroboros.memory.judge.JudgeVerdict
 import com.uroboros.memory.judge.JudgeVerdictDao
 
 @Database(
     entities = [
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
-        Dream::class, DreamNight::class,
+        Dream::class, DreamNight::class, MirrorVariant::class,
     ],
-    version = 24,
+    version = 25,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -30,6 +32,7 @@ abstract class MemoryDatabase : RoomDatabase() {
     abstract fun dreamDao(): DreamDao
     abstract fun dreamServedDao(): DreamServedDao
     abstract fun agentRecallDao(): AgentRecallDao
+    abstract fun mirrorDao(): MirrorDao
 
     companion object {
         // Item 6b/8 (2026-08-17): новая таблица для снимка последнего стабильного
@@ -287,6 +290,33 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Зеркало (см. dream.MirrorVariant) — новая таблица, и итог зеркала в
+        // строку ночи (DreamNight.mirrorOutcome). Таблица пустая, и это правда:
+        // прежним ночам вариантов не выдумывается — на что смотрело бы зеркало
+        // тогда, уже не восстановить. У прежних ночей итог NULL — зеркала не было.
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `mirror` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `nightAt` INTEGER NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `fromTurn` INTEGER NOT NULL,
+                        `toTurn` INTEGER NOT NULL,
+                        `excludedStems` TEXT NOT NULL,
+                        `repliesSeen` INTEGER NOT NULL,
+                        `fulfilledAt` INTEGER,
+                        `fulfilledWords` TEXT,
+                        `fulfilledReply` TEXT
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("ALTER TABLE nights ADD COLUMN mirrorOutcome TEXT")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -313,7 +343,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
                  .build().also { INSTANCE = it }
             }
         }
