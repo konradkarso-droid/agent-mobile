@@ -7,7 +7,7 @@ import androidx.room.Query
 
 /**
  * Таблица выводов ([ConclusionRow]) и итог шага выводов в строке ночи
- * ([DreamNight.conclusionsOutcome]). Пишет только ночь по кнопке
+ * ([DreamNight.conclusionsOutcome]). Пишет только шаг ночи
  * ([ConclusionStep]); показ ([ConclusionView]) и счёт разрядки любопытства
  * ([CuriosityGauge]) только читают.
  *
