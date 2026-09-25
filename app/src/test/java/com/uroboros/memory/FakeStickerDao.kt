@@ -141,6 +141,7 @@ class FakeStickerDao : StickerDao {
     val layerUpdates = mutableListOf<LayerUpdate>()
     val touchedAccess = mutableListOf<Long>()
     val touchedUserMatch = mutableListOf<Long>()
+    val touchedUserMatchUnprompted = mutableListOf<Long>()
 
     /**
      * Записи, которым поднимали бит, в порядке обращения. Порядок и число
@@ -216,6 +217,10 @@ class FakeStickerDao : StickerDao {
         touchedUserMatch += id
     }
 
+    override suspend fun touchUserMatchUnprompted(id: Long) {
+        touchedUserMatchUnprompted += id
+    }
+
     override suspend fun insert(sticker: Sticker): Long {
         inserted += sticker
         val answer = onInsert ?: unprepared("insert")
@@ -270,6 +275,8 @@ class FakeStickerDao : StickerDao {
     override suspend fun sumUserMatches(): Int = unprepared("sumUserMatches")
     override suspend fun countWithUserMatches(): Int = unprepared("countWithUserMatches")
     override suspend fun maxUserMatches(): Int = unprepared("maxUserMatches")
+    override suspend fun sumUnpromptedUserMatches(): Int = unprepared("sumUnpromptedUserMatches")
+    override suspend fun maxUnpromptedUserMatches(): Int = unprepared("maxUnpromptedUserMatches")
 
     override suspend fun reassignProvenanceByPrefix(
         contentPrefix: String,

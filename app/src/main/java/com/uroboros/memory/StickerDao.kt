@@ -243,6 +243,14 @@ interface StickerDao {
     @Query("UPDATE stickers SET userMatchCount = userMatchCount + 1 WHERE id = :id")
     suspend fun touchUserMatch(id: Long)
 
+    /**
+     * Касание без подсказки агента — см. Sticker.userMatchUnpromptedCount.
+     * Зовётся рядом с [touchUserMatch], а не вместо него: старый счётчик
+     * считает всё. Кому засчитывать, решает вызывающий (promptedStems).
+     */
+    @Query("UPDATE stickers SET userMatchUnpromptedCount = userMatchUnpromptedCount + 1 WHERE id = :id")
+    suspend fun touchUserMatchUnprompted(id: Long)
+
     @Query("SELECT * FROM stickers ORDER BY createdAt DESC")
     suspend fun getAll(): List<Sticker>
 
@@ -417,6 +425,14 @@ interface StickerDao {
     /** Самая часто пригождавшаяся запись — верхняя граница разброса. */
     @Query("SELECT COALESCE(MAX(userMatchCount), 0) FROM stickers")
     suspend fun maxUserMatches(): Int
+
+    /** Сколько касаний без подсказки агента всего (Sticker.userMatchUnpromptedCount). */
+    @Query("SELECT COALESCE(SUM(userMatchUnpromptedCount), 0) FROM stickers")
+    suspend fun sumUnpromptedUserMatches(): Int
+
+    /** Больше всего касаний без подсказки у одной записи — у лидера. */
+    @Query("SELECT COALESCE(MAX(userMatchUnpromptedCount), 0) FROM stickers")
+    suspend fun maxUnpromptedUserMatches(): Int
 
     // --- Разовый ремонт провенанса (2026-08-24).
     //
