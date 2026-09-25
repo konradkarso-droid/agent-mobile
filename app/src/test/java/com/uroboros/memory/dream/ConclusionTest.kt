@@ -126,6 +126,21 @@ class ConclusionTest {
     }
 
     @Test
+    fun `ряд пуст, а давление есть — оно от ответов о спрошенных снах`() {
+        assertEquals(
+            Conclusion.Pick.Silent("давление только от ответов о спрошенных снах — связывать нечего"),
+            Conclusion.pick(emptyList(), emptySet(), pressure = 2),
+        )
+    }
+
+    @Test
+    fun `давление не мешает выбору, когда ряд не пуст`() {
+        val ranked = listOf(leader(1, "1,2"))
+        val got = Conclusion.pick(ranked, emptySet(), pressure = 7) as Conclusion.Pick.Dreams
+        assertEquals(ranked, got.dreams)
+    }
+
+    @Test
     fun `не больше объявленного числа снов, начиная с лидера`() {
         val ranked = (1..5).map { leader(it.toLong(), "1,$it") }
         val got = Conclusion.pick(ranked, emptySet()) as Conclusion.Pick.Dreams
