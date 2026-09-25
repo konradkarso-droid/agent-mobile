@@ -26,10 +26,16 @@ import kotlinx.coroutines.ensureActive
  * — не пробуется снова: запрос тот же, ответ был бы тем же, а это ~30 с модели
  * впустую каждую ночь.
  *
+ * СБОЙ — НЕ ПРОБА. Если модель не ответила или ответ оборвал сторож, строка
+ * в таблицу НЕ пишется, и шаг на этом кончается: довод «повтор даст то же»
+ * держится только на ответе, который модель дала и который не прошёл
+ * проверку. Сбой (нагрев, ошибка движка) в другую ночь может не случиться,
+ * а строка с ним закрыла бы сон навсегда. Остальные сны этой ночи не
+ * пробуются: после сбоя движка или сторожа звать модель снова — не то, что
+ * стоит делать без человека. Причина сбоя идёт в итог ночи.
+ *
  * ЧЕГО НЕ УМЕЕТ:
- *  - сон, чей вывод отброшен, вывода не получит никогда — и сон, на котором
- *    модель не ответила или ответ оборвал сторож, тоже: такая попытка
- *    записывается строкой с причиной и считается пробой;
+ *  - сон, чей вывод отброшен, вывода не получит никогда;
  *  - записи сна читаются в момент шага; если позже звено скроют, вывод
  *    останется в таблице, но на экране замолчит (см. [ConclusionView]).
  *
@@ -67,13 +73,15 @@ object ConclusionStep {
         // Давление читается тем же путём, что прибор: сны с принятым выводом
         // в ряд уже не попадают, записи — по номеру и без отметки обращения.
         val pressure = CuriosityGauge(db).read()
-        val candidates = when (val picked = Conclusion.pick(pressure.ranked, conclusions.triedKeys().toHashSet())) {
+        val tried = conclusions.triedKeys().toHashSet()
+        val candidates = when (val picked = Conclusion.pick(pressure.ranked, tried, pressure.pressure)) {
             is Conclusion.Pick.Silent -> return Conclusion.silentOutcome(picked.reason)
             is Conclusion.Pick.Dreams -> picked.dreams
         }
 
         var made = 0
-        var calls = 0
+        // Сколько раз модель ответила: без ответов итог — «не делаю» с причиной.
+        var answered = 0
         val dropped = mutableListOf<String>()
         var stoppedBy: String? = null
         for (candidate in candidates) {
@@ -82,9 +90,16 @@ object ConclusionStep {
                 stoppedBy = why
                 break
             }
-            calls++
             val texts = candidate.records.map { it.content }
-            val (text, reason) = conclude(engine, texts)
+            val (text, reason) = when (val result = conclude(engine, texts)) {
+                // Сбой — не проба: строки нет, шаг кончается (см. «СБОЙ — НЕ ПРОБА»).
+                is Attempt.Failed -> {
+                    stoppedBy = result.reason
+                    break
+                }
+                is Attempt.Answered -> result.text to result.reason
+            }
+            answered++
 
             // Отмена, пришедшая за время ответа, не должна успеть оставить строку.
             currentCoroutineContext().ensureActive()
@@ -100,32 +115,38 @@ object ConclusionStep {
             )
             if (reason == null) made++ else dropped += reason
         }
-        if (calls == 0 && stoppedBy != null) return Conclusion.silentOutcome(stoppedBy)
+        if (answered == 0 && stoppedBy != null) return Conclusion.silentOutcome(stoppedBy)
         return Conclusion.doneOutcome(made, dropped, stoppedBy)
     }
 
-    /**
-     * Спросить модель о записях одного сна, разобрать и проверить. Вернуть
-     * текст для строки и причину отказа (null — прошёл).
-     */
-    private suspend fun conclude(engine: LlmEngine, texts: List<String>): Pair<String, String?> {
+    /** Чем кончилась попытка по одному сну. */
+    private sealed class Attempt {
+        /** Модель ответила; [reason] — причина отказа, null — вывод прошёл. */
+        data class Answered(val text: String, val reason: String?) : Attempt()
+
+        /** Ответа нет — сбой, а не проба (см. «СБОЙ — НЕ ПРОБА»). */
+        data class Failed(val reason: String) : Attempt()
+    }
+
+    /** Спросить модель о записях одного сна, разобрать и проверить. */
+    private suspend fun conclude(engine: LlmEngine, texts: List<String>): Attempt {
         val answer = try {
             engine.withDeterministicSampling {
                 EngineJudgeLlm(engine, Conclusion.ANSWER_TOKENS).answer(Conclusion.SYSTEM, Conclusion.request(texts))
             }
         } catch (broken: JudgeGenerationException) {
-            return "" to "модель не ответила: ${broken.message ?: "без пояснения"}"
+            return Attempt.Failed("модель не ответила: ${broken.message ?: "без пояснения"}")
         }
         // Ответ, обрезанный сторожем, — не ответ (ARCHITECTURE.md §3.1).
         when (engine.lastGenerationEnd) {
-            GenerationEnd.WATCHDOG_CRITICAL -> return "" to "оборван сторожем: опасная зона"
-            GenerationEnd.WATCHDOG_TIMEOUT -> return "" to "оборван сторожем: потолок работы"
+            GenerationEnd.WATCHDOG_CRITICAL -> return Attempt.Failed("ответ оборван сторожем: опасная зона")
+            GenerationEnd.WATCHDOG_TIMEOUT -> return Attempt.Failed("ответ оборван сторожем: потолок работы")
             else -> Unit
         }
         val text = when (val parsed = Conclusion.parse(answer)) {
-            is Conclusion.Parsed.Refused -> return parsed.raw to parsed.reason
+            is Conclusion.Parsed.Refused -> return Attempt.Answered(parsed.raw, parsed.reason)
             is Conclusion.Parsed.Text -> parsed.text
         }
-        return text to Conclusion.check(text, texts)
+        return Attempt.Answered(text, Conclusion.check(text, texts))
     }
 }
