@@ -32,6 +32,7 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
+import com.uroboros.initiative.InitiativeHolder
 import com.uroboros.llm.EchoCheck
 import com.uroboros.llm.EngineLines
 import com.uroboros.llm.ConversationTurns
@@ -2755,10 +2756,14 @@ class MainActivity : AppCompatActivity() {
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
         val conclusions = conclusionsLine ?: "Выводы: ещё не прочитано"
         group("Память", recordsQuestionsLine, circleLine, touchesLine, selfLeader)
+        // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
+        // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
+        // отрисовке, как эхо (см. InitiativeHolder).
+        val initiativeHolderLine = InitiativeHolder.meter(InitiativeHolder.read(journal.history()))
         group(
             "Сны, любопытство, зеркало",
             dreamsLine, recallLine, mirror, conclusions, curiosityLine(), curiosityAskMeter(),
-            AgentService.initiativeLine.value, selfStateLine,
+            AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
         )
         group("Ход", lastMetricsLine, echoLine, disputeNoticeLine, composedLine)
         val composed = lastComposedContent
