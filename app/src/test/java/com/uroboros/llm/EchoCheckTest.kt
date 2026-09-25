@@ -8,12 +8,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Детекторы эха [EchoCheck] и пометки о нём в реплике следующего хода.
+ * Детекторы эха [EchoCheck]; пометок о нём в реплике следующего хода нет.
  *
  * Живые примеры — с телефона. Главные проверки на молчание: ответ по делу с
  * парой общих слов с вопросом — не зеркало; предложение из одной основы не
- * учитывается. Детектор, ловящий всё подряд, в проверках «ловит» выглядел бы
- * правильным.
+ * учитывается; ответ, совпадающий с вопросом или записью, — не ответ
+ * служебной строке. Детектор, ловящий всё подряд, в проверках «ловит»
+ * выглядел бы правильным.
  */
 class EchoCheckTest {
 
@@ -99,19 +100,90 @@ class EchoCheckTest {
     // --- Прибор ---
 
     @Test
-    fun `строка Эхо печатается всегда и разводит два вида`() {
+    fun `строка Эхо печатается всегда и разводит три вида`() {
         assertEquals("Эхо: ответа ещё нет", EchoCheck.meter(null))
         assertEquals(
-            "Эхо: повтор себя — нет · зеркало — «Нет, сейчас не вспомнишь.»",
+            "Эхо: повтор себя — нет · зеркало — «Нет, сейчас не вспомнишь.» · ответ служебной строке — нет",
             EchoCheck.meter(EchoCheck.Result(selfRepeat = null, mirror = "Нет, сейчас не вспомнишь.")),
         )
         assertEquals(
-            "Эхо: повтор себя — нет · зеркало — нет",
+            "Эхо: повтор себя — нет · зеркало — нет · ответ служебной строке — нет",
             EchoCheck.meter(EchoCheck.Result(null, null)),
         )
     }
 
-    // --- Пометки на следующем ходе ---
+    // --- Ответ служебной строке ---
+
+    /**
+     * Живой пример: пометка об эхе стояла в реплике, модель ответила на неё.
+     * Доля основ 3 из 4 («понял» в блоке нет) — порог зеркала 0.8 её пропустил бы.
+     */
+    @Test
+    fun `ответ на служебную строку ловится на живом примере`() {
+        val service = "В прошлом ответе ты повторил слова пользователя вместо своих."
+        val last = ConversationJournal.Turn(
+            userContent = service + "\n\nХорошо.",
+            agentContent = "Понял, повторил слова пользователя.",
+            question = "Хорошо.",
+        )
+        val result = EchoCheck.ofLast(listOf(last))!!
+        assertEquals("Понял, повторил слова пользователя.", result.serviceReply)
+        assertEquals(service, result.serviceBlock)
+        assertNull(result.mirror)
+        assertEquals(
+            "Эхо: повтор себя — нет · зеркало — нет · ответ служебной строке — " +
+                "«Понял, повторил слова пользователя.» → «В прошлом ответе ты повторил слова польз…»",
+            EchoCheck.meter(result),
+        )
+    }
+
+    /** Совпадение с вопросом — это зеркало, а не ответ служебной строке. */
+    @Test
+    fun `ответ, совпадающий только с вопросом, — не ответ служебной строке`() {
+        val last = ConversationJournal.Turn(
+            userContent = ConversationJournal.ANSWER_WITHOUT_SUPPORT + "\n\nА сейчас не вспомнишь?",
+            agentContent = "Нет, сейчас не вспомнишь.",
+            question = "А сейчас не вспомнишь?",
+        )
+        val result = EchoCheck.ofLast(listOf(last))!!
+        assertEquals("Нет, сейчас не вспомнишь.", result.mirror)
+        assertNull(result.serviceReply)
+        assertNull(result.serviceBlock)
+    }
+
+    /**
+     * Пересказ записи — законный ответ. Запись нарочно с пустой строкой внутри
+     * (сохранённая речь владельца бывает в несколько абзацев): деление реплики
+     * по пустой строке до выемки записей выдало бы её хвост за служебный блок.
+     */
+    @Test
+    fun `ответ, совпадающий только с записью, — не ответ служебной строке`() {
+        val record = "Пользователь сказал: «Колодка из бука.\n\nРубанок старый.»"
+        val question = "Какой у меня рубанок?"
+        val last = ConversationJournal.Turn(
+            userContent = ConversationJournal.ANSWER_WITHOUT_SUPPORT + "\n\n" + record + "\n\n" + question,
+            agentContent = "Рубанок старый.",
+            question = question,
+            records = listOf(ConversationJournal.RecordUse(record, 0)),
+        )
+        assertEquals(listOf(ConversationJournal.ANSWER_WITHOUT_SUPPORT), EchoCheck.serviceBlocks(last))
+        assertNull(EchoCheck.ofLast(listOf(last))!!.serviceReply)
+    }
+
+    @Test
+    fun `ход без служебных блоков — нет`() {
+        val last = ConversationJournal.Turn(
+            userContent = "Из чего колодка?",
+            agentContent = "Колодка из бука.",
+            question = "Из чего колодка?",
+        )
+        assertEquals(emptyList<String>(), EchoCheck.serviceBlocks(last))
+        val result = EchoCheck.ofLast(listOf(last))!!
+        assertNull(result.serviceReply)
+        assertTrue(EchoCheck.meter(result).endsWith("ответ служебной строке — нет"))
+    }
+
+    // --- Пометок об эхе в реплике нет ---
 
     private fun journalAfter(question: String, answer: String, earlier: String? = null) =
         ConversationJournal().apply {
@@ -119,49 +191,28 @@ class EchoCheckTest {
             appendTurn(question, answer, question, listOf("запись"))
         }
 
+    /** Эхо поймано обоих видов, а в реплику следующего хода о нём не идёт ничего. */
     @Test
-    fun `обе пометки, без цитаты пойманного`() {
+    fun `пойманное эхо в реплику не идёт`() {
         val journal = journalAfter(
             question = "А сейчас не вспомнишь?",
             answer = "Нет, сейчас не вспомнишь. Снова активирован, память проверить нужно.",
             earlier = "Снова активирован, память проверить нужно.",
         )
-        val content = journal.composeUserContent(emptyList(), "Хорошо.")
-        assertEquals(
-            ConversationJournal.ECHO_SELF_REPEAT + "\n\n" + ConversationJournal.ECHO_MIRROR + "\n\nХорошо.",
-            content,
-        )
-        assertFalse(content.contains("вспомнишь"))
-        assertFalse(content.contains("активирован"))
-    }
-
-    @Test
-    fun `одна пометка — только зеркало`() {
-        val journal = journalAfter("А сейчас не вспомнишь?", "Нет, сейчас не вспомнишь.")
-        val content = journal.composeUserContent(emptyList(), "Хорошо.")
-        assertEquals(ConversationJournal.ECHO_MIRROR + "\n\nХорошо.", content)
-        assertFalse(content.contains("вспомнишь"))
-    }
-
-    @Test
-    fun `ни одной пометки после ответа по делу`() {
-        val journal = journalAfter(
-            "Из какого дерева сделана колодка моего рубанка?",
-            "Колодка сделана из бука, его древесина плотная и не трескается.",
-        )
+        val echo = EchoCheck.ofLast(journal.history())!!
+        assertTrue(echo.mirror != null && echo.selfRepeat != null)
         assertEquals("Хорошо.", journal.composeUserContent(emptyList(), "Хорошо."))
     }
 
-    /** Пометки об эхе стоят за пометкой об опоре: та по-прежнему первая. */
+    /** Пометка об опоре не тронута: после хода без записей она на месте, эха рядом нет. */
     @Test
-    fun `пометка об опоре остаётся первой`() {
+    fun `пометка об опоре остаётся, пометки об эхе нет`() {
         val journal = ConversationJournal().apply {
             appendTurn("А сейчас не вспомнишь?", "Нет, сейчас не вспомнишь.", "А сейчас не вспомнишь?", emptyList())
         }
-        val content = journal.composeUserContent(emptyList(), "Хорошо.")
         assertEquals(
-            ConversationJournal.ANSWER_WITHOUT_SUPPORT + "\n\n" + ConversationJournal.ECHO_MIRROR + "\n\nХорошо.",
-            content,
+            ConversationJournal.ANSWER_WITHOUT_SUPPORT + "\n\nХорошо.",
+            journal.composeUserContent(emptyList(), "Хорошо."),
         )
     }
 }
