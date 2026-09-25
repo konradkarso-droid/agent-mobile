@@ -1,6 +1,8 @@
 package com.uroboros.memory.dream
 
 import com.uroboros.memory.FakeStickerDao
+import com.uroboros.memory.ProvenanceLabels
+import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -118,7 +120,7 @@ class DreamRecallTest {
         assertEquals(1, lines.size)
         assertEquals(2, lines.single().dreams.size)
         assertEquals(
-            "Тебе снилось, что рядом с «Всегда носи с собой…» было: " +
+            "${ProvenanceLabels.DREAM_FOR_MODEL}, что рядом с «Всегда носи с собой…» было: " +
                 "«Делать нужно хорошо, а плохо - не делать.», " +
                 "«Четвёртое предложение будет немного длиннее.».",
             lines.single().text,
@@ -143,17 +145,22 @@ class DreamRecallTest {
     fun `строка сна узнаётся как сон, запись с теми же словами — нет`() {
         val offer = pick(listOf(dream(8, 9)), live, setOf(8))
         val line = DreamRecall.lines(offer.picked, setOf(8)).single().text
-        assertTrue(line, line.startsWith("Тебе снилось"))
+        val dreamLabel = ProvenanceLabels.DREAM_FOR_MODEL
+        val userLabel = ProvenanceLabels.forModel(SourceKind.USER_STATED.name)
+        assertTrue(line, line.startsWith(dreamLabel))
         assertTrue(DreamRecall.isDreamLine(line))
-        assertTrue(DreamRecall.isDreamLine("Тебе снилось: «а» → «б»."))
-        assertFalse(DreamRecall.isDreamLine("Пользователь сказал: «Тебе снилось, что нет»."))
+        assertTrue(DreamRecall.isDreamLine("$dreamLabel: «а» → «б»."))
+        assertFalse(DreamRecall.isDreamLine("$userLabel: «$dreamLabel, что нет»."))
     }
 
     @Test
     fun `мост называет, через что связалось, и не повторяет найденное`() {
         val bridge = dream(1, 2, 3, kind = DreamWeaver.Kind.BRIDGE)
         val line = DreamRecall.lines(pick(listOf(bridge), live, setOf(1)).picked, setOf(1)).single()
-        assertEquals("Тебе снилось, что «запись 1» и «запись 3» связались через «запись 2».", line.text)
+        assertEquals(
+            "${ProvenanceLabels.DREAM_FOR_MODEL}, что «запись 1» и «запись 3» связались через «запись 2».",
+            line.text,
+        )
     }
 
     @Test
