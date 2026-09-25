@@ -40,20 +40,18 @@ class BuildSelfDescriptionTest {
     }
 
     @Test
-    fun `порядок частей — человек, сборка, нажитое, проверочная в конце`() {
+    fun `порядок частей — человек, сборка, нажитое`() {
         assertEquals(
-            "стена\nа\nб\nнажито\nпроба",
-            BuildSelfDescription.compose("стена", listOf("а", "б"), listOf("нажито"), "проба"),
+            "стена\nа\nб\nнажито",
+            BuildSelfDescription.compose("стена", listOf("а", "б"), listOf("нажито")),
         )
-        val withProbe = BuildSelfDescription.compose("стена", listOf("а"), probe = BuildSelfDescription.PROBE_LINE)
-        assertTrue(withProbe.endsWith("\n" + BuildSelfDescription.PROBE_LINE))
     }
 
     @Test
     fun `пустые части не дают пустых строк`() {
-        assertEquals("стена", BuildSelfDescription.compose("стена", emptyList(), emptyList(), null))
-        assertEquals("стена\nпроба", BuildSelfDescription.compose("стена", emptyList(), listOf(""), "проба"))
-        assertFalse(BuildSelfDescription.compose("стена", listOf("а"), listOf("б"), null).contains("\n\n"))
+        assertEquals("стена", BuildSelfDescription.compose("стена", emptyList(), emptyList()))
+        assertEquals("стена\nб", BuildSelfDescription.compose("стена", emptyList(), listOf("", "б")))
+        assertFalse(BuildSelfDescription.compose("стена", listOf("а"), listOf("б")).contains("\n\n"))
     }
 
     @Test
