@@ -169,7 +169,7 @@ object DolmenCircle {
         val coldName = if (coldByTheme && cold !is Window.LayerEmpty) "холод по словам темы" else "холод"
         val excludedPart = if (ribbonExcluded > 0) " · реплик ленты в исключении $ribbonExcluded" else ""
         return "Круг: вопрос — ${say(question)} · $themeName — ${say(theme)} · " +
-            "$coldName — ${say(cold)} · красный: $red — в ответ не идут, ждут стенной части" +
+            "$coldName — ${say(cold)} · красный: $red — в ответ не идут, идут в стену" +
             excludedPart
     }
 
