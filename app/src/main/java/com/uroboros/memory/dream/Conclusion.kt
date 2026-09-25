@@ -79,10 +79,20 @@ object Conclusion {
      * лидер первым), пропустить пробовавшиеся ([tried]: есть строка вывода,
      * принятая или отброшенная) и взять первые [MAX_PER_NIGHT].
      *
+     * [pressure] — давление целиком ([CuriosityPressure.Result.pressure]); нужно
+     * только затем, чтобы честно назвать причину пустого ряда. Ряд пуст и при
+     * ненулевом давлении, когда всё оно — от ответов о спрошенных снах: такой
+     * сон разряжен и в ряд не входит (см. [CuriosityPressure], «РАЗРЯДКА»).
+     *
      * Почему пробовавшийся сон не пробуется снова — в KDoc [ConclusionStep].
      */
-    fun pick(ranked: List<CuriosityPressure.Leader>, tried: Set<ConclusionKey>): Pick {
-        if (ranked.isEmpty()) return Pick.Silent("давление любопытства ноль — связывать нечего")
+    fun pick(ranked: List<CuriosityPressure.Leader>, tried: Set<ConclusionKey>, pressure: Int = 0): Pick {
+        if (ranked.isEmpty()) {
+            return Pick.Silent(
+                if (pressure > 0) "давление только от ответов о спрошенных снах — связывать нечего"
+                else "давление любопытства ноль — связывать нечего"
+            )
+        }
         val fresh = ranked.filter { ConclusionKey.of(it.dream) !in tried }
         if (fresh.isEmpty()) return Pick.Silent("все сны, дающие давление, уже пробовались")
         return Pick.Dreams(fresh.take(MAX_PER_NIGHT))
