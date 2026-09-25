@@ -7,7 +7,7 @@
     android:animateLayoutChanges="true"
     android:padding="16dp">
 
-    <!-- Верхняя строка, слева направо: раскрыть подробности — запустить цикл —
+    <!-- Верхняя строка, слева направо: раскрыть подробности — начать заново —
          аварийный стоп. Раскладка не декоративная, она разносит действия по
          цене промаха.
 
@@ -18,14 +18,18 @@
          точке той же дуги. Случайно не нажимается, осознанно дотянуться можно.
          Рядом с ним намеренно не поставлено ничего, что жмут часто.
 
-         "Цикл" — посередине, между ними, и запускается ДОЛГИМ нажатием.
-         Общее правило, введённое 27.08.2026: длительность жеста соразмерна
-         цене действия. Короткое касание — дешёвое и обратимое, удержание —
-         дорогое. Цикл это двадцать минут работы и нагрева, поэтому удержание.
-         Защита физическая, а не диалогом "вы уверены?": палец сам чувствует,
-         что просят усилие. Условие применимости — жесты должны быть написаны
-         на экране (строка подсказок внизу), иначе правило превращается в
-         скрытую функцию. -->
+         «Начать заново» — посередине, между ними. Жмут её редко, а промах
+         стоит всего разговора (он уходит в архив и в ленту не возвращается),
+         поэтому она спрашивает подтверждение — в отличие от «Стоп», тут
+         секунда ничего не решает.
+
+         Вид «Начать заново» взят у «Убрать ход», а не у «Стоп»: белая,
+         красный текст. Красная заливка в приложении означает одно —
+         остановить то, что идёт прямо сейчас; эта кнопка правит уже
+         записанное.
+
+         Кнопки запуска TOTE-цикла на экране нет: запускать цикл будет сам
+         агент. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -54,20 +58,19 @@
             android:layout_weight="1"/>
 
         <Button
-            android:id="@+id/buttonCycle"
+            android:id="@+id/buttonRestart"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="40dp"
             android:minWidth="0dp"
-            android:minHeight="40dp"
-            android:paddingStart="20dp"
-            android:paddingEnd="20dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
             android:insetTop="0dp"
             android:insetBottom="0dp"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textAllCaps="false"
-            android:textColor="#123540"
+            android:textColor="#D6453E"
             android:backgroundTint="#FFFFFF"
-            android:text="Цикл"/>
+            android:text="Начать заново"/>
 
         <View
             android:layout_width="0dp"
@@ -93,40 +96,8 @@
 
     </LinearLayout>
 
-    <!-- «Начать заново» — под «Стоп», в том же дальнем правом верхнем углу:
-         жмут её редко, а промах стоит всего разговора (он уходит в архив и в
-         ленту не возвращается). Подтверждение всё равно спрашивается — в
-         отличие от «Стоп», тут секунда ничего не решает.
-
-         Вид взят у «Убрать ход», а не у «Стоп»: белая, красный текст. Красная
-         заливка в приложении означает одно — остановить то, что идёт прямо
-         сейчас; эта кнопка правит уже записанное. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:gravity="end"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/buttonRestart"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:minWidth="0dp"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:textSize="12sp"
-            android:textAllCaps="false"
-            android:textColor="#D6453E"
-            android:backgroundTint="#FFFFFF"
-            android:text="Начать заново"/>
-
-    </LinearLayout>
-
-    <!-- Строка модели. Съехала из верхней строки сюда, потому что там теперь
-         три кнопки. Осталась однострочной с многоточием: имена файлов моделей
+    <!-- Строка модели. Стоит отдельно от верхней строки, потому что там
+         три кнопки. Однострочная с многоточием: имена файлов моделей
          длинные, а перенос в два этажа возвращал бы ту самую тесноту, ради
          которой всё переставлялось. -->
     <TextView
@@ -174,56 +145,6 @@
         android:fontFamily="monospace"
         android:visibility="gone"/>
 
-    <!-- Шторка. Здесь всё, что нужно при разборе, но мешает при обычной
-         работе: параметры движка, потоки, кэш стены, секундомер, память,
-         разбивка по стадиям. Раскрывается кнопкой "Подробно" слева вверху,
-         состояние запоминается между запусками.
-
-         Почему это вообще прячется. Раскрытая панель занимала десяток строк
-         и отъедала высоту у области ответа — той самой, ради которой экран
-         и существует. Раньше эти строки были всегда на виду, потому что
-         иначе поломки оставались молчаливыми; но молчание лечится не тем,
-         что человек постоянно смотрит на цифры, а тем, что важное вынесено
-         наружу отдельными строками (см. две выше) и что ошибки называются
-         словами в области результата. -->
-    <TextView
-        android:id="@+id/textMetrics"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:textSize="11sp"
-        android:textColor="#3A6470"
-        android:fontFamily="monospace"
-        android:lineSpacingExtra="2dp"
-        android:visibility="gone"/>
-
-    <!-- Настройка «После комы продолжать разговор сам» — в шторке, у правого
-         края. Меняют её раз в жизни, поэтому она не стоит на виду рядом с
-         тем, что жмут часто, и за раскрытием шторки случайно не задевается.
-         Видимость — вместе со шторкой (setDetailsExpanded). -->
-    <CheckBox
-        android:id="@+id/checkAutoContinue"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="end"
-        android:layout_marginTop="4dp"
-        android:textSize="12sp"
-        android:textColor="#3A6470"
-        android:visibility="gone"
-        android:text="После комы продолжать разговор сам"/>
-
-    <!-- ВРЕМЕННЫЙ флажок проверки смены стены на лету (ConversationPrefs.wallProbe).
-         Рядом с настройкой выше и так же в шторке. -->
-    <CheckBox
-        android:id="@+id/checkWallProbe"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="end"
-        android:textSize="12sp"
-        android:textColor="#3A6470"
-        android:visibility="gone"
-        android:text="Проверочная строка в стене"/>
-
     <!-- Причина срабатывания стопа. Скрыт, пока стоп не взведён. Показывается
          из MainActivity вместе с кнопкой сброса (следующий шаг). -->
     <TextView
@@ -237,20 +158,6 @@
         android:textColor="#A3231D"
         android:visibility="gone"
         android:text="Остановлено"/>
-
-    <EditText
-        android:id="@+id/editTextInput"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:padding="12dp"
-        android:background="#FFFFFF"
-        android:textSize="14sp"
-        android:textColor="#123540"
-        android:textColorHint="#7FA3AE"
-        android:inputType="textMultiLine"
-        android:maxLines="4"
-        android:hint="Запрос, текст для сохранения или вопрос агенту"/>
 
     <!-- Item 9: ответ агента на вопрос, заданный во время идущего TOTE-цикла.
          Отдельная область — не смешивается с textResults (там прогресс цикла).
@@ -282,39 +189,117 @@
         android:textColor="#123540"
         android:visibility="gone"/>
 
-    <!-- Прокрутка разговора. Имя понадобилось 28.08.2026, когда поле
-         результата перестало быть одним ответом и стало лентой: без имени
-         из кода нельзя ни доехать до низа при появлении ответа, ни прыгнуть
-         на нужный ход.
-
-         Полоска не гаснет (fadeScrollbars=false) намеренно. Она НЕ
-         нажимается — в обычном текстовом поле это рисунок, а не ручка, —
-         но отвечает на вопрос "где я в разговоре", который на длинной
-         ленте возникает постоянно. Точное перемещение делают кнопки хода
-         ниже: единица разговора это реплика, а не пиксель. -->
-    <ScrollView
-        android:id="@+id/scrollResults"
+    <!-- Лента и шторка делят одно место: всё, что остаётся между верхом и
+         нижним блоком. Видна одна из двух. -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="10dp"
-        android:padding="12dp"
-        android:scrollbars="vertical"
-        android:fadeScrollbars="false"
-        android:background="#FFFFFF">
+        android:layout_marginTop="10dp">
 
-        <TextView
-            android:id="@+id/textResults"
+        <!-- Прокрутка разговора. Имя понадобилось 28.08.2026, когда поле
+             результата перестало быть одним ответом и стало лентой: без имени
+             из кода нельзя ни доехать до низа при появлении ответа, ни прыгнуть
+             на нужный ход.
+
+             Полоска не гаснет (fadeScrollbars=false) намеренно. Она НЕ
+             нажимается — в обычном текстовом поле это рисунок, а не ручка, —
+             но отвечает на вопрос "где я в разговоре", который на длинной
+             ленте возникает постоянно. Точное перемещение делают кнопки хода
+             ниже: единица разговора это реплика, а не пиксель. -->
+        <ScrollView
+            android:id="@+id/scrollResults"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="13sp"
-            android:textColor="#123540"
-            android:fontFamily="monospace"/>
+            android:layout_height="match_parent"
+            android:padding="12dp"
+            android:scrollbars="vertical"
+            android:fadeScrollbars="false"
+            android:background="#FFFFFF">
 
-    </ScrollView>
+            <TextView
+                android:id="@+id/textResults"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:textColor="#123540"
+                android:fontFamily="monospace"/>
 
-    <!-- Строка хода. Действия НАД ХОДАМИ разговора, в отличие от сетки
-         внизу, где действия над приложением. Здесь их три: прыжок к
+        </ScrollView>
+
+        <!-- Шторка. Здесь всё, что нужно при разборе, но мешает при обычной
+             работе: параметры движка, потоки, кэш стены, секундомер, память,
+             разбивка по стадиям. Раскрывается кнопкой "Подробно" слева вверху,
+             состояние запоминается между запусками.
+
+             Шторка встаёт НА МЕСТО ЛЕНТЫ, на ту же высоту, и прокручивается
+             своей прокруткой: иначе, раскрытая под лентой, она выталкивала за
+             край экрана и ленту, и собственные флажки. Лента в это время только
+             спрятана (см. setDetailsExpanded). Флажки — в начале шторки, чтобы
+             их было видно сразу, без прокрутки.
+
+             Почему это вообще прячется. Раскрытая панель занимала десяток строк
+             и отъедала высоту у области ответа — той самой, ради которой экран
+             и существует. Раньше эти строки были всегда на виду, потому что
+             иначе поломки оставались молчаливыми; но молчание лечится не тем,
+             что человек постоянно смотрит на цифры, а тем, что важное вынесено
+             наружу отдельными строками (см. две выше) и что ошибки называются
+             словами в области результата. -->
+        <ScrollView
+            android:id="@+id/scrollDetails"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="12dp"
+            android:scrollbars="vertical"
+            android:fadeScrollbars="false"
+            android:background="#FFFFFF"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- Настройка «После комы продолжать разговор сам» — в шторке, у правого
+                     края. Меняют её раз в жизни, поэтому она не стоит на виду рядом с
+                     тем, что жмут часто, и за раскрытием шторки случайно не задевается. -->
+                <CheckBox
+                    android:id="@+id/checkAutoContinue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:textSize="12sp"
+                    android:textColor="#3A6470"
+                    android:text="После комы продолжать разговор сам"/>
+
+                <!-- ВРЕМЕННЫЙ флажок проверки смены стены на лету (ConversationPrefs.wallProbe).
+                     Рядом с настройкой выше и так же в шторке. -->
+                <CheckBox
+                    android:id="@+id/checkWallProbe"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:textSize="12sp"
+                    android:textColor="#3A6470"
+                    android:text="Проверочная строка в стене"/>
+
+                <TextView
+                    android:id="@+id/textMetrics"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="11sp"
+                    android:textColor="#3A6470"
+                    android:fontFamily="monospace"
+                    android:lineSpacingExtra="2dp"/>
+
+            </LinearLayout>
+
+        </ScrollView>
+
+    </FrameLayout>
+
+    <!-- Строка хода. Действия НАД ХОДАМИ разговора, в отличие от строки
+         кнопок внизу, где действия над приложением. Здесь их три: прыжок к
          предыдущей реплике человека, к следующей и отрезание последнего
          хода.
 
@@ -409,47 +394,16 @@
 
     </LinearLayout>
 
-    <!-- Сетка 2x2 вместо столбика: отдаёт высоту области результата.
-         Главное действие — в нижней ЛЕВОЙ ячейке: у левши ось большого
-         пальца в нижнем левом углу, это ближайшая точка дуги. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="12dp">
+    <!-- Строка мелких кнопок над полем ввода. Действия над приложением, в
+         отличие от строки хода выше, где действия над ходами разговора.
+         Кнопки мелкие и в одну строку: высота нужна ленте. Ширина — по
+         подписи, остаток делится поровну, чтобы «Разбор памяти» не резался
+         на узком экране.
 
-        <!-- Текст и цвет этой кнопки меняются программно в MainActivity
-             (setToteRunningState()) в зависимости от того, идёт ли TOTE-цикл.
-             Текст ниже — заглушка на случай, если код не выполнится до
-             отрисовки. -->
-        <Button
-            android:id="@+id/buttonGenerate"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:minHeight="48dp"
-            android:textSize="14sp"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:backgroundTint="#17697B"
-            android:enabled="false"
-            android:text="Генерировать"/>
-
-        <Button
-            android:id="@+id/buttonShow"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:minHeight="48dp"
-            android:textSize="14sp"
-            android:textAllCaps="false"
-            android:textColor="#123540"
-            android:backgroundTint="#FFFFFF"
-            android:text="Показать"/>
-
-    </LinearLayout>
-
+         У «Разбора памяти» короткое нажатие показывает уже найденное, долгое
+         запускает разбор. Разбор это часы работы и нагрева, а удержание —
+         защита от случайного запуска, которая не стоит ни диалога, ни
+         лишнего касания. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -457,65 +411,137 @@
         android:layout_marginTop="8dp">
 
         <Button
-            android:id="@+id/buttonSave"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:id="@+id/buttonShow"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
             android:layout_weight="1"
-            android:minHeight="48dp"
-            android:textSize="14sp"
+            android:minWidth="0dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:maxLines="1"
+            android:textSize="11sp"
             android:textAllCaps="false"
             android:textColor="#123540"
             android:backgroundTint="#FFFFFF"
+            android:text="Показать"/>
+
+        <Button
+            android:id="@+id/buttonSave"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:maxLines="1"
+            android:textSize="11sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
+            android:layout_marginStart="4dp"
             android:text="Сохранить"/>
 
         <Button
             android:id="@+id/buttonLoadModel"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
             android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:minHeight="48dp"
-            android:textSize="14sp"
+            android:minWidth="0dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:maxLines="1"
+            android:textSize="11sp"
             android:textAllCaps="false"
             android:textColor="#123540"
             android:backgroundTint="#FFFFFF"
+            android:layout_marginStart="4dp"
             android:text="Модель"/>
+
+        <Button
+            android:id="@+id/buttonJudge"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:maxLines="1"
+            android:textSize="11sp"
+            android:textAllCaps="false"
+            android:textColor="#123540"
+            android:backgroundTint="#FFFFFF"
+            android:layout_marginStart="4dp"
+            android:text="Разбор памяти"/>
 
     </LinearLayout>
 
-    <!-- Разбор памяти судьёй: короткое нажатие показывает уже найденное, долгое
-         запускает разбор. Жест дорогого действия тот же, что у цикла, и по той
-         же причине: разбор это часы работы и нагрева, а удержание — защита от
-         случайного запуска, которая не стоит ни диалога, ни лишнего касания.
-
-         Кнопка своя, а не третий смысл на чужой: на кнопке с двумя жестами
-         третий был бы невидим, и запуск цикла уже приходилось переносить
-         именно из-за этого. -->
-    <Button
-        android:id="@+id/buttonJudge"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:minHeight="48dp"
-        android:textSize="14sp"
-        android:textAllCaps="false"
-        android:textColor="#123540"
-        android:backgroundTint="#FFFFFF"
-        android:text="Разбор памяти"/>
-
-    <!-- Подсказки о жестах вынесены сюда одной строкой. Раньше они жили внутри
+    <!-- Подсказки о жестах одной строкой, под кнопками. Раньше они жили внутри
          подписей самих кнопок и заставляли текст переноситься в два этажа.
 
          Эта строка обязательна, а не украшение: правило "дорогое действие —
          долгим нажатием" работает только пока жесты написаны на экране. Убрать
-         её — значит превратить запуск цикла в скрытую функцию. -->
+         её — значит превратить долгие нажатия в скрытые функции. -->
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="4dp"
         android:gravity="center"
-        android:textSize="11sp"
+        android:textSize="10sp"
         android:textColor="#7FA3AE"
-        android:text="Долгое нажатие: Цикл — запуск · Показать — лог · Сохранить — экспорт · Модель — папка · Разбор — запуск"/>
+        android:text="Долгое нажатие: Показать — лог · Сохранить — экспорт · Модель — папка · Разбор — запуск"/>
+
+    <!-- Поле ввода — в самом низу, как в чате, и растёт по высоте с текстом.
+         Отправка — стрелкой внутри поля у правого края: у левши большой
+         палец держит низ экрана, а стрелка стоит там, где кончается набор.
+
+         Место у ЛЕВОГО края внутри поля оставлено под будущую кнопку «+»
+         (добавить документ). Самой кнопки нет: загрузки документов нет, а
+         кнопка, которая ничего не делает, хуже её отсутствия.
+
+         Цвет стрелки меняется в MainActivity (setToteRunningState), бледный —
+         у погашенной: пока идёт ответ, она недоступна и так и выглядит. -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp">
+
+        <EditText
+            android:id="@+id/editTextInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="44dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="56dp"
+            android:paddingBottom="12dp"
+            android:background="#FFFFFF"
+            android:textSize="14sp"
+            android:textColor="#123540"
+            android:textColorHint="#7FA3AE"
+            android:inputType="textMultiLine"
+            android:maxLines="4"
+            android:hint="Запрос, текст для сохранения или вопрос агенту"/>
+
+        <ImageButton
+            android:id="@+id/buttonSend"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="end|bottom"
+            android:layout_marginEnd="6dp"
+            android:layout_marginBottom="4dp"
+            android:background="@drawable/bg_send_arrow"
+            android:backgroundTint="#C9DAE0"
+            android:src="@drawable/ic_send_arrow"
+            android:contentDescription="Отправить"
+            android:enabled="false"/>
+
+    </FrameLayout>
 
 </LinearLayout>

@@ -185,7 +185,7 @@ class DolmenCircleTest {
         assertTrue(line.contains("вопрос — нашёл 4, мест 3"))
         assertTrue(line.contains("тема — нечем искать (нет слов)"))
         assertTrue(line.contains("холод — слой пуст"))
-        assertTrue(line.contains("красный: 0 — в ответ не идут, ждут стенной части"))
+        assertTrue(line.contains("красный: 0 — в ответ не идут, идут в стену"))
 
         val empty = DolmenCircle.meter(
             DolmenCircle.Window.SearchedEmpty, DolmenCircle.Window.SearchedEmpty,

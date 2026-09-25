@@ -6,6 +6,7 @@ import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.text.SpannableStringBuilder
@@ -16,6 +17,7 @@ import android.text.style.BackgroundColorSpan
 import android.text.style.ClickableSpan
 import android.text.style.LeadingMarginSpan
 import android.text.style.LineBackgroundSpan
+import android.text.style.StyleSpan
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -80,7 +82,6 @@ import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
 import com.uroboros.will.SimplePendingQuerySource
-import com.uroboros.will.ToteResult
 import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
 import kotlinx.coroutines.CancellationException
@@ -379,8 +380,10 @@ class MainActivity : AppCompatActivity() {
     // бирюзовый = обычное главное действие, фиолетовый = канал речи агента
     // (тем же цветом помечен блок "Ответ агента"). Красный нигде, кроме
     // аварийного стопа, не используется.
-    private val colorIdle = ColorStateList.valueOf(Color.parseColor("#17697B"))
-    private val colorToteRunning = ColorStateList.valueOf(Color.parseColor("#5B4B9E"))
+    // У погашенной стрелки свой, бледный цвет: пока идёт ответ, она должна
+    // выглядеть недоступной, а не просто не отзываться.
+    private val colorIdle = sendArrowTint("#17697B")
+    private val colorToteRunning = sendArrowTint("#5B4B9E")
 
     private val prefs by lazy { getSharedPreferences(ModelPrefs.NAME, Context.MODE_PRIVATE) }
 
@@ -713,7 +716,7 @@ class MainActivity : AppCompatActivity() {
      * молча, и человек решил бы, что генерация сорвалась.
      */
     private fun toggleTurnRecords(index: Int) {
-        if (!binding.buttonGenerate.isEnabled) return
+        if (!binding.buttonSend.isEnabled) return
         if (!expandedTurns.remove(index)) expandedTurns += index
         binding.textResults.text = renderJournal()
     }
@@ -1201,7 +1204,7 @@ class MainActivity : AppCompatActivity() {
      * [togglePendingHelp] и по тем же доводам, включая цену пересборки.
      */
     private fun toggleWitnessNote() {
-        if (!binding.buttonGenerate.isEnabled) return
+        if (!binding.buttonSend.isEnabled) return
         witnessNoteExpanded = !witnessNoteExpanded
         openMemoryView()
     }
@@ -1221,7 +1224,7 @@ class MainActivity : AppCompatActivity() {
      * перерисовка стёрла бы показанную его часть.
      */
     private fun togglePendingHelp() {
-        if (!binding.buttonGenerate.isEnabled) return
+        if (!binding.buttonSend.isEnabled) return
         pendingHelpExpanded = !pendingHelpExpanded
         openPendingReview()
     }
@@ -2457,12 +2460,17 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun sendArrowTint(enabled: String): ColorStateList = ColorStateList(
+        arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+        intArrayOf(Color.parseColor("#C9DAE0"), Color.parseColor(enabled)),
+    )
+
     private fun setToteRunningState(running: Boolean) {
         isToteRunning = running
-        // Подписи короткие: подсказки о жестах вынесены одной строкой в
-        // разметку, поэтому переносить внутри кнопки больше нечего.
-        binding.buttonGenerate.text = if (running) "Спросить" else "Генерировать"
-        binding.buttonGenerate.backgroundTintList = if (running) colorToteRunning else colorIdle
+        // У стрелки нет подписи: во время цикла она отправляет вопрос циклу, и
+        // это видно по цвету, а не по слову. С экрана цикл сейчас не
+        // запускается, но ветка оставлена живой — отправка её не меняет.
+        binding.buttonSend.backgroundTintList = if (running) colorToteRunning else colorIdle
     }
 
     // Числа форматируются через Locale.US намеренно: на экране рядом стоят
@@ -2618,8 +2626,9 @@ class MainActivity : AppCompatActivity() {
         // больше не входит: она обязана быть видна независимо от того,
         // раскрыта шторка или нет.
         //
-        // ГРУППЫ РАЗДЕЛЕНЫ ЧЕРТОЙ, И ГРАНИЦА ПРОВЕДЕНА НЕ ПО ТЕМАМ. Деление по
-        // темам (память, скорость, модель) разлучило бы строки, которые стоят
+        // ГРУППЫ РАЗДЕЛЕНЫ ЧЕРТОЙ, у каждой короткий заголовок, чтобы в
+        // длинной шторке было видно, где что. ГРАНИЦА ПРОВЕДЕНА НЕ ПО ТЕМАМ.
+        // Деление по темам (память, скорость, модель) разлучило бы строки, которые стоят
         // рядом затем, чтобы сверять друг друга: "Лента" и "Лента на диске"
         // интересны разницей между тем, что в памяти процесса, и тем, что
         // переживёт перезапуск, а наблюдение за зоной и опрос источников — тем,
@@ -2635,9 +2644,9 @@ class MainActivity : AppCompatActivity() {
         // разойтись с лентой, заводить незачем.
         val metrics = SpannableStringBuilder()
         val metricRules = mutableListOf<Int>()
-        // Пустая группа не оставляет ни черты, ни пустой строки: черта над
-        // пустотой читалась бы как "здесь что-то не напечаталось".
-        fun group(vararg lines: String?) {
+        // Пустая группа не оставляет ни черты, ни заголовка, ни пустой строки:
+        // черта над пустотой читалась бы как "здесь что-то не напечаталось".
+        fun group(title: String, vararg lines: String?) {
             val present = lines.filterNotNull()
             if (present.isEmpty()) return
             if (metrics.isNotEmpty()) {
@@ -2648,23 +2657,28 @@ class MainActivity : AppCompatActivity() {
                 metricRules += metrics.length
                 metrics.append("\n")
             }
+            val titleStart = metrics.length
+            metrics.append(title)
+            metrics.setSpan(StyleSpan(Typeface.BOLD), titleStart, metrics.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            metrics.append("\n")
             metrics.append(present.joinToString("\n"))
         }
         group(
+            "Лента и точки",
             journalLine(), journalDiskLine, journalRestoreLine,
             checkpointDiskLine, checkpointActionLine, engineReturnLine,
             // Автозапись стоит в одной группе с лентой, а не с числами прогона:
             // она описывает разговор целиком и живёт столько же, сколько он.
             autoSaveLine(),
         )
-        group(engineParamsLine, promptCacheLine, buildSelfLine, turns.wallChangeLine)
-        // Числа прогона — своя группа: после ответа их приходит больше десятка
-        // строк, и слитые с параметрами движка они превращали шторку в
+        group("Движок и стена", engineParamsLine, promptCacheLine, buildSelfLine, turns.wallChangeLine)
+        // Числа прогона — своя группа «Ход»: после ответа их приходит больше
+        // десятка строк, и слитые с параметрами движка они превращали шторку в
         // простыню. Параметры отвечают на "с чем запущено", прогон — на "как
         // прошло"; это разные вопросы и разная свежесть.
-        // Сверка стоит в одной группе с числами прогона и ВЫШЕ них: она
-        // описывает то, что ушло в модель, а числа — то, чем это кончилось.
-        // Обе строки живут один ход и стираются вместе.
+        // Сверка стоит в начале группы «Память», а не с числами прогона, хотя
+        // живёт, как они, один ход: она сверяет записи памяти, ушедшие в
+        // модель, и читается рядом с кругом, который эти записи отобрал.
         // Ссылка на собранную реплику стоит в ОДНОЙ группе с числами прогона
         // и последней строкой в ней: числа называют состав запроса, ссылка
         // открывает сам текст, о котором они говорят. Разлучать их чертой
@@ -2692,7 +2706,13 @@ class MainActivity : AppCompatActivity() {
         // Нажитое о себе — сразу за касаниями: из них оно и считается.
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
-        group(disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, selfLeader, echoLine, dreamsLine, recallLine, mirror, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
+        group("Память", disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, selfLeader)
+        group(
+            "Сны, любопытство, зеркало",
+            echoLine, dreamsLine, recallLine, mirror, curiosityLine(), curiosityAskMeter(),
+            AgentService.initiativeLine.value, selfStateLine,
+        )
+        group("Ход", lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2708,6 +2728,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         group(
+            "Сторож",
             // Наблюдение за зоной стоит последним: смотрят на него не при
             // каждом ответе, а когда показания железа выглядят странно.
             // Печатается ВСЕГДА, включая случай "событий не было": прибор,
@@ -2716,7 +2737,7 @@ class MainActivity : AppCompatActivity() {
         )
         // Ширина панели в знаках — своей группой и в самом низу: смотрят на
         // неё, когда разметка выглядит странно, а не при работе.
-        group(panelWidthLine())
+        group("Разметка", panelWidthLine())
         for (start in metricRules) {
             metrics.setSpan(
                 RecordRuleSpan(colorRecordRule, start, ruleThickness, centered = true),
@@ -2862,11 +2883,20 @@ class MainActivity : AppCompatActivity() {
      * Состояние запоминается между запусками: тот, кто разбирается с
      * поломкой, не должен раскрывать её заново после каждого перезапуска
      * приложения, а перезапусков при работе с моделью много.
+     *
+     * ШТОРКА ВСТАЁТ НА МЕСТО ЛЕНТЫ, А ЛЕНТА ТОЛЬКО ПРЯЧЕТСЯ — INVISIBLE, НЕ
+     * GONE. Лента при этом не пересоздаётся и не теряет положения прокрутки.
+     * А главное, её разметка продолжает считаться: по ширине поля ленты
+     * считается строка «Ширина панели» в самой шторке, и у спрятанной через
+     * GONE ленты, если шторка открыта с запуска, ширина осталась бы нулевой.
+     *
+     * ЧЕГО ЭТО НЕ ДЕЛАЕТ: кнопки внизу, которые пишут в ленту («Показать»,
+     * «Разбор памяти», их долгие нажатия), шторку не сворачивают — их
+     * вывод ляжет в спрятанную ленту. Сворачивает только отправка реплики.
      */
     private fun setDetailsExpanded(expanded: Boolean) {
-        binding.textMetrics.visibility = if (expanded) View.VISIBLE else View.GONE
-        binding.checkAutoContinue.visibility = if (expanded) View.VISIBLE else View.GONE
-        binding.checkWallProbe.visibility = if (expanded) View.VISIBLE else View.GONE
+        binding.scrollDetails.visibility = if (expanded) View.VISIBLE else View.GONE
+        binding.scrollResults.visibility = if (expanded) View.INVISIBLE else View.VISIBLE
         binding.buttonDetails.text = if (expanded) "Свернуть ▴" else "Подробно ▾"
         prefs.edit().putBoolean(KEY_DETAILS_EXPANDED, expanded).apply()
     }
@@ -3197,7 +3227,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun showLoadedModel(displayName: String) {
         binding.textModelStatus.text = "Модель загружена: $displayName"
-        binding.buttonGenerate.isEnabled = true
+        binding.buttonSend.isEnabled = true
         // Момент выбран не случайно: строка про ctx/threads/batch
         // пишется библиотекой ровно при загрузке и за прогон не
         // меняется. Читать её здесь — значит не заводить ради неё
@@ -3411,12 +3441,12 @@ class MainActivity : AppCompatActivity() {
     /**
      * Идёт ход — чей угодно. Замок хода ([ConversationTurns.busy]) держит сам
      * ход; сборка реплики экраном идёт раньше замка, и её выдаёт погашенная
-     * кнопка «Генерировать» при загруженной модели. Говорится словами, а не
+     * стрелка отправки при загруженной модели. Говорится словами, а не
      * молчанием.
      */
     private fun restartBlocked(): Boolean {
         val busy = turns.busy.value ||
-            (llmEngine.isLoaded && !binding.buttonGenerate.isEnabled)
+            (llmEngine.isLoaded && !binding.buttonSend.isEnabled)
         if (busy) Toast.makeText(this, "Идёт ход — начать заново можно, когда он кончится", Toast.LENGTH_SHORT).show()
         return busy
     }
@@ -3439,7 +3469,7 @@ class MainActivity : AppCompatActivity() {
      * в этот момент значит отрезать не тот ход.
      */
     private fun showDropTurnDialog() {
-        if (!binding.buttonGenerate.isEnabled) return
+        if (!binding.buttonSend.isEnabled) return
         val last = journal.history().lastOrNull() ?: return
         val index = journal.turnCount - 1
         val preview = last.agentContent.take(DROP_PREVIEW_CHARS).replace("\n", " ")
@@ -3621,7 +3651,7 @@ class MainActivity : AppCompatActivity() {
         // ответа: она и есть то, ради чего экран существует.
         setDetailsExpanded(prefs.getBoolean(KEY_DETAILS_EXPANDED, false))
         binding.buttonDetails.setOnClickListener {
-            val expanding = binding.textMetrics.visibility != View.VISIBLE
+            val expanding = binding.scrollDetails.visibility != View.VISIBLE
             setDetailsExpanded(expanding)
             // Разворачивание шторки САМО пересчитывает показания, и это не
             // удобство, а условие исправности прибора.
@@ -3710,9 +3740,10 @@ class MainActivity : AppCompatActivity() {
         binding.textResults.movementMethod = LinkMovementMethod.getInstance()
 
         // То же самое для шторки: без этой строки ссылка на собранную реплику
-        // не отзовётся на касание вовсе. Шторка растёт по содержимому и своей
-        // прокрутки не имеет, поэтому с внешней не спорит — но если панель
-        // начнёт дёргаться при взмахе, виновата эта строка, как и соседняя.
+        // не отзовётся на касание вовсе. Поле шторки лежит в своей прокрутке и
+        // растёт по содержимому, как поле ленты, поэтому с внешней не спорит —
+        // но если панель начнёт дёргаться при взмахе, виновата эта строка, как
+        // и соседняя.
         binding.textMetrics.movementMethod = LinkMovementMethod.getInstance()
 
         if (!journal.isEmpty) {
@@ -3997,7 +4028,7 @@ class MainActivity : AppCompatActivity() {
         // глушит намеренно: этот путь не проходит через ActionGate и вообще
         // ничего не делает с устройством, зато остаётся единственным способом
         // что-то спросить у системы, пока она стоит.
-        binding.buttonGenerate.setOnClickListener {
+        binding.buttonSend.setOnClickListener {
             // Хвост 20: числа прошлого прогона стираются ДО всех проверок.
             // Иначе несостоявшийся запуск оставляет их на экране, и они
             // читаются как относящиеся к нынешнему.
@@ -4040,8 +4071,11 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
-            binding.buttonGenerate.isEnabled = false
+            binding.buttonSend.isEnabled = false
             showProgress("Идёт генерация...")
+            // Реплика ушла — ответ должен быть виден: открытая шторка стоит на
+            // месте ленты и закрыла бы его.
+            setDetailsExpanded(false)
 
             lifecycleScope.launch {
                 if (judgeRunning) awaitJudgeYield()
@@ -4374,7 +4408,7 @@ class MainActivity : AppCompatActivity() {
                     // Done: раньше кнопка включалась только если поток
                     // закончился ожидаемым событием, и любой другой выход
                     // оставлял её навсегда серой.
-                    binding.buttonGenerate.isEnabled = true
+                    binding.buttonSend.isEnabled = true
                     showProgress(null)
                 }
 
@@ -4451,13 +4485,13 @@ class MainActivity : AppCompatActivity() {
                 )
                 val ran = when (outcome) {
                     ConversationTurns.Outcome.JournalFull -> {
-                        binding.buttonGenerate.isEnabled = true
+                        binding.buttonSend.isEnabled = true
                         showProgress(null)
                         showJournalFullDialog()
                         return@launch
                     }
                     is ConversationTurns.Outcome.TooLong -> {
-                        binding.buttonGenerate.isEnabled = true
+                        binding.buttonSend.isEnabled = true
                         showProgress(null)
                         showQuestionTooLongDialog(outcome.contentChars, outcome.maxChars)
                         return@launch
@@ -4672,17 +4706,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Запуск TOTE-цикла переехал сюда с долгого нажатия на "Генерировать"
-        // (2026-08-27). Причина: на той кнопке жест был невидим, а сама кнопка
-        // тем временем меняет смысл — во время цикла она становится "Спросить".
-        // Два разных дорогих действия на одной кнопке, оба скрытые.
+        // Кнопки запуска TOTE-цикла на экране нет: запускать цикл будет сам
+        // агент. Код цикла и его состояние (isToteRunning, toteJob) остались —
+        // стоп по-прежнему обрывает цикл, если тот идёт.
         //
-        // Жест остался ДОЛГИМ намеренно, см. пояснение в разметке: цикл это
-        // двадцать минут работы и нагрева, и удержание — физическая защита от
-        // случайного запуска, которая не стоит ни диалога, ни лишнего касания.
-        // Разбор памяти судьёй. Жесты как у цикла: короткое нажатие показывает
-        // уже найденное, долгое запускает разбор. Проверки перед запуском те же
-        // и по тем же причинам; разбор вдобавок не пускается поверх цикла —
+        // Разбор памяти судьёй. Короткое нажатие показывает уже найденное,
+        // долгое запускает разбор: разбор это часы работы и нагрева, и
+        // удержание — физическая защита от случайного запуска (см. пояснение в
+        // разметке). Разбор не пускается поверх цикла —
         // модель одна, и настройки её выдачи на время разбора меняются на
         // повторяемые (см. LlmEngine.withDeterministicSampling).
         binding.buttonJudge.setOnClickListener { openMemoryView() }
@@ -4740,86 +4771,6 @@ class MainActivity : AppCompatActivity() {
             // Прогон идёт в службе, а не на экране: переживает погасший экран
             // и уход из приложения. Ход и итог приходят через AgentService.state.
             AgentService.startJudge(applicationContext, modelIdentity(), JUDGE_BUDGET_MS)
-            true
-        }
-
-        binding.buttonCycle.setOnLongClickListener {
-            // Хвост 20, как и на "Генерировать": числа прошлого прогона
-            // стираются до всех проверок, чтобы отказ запуска не оставил их
-            // читаться как нынешние.
-            clearRunMetrics()
-
-            if (isToteRunning) {
-                Toast.makeText(this@MainActivity, "Цикл уже идёт", Toast.LENGTH_SHORT).show()
-                return@setOnLongClickListener true
-            }
-            if (AgentService.state.value is AgentService.RunState.Running) {
-                Toast.makeText(this@MainActivity, JUDGE_BUSY, Toast.LENGTH_SHORT).show()
-                return@setOnLongClickListener true
-            }
-            // Запуск цикла под взведённым стопом запрещён. Формально гейт всё
-            // равно отказал бы каждой компиляции, но цикл успел бы намолотить
-            // итераций впустую и выйти по энергии — с экрана это выглядело бы
-            // как поломка, а не как работающий запрет.
-            if (EmergencyStop.isActive()) {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Взведён аварийный стоп — снимите его в красной полосе вверху",
-                    Toast.LENGTH_LONG
-                ).show()
-                return@setOnLongClickListener true
-            }
-            if (!llmEngine.isLoaded) {
-                Toast.makeText(this@MainActivity, "Сначала загрузите модель", Toast.LENGTH_SHORT).show()
-                return@setOnLongClickListener true
-            }
-            setToteRunningState(true)
-            binding.textAnswerLabel.visibility = View.GONE
-            binding.textAnswer.visibility = View.GONE
-            binding.textResults.text = "Запускаю TOTE-цикл (компиляция + LLM)..."
-            toteJob = lifecycleScope.launch {
-                try {
-                    when (val result = codingTask.run()) {
-                        is ToteResult.Success -> {
-                            binding.textResults.text =
-                                "УСПЕХ за ${result.iterations} итераций:\n\n${result.finalState.code}"
-                        }
-                        is ToteResult.Evacuated -> {
-                            binding.textResults.text =
-                                "ЭВАКУАЦИЯ после ${result.iterations} итераций: ${result.reason}\n" +
-                                    "Разных ошибок за прогон: ${result.distinctFailures}\n\n" +
-                                    "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
-                                    "Последний код:\n${result.lastState.code}"
-                        }
-                        is ToteResult.HardStopped -> {
-                            binding.textResults.text =
-                                "ЖЁСТКИЙ СТОП после ${result.iterations} итераций (достигнут лимит)\n" +
-                                    "Разных ошибок за прогон: ${result.distinctFailures}\n\n" +
-                                    "Последняя ошибка компиляции:\n${result.lastOutcome?.detail ?: "(нет данных)"}\n\n" +
-                                    "Последний код:\n${result.lastState.code}"
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    // Обрыв — это нормальный исход, а не сбой. Но экран не должен
-                    // остаться с текстом "Запускаю цикл...", как будто он висит.
-                    binding.textResults.text =
-                        "Цикл прерван аварийным стопом.\n\n" +
-                            "Начатая работа отменена. Причина — в красной полосе вверху экрана."
-                    throw e
-                } finally {
-                    // Одним местом на все исходы, включая прерванный. Числа о
-                    // вмешательствах до сих пор жили только в журнале, под долгим
-                    // нажатием, — то есть человек, читающий "УСПЕХ за 2 итерации",
-                    // не видел, вмешивалось ли устройство по дороге. На
-                    // прерванном прогоне это тем более верно: там строка исхода
-                    // говорит только о нажатой кнопке.
-                    binding.textResults.append(
-                        "\n\n" + codingTask.getInterferenceSummary()
-                    )
-                    setToteRunningState(false)
-                    toteJob = null
-                }
-            }
             true
         }
     }
