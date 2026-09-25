@@ -161,8 +161,8 @@ object CuriosityPressure {
         }
         val leader = result.leader
         if (result.pressure > 0 && leader != null) {
-            append("\n  сильнее всех сжал (вклад ").append(leader.contribution).append("): ")
-            append(DreamView.brief(leader.brief.kind, leader.brief.texts))
+            append("\n  сильнее всех сжал (вклад ").append(leader.contribution).append("), ")
+            append(DreamView.column(leader.brief.kind, leader.brief.texts, indent = "    "))
         }
     }
 }
