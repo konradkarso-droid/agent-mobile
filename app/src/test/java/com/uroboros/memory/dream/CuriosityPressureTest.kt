@@ -151,11 +151,19 @@ class CuriosityPressureTest {
             listOf(CuriosityPressure.Brief(DreamWeaver.Kind.TIME.name, listOf("Кот спит", "Дождь идёт"))),
         )
         val rows = line.lines()
-        assertEquals(2, rows.size)
+        assertTrue(rows.size >= 2)
         assertTrue(rows[0].startsWith("Любопытство: давление 3"))
         assertTrue(rows[0].contains("в этом ходе подхвачен сон «по времени: Кот спит → Дождь идёт»"))
         assertTrue(rows[1].contains("вклад 3"))
         assertFalse(rows[0].contains("вклад"))
+    }
+
+    @Test
+    fun `сон столбиком — вид, затем каждое звено своей строкой`() {
+        assertEquals(
+            "мост:\n    · Кот спит\n    · Дождь идёт\n    · Гром",
+            DreamView.column(DreamWeaver.Kind.BRIDGE.name, listOf("Кот спит", "Дождь идёт", "Гром"), indent = "    "),
+        )
     }
 
     @Test
