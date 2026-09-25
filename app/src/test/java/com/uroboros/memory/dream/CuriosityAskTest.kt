@@ -1,6 +1,5 @@
 package com.uroboros.memory.dream
 
-import com.uroboros.memory.ProvenanceLabels
 import com.uroboros.memory.Sticker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -125,28 +124,32 @@ class CuriosityAskTest {
     }
 
     @Test
-    fun `строка для модели — сон целиком, с меткой сна, без слова «интересно»`() {
+    fun `строка для модели — записи лидера, без сна и без слова «интересно»`() {
         val leader = (decide(dream(1, 2, picked = 2)) as CuriosityAsk.Decision.Ask).leader
+        val line = CuriosityAsk.line(leader)
         assertEquals(
-            "Этот сон возвращался в разговоре. ${ProvenanceLabels.DREAM_FOR_MODEL}: " +
+            "Меня занимает, как связано: " +
                 "«Запись номер 1 лежит в памяти», «Запись номер 2 лежит в памяти». " +
-                "Если к месту — спроси пользователя о нём, одним вопросом.",
-            CuriosityAsk.line(leader),
+                "Если к месту — спроси пользователя об этом, одним вопросом.",
+            line,
         )
-        assertFalse(CuriosityAsk.line(leader).contains("интерес"))
-        assertFalse("без записей ответа слова «рядом» нет", CuriosityAsk.line(leader).contains("рядом"))
+        assertFalse(line.contains("интерес"))
+        assertFalse(line, line.contains("снилось") || line.contains("сон"))
+        assertFalse("без записей ответа слова «рядом» нет", line.contains("рядом"))
     }
 
     @Test
-    fun `строка для пути «первым» — тот же сон, просьба спросить прямо`() {
+    fun `строка для пути «первым» — те же записи, просьба спросить прямо`() {
         val leader = (decide(dream(1, 2, picked = 2)) as CuriosityAsk.Decision.Ask).leader
+        val line = CuriosityAsk.lineFirst(leader)
         assertEquals(
-            "Этот сон возвращался в разговоре. ${ProvenanceLabels.DREAM_FOR_MODEL}: " +
+            "Меня занимает, как связано: " +
                 "«Запись номер 1 лежит в памяти», «Запись номер 2 лежит в памяти». " +
-                "Спроси пользователя о нём, одним вопросом.",
-            CuriosityAsk.lineFirst(leader),
+                "Спроси пользователя об этом, одним вопросом.",
+            line,
         )
-        assertFalse("без «если к месту»", CuriosityAsk.lineFirst(leader).contains("Если к месту"))
-        assertFalse(CuriosityAsk.lineFirst(leader).contains("интерес"))
+        assertFalse("без «если к месту»", line.contains("Если к месту"))
+        assertFalse(line.contains("интерес"))
+        assertFalse(line, line.contains("снилось") || line.contains("сон"))
     }
 }
