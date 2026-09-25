@@ -63,7 +63,7 @@ class RecordAgeLabelTest {
             source = SourceKind.USER_STATED.name,
         )
         assertEquals(
-            "Пользователь сказал вчера: «колодка из берёзы».",
+            "${ProvenanceLabels.forModel(SourceKind.USER_STATED.name)} вчера: «колодка из берёзы».",
             ProvenanceLabels.recordForModel(record, at(1), zone),
         )
         assertEquals(
