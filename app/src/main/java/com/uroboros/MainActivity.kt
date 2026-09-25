@@ -2599,7 +2599,12 @@ class MainActivity : AppCompatActivity() {
         // каждой отрисовке, как строка ленты, — второго места, где оно может
         // разойтись с лентой, нет (см. EchoCheck).
         val echoLine = EchoCheck.meter(EchoCheck.ofLast(journal.history()))
-        group(disputeNoticeLine, recordsQuestionsLine, circleLine, echoLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
+        // Касания — рядом с кругом: круг говорит, откуда записи, касания — кому
+        // из них засчитан интерес владельца. Строка лежит у посредника, а не
+        // полем экрана, и потому переживает пересоздание экрана (см.
+        // TrustedMediator.touchesLine).
+        val touchesLine = mediator.touchesLine ?: "Касания: в этом запуске ответа ещё не было"
+        group(disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, echoLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -3951,6 +3956,9 @@ class MainActivity : AppCompatActivity() {
                 // реплику дважды (см. excludedTexts у getContextWithSummary).
                 // Текущая нужна отдельно: в ленте её ещё нет, а старая запись
                 // того же текста нашлась бы окном вопроса первой.
+                //
+                // Прошлый ответ агента — по нему касание признаётся
+                // подсказанным (см. promptedStems в HourglassMemory.kt).
                 val ribbonQuestions = journal.history().map { it.question }
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
@@ -3958,6 +3966,7 @@ class MainActivity : AppCompatActivity() {
                     limit = 5,
                     recentQuestions = ribbonQuestions,
                     excludedTexts = ribbonQuestions + userText,
+                    previousAnswer = journal.history().lastOrNull()?.agentContent,
                 )
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
@@ -4107,10 +4116,11 @@ class MainActivity : AppCompatActivity() {
                 // то, что мы знаем точно.
                 //
                 // Системной стены здесь нет и быть не может: она задаётся
-                // отдельно при загрузке модели (LlmEngine.configureAfterLoad) и
-                // в этот текст не входит. Если счётчик токенов окажется больше
-                // того, что здесь показано, разница — стена, лента и то, что
-                // движок поднял из кэша.
+                // отдельно — при загрузке модели (LlmEngine.configureAfterLoad)
+                // и при смене на лету (LlmEngine.requestWall) — и в этот текст
+                // не входит. Если счётчик токенов окажется больше того, что
+                // здесь показано, разница — стена, лента и то, что движок
+                // поднял из кэша.
                 //
                 // Числа до 27.08.2026 с новыми напрямую не сравнивать: там
                 // "память" включала старую рамку целиком. И с 28.08 рамки

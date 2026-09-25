@@ -264,8 +264,9 @@ class TrustedMediator(context: Context) {
      * То же самое плюс готовая строка о том, чем закончился отбор: сколько слов
      * искали, сколько записей нашлось, сколько прошло, сколько отсеяно и почему.
      *
-     * Проброс без логики — состояния отбора и их формулировки решает
-     * HourglassMemory, фасад не пересказывает их своими словами. Наружу идёт
+     * Проброс без логики отбора — состояния отбора и их формулировки решает
+     * HourglassMemory, фасад не пересказывает их своими словами. Сверху фасад
+     * только запоминает строку касаний ([touchesLine]). Наружу идёт
      * готовый текст, а не сам тип: за пределами памяти он нужен только чтобы его
      * показать, и ветвиться по нему в UI было бы решением об отборе, принятым
      * мимо того, кто отбирает. Та же форма, что у memoryCanaryReport().
@@ -276,9 +277,33 @@ class TrustedMediator(context: Context) {
         limit: Int = 10,
         recentQuestions: List<String> = emptyList(),
         excludedTexts: List<String> = emptyList(),
+        previousAnswer: String? = null,
     ): ContextResult {
-        return hourglass.getContextWithSummary(purpose, query, limit, recentQuestions, excludedTexts)
+        val result = hourglass.getContextWithSummary(
+            purpose, query, limit, recentQuestions, excludedTexts, previousAnswer
+        )
+        // Строку касаний ставит только ответ: просмотр памяти касаний не
+        // засчитывает, и затирать им показание хода было бы враньём. Сбой
+        // чтения чисел по базе не срывает ответ — строка говорит о нём сама.
+        if (purpose == RetrievalPurpose.ANSWERING_USER) {
+            touchesLine = runCatching {
+                result.touches.line(dao.sumUnpromptedUserMatches(), dao.maxUnpromptedUserMatches())
+            }.getOrElse { "Касания: числа по базе не прочитались — ${it.javaClass.simpleName}" }
+        }
+        return result
     }
+
+    /**
+     * Строка «Касания:» последнего ответа (см. UserTouches.line), или null —
+     * в этом запуске ответа ещё не было.
+     *
+     * Лежит здесь, а не полем экрана: посредник живёт на процесс (ProcessObjects),
+     * поэтому строка переживает пересоздание экрана. Смерть процесса не
+     * переживает — до следующего ответа строки нет, и экран говорит об этом.
+     */
+    @Volatile
+    var touchesLine: String? = null
+        private set
 
     suspend fun totalStickers(): Int = dao.count()
     suspend fun getPendingReview(): List<Sticker> = dao.getPendingReview()

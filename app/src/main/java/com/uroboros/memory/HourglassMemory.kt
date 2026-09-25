@@ -97,6 +97,31 @@ internal fun usefulnessMarks(
     if (purpose != RetrievalPurpose.ANSWERING_USER) emptySet()
     else returned.filter { it in matched }.toSet()
 
+/**
+ * Подсказано ли касание записи прошлым ответом агента: основы, общие у вопроса
+ * владельца и записи, которые стояли и в прошлом ответе. Пустое множество — не
+ * подсказано. Подсказанное касание идёт только в Sticker.userMatchCount; зачем
+ * второй счётчик и чего правило не видит — у Sticker.userMatchUnpromptedCount.
+ * Чистая функция по той же причине, что [usefulnessMarks]: правило закрепляется
+ * тестом.
+ *
+ * ГРАНИЦА «ХОТЯ БЫ ОДНА ОСНОВА» — объявленная, не подобранная. Чистый счётчик
+ * идёт в основание решения о вечной записи, поэтому сомнительное касание не
+ * засчитывается: ошибка в сторону пропуска. Слишком ли граница строга, покажет
+ * строка «Касания:» (см. [UserTouches]).
+ *
+ * Вопрос агента о сне (любопытство) отдельно не учитывается: он стоит в тексте
+ * прошлого ответа и ловится тем же правилом.
+ *
+ * Мерка слов — [RiskTrigger.significantStems], та же, что у AgentRecall.
+ */
+internal fun promptedStems(question: String, record: String, previousAnswer: String?): Set<String> {
+    if (previousAnswer.isNullOrBlank()) return emptySet()
+    val shared = RiskTrigger.significantStems(question) intersect RiskTrigger.significantStems(record)
+    if (shared.isEmpty()) return emptySet()
+    return shared intersect RiskTrigger.significantStems(previousAnswer)
+}
+
 // Два порога ниже стояли в private companion object класса и вынесены сюда
 // вместе с правилом, которое их читает: число и единственное место, где оно
 // применяется, должны лежать рядом, иначе правка одного не видна из другого.
@@ -425,7 +450,38 @@ data class ContextResult(
      * холод греется только тем, что агент использовал (см. getContextWithSummary).
      */
     val coldIds: Set<Long> = emptySet(),
+    /** Касания владельца на этом отборе — подсказанные и нет (см. [promptedStems]). */
+    val touches: UserTouches = UserTouches(0, 0, emptySet()),
 )
+
+/**
+ * Касания владельца на одном отборе: сколько записей засчитано старым правилом
+ * ([usefulnessMarks]), сколько из них признаны подсказанными ([promptedStems]) и
+ * по каким основам. Подсказанные ушли только в Sticker.userMatchCount, остальные —
+ * ещё и в Sticker.userMatchUnpromptedCount.
+ */
+data class UserTouches(
+    val counted: Int,
+    val prompted: Int,
+    /** Основы, по которым касания признаны подсказанными, в порядке появления. */
+    val promptedStems: Set<String>,
+) {
+    /**
+     * Строка прибора «Касания:». Сумму и максимум нового счётчика по базе
+     * дочитывает вызывающий: отбор базу ради прибора не спрашивает.
+     */
+    fun line(unpromptedTotal: Int, unpromptedMax: Int): String {
+        val stems = if (promptedStems.isEmpty()) "" else " (" +
+            promptedStems.take(MAX_SHOWN_STEMS).joinToString(", ") { "«$it»" } +
+            (if (promptedStems.size > MAX_SHOWN_STEMS) ", …" else "") + ")"
+        return "Касания: засчитано $counted · подсказано $prompted$stems · " +
+            "без подсказки всего $unpromptedTotal, у лидера $unpromptedMax"
+    }
+
+    private companion object {
+        const val MAX_SHOWN_STEMS = 3
+    }
+}
 
 /**
  * Правило, по которому кандидат проходит отбор или отсеивается. Чистая функция:
@@ -757,6 +813,14 @@ class HourglassMemory(
          * исключена. Цена принята: лента закроется — запись вернётся.
          */
         excludedTexts: List<String> = emptyList(),
+        /**
+         * Прошлый ответ агента — по нему касание признаётся подсказанным (см.
+         * [promptedStems]) и не идёт в Sticker.userMatchUnpromptedCount.
+         * null — прошлого ответа нет или его не передали: подсказки нет. Так
+         * зовут все, кроме пути ответа, и у всех, кроме него, польза не
+         * засчитывается вовсе.
+         */
+        previousAnswer: String? = null,
     ): ContextResult {
         migrateExpired()
 
@@ -836,6 +900,10 @@ class HourglassMemory(
             matched = matchedByQuestion.toSet()
         )
 
+        // Подсказанное касание идёт только в старый счётчик — см. promptedStems.
+        var promptedCount = 0
+        val promptedBy = LinkedHashSet<String>()
+
         val now = System.currentTimeMillis()
         val touched = result.map { sticker ->
             val timeSinceLastAccess = now - sticker.lastAccessedAt
@@ -859,6 +927,15 @@ class HourglassMemory(
             if (useful) {
                 dao.touchUserMatch(sticker.id)
             }
+            val prompts = if (useful) promptedStems(query, sticker.content, previousAnswer) else emptySet()
+            val unprompted = useful && prompts.isEmpty()
+            if (unprompted) {
+                dao.touchUserMatchUnprompted(sticker.id)
+            } else if (useful) {
+                promptedCount++
+                promptedBy += prompts
+            }
+            val unpromptedAdd = if (unprompted) 1 else 0
 
             if (shouldWarm) {
                 val newExpiry = Prism.newInterval(warmer)?.let { now + it }
@@ -868,13 +945,15 @@ class HourglassMemory(
                     lastAccessedAt = now,
                     layer = warmer.name,
                     expiryTime = newExpiry,
-                    userMatchCount = sticker.userMatchCount + if (useful) 1 else 0
+                    userMatchCount = sticker.userMatchCount + if (useful) 1 else 0,
+                    userMatchUnpromptedCount = sticker.userMatchUnpromptedCount + unpromptedAdd
                 )
             } else {
                 sticker.copy(
                     accessCount = sticker.accessCount + 1,
                     lastAccessedAt = now,
-                    userMatchCount = sticker.userMatchCount + if (useful) 1 else 0
+                    userMatchCount = sticker.userMatchCount + if (useful) 1 else 0,
+                    userMatchUnpromptedCount = sticker.userMatchUnpromptedCount + unpromptedAdd
                 )
             }
         }
@@ -905,6 +984,7 @@ class HourglassMemory(
             requestsFiltered = rFiltered,
             circle = circle,
             coldIds = coldIds,
+            touches = UserTouches(toMark.size, promptedCount, promptedBy),
         )
     }
 
