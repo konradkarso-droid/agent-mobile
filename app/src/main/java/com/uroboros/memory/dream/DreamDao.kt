@@ -72,4 +72,18 @@ interface DreamDao {
             "ORDER BY nightAt DESC LIMIT 1"
     )
     suspend fun lastSelfLineOutcome(): String?
+
+    /**
+     * Дописать итог зеркала в ночь [nightAt] (см. [DreamNight.mirrorOutcome]).
+     * Ноль тронутых строк — как у [setSelfLineOutcome].
+     */
+    @Query("UPDATE nights SET mirrorOutcome = :outcome WHERE nightAt = :nightAt")
+    suspend fun setMirrorOutcome(nightAt: Long, outcome: String): Int
+
+    /** Итог зеркала последней ночи, где оно было; null — ни разу. */
+    @Query(
+        "SELECT mirrorOutcome FROM nights WHERE mirrorOutcome IS NOT NULL " +
+            "ORDER BY nightAt DESC LIMIT 1"
+    )
+    suspend fun lastMirrorOutcome(): String?
 }

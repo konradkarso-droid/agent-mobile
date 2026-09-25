@@ -71,6 +71,8 @@ import com.uroboros.memory.dream.CuriosityPressure
 import com.uroboros.memory.dream.DreamPickup
 import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
+import com.uroboros.memory.dream.MirrorChecker
+import com.uroboros.memory.dream.MirrorView
 import com.uroboros.memory.dream.UnpromptedLeaderGauge
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
@@ -475,6 +477,31 @@ class MainActivity : AppCompatActivity() {
     private suspend fun refreshSelfLeader() {
         selfLeaderLine = runCatching { unpromptedLeaderGauge.line() }
             .getOrElse { "Нажитое о себе: не прочиталось — ${it.javaClass.simpleName}" }
+    }
+
+    /** Раздел «Зеркало» в «Показать» и строка «Зеркало:». Только чтение, см. MirrorView. */
+    private val mirrorView by lazy { MirrorView(applicationContext) }
+
+    /** Сверка реплики владельца с вариантами зеркала, см. MirrorChecker. */
+    private val mirrorChecker by lazy { MirrorChecker(applicationContext) }
+
+    /**
+     * Строка «Зеркало:», прочитанная из базы при последнем показе; null — ещё
+     * не читалась. Считается из базы (см. MirrorView), поле — только место.
+     */
+    private var mirrorLine: String? = null
+
+    /**
+     * Почему последняя реплика не сверена с зеркалом; null — сверена или
+     * сверки ещё не было. Сбой сверки ход не срывает, но называется в строке.
+     */
+    private var mirrorCheckFailure: String? = null
+
+    /** Перечитать строку «Зеркало:». Сбой чтения называется в самой строке. */
+    private suspend fun refreshMirror() {
+        mirrorLine = runCatching { mirrorView.meter() }
+            .getOrElse { "Зеркало: не прочиталось — ${it.javaClass.simpleName}" } +
+            (mirrorCheckFailure?.let { " · последняя реплика не сверена — $it" } ?: "")
     }
 
     /**
@@ -1333,6 +1360,10 @@ class MainActivity : AppCompatActivity() {
                 // строки: сон ничего не утверждает, соглашаться с ним нечем.
                 // Почему не рядом со спорными парами — в шапке DreamView.
                 section(dreamView.section(), headed = true)
+                // Зеркало — своим разделом сразу за снами и тоже без кнопок:
+                // варианты сочинила модель, и рядом со снами видно, что это не
+                // сны (см. MirrorVariant).
+                section(mirrorView.section(), headed = true)
                 // Просьбы — отдельным разделом: это память, а не сны. Зачем тексты,
                 // а не число, — в шапке RequestCensus.
                 section(RequestCensus.section(applicationContext), headed = true)
@@ -2660,7 +2691,8 @@ class MainActivity : AppCompatActivity() {
         val touchesLine = mediator.touchesLine ?: "Касания: в этом запуске ответа ещё не было"
         // Нажитое о себе — сразу за касаниями: из них оно и считается.
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
-        group(disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, selfLeader, echoLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
+        val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
+        group(disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, selfLeader, echoLine, dreamsLine, recallLine, mirror, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -3616,6 +3648,7 @@ class MainActivity : AppCompatActivity() {
                 // сообщает, и узнать о ней можно только перечитав.
                 lifecycleScope.launch {
                     refreshSelfLeader()
+                    refreshMirror()
                     renderMetricsPanel()
                 }
             }
@@ -3658,6 +3691,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             refreshCuriosity()
             refreshSelfLeader()
+            refreshMirror()
             renderMetricsPanel()
         }
 
@@ -4329,6 +4363,13 @@ class MainActivity : AppCompatActivity() {
                     }
                     refreshCuriosity()
 
+                    // Сверка «сбылось» с вариантами зеркала — там же и по той же
+                    // мерке: реплика сказана, когда ушла в движок. Пишет только
+                    // таблицу зеркала (см. MirrorChecker). Сбой не срывает ход —
+                    // его называет строка «Зеркало:».
+                    mirrorCheckFailure = runCatching { mirrorChecker.check(userText, repliedAt) }
+                        .exceptionOrNull()?.javaClass?.simpleName
+
                     // Здесь, в конце хода при любом его исходе, а не по событию
                     // Done: раньше кнопка включалась только если поток
                     // закончился ожидаемым событием, и любой другой выход
@@ -4566,6 +4607,8 @@ class MainActivity : AppCompatActivity() {
                     refreshCuriosity()
                     // Ход мог добавить касание без подсказки — лидер мог смениться.
                     refreshSelfLeader()
+                    // Реплика этого хода могла сбыть вариант зеркала.
+                    refreshMirror()
                     // Ход состоялся: двери стареют на ход, принесённое
                     // этим ходом получает свою (см. DreamDoor).
                     DreamDoor.afterTurn(brought.map { it.id })
