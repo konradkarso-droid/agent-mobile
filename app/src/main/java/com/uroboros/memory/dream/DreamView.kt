@@ -272,6 +272,14 @@ class DreamView(
         internal fun brief(kind: String, texts: List<String>): String =
             label(kind) + ": " + texts.joinToString(" → ") { short(it) }
 
+        /**
+         * Тот же сон столбиком: вид, затем каждое звено своей строкой с
+         * отступом [indent]. Для места, где сон стоит отдельной строкой и
+         * звенья через стрелку рвались бы переносом посреди звена.
+         */
+        internal fun column(kind: String, texts: List<String>, indent: String): String =
+            label(kind) + ":" + texts.joinToString("") { "\n$indent· " + short(it) }
+
         private fun label(kind: String): String = when (kind) {
             DreamWeaver.Kind.BRIDGE.name -> "мост"
             DreamWeaver.Kind.TIME.name -> "по времени"
