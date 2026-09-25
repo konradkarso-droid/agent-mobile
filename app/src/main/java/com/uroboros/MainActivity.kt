@@ -33,6 +33,7 @@ import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.EchoCheck
+import com.uroboros.llm.EngineLines
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.CONTEXT_SIZE
@@ -927,8 +928,7 @@ class MainActivity : AppCompatActivity() {
                 //
                 // Рядом их ставит порядок, а не колонки: панель узкая, и две
                 // колонки дали бы по двадцать знаков на сторону, то есть рваный
-                // текст против рваного. Ширина панели печатается в шторке, по
-                // ней это и решается.
+                // текст против рваного.
                 for (line in disputeLines(report)) {
                     out.append("\n")
                     val lineStart = out.length
@@ -1244,6 +1244,8 @@ class MainActivity : AppCompatActivity() {
      * здесь просмотровый, пользы записям не засчитывает и состояния не меняет.
      */
     private fun openMemoryView() {
+        // Вывод идёт в ленту — открытая шторка закрыла бы его (см. setDetailsExpanded).
+        setDetailsExpanded(false)
 
         binding.buttonShow.isEnabled = false
         lifecycleScope.launch {
@@ -2674,14 +2676,39 @@ class MainActivity : AppCompatActivity() {
             // она описывает разговор целиком и живёт столько же, сколько он.
             autoSaveLine(),
         )
-        group("Движок и стена", engineParamsLine, promptCacheLine, buildSelfLine, turns.wallChangeLine)
+        // Строки о себе печатаются числом, а тексты открываются по ссылке в
+        // конце строки: целиком они занимали полэкрана (см. showBuildSelfDialog).
+        // Ссылка — в конце первой строки: за ней может стоять строка о сбое
+        // чтения нажитого, и ссылка в её конце читалась бы как относящаяся к ней.
+        val buildSelfLinked = ::llmEngine.isInitialized && llmEngine.buildSelfLines.isNotEmpty()
+        val buildSelf = buildSelfLine?.let {
+            if (!buildSelfLinked) return@let it
+            val head = it.substringBefore('\n')
+            val tail = it.substringAfter('\n', missingDelimiterValue = "")
+            head + BUILD_SELF_LINK + (if (tail.isEmpty()) "" else "\n$tail")
+        }
+        group("Движок и стена", engineParamsLine, promptCacheLine, buildSelf, turns.wallChangeLine)
+        if (buildSelf != null && buildSelfLinked) {
+            val end = metrics.lastIndexOf(BUILD_SELF_LINK) + BUILD_SELF_LINK.length
+            val start = end - BUILD_SELF_LINK_WORD.length
+            metrics.setSpan(
+                object : ClickableSpan() {
+                    override fun onClick(widget: View) = showBuildSelfDialog()
+                    override fun updateDrawState(ds: TextPaint) {
+                        ds.color = colorRecordsLink
+                        ds.isUnderlineText = false
+                    }
+                },
+                start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
         // Числа прогона — своя группа «Ход»: после ответа их приходит больше
         // десятка строк, и слитые с параметрами движка они превращали шторку в
         // простыню. Параметры отвечают на "с чем запущено", прогон — на "как
         // прошло"; это разные вопросы и разная свежесть.
-        // Сверка стоит в начале группы «Память», а не с числами прогона, хотя
-        // живёт, как они, один ход: она сверяет записи памяти, ушедшие в
-        // модель, и читается рядом с кругом, который эти записи отобрал.
+        // Сверка и эхо стоят в группе «Ход», за числами прогона: обе живут один
+        // ход и стираются вместе с ним — сверка проверяет записи, ушедшие в
+        // модель на этом ходе, эхо — её ответ.
         // Ссылка на собранную реплику стоит в ОДНОЙ группе с числами прогона
         // и последней строкой в ней: числа называют состав запроса, ссылка
         // открывает сам текст, о котором они говорят. Разлучать их чертой
@@ -2696,10 +2723,8 @@ class MainActivity : AppCompatActivity() {
         // началом строки не является. Верно это ровно потому, что строка в
         // группе последняя.
         val composedLine = composedContentLine()
-        // Эхо — сразу за кругом, но своей строкой: круг говорит о том, что
-        // подано модели, эхо — о том, что она ответила. Считается по ленте при
-        // каждой отрисовке, как строка ленты, — второго места, где оно может
-        // разойтись с лентой, нет (см. EchoCheck).
+        // Эхо считается по ленте при каждой отрисовке, как строка ленты, —
+        // второго места, где оно может разойтись с лентой, нет (см. EchoCheck).
         val echoLine = EchoCheck.meter(EchoCheck.ofLast(journal.history()))
         // Касания — рядом с кругом: круг говорит, откуда записи, касания — кому
         // из них засчитан интерес владельца. Строка лежит у посредника, а не
@@ -2709,13 +2734,13 @@ class MainActivity : AppCompatActivity() {
         // Нажитое о себе — сразу за касаниями: из них оно и считается.
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
-        group("Память", disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, selfLeader)
+        group("Память", recordsQuestionsLine, circleLine, touchesLine, selfLeader)
         group(
             "Сны, любопытство, зеркало",
-            echoLine, dreamsLine, recallLine, mirror, curiosityLine(), curiosityAskMeter(),
+            dreamsLine, recallLine, mirror, curiosityLine(), curiosityAskMeter(),
             AgentService.initiativeLine.value, selfStateLine,
         )
-        group("Ход", lastMetricsLine, composedLine)
+        group("Ход", lastMetricsLine, echoLine, disputeNoticeLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -2738,9 +2763,6 @@ class MainActivity : AppCompatActivity() {
             // молчащий при нуле, неотличим от неподключённого.
             watchdog.formatZoneObservation(::zoneLabel),
         )
-        // Ширина панели в знаках — своей группой и в самом низу: смотрят на
-        // неё, когда разметка выглядит странно, а не при работе.
-        group("Разметка", panelWidthLine())
         for (start in metricRules) {
             metrics.setSpan(
                 RecordRuleSpan(colorRecordRule, start, ruleThickness, centered = true),
@@ -2758,6 +2780,21 @@ class MainActivity : AppCompatActivity() {
      * экране рядом стоит «Токенов: запрос N» от движка, и числа эти РАЗНЫЕ по
      * смыслу — здесь одна реплика, там весь запрос со стеной и лентой.
      */
+    /**
+     * Строки о себе, которые код добавил к стене при этой загрузке, — целиком.
+     * В шторке от них остаётся число (см. LlmEngine.getBuildSelfReport).
+     * Нажитое о себе здесь не показывается: его строки видны в разделе
+     * памяти, откуда они пришли.
+     */
+    private fun showBuildSelfDialog() {
+        val lines = llmEngine.buildSelfLines
+        AlertDialog.Builder(this)
+            .setTitle("О себе от сборки")
+            .setMessage(lines.joinToString("\n\n"))
+            .setPositiveButton("Закрыть", null)
+            .show()
+    }
+
     private fun composedContentLine(): String {
         val content = lastComposedContent
             ?: return "Реплика: на этом запуске ещё не собиралась"
@@ -2798,51 +2835,6 @@ class MainActivity : AppCompatActivity() {
             )
             .setPositiveButton("Закрыть", null)
             .show()
-    }
-
-    /**
-     * Сколько знаков помещается в строку панели результатов.
-     *
-     * ЗАЧЕМ. На этом числе стоит вся разметка списков: колонки подписей
-     * меряются по шрифту панели (см. labelColumn), а колонки держатся на том,
-     * что шрифт моноширинный. Оно же отвечает на вопрос, помещаются ли два
-     * текста рядом или только друг под другом.
-     *
-     * ТРИ ЗНАЧЕНИЯ, А НЕ ДВА. Пока разметка не посчитана, ширина панели равна
-     * нулю, и напечатанный ноль читался бы как «не помещается ничего». До
-     * первой отрисовки здесь стоит «?», как у температуры и заряда.
-     *
-     * Область: число верно для шрифта и размера, заданных панели в разметке, и
-     * меняется вместе с ними и с устройством. Перепроверяется само собой —
-     * строка считается при каждой отрисовке шторки.
-     */
-    private fun panelWidthLine(): String {
-        val panel = binding.textResults
-        val usable = panel.width - panel.paddingLeft - panel.paddingRight
-        val charWidth = panel.paint.measureText("0")
-        if (usable <= 0 || charWidth <= 0f) return "Ширина панели: ? (разметка ещё не посчитана)"
-        val chars = (usable / charWidth).toInt()
-        return "Ширина панели: $chars ${pluralRu(chars, "знак", "знака", "знаков")} в строке"
-    }
-
-    /**
-     * Форма существительного при числе по правилам русского языка.
-     *
-     * Нужна везде, где число печатается рядом со словом: «42 знака», но «41
-     * знак» и «45 знаков». Без неё строка врёт на четырёх числах из десяти, и
-     * врёт тихо — читается как небрежность, а не как ошибка.
-     *
-     * Одиннадцать-четырнадцать — исключение из правила последней цифры, и
-     * проверяются они первыми.
-     */
-    private fun pluralRu(count: Int, one: String, few: String, many: String): String {
-        val hundred = count % 100
-        if (hundred in 11..14) return many
-        return when (count % 10) {
-            1 -> one
-            2, 3, 4 -> few
-            else -> many
-        }
     }
 
     /**
@@ -2888,14 +2880,12 @@ class MainActivity : AppCompatActivity() {
      * приложения, а перезапусков при работе с моделью много.
      *
      * ШТОРКА ВСТАЁТ НА МЕСТО ЛЕНТЫ, А ЛЕНТА ТОЛЬКО ПРЯЧЕТСЯ — INVISIBLE, НЕ
-     * GONE. Лента при этом не пересоздаётся и не теряет положения прокрутки.
-     * А главное, её разметка продолжает считаться: по ширине поля ленты
-     * считается строка «Ширина панели» в самой шторке, и у спрятанной через
-     * GONE ленты, если шторка открыта с запуска, ширина осталась бы нулевой.
+     * GONE. Лента при этом не пересоздаётся и не теряет положения прокрутки,
+     * а её разметка продолжает считаться.
      *
-     * ЧЕГО ЭТО НЕ ДЕЛАЕТ: кнопки внизу, которые пишут в ленту («Показать»,
-     * «Разбор памяти», их долгие нажатия), шторку не сворачивают — их
-     * вывод ляжет в спрятанную ленту. Сворачивает только отправка реплики.
+     * СВОРАЧИВАЮТ ШТОРКУ те, кто пишет в ленту: отправка реплики, «Показать» и
+     * «Разбор памяти» с их долгими нажатиями. Иначе их вывод лёг бы в
+     * спрятанную ленту, и нажатие выглядело бы как ничего не сделавшее.
      */
     private fun setDetailsExpanded(expanded: Boolean) {
         binding.scrollDetails.visibility = if (expanded) View.VISIBLE else View.GONE
@@ -2961,7 +2951,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun extractEngineParams(log: String): String {
         val lines = log.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        lines.lastOrNull { it.contains("ctx=") }?.let { return "Движок: $it" }
+        lines.lastOrNull { it.contains("ctx=") }?.let { return "Движок: " + EngineLines.engineParams(it) }
         lines.lastOrNull { it.contains("Loading model", ignoreCase = true) }
             ?.let { return "Движок: $it" }
         return "Движок: строка параметров в логе не найдена (нет ни ctx=, ни Loading model)"
@@ -3086,15 +3076,6 @@ class MainActivity : AppCompatActivity() {
                 "ответ ${metrics.tokensPredicted}"
             lines += "Память: пик ${fmt0(metrics.peakMemoryMB.toDouble())} МБ " +
                 "(${fmt0(metrics.memoryUsagePercent.toDouble())}%)"
-
-            // Скорость по нашему секундомеру считается ПОСЛЕ первого токена:
-            // иначе в неё попадёт обсчёт запроса, и число будет несопоставимо
-            // с тем, что показал движок.
-            val decodeMs = wallMs - (firstTokenAtMs ?: 0L)
-            if (decodeMs > 0L && metrics.tokensPredicted > 0) {
-                val wallRate = metrics.tokensPredicted * 1000.0 / decodeMs
-                lines += "Секундомер без обсчёта запроса: ${fmt1(wallRate)} ток/с"
-            }
         }
 
         breakdown?.let { breakdownLine(it) }?.let { lines += it }
@@ -3777,17 +3758,6 @@ class MainActivity : AppCompatActivity() {
         binding.checkAutoContinue.setOnCheckedChangeListener { _, on ->
             ConversationPrefs.setAutoContinue(applicationContext, on)
         }
-        // ВРЕМЕННЫЙ флажок — см. ConversationPrefs.wallProbe. Строка встаёт в
-        // стену со следующего ответа (LlmEngine.applyWall). Просьба — не на
-        // главном потоке: она может подождать идущую запись точки.
-        binding.checkWallProbe.isChecked = ConversationPrefs.wallProbe(applicationContext)
-        binding.checkWallProbe.setOnCheckedChangeListener { _, on ->
-            ConversationPrefs.setWallProbe(applicationContext, on)
-            if (::llmEngine.isInitialized) {
-                val engine = llmEngine
-                lifecycleScope.launch(Dispatchers.IO) { engine.requestWall(engine.wallFor(on)) }
-            }
-        }
         // Строка «Первым:» приходит от тела агента (AgentService.initiativeLine).
         lifecycleScope.launch {
             AgentService.initiativeLine.collect { renderMetricsPanel() }
@@ -3997,6 +3967,7 @@ class MainActivity : AppCompatActivity() {
         binding.buttonShow.setOnClickListener { openMemoryView() }
 
         binding.buttonShow.setOnLongClickListener {
+            setDetailsExpanded(false)
             binding.textResults.text = codingTask.getDebugLog()
             true
         }
@@ -4779,7 +4750,9 @@ class MainActivity : AppCompatActivity() {
             // судьи и вернёт отказ вместе с тем, что приснилось.
             //
             // Прогон идёт в службе, а не на экране: переживает погасший экран
-            // и уход из приложения. Ход и итог приходят через AgentService.state.
+            // и уход из приложения. Ход и итог приходят через AgentService.state
+            // и пишутся в ленту — шторка сворачивается, чтобы их было видно.
+            setDetailsExpanded(false)
             AgentService.startJudge(applicationContext, modelIdentity(), JUDGE_BUDGET_MS)
             true
         }
@@ -4855,6 +4828,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** Слово-ссылка в строке «О себе от сборки», см. showBuildSelfDialog. */
+        private const val BUILD_SELF_LINK_WORD = "показать"
+        private const val BUILD_SELF_LINK = " — $BUILD_SELF_LINK_WORD"
+
         private const val KEY_MODEL_FOLDER_URI = "model_folder_uri"
         private const val KEY_LAST_MODEL_URI = ModelPrefs.KEY_LAST_MODEL_URI
 
