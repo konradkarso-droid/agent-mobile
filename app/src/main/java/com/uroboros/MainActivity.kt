@@ -226,8 +226,9 @@ class MainActivity : AppCompatActivity() {
      * вопросами при выдаче, и пока решение не принято, он ничего не меняет.
      *
      * ЗАЧЕМ. Автозапись кладёт в память каждую отправленную реплику, вопросы
-     * тоже. Модели запись подаётся как «Пользователь сказал: «…»», и для вопроса
-     * это правда, а не ложный факт. Подозревается другое: на повторный вопрос
+     * тоже. Модели запись подаётся со своей подписью источника (см.
+     * ProvenanceLabels.recordForModel), и для вопроса это правда, а не ложный
+     * факт. Подозревается другое: на повторный вопрос
      * отбор по общим словам находит прежние формулировки того же вопроса, и
      * они занимают места в выдаче, не неся сведений. Это правдоподобно, но не
      * наблюдалось; строка нужна, чтобы увидеть, так ли это.
@@ -257,19 +258,20 @@ class MainActivity : AppCompatActivity() {
     private var circleLine: String? = null
 
     /**
-     * Сны к последнему ответу: сколько подходило, сколько подано, а если ноль —
-     * почему (см. [DreamRecall.meter]). Отдельной строкой, а не внутри
-     * «Записей к ответу»: слитое число «записей 5» могло бы значить «3 записи
-     * и сон из двух», и прибор врал бы о том, что нашёл поиск.
+     * Ассоциация к последнему ответу: сколько снов подходило, сколько записей
+     * принесено, а если ноль — почему (см. [DreamRecall.meter]). Отдельной
+     * строкой: «Записей к ответу» говорит, сколько записей легло, эта — что
+     * ассоциация делала и почему молчала.
      *
      * null прячет строку: отбора на этом ходе не было.
      */
     private var dreamsLine: String? = null
 
     /**
-     * Вспомнил ли агент то, что принёс ему сон на последнем ходе (см.
-     * AgentRecall.meter). Отдельно от строки снов: та говорит, что подано, эта —
-     * что агент из поданного взял. null прячет строку: сон ничего не принёс.
+     * Вспомнил ли агент то, что принесла ему ассоциация на последнем ходе (см.
+     * AgentRecall.meter). Отдельно от строки ассоциаций: та говорит, что
+     * принесено, эта — что агент из принесённого взял. null прячет строку:
+     * ассоциация ничего не принесла.
      */
     private var recallLine: String? = null
 
@@ -451,7 +453,7 @@ class MainActivity : AppCompatActivity() {
     /** Раздел «Сны» в «Показать». Только чтение, см. DreamView. */
     private val dreamView by lazy { DreamView(applicationContext) }
 
-    /** Подача снов к ответу, см. DreamRecall. */
+    /** Ассоциация к ответу через сны, см. DreamRecall. */
     private val dreamRecall by lazy { DreamRecall(applicationContext) }
 
     /** Вспоминание агентом того, что принёс сон, см. AgentRecall. */
@@ -641,8 +643,9 @@ class MainActivity : AppCompatActivity() {
                 out.append("\n[записей нет]")
                 return
             }
-            // Сны лежат в ходе одним списком с записями, но считаются отдельно:
-            // «записей 3» не должно значить «2 записи и сон».
+            // Строки сна есть только у старых ходов (новые их не несут, см.
+            // DreamRecall): там они лежат одним списком с записями, но
+            // считаются отдельно — «записей 3» не должно значить «2 записи и сон».
             val (dreamUses, recordUses) = turn.records.partition { DreamRecall.isDreamLine(it.text) }
             val fresh = recordUses.count { it.firstSeenTurn == index }
             val expanded = index in expandedTurns
@@ -4112,7 +4115,7 @@ class MainActivity : AppCompatActivity() {
                     runCatching { mediator.getRecord(id) }.getOrNull()
                 }
                 val doorRecords = DreamDoor.pick(behindDoor, contextResult.stickers, userText)
-                val stickers = contextResult.stickers + doorRecords
+                val answerStickers = contextResult.stickers + doorRecords
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
                 // хвост генерации). Причина — сказанным считается то, что
@@ -4124,19 +4127,21 @@ class MainActivity : AppCompatActivity() {
                 // не находится отбором на своём же ходе и утверждение не
                 // уезжает в модель дважды — репликой и цитатой рядом с ней.
 
+                // Ассоциация: сны последней ночи приносят записи, связанные с
+                // записями этого ответа (см. DreamRecall). Отбор только
+                // читает: ни записи, ни сны здесь не меняются, а отметка
+                // «подан» ставится ниже, когда реплика ушла в движок.
+                // Принесённое встаёт после записей ответа, как записи двери.
+                val answerIds = answerStickers.map { it.id }.toSet()
+                val dreamOffer = dreamRecall.offer(answerIds)
+                val associated = dreamOffer.brought
+                val stickers = answerStickers + associated
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
                 val recordsAt = System.currentTimeMillis()
                 val allRecords = stickers.map { sticker ->
                     ProvenanceLabels.recordForModel(sticker, recordsAt)
                 }
-                // Сны всплывают через записи этого ответа (см. DreamRecall).
-                // Отбор только читает: ни записи, ни сны здесь не меняются, а
-                // отметка «подан» ставится ниже, когда реплика ушла в движок.
-                val answerIds = stickers.map { it.id }.toSet()
-                val dreamOffer = dreamRecall.offer(answerIds)
-                val dreamLineSet = DreamRecall.lines(dreamOffer.picked, answerIds)
-                val dreamLines = dreamLineSet.map { it.text }
                 // Сверка идёт по ТЕКСТАМ записей, а не по готовым строкам
                 // выше: строка несёт провенанс и кавычки, которых правило не
                 // видело и видеть не должно.
@@ -4171,7 +4176,9 @@ class MainActivity : AppCompatActivity() {
                 val questionsFiltered = contextResult.questionsFiltered
                 val requestsFiltered = contextResult.requestsFiltered
                 recordsQuestionsLine = "Записей к ответу: ${stickers.size}" +
-                    (if (doorRecords.isNotEmpty()) " (через дверь сна: ${doorRecords.size})" else "") +
+                    (if (associated.isNotEmpty() || doorRecords.isNotEmpty()) {
+                        " (по ассоциации: ${associated.size}, через дверь: ${doorRecords.size})"
+                    } else "") +
                     (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
                     (if (requestsFiltered > 0) " · отсеяно просьб: $requestsFiltered" else "") +
                     " · дверей открыто: ${behindDoor.size}"
@@ -4184,16 +4191,19 @@ class MainActivity : AppCompatActivity() {
                 // и лента кончается к двадцатому ходу вместо шестидесятого,
                 // причём почти всё добавленное — повторы одного и того же.
                 val newRecords = journal.unseenRecords(allRecords)
-                // Сон, уже лежащий в ленте, второй раз не кладётся — тем же
-                // отсевом, что записи. Строки снов идут в реплику ПОСЛЕ строк
-                // записей: сначала найденное, потом то, что с ним связалось.
-                val newDreamLines = journal.unseenRecords(dreamLines)
-                val servedDreams = dreamLineSet.filter { it.text in newDreamLines }.flatMap { it.dreams }
-                dreamsLine = DreamRecall.meter(
-                    dreamOffer,
-                    alreadyInRibbon = dreamOffer.picked.size - servedDreams.size,
-                    lineCount = dreamLineSet.size,
-                )
+                // Принесённое ассоциацией, что уйдёт в движок в этом ходе:
+                // запись, уже лежащая в ленте, второй раз не кладётся — тем
+                // же отсевом. Строки принесённого стоят в allRecords за
+                // записями ответа, в том же порядке.
+                val newLines = newRecords.toHashSet()
+                val broughtNow = associated.filterIndexed { i, _ ->
+                    allRecords[answerStickers.size + i] in newLines
+                }
+                val broughtNowIds = broughtNow.mapTo(HashSet()) { it.id }
+                // Сон подан, если хоть одна запись, которую принёс именно
+                // он, ушла в движок.
+                val servedDreams = dreamOffer.picked.filter { p -> p.brought.any { it.id in broughtNowIds } }
+                dreamsLine = DreamRecall.meter(dreamOffer, alreadyInRibbon = associated.size - broughtNow.size)
                 // Состояние агента — только когда что-то сдвинулось с прошлого
                 // показа (см. SelfState). Сбой чтения приборов не срывает ход:
                 // строки просто нет, а на экране сказано почему.
@@ -4225,7 +4235,7 @@ class MainActivity : AppCompatActivity() {
                 curiosityAskLine = CuriosityAsk.meter(askDecision)
                 val askedLeader = (askDecision as? CuriosityAsk.Decision.Ask)?.leader
                 val userContent = journal.composeUserContent(
-                    newRecords + newDreamLines, userText, disputeText, selfLine,
+                    newRecords, userText, disputeText, selfLine,
                     askedLeader?.let { CuriosityAsk.line(it) },
                 )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
@@ -4280,10 +4290,6 @@ class MainActivity : AppCompatActivity() {
                 // сверка сработала, а смотрят на эту строку именно там.
                 val recordsChars =
                     if (newRecords.isEmpty()) 0 else newRecords.joinToString("\n").length
-                // Сны считаются отдельно от записей по той же причине, что и на
-                // панели: слитые знаки выдали бы сон за найденное поиском.
-                val dreamsChars =
-                    if (newDreamLines.isEmpty()) 0 else newDreamLines.joinToString("\n").length
                 // Всё остальное, что не вопрос и не записи: пометка, блок
                 // сверки, разделители между блоками. ОДНИМ числом намеренно —
                 // разложить его по слагаемым значило бы завести на панели три
@@ -4291,18 +4297,16 @@ class MainActivity : AppCompatActivity() {
                 // сама реплика по ссылке ниже. Величина выводится вычитанием,
                 // поэтому отрицательной стать не может: вопрос и записи входят
                 // в реплику целиком.
-                val otherChars = userContent.length - userText.length - recordsChars - dreamsChars
-                val dreamsPart =
-                    if (newDreamLines.isEmpty()) "" else " · строк сна ${newDreamLines.size} на $dreamsChars зн."
+                val otherChars = userContent.length - userText.length - recordsChars
                 val otherPart = if (otherChars > 0) " · прочее $otherChars зн." else ""
                 val promptShape = if (newRecords.isEmpty()) {
                     val skipped = allRecords.size
                     val tail = if (skipped > 0) " ($skipped уже в ленте)" else ""
-                    "Запрос: новых записей нет$tail$dreamsPart$otherPart · " +
+                    "Запрос: новых записей нет$tail$otherPart · " +
                         "вопрос ${userText.length} зн.$noteTail"
                 } else {
                     "Запрос: новых записей ${newRecords.size} из ${allRecords.size} на " +
-                        "$recordsChars зн.$dreamsPart$otherPart · " +
+                        "$recordsChars зн.$otherPart · " +
                         "вопрос ${userText.length} зн.$noteTail"
                 }
 
@@ -4347,8 +4351,8 @@ class MainActivity : AppCompatActivity() {
                     // фоновым разбором памяти. Нет и различения вопроса от
                     // утверждения — в память идёт речь целиком, как сказана.
                     // Речь — это набранное (userText), а не собранная реплика:
-                    // строки состояния, снов и выхода любопытства в память не
-                    // попадают.
+                    // строки состояния, записей и выхода любопытства в память
+                    // не попадают.
                     val autoSaved = mediator.saveEvent(
                         content = userText,
                         source = SourceKind.USER_STATED,
@@ -4357,10 +4361,11 @@ class MainActivity : AppCompatActivity() {
                     if (autoSaved.stored) autoSavedCount++ else autoSavedRepeats++
 
                     // Отметка «подан» — там же и по той же мерке, что автозапись:
-                    // сон подан, когда реплика с ним ушла в движок. Ноль токенов
-                    // этого не отменяет. Цена названа: ноль токенов на точном
-                    // повторе прошлого запроса не растит ленту, и тот же сон при
-                    // повторной отправке отметится ещё раз.
+                    // сон подан, когда реплика с принесённым им ушла в движок.
+                    // Ноль токенов этого не отменяет. Цена названа: ноль
+                    // токенов на точном повторе прошлого запроса не растит
+                    // ленту, и тот же сон при повторной отправке отметится ещё
+                    // раз.
                     dreamRecall.markServed(servedDreams, System.currentTimeMillis())
 
                     // Реплика владельца ушла в движок — она снимает ожидание
@@ -4426,12 +4431,9 @@ class MainActivity : AppCompatActivity() {
                     // местах, экран однажды разойдётся с тем, что ушло в модель.
                     // Уже лежавшие записи от этого не задваиваются — их номер хода
                     // в журнале остаётся прежним.
-                    //
-                    // Сны кладутся в ход вместе с записями: по этому списку лента
-                    // отсеивает повторы, и сон без него подавался бы заново на
-                    // каждом ходе. Показ хода считает их отдельно
-                    // (DreamRecall.isDreamLine).
-                    records = allRecords + dreamLines,
+                    // Принесённое ассоциацией лежит здесь же: по этому
+                    // списку лента отсеивает повторы.
+                    records = allRecords,
                     onAccepted = {
                         // Экран показывает всю ленту плюс начатый ход. Поле НЕ
                         // очищается: разговор копится, а не заменяется. Токены ниже
@@ -4594,14 +4596,22 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                 } else {
-                    // Вспомнил ли агент принесённое сном — по готовому
+                    // Вспомнил ли агент принесённое ассоциацией — по готовому
                     // ответу, после закрытия хода: вспоминание греет
                     // записи, и греть их за ответ, который не лёг в ленту,
                     // было бы нечестно. Правила — в AgentRecall.
-                    val brought = servedDreams.flatMap { it.records }
-                        .filter { it.id !in answerIds }
-                        .distinctBy { it.id }
-                    val recalled = AgentRecall.recalled(brought, stickers, userText, answerText.toString())
+                    //
+                    // Принесённое стоит среди записей хода, но его слова НЕ
+                    // вычитаются как слова найденных — иначе оно вычло бы
+                    // само себя и не вспоминалось бы никогда. Сверяется, как
+                    // холод ниже: принесённое — против остальных записей хода.
+                    val brought = broughtNow
+                    val recalled = AgentRecall.recalled(
+                        brought,
+                        stickers.filter { it.id !in broughtNowIds },
+                        userText,
+                        answerText.toString(),
+                    )
                     val recallOutcome = agentRecaller.recall(recalled.map { it.id })
                     // Сны, чьё принесённое вспомнено, — притоки реки на
                     // следующую ночь (см. DreamRiver).

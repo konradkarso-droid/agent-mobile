@@ -282,7 +282,8 @@ class DreamView(
             else -> kind
         }
 
-        private fun short(text: String): String {
+        /** Звено для экрана: в одну строку, длинное обрезано. Так же запись называется в приборе ассоциаций. */
+        internal fun short(text: String): String {
             val flat = text.replace('\n', ' ').trim()
             return if (flat.length <= MAX_TEXT) flat else flat.take(MAX_TEXT - 1).trimEnd() + "…"
         }
