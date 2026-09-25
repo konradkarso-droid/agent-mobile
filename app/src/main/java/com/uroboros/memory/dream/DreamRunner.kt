@@ -57,10 +57,23 @@ object DreamRunner {
                 ?.filter { it.lastRecalledAt != null }
                 .orEmpty()
             val river = DreamRiver.weave(tributaries, night.dreams, records.associateBy { it.id })
+            // Лидер по касаниям без подсказки — в строку ночи (см. UnpromptedLeader).
+            // Сбой подсчёта ночь не роняет: лидер тогда null, причина — в отчёте.
+            var leaderFailure: String? = null
+            val leaderId = try {
+                UnpromptedLeader.leaderOf(stickers.unpromptedTouches())
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                leaderFailure = "Лидер касаний не посчитан: ${t.javaClass.simpleName}: " +
+                    "${t.message ?: "без пояснения"} — в ночь записан без лидера."
+                null
+            }
             val row = DreamNight.of(nightAt, night).copy(
                 startedBy = startedBy.name,
                 riverTributaries = tributaries.size,
                 riverDreams = river.size,
+                unpromptedLeaderId = leaderId,
             )
             val rows = night.dreams.map {
                 Dream(
@@ -75,7 +88,7 @@ object DreamRunner {
                 db.dreamDao().insertNight(row)
                 db.dreamDao().insertAll(rows)
             }
-            describe(row)
+            describe(row) + (leaderFailure?.let { "\n$it" } ?: "")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {

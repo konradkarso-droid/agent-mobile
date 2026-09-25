@@ -70,6 +70,7 @@ import com.uroboros.memory.dream.CuriosityPressure
 import com.uroboros.memory.dream.DreamPickup
 import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
+import com.uroboros.memory.dream.UnpromptedLeaderGauge
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
 import com.uroboros.safety.DeviceSafetyWatchdog
@@ -457,6 +458,22 @@ class MainActivity : AppCompatActivity() {
 
     /** Выход «спросить» в базе, см. CuriosityAsk. */
     private val curiosityAskMarker by lazy { CuriosityAskMarker(applicationContext) }
+
+    /** Прибор «Нажитое о себе», см. UnpromptedLeader. */
+    private val unpromptedLeaderGauge by lazy { UnpromptedLeaderGauge(applicationContext) }
+
+    /**
+     * Строка «Нажитое о себе:», прочитанная из базы при последнем показе;
+     * null — ещё не читалась. Поле — только место, куда кладётся прочитанное:
+     * сама строка считается из базы (см. UnpromptedLeaderGauge).
+     */
+    private var selfLeaderLine: String? = null
+
+    /** Перечитать «Нажитое о себе». Сбой чтения называется в самой строке. */
+    private suspend fun refreshSelfLeader() {
+        selfLeaderLine = runCatching { unpromptedLeaderGauge.line() }
+            .getOrElse { "Нажитое о себе: не прочиталось — ${it.javaClass.simpleName}" }
+    }
 
     /** Когда владелец писал последним — на диске, см. ConversationTimes. */
     private val conversationTimes by lazy { ConversationTimes(applicationContext) }
@@ -2604,7 +2621,9 @@ class MainActivity : AppCompatActivity() {
         // полем экрана, и потому переживает пересоздание экрана (см.
         // TrustedMediator.touchesLine).
         val touchesLine = mediator.touchesLine ?: "Касания: в этом запуске ответа ещё не было"
-        group(disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, echoLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
+        // Нажитое о себе — сразу за касаниями: из них оно и считается.
+        val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
+        group(disputeNoticeLine, recordsQuestionsLine, circleLine, touchesLine, selfLeader, echoLine, dreamsLine, recallLine, curiosityLine(), curiosityAskMeter(), AgentService.initiativeLine.value, selfStateLine, lastMetricsLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -3552,7 +3571,16 @@ class MainActivity : AppCompatActivity() {
             // по часам ради него здесь нет намеренно: отдельный цикл со своей
             // отменой заводится, когда надобность в непрерывном наблюдении
             // окажется наблюдавшейся, а не предполагаемой.
-            if (expanding) renderMetricsPanel()
+            if (expanding) {
+                renderMetricsPanel()
+                // «Нажитое о себе» читается из базы, поэтому приходит вторым
+                // движением: ночь, прошедшая в теле агента, экрану о себе не
+                // сообщает, и узнать о ней можно только перечитав.
+                lifecycleScope.launch {
+                    refreshSelfLeader()
+                    renderMetricsPanel()
+                }
+            }
         }
 
         // ---- Аварийный стоп (2026-08-24) ----
@@ -3591,6 +3619,7 @@ class MainActivity : AppCompatActivity() {
         // печатается всегда, и до первого хода в ней должно быть число.
         lifecycleScope.launch {
             refreshCuriosity()
+            refreshSelfLeader()
             renderMetricsPanel()
         }
 
@@ -4497,6 +4526,8 @@ class MainActivity : AppCompatActivity() {
                         servedDreams.map { it.dream } + listOfNotNull(askedLeader?.dream),
                     )
                     refreshCuriosity()
+                    // Ход мог добавить касание без подсказки — лидер мог смениться.
+                    refreshSelfLeader()
                     // Ход состоялся: двери стареют на ход, принесённое
                     // этим ходом получает свою (см. DreamDoor).
                     DreamDoor.afterTurn(brought.map { it.id })

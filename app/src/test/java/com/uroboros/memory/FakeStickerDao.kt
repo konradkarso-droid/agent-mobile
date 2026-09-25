@@ -277,6 +277,7 @@ class FakeStickerDao : StickerDao {
     override suspend fun maxUserMatches(): Int = unprepared("maxUserMatches")
     override suspend fun sumUnpromptedUserMatches(): Int = unprepared("sumUnpromptedUserMatches")
     override suspend fun maxUnpromptedUserMatches(): Int = unprepared("maxUnpromptedUserMatches")
+    override suspend fun unpromptedTouches(): List<UnpromptedTouch> = unprepared("unpromptedTouches")
 
     override suspend fun reassignProvenanceByPrefix(
         contentPrefix: String,
