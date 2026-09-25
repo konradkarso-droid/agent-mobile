@@ -30,6 +30,7 @@ import com.uroboros.memory.dream.ConclusionStep
 import com.uroboros.memory.dream.Mirror
 import com.uroboros.memory.dream.MirrorStep
 import com.uroboros.memory.dream.NightStart
+import com.uroboros.memory.dream.NightSteps
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.memory.dream.SelfLineStep
 import com.uroboros.memory.dream.SleepDecision
@@ -69,7 +70,13 @@ import java.util.Locale
  * ночь сама, с отметкой «уснул сам». Сон не проходит через ворота действий и
  * аварийным стопом не останавливается: он только читает записи и считает.
  *
- * Следом, той же минутой, — пора ли судить (условия — в [SelfJudgeDecision]).
+ * Сразу за сном, той же минутой, — шаги ночи: строка о себе, зеркало и выводы
+ * для последней ночи, у которой их ещё нет (повод и условия — в [NightSteps]).
+ * Им нужна модель, но не зарядка: заход короткий. Так ночь без кнопки
+ * получает всё то же, что ночь по кнопке, — сон дешёвый и идёт при любом
+ * заряде, а шаги доделываются, когда модели можно.
+ *
+ * Следом — пора ли судить (условия — в [SelfJudgeDecision]).
  * Суд начинается строго: на зарядке, в тишине, когда есть что судить. Модели
  * нет — служба загружает последнюю выбранную сама: после комы экран может не
  * открыться до утра, а суд нужен именно ночью. Сняли с зарядки — суд
@@ -137,8 +144,8 @@ import java.util.Locale
  *    на паузе живого разговора он не начинается.
  *  - Остановка во время сна (первые миллисекунды прогона) не даёт отчёта: сон
  *    так короток, что попасть в него нажатием почти нельзя.
- *  - Пока идёт ход первым, проверки сна и суда ждут: все три идут одним
- *    циклом, одна за другой.
+ *  - Пока идёт ход первым, проверки сна, шагов ночи и суда ждут: все идут
+ *    одним циклом, одна за другой.
  */
 class AgentService : Service() {
 
@@ -175,6 +182,22 @@ class AgentService : Service() {
 
     /** Итог последнего самостоятельного прогона словами; после комы его нет. */
     private var lastSelfJudge: String? = null
+
+    /** Итог последней проверки шагов ночи словами — для уведомления. */
+    private var stepsLine = NightSteps.HEAD + "первая проверка через минуту."
+
+    /** Итог последнего захода шагов ночи словами; после комы его нет. */
+    private var lastNightSteps: String? = null
+
+    /** До какого момента шаги ночи ждут после незагрузившейся модели, мс. */
+    private var stepsRestUntil = 0L
+
+    /** Идущий прогон — заход шагов ночи; см. [startNightSteps]. */
+    private var stepsRun = false
+
+    /** Ночь идущего захода шагов и его итог одной строкой — для [end]. */
+    private var stepsNightAt = 0L
+    private var stepsSummary: String? = null
 
     /** До какого момента суд отдыхает после прошлого прогона, мс. */
     private var restUntil = 0L
@@ -245,8 +268,16 @@ class AgentService : Service() {
             } catch (t: Throwable) {
                 showSleepLine("Проверка сна сорвалась: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}.")
             }
-            // Отдельной попыткой: сорвавшийся сон не должен отменять суд, и
-            // наоборот.
+            // Каждая проверка — отдельной попыткой: сорвавшаяся не должна
+            // отменять следующие. Шаги ночи — сразу за сном: уснул сам — в эту
+            // же минуту и доделывает ночь, если модели можно.
+            try {
+                checkNightSteps()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                showStepsLine(NightSteps.HEAD + "проверка сорвалась: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}.")
+            }
             try {
                 checkJudge()
             } catch (cancelled: CancellationException) {
@@ -581,6 +612,136 @@ class AgentService : Service() {
         startNight(modelUri, SelfJudgeDecision.RUN_BUDGET_MS, dreamFirst = false, self = true)
     }
 
+    /**
+     * Пора ли доделать шаги последней ночи. Порядок — как у суда: условия без
+     * модели ([NightSteps.refusal]), затем загрузка модели, затем переспрос
+     * того, что могло измениться за загрузку.
+     */
+    private suspend fun checkNightSteps() {
+        val objects = ProcessObjects.get(applicationContext)
+        val engine = objects.llmEngine
+        val watchdog = objects.watchdog
+        val now = System.currentTimeMillis()
+
+        val night = MemoryDatabase.getInstance(applicationContext).dreamDao().lastNight()
+        if (night == null) {
+            showStepsLine(NightSteps.HEAD + "ночей ещё не было.")
+            return
+        }
+        val missing = NightSteps.missing(night)
+        if (!missing.any) {
+            showStepsLine(NightSteps.HEAD + "у ночи ${clock(night.nightAt)} сделаны.")
+            return
+        }
+        val quietSince = maxOf(engine.activity.lastEndedAtMs ?: 0L, bodyStartedAt)
+        val modelUri = ModelPrefs.lastModelUri(applicationContext)
+        NightSteps.refusal(
+            NightSteps.Inputs(
+                running = working || job?.isActive == true || nightLock.isLocked,
+                emergencyStop = EmergencyStop.isActive(),
+                powerKnown = watchdog.zoneObservation().powerLastAtMs != null,
+                watchdogRefusal = watchdog.longRunBlockReason(),
+                engineBusy = engine.activity.busy,
+                quietMs = now - quietSince,
+                restLeftMs = stepsRestUntil - now,
+                modelChosen = modelUri != null,
+            )
+        )?.let {
+            showStepsLine(NightSteps.HEAD + "у ночи ${clock(night.nightAt)} нет: ${missing.words()} — жду: $it.")
+            return
+        }
+        modelUri ?: return
+
+        if (!engine.isLoaded) {
+            showStepsLine(NightSteps.HEAD + "загружаю модель, чтобы доделать ночь ${clock(night.nightAt)}.")
+            val uri = Uri.parse(modelUri)
+            if (!engine.loadModelFromUri(uri)) {
+                stepsRestUntil = System.currentTimeMillis() + NightSteps.REST_AFTER_FAILED_LOAD_MS
+                showStepsLine(NightSteps.HEAD + "модель не загрузилась, следующая попытка через полчаса.")
+                return
+            }
+            objects.loadedModelName = DocumentFile.fromSingleUri(applicationContext, uri)?.name
+                ?: uri.lastPathSegment
+        }
+        // Загрузка шла десятки секунд: за это время могли заговорить с агентом
+        // или телефон мог нагреться и разрядиться.
+        if (engine.activity.busy || job?.isActive == true || watchdog.longRunBlockReason() != null) {
+            showStepsLine(NightSteps.HEAD + "пока грузилась модель, условия изменились.")
+            return
+        }
+        startNightSteps(night.nightAt, missing)
+    }
+
+    /**
+     * Заход шагов ночи [nightAt]: только недостающие ([missing]), в том же
+     * порядке, что в ночи по кнопке ([startNight]). Идёт как самостоятельный
+     * прогон: экран его ход не показывает, человек, написавший агенту,
+     * заставляет его уступить ([yieldToConversation]), кнопка ночи в это время
+     * отвечает «разбор уже идёт».
+     *
+     * Условия модели переспрашиваются перед каждым шагом — и порог заряда
+     * сторожа вместе с ними: шаги идут без зарядки.
+     */
+    private fun startNightSteps(nightAt: Long, missing: NightSteps.Missing) {
+        val objects = ProcessObjects.get(applicationContext)
+        stepsRun = true
+        selfRun = false
+        yielding = false
+        stopNote = null
+        stepsNightAt = nightAt
+        stepsSummary = null
+
+        job = scope.launch {
+            val db = MemoryDatabase.getInstance(applicationContext)
+            val startedAt = System.currentTimeMillis()
+            _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null, self = true)
+            working = true
+            currentText = "Доделываю ночь ${clock(nightAt)}: ${missing.words()}."
+            updateNotificationText()
+
+            val power = objects.watchdog.power.value
+            val before = power.percent.takeIf { power.percentKnown }
+            val why: () -> String? = {
+                whyModelCannotRun(applicationContext) ?: objects.watchdog.longRunBlockReason()
+            }
+            acquireWakeLock(NightSteps.BUDGET_MS)
+            val report = try {
+                val outcomes = ArrayList<String>(3)
+                if (missing.selfLine) {
+                    outcomes += noteSelfLine(db, nightAt, SelfLineStep.run(db, objects.mediator, objects.llmEngine) { why() })
+                }
+                if (missing.mirror) {
+                    // Лента читается здесь, на главном потоке, как в ночи по кнопке.
+                    val history = objects.turns.journal.history()
+                    outcomes += noteMirror(db, nightAt, MirrorStep.run(db, objects.llmEngine, nightAt, history) { why() })
+                }
+                if (missing.conclusions) {
+                    outcomes += noteConclusions(db, nightAt, ConclusionStep.run(db, objects.llmEngine, nightAt) { why() })
+                }
+                stepsSummary = NightSteps.summary(outcomes)
+                outcomes.joinToString("\n\n")
+            } catch (cancelled: CancellationException) {
+                STOPPED_REPORT
+            } finally {
+                releaseWakeLock()
+            }
+            val after = objects.watchdog.power.value.let { if (it.percentKnown) it.percent else null }
+            stepsSummary = NightSteps.battery(before, after, power.charging) + ": " +
+                (stepsSummary ?: "оборван, недостающее — при следующей тишине")
+            end(report)
+        }
+    }
+
+    /** Показать итог проверки шагов ночи; во время разбора уведомление не трогается. */
+    private fun showStepsLine(line: String) {
+        stepsLine = line
+        if (working) return
+        val text = livingText()
+        if (text == currentText) return
+        currentText = text
+        updateNotificationText()
+    }
+
     private suspend fun checkSleep() {
         if (working || job?.isActive == true) {
             showSleepLine("Не сплю: идёт разбор памяти.")
@@ -638,6 +799,7 @@ class AgentService : Service() {
     /** Текст уведомления, пока разбор не идёт: жизнь, сон и суд, последние сами. */
     private fun livingText(): String =
         LIVING_TEXT + "\n" + sleepLine + (lastSelfSleep?.let { "\n$it" } ?: "") +
+            "\n" + stepsLine + (lastNightSteps?.let { "\n$it" } ?: "") +
             "\n" + judgeLine + (lastSelfJudge?.let { "\n$it" } ?: "")
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -685,6 +847,7 @@ class AgentService : Service() {
     private fun startNight(modelIdentity: String, budgetMs: Long, dreamFirst: Boolean, self: Boolean) {
         val objects = ProcessObjects.get(applicationContext)
         selfRun = self
+        stepsRun = false
         yielding = false
         stopNote = null
 
@@ -751,9 +914,10 @@ class AgentService : Service() {
                         _state.value = RunState.Running(startedAt, done, now, self)
                         showProgress(startedAt, done, now)
                     }
-                // Строка о себе — только ночью по кнопке и только после судьи
-                // (см. SelfLineStep). Условия модели переспрашиваются перед
-                // вызовом: судья шёл долго. «Разбор уже идёт» не в счёт — идёт наш.
+                // Строка о себе — в ночи по кнопке после судьи (см. SelfLineStep);
+                // ночь без кнопки получает её заходом шагов (startNightSteps).
+                // Условия модели переспрашиваются перед вызовом: судья шёл
+                // долго. «Разбор уже идёт» не в счёт — идёт наш.
                 val selfLine = if (dreamFirst) {
                     val outcome = SelfLineStep.run(db, objects.mediator, objects.llmEngine) {
                         whyModelCannotRun(applicationContext)
@@ -849,6 +1013,11 @@ class AgentService : Service() {
         val now = System.currentTimeMillis()
         val headline = report.lineSequence().firstOrNull { it.isNotBlank() } ?: "без отчёта"
         when {
+            stepsRun -> {
+                _state.value = RunState.Idle
+                val how = if (yielding) "уступил разговору в ${clock(now)}" else "кончил в ${clock(now)}"
+                lastNightSteps = "Доделывал ночь ${clock(stepsNightAt)}, $how (${stepsSummary ?: headline})"
+            }
             yielding -> {
                 _state.value = RunState.Idle
                 lastSelfJudge = "Суд уступил разговору в ${clock(now)}: $headline"
@@ -863,6 +1032,7 @@ class AgentService : Service() {
         }
         yielding = false
         selfRun = false
+        stepsRun = false
         finish()
     }
 
