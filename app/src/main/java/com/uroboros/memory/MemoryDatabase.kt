@@ -19,7 +19,7 @@ import com.uroboros.memory.judge.JudgeVerdictDao
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class,
     ],
-    version = 22,
+    version = 23,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -265,6 +265,19 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Лидер ночи по касаниям без подсказки (см. dream.DreamNight.unpromptedLeaderId)
+        // и основание строки о себе (см. Sticker.basedOnId). Обе колонки пустые.
+        // У прежних ночей лидер null — правда: лидера тогда не записывали, а
+        // вычислить его задним числом из растущих счётчиков нельзя. У прежних
+        // записей основание null — правда: ни одна не предложена агентом как
+        // строка о себе.
+        val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE nights ADD COLUMN unpromptedLeaderId INTEGER")
+                db.execSQL("ALTER TABLE stickers ADD COLUMN basedOnId INTEGER")
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -291,7 +304,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
                  .build().also { INSTANCE = it }
             }
         }

@@ -68,6 +68,16 @@ data class DreamNight(
      * снились наравне с утверждениями, и ноль здесь был бы неправдой.
      */
     val skippedRequests: Int? = null,
+    /**
+     * Номер записи, которая в эту ночь была лидером по касаниям без подсказки
+     * и проходила условие лидера (см. [UnpromptedLeader]); null — такого
+     * лидера не было, или сбой подсчёта (тогда о нём сказано в отчёте ночи),
+     * или ночь прошла раньше, чем лидера стали записывать.
+     *
+     * Почему хранится в строке ночи, а не пересчитывается, — в KDoc
+     * [UnpromptedLeader] («ПОЧЕМУ НОЧИ»).
+     */
+    val unpromptedLeaderId: Long? = null,
 ) {
     companion object {
         fun of(nightAt: Long, night: DreamWeaver.Night) = DreamNight(

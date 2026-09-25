@@ -196,6 +196,7 @@ class DreamRecallTest {
         override suspend fun ofNight(nightAt: Long): List<Dream> = rows
         override suspend fun stirredSince(since: Long): List<Dream> = error("отбор не читает пружину")
         override suspend fun lastAskedAt(): Long? = error("отбор не читает выход любопытства")
+        override suspend fun lastUnpromptedLeaders(limit: Int): List<Long?> = error("отбор не читает ряд лидеров")
     }
 
     private class FakeServedDao : DreamServedDao {

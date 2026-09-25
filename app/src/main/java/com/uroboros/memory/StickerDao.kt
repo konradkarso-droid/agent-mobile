@@ -24,6 +24,18 @@ data class HiddenRow(
 )
 
 /**
+ * Касания без подсказки одной записи (Sticker.userMatchUnpromptedCount) и то,
+ * по чему правило лидера её отбирает (см. dream.UnpromptedLeader).
+ */
+data class UnpromptedTouch(
+    val id: Long,
+    val count: Int,
+    val tag: String,
+    val rejectedAt: Long?,
+    val reviewPending: Boolean,
+)
+
+/**
  * Дыра №4, вторая половина (аудит 2026-08-21): раньше горячий путь getContext()
  * тянул ВСЮ таблицу в память через getAll() (дважды за вызов — ещё раз внутри
  * migrateExpired), фильтровал и сортировал в Kotlin, а потом писал каждую строку
@@ -433,6 +445,18 @@ interface StickerDao {
     /** Больше всего касаний без подсказки у одной записи — у лидера. */
     @Query("SELECT COALESCE(MAX(userMatchUnpromptedCount), 0) FROM stickers")
     suspend fun maxUnpromptedUserMatches(): Int
+
+    /**
+     * Записи с касаниями без подсказки — для лидера (см. dream.UnpromptedLeader).
+     * Отбор тот же, что у правила лидера, и там же объяснён; в Kotlin он
+     * повторён, и правило закрепляется тестами там, а не здесь.
+     */
+    @Query(
+        "SELECT id, userMatchUnpromptedCount AS count, tag, rejectedAt, reviewPending FROM stickers " +
+            "WHERE userMatchUnpromptedCount > 0 AND rejectedAt IS NULL AND reviewPending = 0 " +
+            "AND tag != '" + Prism.IDENTITY_TAG + "'"
+    )
+    suspend fun unpromptedTouches(): List<UnpromptedTouch>
 
     // --- Разовый ремонт провенанса (2026-08-24).
     //

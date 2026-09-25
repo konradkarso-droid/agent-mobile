@@ -49,4 +49,12 @@ interface DreamDao {
      */
     @Query("SELECT MAX(askedAt) FROM dreams")
     suspend fun lastAskedAt(): Long?
+
+    /**
+     * Лидеры по касаниям без подсказки последних [limit] ночей, от новых к
+     * старым ([DreamNight.unpromptedLeaderId]; null — лидера не было или его
+     * тогда не записывали). Ряд для условия кандидата, см. [UnpromptedLeader].
+     */
+    @Query("SELECT unpromptedLeaderId FROM nights ORDER BY nightAt DESC LIMIT :limit")
+    suspend fun lastUnpromptedLeaders(limit: Int): List<Long?>
 }
