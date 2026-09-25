@@ -6,9 +6,9 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 
 /**
- * Таблица зеркала ([MirrorVariant]). Пишут её только ночь по кнопке
- * ([MirrorStep]) и сверка в ходе ([MirrorChecker]); показ ([MirrorView]) и
- * прибор только читают.
+ * Таблица зеркала ([MirrorVariant]). Пишут её только шаг ночи ([MirrorStep])
+ * и сверка в ходе ([MirrorChecker]); показ ([MirrorView]) и прибор только
+ * читают.
  */
 @Dao
 interface MirrorDao {
