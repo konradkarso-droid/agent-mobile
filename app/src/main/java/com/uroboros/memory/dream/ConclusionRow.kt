@@ -17,7 +17,7 @@ import androidx.room.PrimaryKey
  * ([ConclusionView]) и счёт разрядки любопытства ([CuriosityGauge]).
  *
  * Строки копятся по ночам и сами не удаляются: не больше
- * [Conclusion.MAX_PER_NIGHT] за ночь по кнопке.
+ * [Conclusion.MAX_PER_NIGHT] за ночь.
  */
 @Entity(tableName = "conclusions")
 data class ConclusionRow(
