@@ -57,4 +57,19 @@ interface DreamDao {
      */
     @Query("SELECT unpromptedLeaderId FROM nights ORDER BY nightAt DESC LIMIT :limit")
     suspend fun lastUnpromptedLeaders(limit: Int): List<Long?>
+
+    /**
+     * Дописать итог шага «строка о себе» в ночь [nightAt] (см.
+     * [DreamNight.selfLineOutcome]). Возвращает число тронутых строк: ноль —
+     * строки этой ночи нет (сон сорвался), и итог остался только в отчёте.
+     */
+    @Query("UPDATE nights SET selfLineOutcome = :outcome WHERE nightAt = :nightAt")
+    suspend fun setSelfLineOutcome(nightAt: Long, outcome: String): Int
+
+    /** Итог шага «строка о себе» последней ночи, где шаг был; null — ни разу. */
+    @Query(
+        "SELECT selfLineOutcome FROM nights WHERE selfLineOutcome IS NOT NULL " +
+            "ORDER BY nightAt DESC LIMIT 1"
+    )
+    suspend fun lastSelfLineOutcome(): String?
 }

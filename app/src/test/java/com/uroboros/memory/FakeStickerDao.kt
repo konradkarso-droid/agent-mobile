@@ -114,6 +114,13 @@ class FakeStickerDao : StickerDao {
      */
     var onSetReviewPending: ((id: Long) -> Unit)? = null
 
+    /**
+     * Ответ на identityWall(limit) — принятые строки о себе. Путь ответа
+     * читает их для правила подсказки (promptedStems), когда есть кому
+     * засчитать касание.
+     */
+    var onIdentityWall: ((limit: Int) -> List<String>)? = null
+
     // --- Что записалось (читает тест) ---
 
     data class SearchCall(
@@ -278,6 +285,14 @@ class FakeStickerDao : StickerDao {
     override suspend fun sumUnpromptedUserMatches(): Int = unprepared("sumUnpromptedUserMatches")
     override suspend fun maxUnpromptedUserMatches(): Int = unprepared("maxUnpromptedUserMatches")
     override suspend fun unpromptedTouches(): List<UnpromptedTouch> = unprepared("unpromptedTouches")
+    override suspend fun identityWall(limit: Int): List<String> {
+        val answer = onIdentityWall ?: unprepared("identityWall")
+        return answer(limit)
+    }
+    override suspend fun countAcceptedIdentity(): Int = unprepared("countAcceptedIdentity")
+    override suspend fun pendingIdentity(): Sticker? = unprepared("pendingIdentity")
+    override suspend fun settledIdentityBasedOn(baseId: Long): List<Sticker> =
+        unprepared("settledIdentityBasedOn")
 
     override suspend fun reassignProvenanceByPrefix(
         contentPrefix: String,

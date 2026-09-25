@@ -458,6 +458,50 @@ interface StickerDao {
     )
     suspend fun unpromptedTouches(): List<UnpromptedTouch>
 
+    // --- Строки «о себе» в стене (см. dream.SelfLine).
+    //
+    // «Принятая» строка — с меткой identity, не на проверке и не отвергнутая.
+    // Условие одно на все запросы ниже; стена, счёт стены и правило подсказки
+    // обязаны видеть один и тот же набор.
+
+    /**
+     * Тексты принятых строк «о себе», старые первыми, не больше [limit]. Это
+     * нажитое в стене (LlmEngine.wallFor) и основание правила подсказки
+     * (promptedStems): стена — подсказка ровно в том составе, в каком стоит.
+     * Порядок по времени создания: новая строка встаёт в конец, и совпавшее
+     * начало стены движок переиспользует.
+     */
+    @Query(
+        "SELECT content FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' " +
+            "AND reviewPending = 0 AND rejectedAt IS NULL ORDER BY createdAt ASC, id ASC LIMIT :limit"
+    )
+    suspend fun identityWall(limit: Int): List<String>
+
+    /** Сколько строк «о себе» принято — для потолка стены (SelfLine.WALL_CEILING). */
+    @Query(
+        "SELECT COUNT(*) FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' " +
+            "AND reviewPending = 0 AND rejectedAt IS NULL"
+    )
+    suspend fun countAcceptedIdentity(): Int
+
+    /** Строка «о себе», ждущая решения, самая новая; null — такой нет. */
+    @Query(
+        "SELECT * FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' " +
+            "AND reviewPending = 1 AND rejectedAt IS NULL ORDER BY createdAt DESC LIMIT 1"
+    )
+    suspend fun pendingIdentity(): Sticker?
+
+    /**
+     * Строки «о себе» с основанием [baseId], которые человек уже решил:
+     * принятые или отвергнутые. Ждущая решения сюда не входит — о ней
+     * отдельный запрос [pendingIdentity].
+     */
+    @Query(
+        "SELECT * FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId = :baseId " +
+            "AND (rejectedAt IS NOT NULL OR reviewPending = 0)"
+    )
+    suspend fun settledIdentityBasedOn(baseId: Long): List<Sticker>
+
     // --- Разовый ремонт провенанса (2026-08-24).
     //
     // Строки, созданные ДО правки "дыры №4", помечены USER_STATED/OBSERVED,

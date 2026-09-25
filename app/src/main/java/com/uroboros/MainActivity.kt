@@ -45,6 +45,7 @@ import com.uroboros.memory.DisputeNotice
 import com.uroboros.memory.DolmenCircle
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
+import com.uroboros.memory.Prism
 import com.uroboros.memory.ProvenanceLabels
 import com.uroboros.memory.RecordNumber
 import com.uroboros.memory.RejectOutcome
@@ -88,6 +89,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -475,6 +477,22 @@ class MainActivity : AppCompatActivity() {
             .getOrElse { "Нажитое о себе: не прочиталось — ${it.javaClass.simpleName}" }
     }
 
+    /**
+     * Решение человека могло изменить набор принятых строк о себе — перечитать
+     * нажитое в стене (LlmEngine.refreshLearned). Зовётся после каждого такого
+     * решения без проверки метки записи: одинаковая стена ничего не ожидает.
+     * Не на главном потоке — просьба стены может подождать запись точки.
+     */
+    private fun refreshWallLearned() {
+        val engine = llmEngine
+        lifecycleScope.launch(Dispatchers.IO) {
+            val why = engine.refreshLearned() ?: return@launch
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@MainActivity, why, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     /** Когда владелец писал последним — на диске, см. ConversationTimes. */
     private val conversationTimes by lazy { ConversationTimes(applicationContext) }
 
@@ -504,7 +522,8 @@ class MainActivity : AppCompatActivity() {
 
     private val judgeUi by lazy {
         JudgeUi(this, judgeLauncher, colorRecordsLink, lifecycleScope) { id ->
-            mediator.reject(id, RejectPath.DISPUTE) == RejectOutcome.DONE
+            (mediator.reject(id, RejectPath.DISPUTE) == RejectOutcome.DONE)
+                .also { refreshWallLearned() }
         }
     }
 
@@ -892,6 +911,11 @@ class MainActivity : AppCompatActivity() {
                 val serviceStart = out.length
                 out.append("[").append(sticker.layer).append("] тег: ")
                 out.append(sticker.tag).append(" · ").append(fmtMoment(sticker.createdAt))
+                // Строка, предложенная агентом, — на чём стоит (см. SelfLine.originLine).
+                // Экран, а не прибор очереди, отличает её от записи по спору.
+                runCatching { unpromptedLeaderGauge.originLine(sticker) }
+                    .getOrElse { "предложил агент · основание не прочиталось — ${it.javaClass.simpleName}" }
+                    ?.let { out.append("\n").append(it) }
                 // Черта ложится по верху служебной строки: она отделяет спор от
                 // паспорта записи и заодно служит признаком того, что абзацные
                 // спаны применились.
@@ -1588,6 +1612,7 @@ class MainActivity : AppCompatActivity() {
      */
     private suspend fun rejectAsMistake(id: Long) {
         val outcome = mediator.reject(id, RejectPath.MISTAKE)
+        refreshWallLearned()
         Toast.makeText(
             this@MainActivity,
             when (outcome) {
@@ -1787,11 +1812,20 @@ class MainActivity : AppCompatActivity() {
             // о записи, и сверка ему не нужна. Принять — только при состоявшейся.
             val rejectNote = "«Отвергнуть» уберёт запись из очереди и из ответов агента " +
                 "навсегда; из памяти она не стирается, но вернуть её нажатием нельзя."
-            val message = if (check.allowsAccept) {
-                "«$preview$tail»\n\n$verdict\n\n" +
-                    "«Принять»: запись перестанет быть скрытой и снова сможет попасть в " +
+            // Строка о себе, предложенная агентом, в ответ не идёт — она идёт в
+            // стену (см. dream.SelfLine), и прежний абзац для неё неверен.
+            val selfLine = sticker.tag == Prism.IDENTITY_TAG && sticker.basedOnId != null
+            val acceptNote = if (selfLine) {
+                "«Принять»: строка встанет в стену — текст, который агент читает " +
+                    "перед каждым разговором. Она будет там, пока её не отвергнуть. " +
+                    "Её тема перестанет засчитываться в касания без подсказки."
+            } else {
+                "«Принять»: запись перестанет быть скрытой и снова сможет попасть в " +
                     "ответ агента. Вернуть её в очередь нечем — только сохранить " +
-                    "спорное утверждение заново.\n\n$rejectNote"
+                    "спорное утверждение заново."
+            }
+            val message = if (check.allowsAccept) {
+                "«$preview$tail»\n\n$verdict\n\n$acceptNote\n\n$rejectNote"
             } else {
                 "«$preview$tail»\n\n$verdict\n\n$rejectNote"
             }
@@ -1825,6 +1859,7 @@ class MainActivity : AppCompatActivity() {
      */
     private suspend fun rejectRecord(sticker: Sticker) {
         val outcome = mediator.reject(sticker.id, RejectPath.QUEUE)
+        refreshWallLearned()
         val pending = mediator.getPendingReview()
         binding.textResults.text = renderPendingReview(pending)
         Toast.makeText(
@@ -1858,6 +1893,7 @@ class MainActivity : AppCompatActivity() {
             ).show()
             return
         }
+        refreshWallLearned()
         // Список перечитывается, а не правится на месте: после записи в базу
         // на экране должно стоять то, что в базе, а не то, что мы
         // рассчитывали туда положить.
@@ -1981,6 +2017,7 @@ class MainActivity : AppCompatActivity() {
         for (opponent in opponents) {
             if (mediator.hideForReview(opponent.id)) hidden++
         }
+        refreshWallLearned()
         val pending = mediator.getPendingReview()
         binding.textResults.text = renderPendingReview(pending)
         val message =
@@ -3143,7 +3180,8 @@ class MainActivity : AppCompatActivity() {
         // диске, и его размер виден ещё до первого вопроса. То есть
         // "кэш подхватился" видно раньше, чем это подтвердит секундомер.
         promptCacheLine = llmEngine.getPromptCacheReport()
-        buildSelfLine = llmEngine.getBuildSelfReport()
+        buildSelfLine = llmEngine.getBuildSelfReport() +
+            (llmEngine.learnedFailure?.let { "\n$it" } ?: "")
         // Тот же момент и по той же причине: путь к точке считается от
         // отпечатка загрузки, до неё его просто нет. Заодно это первое,
         // что человек увидит после перезапуска, — успела ли вчерашняя

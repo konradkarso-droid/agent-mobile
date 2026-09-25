@@ -2,6 +2,8 @@ package com.uroboros.memory.dream
 
 import android.content.Context
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.Prism
+import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
 
 /**
@@ -28,6 +30,27 @@ class UnpromptedLeaderGauge(
         // а не читает память.
         val content = standing.topId?.let { stickers.getById(it)?.content }
         val nights = dreams.lastUnpromptedLeaders(UnpromptedLeader.NIGHTS_WINDOW)
-        return UnpromptedLeader.meter(standing, content, nights)
+        // Путь строки о себе (см. SelfLine.meterTail) — тоже из базы.
+        val pending = stickers.pendingIdentity()?.let { it.id to it.basedOnId }
+        return UnpromptedLeader.meter(standing, content, nights) +
+            SelfLine.meterTail(pending, stickers.countAcceptedIdentity(), dreams.lastSelfLineOutcome())
+    }
+
+    /**
+     * Строка у записи в очереди, которую предложил агент (см.
+     * SelfLine.originLine); null — запись не такая. Числа основания читаются
+     * сейчас, при показе.
+     */
+    suspend fun originLine(sticker: Sticker): String? {
+        val baseId = sticker.basedOnId ?: return null
+        if (sticker.tag != Prism.IDENTITY_TAG) return null
+        val base = stickers.getById(baseId)
+        val nights = dreams.lastUnpromptedLeaders(UnpromptedLeader.NIGHTS_WINDOW)
+        return SelfLine.originLine(
+            baseId = baseId,
+            baseText = base?.content,
+            touches = base?.userMatchUnpromptedCount ?: 0,
+            nightsLed = UnpromptedLeader.nightsLed(baseId, nights),
+        )
     }
 }
