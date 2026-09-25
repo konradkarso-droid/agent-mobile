@@ -32,14 +32,18 @@ class JudgeGenerationException(message: String) : RuntimeException(message)
  * весь прогон в [LlmEngine.withDeterministicSampling]. Снятый без этого вердикт
  * не значит ничего, и по самому вердикту это не видно.
  */
-class EngineJudgeLlm(private val engine: LlmEngine) : MemoryJudge.Llm {
+class EngineJudgeLlm(
+    private val engine: LlmEngine,
+    /** Потолок выдачи на вопрос; судья берёт [ANSWER_TOKENS], тема строки о себе — свой (SelfLineStep). */
+    private val answerTokens: Int = ANSWER_TOKENS,
+) : MemoryJudge.Llm {
 
     override suspend fun answer(system: String, request: String): String {
         val said = StringBuilder()
         var failure: String? = null
         engine.generateConversationFlow(
             messages = listOf(SYSTEM_ROLE to system, USER_ROLE to request),
-            maxTokens = ANSWER_TOKENS,
+            maxTokens = answerTokens,
         ).collect { event ->
             when (event) {
                 is GenerationEvent.Token -> said.append(event.text)
@@ -51,9 +55,9 @@ class EngineJudgeLlm(private val engine: LlmEngine) : MemoryJudge.Llm {
         return said.toString()
     }
 
-    private companion object {
-        const val SYSTEM_ROLE = "system"
-        const val USER_ROLE = "user"
+    companion object {
+        private const val SYSTEM_ROLE = "system"
+        private const val USER_ROLE = "user"
 
         /**
          * Потолок выдачи на один вопрос.

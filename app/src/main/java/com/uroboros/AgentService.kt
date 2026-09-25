@@ -26,6 +26,8 @@ import com.uroboros.memory.GatedAction
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.dream.NightStart
+import com.uroboros.memory.dream.SelfLine
+import com.uroboros.memory.dream.SelfLineStep
 import com.uroboros.memory.dream.SleepDecision
 import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
@@ -99,6 +101,10 @@ import java.util.Locale
  * сторож, ни отсутствие аварийного стопа: он только читает записи и считает.
  * Поэтому [whyCannotStart] спрашивается ПОСЛЕ сна и решает только судьбу
  * судьи — иначе незагруженная модель отменяла бы и сон, которому она не нужна.
+ *
+ * С кнопки за судьёй идёт третий шаг — строка о себе ([SelfLineStep]). Условия
+ * у него те же, что у судьи, кроме «разбор уже идёт» ([whyModelCannotRun]); не
+ * стартовал судья — нет и шага. Итог шага дописывается в строку ночи.
  *
  * Отказ судьи не теряется: он приходит на экран итогом прогона вместе с тем,
  * что приснилось. Экран поэтому сам условия судьи не спрашивает — иначе ночь
@@ -677,19 +683,27 @@ class AgentService : Service() {
         stopNote = null
 
         job = scope.launch {
+            val db = MemoryDatabase.getInstance(applicationContext)
+            // Начало ночи задаётся здесь, а не внутри сна: по нему шаг «строка
+            // о себе» дописывает свой итог в строку этой ночи.
+            val nightAt = System.currentTimeMillis()
             // Сон идёт без блокировки сна и без пометки "идёт разбор": это
             // миллисекунды счёта, а не прогон, который надо сторожить.
             val dreamed = if (dreamFirst) {
-                nightLock.withLock {
-                    DreamRunner.run(MemoryDatabase.getInstance(applicationContext), NightStart.BUTTON)
-                }
+                nightLock.withLock { DreamRunner.run(db, NightStart.BUTTON, nightAt) }
             } else {
                 null
             }
 
             val refusal = whyCannotStart(applicationContext)
             if (refusal != null) {
-                end(listOfNotNull(dreamed, refusal).joinToString("\n\n"))
+                // Судья не стартовал — строки о себе тоже нет, по той же причине.
+                val selfLine = if (dreamFirst) {
+                    noteSelfLine(db, nightAt, SelfLine.notOfferedOutcome(refusal))
+                } else {
+                    null
+                }
+                end(listOfNotNull(dreamed, refusal, selfLine).joinToString("\n\n"))
                 return@launch
             }
 
@@ -713,12 +727,24 @@ class AgentService : Service() {
 
             acquireWakeLock(budgetMs)
             val report = try {
-                JudgeLauncher(applicationContext, objects.llmEngine)
+                val judged = JudgeLauncher(applicationContext, objects.llmEngine)
                     .runAndReport(modelIdentity, budgetMs) { done ->
                         val now = System.currentTimeMillis()
                         _state.value = RunState.Running(startedAt, done, now, self)
                         showProgress(startedAt, done, now)
                     }
+                // Строка о себе — только ночью по кнопке и только после судьи
+                // (см. SelfLineStep). Условия модели переспрашиваются перед
+                // вызовом: судья шёл долго. «Разбор уже идёт» не в счёт — идёт наш.
+                val selfLine = if (dreamFirst) {
+                    val outcome = SelfLineStep.run(db, objects.mediator, objects.llmEngine) {
+                        whyModelCannotRun(applicationContext)
+                    }
+                    noteSelfLine(db, nightAt, outcome)
+                } else {
+                    null
+                }
+                listOfNotNull(judged, selfLine).joinToString("\n\n")
             } catch (cancelled: CancellationException) {
                 STOPPED_REPORT
             } finally {
@@ -728,6 +754,22 @@ class AgentService : Service() {
             end(listOfNotNull(dreamed, report).joinToString("\n\n"))
         }
     }
+
+    /**
+     * Дописать итог шага «строка о себе» в строку ночи [nightAt] и вернуть
+     * его для отчёта. Если сон сорвался и строки ночи нет, обновление ничего
+     * не тронет — итог останется только в отчёте. Сбой записи отчёт не
+     * роняет, а называется в нём: иначе прибор молча показывал бы прежнюю ночь.
+     */
+    private suspend fun noteSelfLine(db: MemoryDatabase, nightAt: Long, outcome: String): String =
+        try {
+            db.dreamDao().setSelfLineOutcome(nightAt, outcome)
+            outcome
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            "$outcome\n(в строку ночи не записано: ${t.javaClass.simpleName})"
+        }
 
     /**
      * Прогон кончился. Итог кнопочного прогона идёт на экран; самостоятельного
@@ -897,10 +939,16 @@ class AgentService : Service() {
          * показания батареи, считается неработающим: прогон без живой остановки
          * по нагреву не начинается, сомнение решается в сторону отказа.
          */
-        fun whyCannotStart(context: Context): String? {
+        fun whyCannotStart(context: Context): String? =
+            if (state.value is RunState.Running) "Разбор уже идёт." else whyModelCannotRun(context)
+
+        /**
+         * Условия [whyCannotStart] без «разбор уже идёт» — для шага внутри
+         * идущего разбора (строка о себе после судьи): разбор идёт наш.
+         */
+        fun whyModelCannotRun(context: Context): String? {
             val objects = ProcessObjects.get(context)
             return when {
-                state.value is RunState.Running -> "Разбор уже идёт."
                 EmergencyStop.isActive() -> "Взведён аварийный стоп — снимите его в красной полосе вверху."
                 !objects.llmEngine.isLoaded -> "Сначала загрузите модель."
                 objects.watchdog.zoneObservation().powerLastAtMs == null ->

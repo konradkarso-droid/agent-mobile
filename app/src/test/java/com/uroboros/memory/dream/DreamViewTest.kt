@@ -172,6 +172,8 @@ class DreamViewTest {
         override suspend fun stirredSince(since: Long): List<Dream> = error("показ не читает пружину")
         override suspend fun lastAskedAt(): Long? = error("показ не читает выход любопытства")
         override suspend fun lastUnpromptedLeaders(limit: Int): List<Long?> = error("показ не читает ряд лидеров")
+        override suspend fun setSelfLineOutcome(nightAt: Long, outcome: String): Int = error("показ не пишет итог шага")
+        override suspend fun lastSelfLineOutcome(): String? = error("показ не читает итог шага")
     }
 
     private fun record(id: Long, hidden: Boolean = false, rejected: Boolean = false) = Sticker(

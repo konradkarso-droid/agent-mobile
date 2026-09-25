@@ -44,6 +44,8 @@ class QuestionFilterTest {
             }
             onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
             onCountInLayer = { layer -> records.count { it.layer == layer } }
+            // Стены нет: правило подсказки работает по прошлому ответу, как прежде.
+            onIdentityWall = { emptyList() }
         }
         return HourglassMemory(dao)
     }

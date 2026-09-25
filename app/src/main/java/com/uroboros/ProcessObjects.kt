@@ -4,7 +4,9 @@ import android.content.Context
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
+import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.TrustedMediator
+import com.uroboros.memory.dream.SelfLine
 import com.uroboros.safety.DeviceSafetyWatchdog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -81,7 +83,10 @@ object ProcessObjects {
 
     private fun create(app: Context): Held {
         val watchdog = DeviceSafetyWatchdog(app, processScope)
-        val llmEngine = LlmEngine(app, watchdog)
+        // Нажитое о себе для стены движок читает через эту функцию: слой памяти
+        // знает, какие строки приняты, движок — только что их надо поставить.
+        val stickers = MemoryDatabase.getInstance(app).stickerDao()
+        val llmEngine = LlmEngine(app, watchdog) { stickers.identityWall(SelfLine.WALL_CEILING) }
         return Held(
             mediator = TrustedMediator(app),
             watchdog = watchdog,

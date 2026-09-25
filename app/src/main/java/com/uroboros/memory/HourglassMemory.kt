@@ -1,6 +1,7 @@
 package com.uroboros.memory
 
 import android.util.Log
+import com.uroboros.memory.dream.SelfLine
 
 /**
  * Строка важности → число для сортировки, по убыванию: LOW=0, MEDIUM=1, HIGH=2.
@@ -98,12 +99,20 @@ internal fun usefulnessMarks(
     else returned.filter { it in matched }.toSet()
 
 /**
- * Подсказано ли касание записи прошлым ответом агента: основы, общие у вопроса
- * владельца и записи, которые стояли и в прошлом ответе. Пустое множество — не
- * подсказано. Подсказанное касание идёт только в Sticker.userMatchCount; зачем
- * второй счётчик и чего правило не видит — у Sticker.userMatchUnpromptedCount.
- * Чистая функция по той же причине, что [usefulnessMarks]: правило закрепляется
- * тестом.
+ * Подсказано ли касание записи агентом: основы, общие у вопроса владельца и
+ * записи, которые стояли в прошлом ответе агента или в основах тем стены.
+ * Пустое множество — не подсказано. Подсказанное касание идёт только в
+ * Sticker.userMatchCount; зачем второй счётчик и чего правило не видит — у
+ * Sticker.userMatchUnpromptedCount. Чистая функция по той же причине, что
+ * [usefulnessMarks]: правило закрепляется тестом.
+ *
+ * СТЕНА — ТОЖЕ ПОДСКАЗКА. Принятая строка «о себе» стоит в стене перед каждым
+ * разговором, и агент заговаривает о её теме сам; не считай её подсказкой —
+ * строка накручивала бы себе счёт, по которому выросла, и это самая опасная
+ * петля пути в красный. Берутся основы ТЕМЫ ([wallTopicStems],
+ * dream.SelfLine.topicStems), не всей строки: слова рамки сделали бы
+ * подсказанным почти любое касание. Стена стоит и в новом разговоре, поэтому
+ * проверка по ней идёт и без прошлого ответа.
  *
  * ГРАНИЦА «ХОТЯ БЫ ОДНА ОСНОВА» — объявленная, не подобранная. Чистый счётчик
  * идёт в основание решения о вечной записи, поэтому сомнительное касание не
@@ -115,11 +124,19 @@ internal fun usefulnessMarks(
  *
  * Мерка слов — [RiskTrigger.significantStems], та же, что у AgentRecall.
  */
-internal fun promptedStems(question: String, record: String, previousAnswer: String?): Set<String> {
-    if (previousAnswer.isNullOrBlank()) return emptySet()
+internal fun promptedStems(
+    question: String,
+    record: String,
+    previousAnswer: String?,
+    wallTopicStems: Set<String> = emptySet(),
+): Set<String> {
+    if (previousAnswer.isNullOrBlank() && wallTopicStems.isEmpty()) return emptySet()
     val shared = RiskTrigger.significantStems(question) intersect RiskTrigger.significantStems(record)
     if (shared.isEmpty()) return emptySet()
-    return shared intersect RiskTrigger.significantStems(previousAnswer)
+    val byAnswer =
+        if (previousAnswer.isNullOrBlank()) emptySet()
+        else shared intersect RiskTrigger.significantStems(previousAnswer)
+    return byAnswer + (shared intersect wallTopicStems)
 }
 
 // Два порога ниже стояли в private companion object класса и вынесены сюда
@@ -903,6 +920,12 @@ class HourglassMemory(
         // Подсказанное касание идёт только в старый счётчик — см. promptedStems.
         var promptedCount = 0
         val promptedBy = LinkedHashSet<String>()
+        // Основы тем стены — один запрос на вопрос, и только если есть кому
+        // засчитывать касание. Тот же набор строк, что стоит в стене
+        // (StickerDao.identityWall), — почему стена подсказка, у promptedStems.
+        val wallStems =
+            if (toMark.isEmpty()) emptySet()
+            else dao.identityWall(SelfLine.WALL_CEILING).flatMapTo(HashSet()) { SelfLine.topicStems(it) }
 
         val now = System.currentTimeMillis()
         val touched = result.map { sticker ->
@@ -927,7 +950,8 @@ class HourglassMemory(
             if (useful) {
                 dao.touchUserMatch(sticker.id)
             }
-            val prompts = if (useful) promptedStems(query, sticker.content, previousAnswer) else emptySet()
+            val prompts =
+                if (useful) promptedStems(query, sticker.content, previousAnswer, wallStems) else emptySet()
             val unprompted = useful && prompts.isEmpty()
             if (unprompted) {
                 dao.touchUserMatchUnprompted(sticker.id)

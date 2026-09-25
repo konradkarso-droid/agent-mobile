@@ -198,7 +198,12 @@ enum class GenerationEnd {
 
 class LlmEngine(
     private val context: Context,
-    private val watchdog: DeviceSafetyWatchdog
+    private val watchdog: DeviceSafetyWatchdog,
+    /**
+     * Чтение нажитого о себе для стены — принятых строк «о себе». Приходит
+     * снаружи (ProcessObjects): движок о слое памяти не знает. См. [learnedLines].
+     */
+    private val readLearned: suspend () -> List<String> = { emptyList() },
 ) {
 
     private val engine = GGMLEngine()
@@ -654,6 +659,7 @@ class LlmEngine(
         if (ok) {
             val file = File(modelPath)
             loadedSource = modelPath
+            loadLearned()
             configureAfterLoad(
                 sourceIdentity = file.name + ":" + file.length(),
                 loadIdentity = loadIdentity(
@@ -691,6 +697,7 @@ class LlmEngine(
         )
         if (ok) {
             loadedSource = uri.toString()
+            loadLearned()
             configureAfterLoad(
                 sourceIdentity = uri.toString(),
                 loadIdentity = loadIdentity(
@@ -753,17 +760,83 @@ class LlmEngine(
 
     /**
      * Стена, собранная из нынешних частей, — и для загрузки, и для смены на
-     * лету. Строки сборки берутся от загрузки ([buildSelfLines]), нажитого о
-     * себе пока нет.
+     * лету. Строки сборки берутся от загрузки ([buildSelfLines]), нажитое о
+     * себе — последнее прочитанное ([learnedLines]).
      *
      * @param probe включена ли проверочная строка ([BuildSelfDescription.PROBE_LINE]).
      */
     fun wallFor(probe: Boolean): String = BuildSelfDescription.compose(
         humanWall = BibleSoftWall.TEXT,
         buildLines = buildSelfLines,
-        learned = emptyList(),
+        learned = learnedLines,
         probe = if (probe) BuildSelfDescription.PROBE_LINE else null,
     )
+
+    /**
+     * Нажитое о себе в стене: принятые человеком строки «о себе», как их
+     * отдаёт [readLearned]. Пишется под [wallLock]; читается без него — список
+     * неизменяемый и подменяется целиком, а [wallFor] зовут и с экрана, где
+     * ждать замка нельзя (см. «ЧЕГО ПОД ЗАМКОМ НЕТ» у [wallLock]).
+     */
+    @Volatile
+    private var learnedLines: List<String> = emptyList()
+
+    /**
+     * Почему в стене нет нажитого, словами для экрана; null — прочитано.
+     * Сбой чтения не роняет ни загрузку, ни смену: стена тогда без нажитого
+     * (при загрузке) или прежняя (при смене).
+     */
+    @Volatile
+    var learnedFailure: String? = null
+        private set
+
+    /**
+     * Прочитать нажитое при загрузке — до [configureAfterLoad], чтобы стена
+     * встала сразу с ним. Чтение приостанавливается, а не блокирует поток:
+     * база отвечает на своём потоке.
+     */
+    private suspend fun loadLearned() {
+        val lines = try {
+            readLearned()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            learnedFailure = "Стена без нажитого: память не ответила (${t.javaClass.simpleName})"
+            synchronized(wallLock) { learnedLines = emptyList() }
+            return
+        }
+        learnedFailure = null
+        synchronized(wallLock) { learnedLines = lines }
+    }
+
+    /**
+     * Перечитать нажитое после решения человека и попросить стену с ним.
+     * Встанет в начале следующего запроса разговора ([requestWall]); та же
+     * стена ничего не ожидает, поэтому звать можно без проверки, что набор
+     * изменился. Модель не перезагружается.
+     *
+     * Звать не с главного потока: [requestWall] может подождать запись точки.
+     *
+     * @return null — стена попрошена; иначе почему нет (сбой чтения). При
+     *   сбое стена остаётся прежней.
+     */
+    suspend fun refreshLearned(): String? {
+        val lines = try {
+            readLearned()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            val why = "Нажитое в стене не обновлено: память не ответила (${t.javaClass.simpleName})"
+            learnedFailure = why
+            return why
+        }
+        learnedFailure = null
+        withContext(Dispatchers.IO) {
+            synchronized(wallLock) { learnedLines = lines }
+            requestWall(wallFor(ConversationPrefs.wallProbe(context)))
+        }
+        return null
+    }
 
     /** Стена, стоящая в движке; null — модель не загружена. Под [wallLock]. */
     private var currentWall: String? = null

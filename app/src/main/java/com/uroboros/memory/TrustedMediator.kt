@@ -214,6 +214,36 @@ class TrustedMediator(context: Context) {
     }
 
     /**
+     * Сохранить строку «о себе», которую предложил агент (см. dream.SelfLine),
+     * — сразу красной и сразу на проверке.
+     *
+     * Провенанс — вывод агента: строку собрал код из темы, названной моделью.
+     * Пометка «на проверке» ставится здесь и уходит в ту же вставку:
+     * HourglassMemory.saveEventChecked поднятый вызывающим бит не сбрасывает и
+     * вставляет запись одним действием, так что промежутка, когда строка видна
+     * отбору или стене, нет. Обычный [saveEvent] не годится: он не передаёт ни
+     * пометку, ни основание.
+     *
+     * Прибор очереди посчитает эту проверку как обычную — проверка и правда
+     * была. Запись в очереди по предложению агента он от спора не отличает;
+     * отличает экран очереди, по основанию.
+     *
+     * Путь только от ночи по кнопке (AgentService); принимает строку только
+     * человек, тем же [acceptFromReview], что и всё в очереди.
+     */
+    suspend fun proposeSelfLine(text: String, basedOnId: Long): SaveResult {
+        val sticker = Sticker(
+            content = text,
+            tag = Prism.IDENTITY_TAG,
+            source = SourceKind.AGENT_INFERRED.name,
+            confidence = ConfidenceLevel.INFERRED.name,
+            reviewPending = true,
+            basedOnId = basedOnId,
+        )
+        return describeSave(hourglass.saveEventChecked(sticker))
+    }
+
+    /**
      * Достать текст похожей записи по номеру.
      *
      * Пропавшая запись не выдаётся за отсутствие похожей: отсев её нашёл, а
