@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.GenerationEvent
-import com.uroboros.ConversationPrefs
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
@@ -753,7 +752,8 @@ class LlmEngine(
             pendingWall = null
             appliedWallChange = null
             wallDeferredBusy = false
-            wallChangedAtLoad = applyWall(wallFor(ConversationPrefs.wallProbe(context)))
+            wallSetOnTheFly = false
+            wallChangedAtLoad = applyWall(wallFor())
         }
         applyStreamingLatency()
     }
@@ -762,14 +762,11 @@ class LlmEngine(
      * Стена, собранная из нынешних частей, — и для загрузки, и для смены на
      * лету. Строки сборки берутся от загрузки ([buildSelfLines]), нажитое о
      * себе — последнее прочитанное ([learnedLines]).
-     *
-     * @param probe включена ли проверочная строка ([BuildSelfDescription.PROBE_LINE]).
      */
-    fun wallFor(probe: Boolean): String = BuildSelfDescription.compose(
+    fun wallFor(): String = BuildSelfDescription.compose(
         humanWall = BibleSoftWall.TEXT,
         buildLines = buildSelfLines,
         learned = learnedLines,
-        probe = if (probe) BuildSelfDescription.PROBE_LINE else null,
     )
 
     /**
@@ -833,7 +830,7 @@ class LlmEngine(
         learnedFailure = null
         withContext(Dispatchers.IO) {
             synchronized(wallLock) { learnedLines = lines }
-            requestWall(wallFor(ConversationPrefs.wallProbe(context)))
+            requestWall(wallFor())
         }
         return null
     }
@@ -847,6 +844,15 @@ class LlmEngine(
     /** Смена на лету, случившаяся в запросе разговора и ещё не забранная: прежняя и новая стена. */
     @Volatile
     private var appliedWallChange: Pair<String, String>? = null
+
+    /**
+     * Стена менялась на лету с этой загрузки. Нужно строке кэша стены: после
+     * смены на лету библиотека не пишет файл стены в новую папку (пишет его
+     * только при счёте запроса с нуля, а здесь совпадает начало), и пустая
+     * папка тогда значит «до перезапуска», а не «до первого ответа».
+     */
+    @Volatile
+    private var wallSetOnTheFly: Boolean = false
 
     /**
      * Ожидающая стена не встала в последнем запросе разговора, потому что
@@ -901,7 +907,10 @@ class LlmEngine(
             wallDeferredBusy = false
             val old = currentWall
             applyWall(wall)
-            if (old != null) appliedWallChange = old to wall
+            if (old != null) {
+                appliedWallChange = old to wall
+                wallSetOnTheFly = true
+            }
         }
     }
 
@@ -924,8 +933,9 @@ class LlmEngine(
     fun getBuildSelfReport(): String {
         if (!engine.isLoaded) return "О себе от сборки: модель не загружена"
         if (buildSelfLines.isNotEmpty()) {
-            return "О себе от сборки: ${buildSelfLines.size} стр. — " +
-                buildSelfLines.joinToString(" / ") { "«$it»" }
+            // Тексты строк здесь не печатаются: они занимали полэкрана. Их
+            // показывает экран по нажатию (см. MainActivity, «показать»).
+            return "О себе от сборки: ${buildSelfLines.size} стр. · нажитых в стене: ${learnedLines.size}"
         }
         val why = when (scriptBanStateAtLoad) {
             -1 -> "библиотека не сообщила о запрете иероглифов"
@@ -935,7 +945,7 @@ class LlmEngine(
             4 -> "запрет иероглифов выключен, вместо него перевод в скобках"
             else -> "запрет иероглифов в состоянии $scriptBanStateAtLoad"
         }
-        return "О себе от сборки: пусто — $why"
+        return "О себе от сборки: пусто — $why · нажитых в стене: ${learnedLines.size}"
     }
 
     /**
@@ -1225,6 +1235,8 @@ class LlmEngine(
         val confirmed = promptCacheAcknowledged
 
         val state = when {
+            files.isEmpty() && wallSetOnTheFly ->
+                "пуст до перезапуска: после смены стены на лету файл не пишется"
             files.isEmpty() -> "пуст (заполнится после первого ответа)"
             else -> "${files.size} ф., ${bytes / (1024 * 1024)} МБ"
         }
@@ -1500,7 +1512,7 @@ class LlmEngine(
             return@withContext false
         }
 
-        checkpointReport = "Точка: сохранена, ${humanBytes(target.length())} · $note"
+        checkpointReport = "Точка: сохранена, ${humanBytes(target.length())} · ${EngineLines.checkpointTokens(note)}"
         checkpointFresh = true
         true
     } }
@@ -1545,7 +1557,7 @@ class LlmEngine(
         checkpointFresh = ok
         if (ok) {
             val note = lastEngineLogLine(STATE_LOAD_OK_FRAGMENT) ?: "лог молчит"
-            checkpointReport = "Точка: поднята · $note"
+            checkpointReport = "Точка: поднята · ${EngineLines.checkpointTokens(note)}"
         } else {
             val why = lastEngineLogLine(STATE_LOAD_FAILED_FRAGMENT) ?: "лог молчит"
             checkpointReport = "Точка: ОТКАЗ при подъёме · $why"
