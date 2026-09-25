@@ -14,7 +14,7 @@ import androidx.room.PrimaryKey
  * показ владельцу ([MirrorView]) и сверка ([MirrorChecker]).
  *
  * Строки копятся по ночам и сами не удаляются: не больше [Mirror.MAX_VARIANTS]
- * за ночь по кнопке.
+ * за ночь.
  */
 @Entity(tableName = "mirror")
 data class MirrorVariant(
