@@ -46,8 +46,11 @@ class CuriosityPressureTest {
         answeredCount = answered,
     )
 
-    private fun measure(dreams: List<Dream>, records: Map<Long, Sticker> = live) =
-        CuriosityPressure.measure(dreams, { records[it] }, now)
+    private fun measure(
+        dreams: List<Dream>,
+        records: Map<Long, Sticker> = live,
+        concluded: Set<ConclusionKey> = emptySet(),
+    ) = CuriosityPressure.measure(dreams, { records[it] }, now, concluded)
 
     @Test
     fun `снов нет — давление ноль и лидера нет`() {
@@ -138,7 +141,7 @@ class CuriosityPressureTest {
         val line = CuriosityPressure.meter(measure(emptyList()))
         assertEquals(
             "Любопытство: давление 0 — подхвачено 0 (×3), вспомнено 0 (×2), " +
-                "своё 0 (×1) · за 3 ночи",
+                "своё 0 (×1) · разряжено выводом: 0 · за 3 ночи",
             line,
         )
     }
@@ -212,5 +215,62 @@ class CuriosityPressureTest {
         assertFalse(line.contains("источника"))
         assertTrue(line.contains("в этом ходе ответ о спрошенном сне «по времени: Кот спит → Дождь идёт»"))
         assertFalse("ответ не выдаётся за подхват", line.contains("подхвачен сон"))
+    }
+
+    // ---- Ряд и разрядка выводом ----
+
+    @Test
+    fun `ряд — все сны с вкладом в порядке вклада, первый — лидер`() {
+        val got = measure(
+            listOf(
+                dream(1, 2, recalled = 2), // вклад 4
+                dream(3, 4, picked = 1, recalled = 1), // вклад 5
+                dream(5, 6, served = 3), // вклад 0 — не в ряду
+                dream(7, 8, nightAt = now - 2 * day, picked = 1), // вклад 3, ночь раньше
+                dream(8, 9, picked = 1), // вклад 3
+            )
+        )
+        assertEquals(listOf(5, 4, 3, 3), got.ranked.map { it.contribution })
+        assertEquals(listOf("3,4", "1,2", "8,9", "7,8"), got.ranked.map { it.dream.recordIds })
+        assertEquals(got.leader, got.ranked.first())
+    }
+
+    @Test
+    fun `сон с принятым выводом не даёт давления, не лидер и считается разряженным`() {
+        val done = dream(1, 2, picked = 9)
+        val got = measure(listOf(done, dream(3, 4, recalled = 1)), concluded = setOf(ConclusionKey.of(done)))
+        assertEquals(0, got.pickedUp)
+        assertEquals(1, got.recalled)
+        assertEquals(2, got.pressure)
+        assertEquals(1, got.concluded)
+        assertEquals(listOf("3,4"), got.ranked.map { it.dream.recordIds })
+        assertEquals("3,4", got.leader?.dream?.recordIds)
+        assertTrue(CuriosityPressure.meter(got).lines()[0].contains("· разряжено выводом: 1 ·"))
+    }
+
+    @Test
+    fun `без выводов результат прежний, и ноль разряженных печатается`() {
+        val dreams = listOf(dream(1, 2, picked = 2, recalled = 1), dream(3, 4, recalled = 3))
+        val before = measure(dreams)
+        val after = measure(dreams, concluded = setOf(ConclusionKey(now - day, "5,6")))
+        assertEquals(before, after)
+        assertEquals(0, after.concluded)
+        assertTrue(CuriosityPressure.meter(after).contains("разряжено выводом: 0"))
+    }
+
+    @Test
+    fun `спрошенный сон с выводом считается один раз, как спрошенный`() {
+        val asked = dream(1, 2, picked = 3, askedAt = now - 1, answered = 2)
+        val got = measure(listOf(asked), concluded = setOf(ConclusionKey.of(asked)))
+        assertEquals(2, got.own)
+        assertEquals(0, got.concluded)
+        assertTrue(got.ranked.isEmpty())
+    }
+
+    @Test
+    fun `молчащий сон с выводом не считается разряженным`() {
+        val done = dream(1, 2, picked = 1)
+        val hidden = live + (2L to record(2, hidden = true))
+        assertEquals(0, measure(listOf(done), hidden, setOf(ConclusionKey.of(done))).concluded)
     }
 }

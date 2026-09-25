@@ -26,6 +26,12 @@ import com.uroboros.memory.Sticker
  * только ответы — в слагаемое «своё», а не в «подхвачено»: иначе агент,
  * спросив, сам раскачивал бы сигнал, который считается сигналом владельца.
  *
+ * Сон с принятым выводом ([Conclusion], ключи — [ConclusionKey]) разряжен так
+ * же: своих счетов давлению не даёт, лидером и в ряду не бывает, считается в
+ * [Result.concluded]. Вывод закрывает связь — тянуть её дальше нечего.
+ * Отброшенный вывод сон не разряжает. Спрошенный сон с выводом считается как
+ * спрошенный, один раз.
+ *
  * ОКНО — [WINDOW_NIGHTS] ночи по часам: сон считается, если его ночь началась
  * не раньше чем [WINDOW_MS] назад. Ночи здесь — сутки, а не проходы сна:
  * сны остывают со временем, даже если телефон неделю не спал.
@@ -38,8 +44,9 @@ import com.uroboros.memory.Sticker
  *    сильнее вспоминания агента», настоящие числа — из замеров;
  *  - не остывает внутри окна: сон позавчерашней ночи весит столько же,
  *    сколько вчерашний, и выпадает из счёта целиком на границе окна;
- *  - разрядка только у спрошенного сна: сон, который выход не выбрал,
- *    копит дальше, пока не выпадет из окна.
+ *  - разрядка только у спрошенного сна и сна с принятым выводом: сон,
+ *    который выход не выбрал и вывод не закрыл, копит дальше, пока не
+ *    выпадет из окна.
  */
 object CuriosityPressure {
 
@@ -74,12 +81,18 @@ object CuriosityPressure {
     /**
      * Итог: три слагаемых порознь (счета, не умноженные на вес) и лидер —
      * null, когда давление ноль.
+     *
+     * @property ranked все сны с вкладом больше нуля, в порядке вклада; лидер
+     *   — первый в ряду. Ряд читают выводы ([ConclusionStep]).
+     * @property concluded сколько снов окна разряжено принятым выводом.
      */
     data class Result(
         val pickedUp: Int,
         val recalled: Int,
         val own: Int,
         val leader: Leader?,
+        val ranked: List<Leader> = emptyList(),
+        val concluded: Int = 0,
     ) {
         val pressure: Int
             get() = PICKED_UP_WEIGHT * pickedUp + RECALLED_WEIGHT * recalled + OWN_WEIGHT * own
@@ -89,16 +102,25 @@ object CuriosityPressure {
      * Давление по снам [dreams] на момент [now].
      *
      * @param byId запись по номеру; null — записи нет, сон молчит.
+     * @param concludedKeys ключи снов с принятым выводом (см. «РАЗРЯДКА»).
      *
      * Лидер при равном вкладе — сон более поздней ночи, затем по строке
-     * номеров: выбор детерминирован, «лучшего» из равных здесь нет.
+     * номеров: выбор детерминирован, «лучшего» из равных здесь нет. Тем же
+     * порядком стоит весь ряд [Result.ranked].
      */
-    fun measure(dreams: List<Dream>, byId: (Long) -> Sticker?, now: Long): Result {
+    fun measure(
+        dreams: List<Dream>,
+        byId: (Long) -> Sticker?,
+        now: Long,
+        concludedKeys: Set<ConclusionKey> = emptySet(),
+    ): Result {
         var pickedUp = 0
         var recalled = 0
         var own = 0
+        var concluded = 0
         var leader: Pair<Dream, List<Sticker>>? = null
         var leaderContribution = 0
+        val stirred = mutableListOf<Leader>()
         for (dream in dreams.distinctBy { it.nightAt to it.recordIds }) {
             if (dream.nightAt < now - WINDOW_MS) continue
             val records = dream.ids().map(byId)
@@ -108,10 +130,15 @@ object CuriosityPressure {
                 own += dream.answeredCount
                 continue
             }
+            if (ConclusionKey.of(dream) in concludedKeys) {
+                concluded++
+                continue
+            }
             pickedUp += dream.pickedUpCount
             recalled += dream.recalledCount
             val contribution = PICKED_UP_WEIGHT * dream.pickedUpCount + RECALLED_WEIGHT * dream.recalledCount
             if (contribution <= 0) continue
+            stirred += Leader(Brief(dream.kind, records.map { it!!.content }), contribution, dream, records.map { it!! })
             val current = leader?.first
             val better = current == null || contribution > leaderContribution ||
                 (contribution == leaderContribution &&
@@ -129,6 +156,12 @@ object CuriosityPressure {
             leader = leader?.let { (dream, records) ->
                 Leader(Brief(dream.kind, records.map { it.content }), leaderContribution, dream, records)
             },
+            ranked = stirred.sortedWith(
+                compareByDescending<Leader> { it.contribution }
+                    .thenByDescending { it.dream.nightAt }
+                    .thenBy { it.dream.recordIds }
+            ),
+            concluded = concluded,
         )
     }
 
@@ -150,6 +183,8 @@ object CuriosityPressure {
         append(" — подхвачено ").append(result.pickedUp).append(" (×").append(PICKED_UP_WEIGHT).append(")")
         append(", вспомнено ").append(result.recalled).append(" (×").append(RECALLED_WEIGHT).append(")")
         append(", своё ").append(result.own).append(" (×").append(OWN_WEIGHT).append(")")
+        // Печатается всегда, и при нуле: см. первую строку KDoc.
+        append(" · разряжено выводом: ").append(result.concluded)
         append(" · за ").append(WINDOW_NIGHTS).append(" ночи")
         if (pickedThisTurn.isNotEmpty()) {
             append(if (pickedThisTurn.size == 1) " · в этом ходе подхвачен сон " else " · в этом ходе подхвачены сны ")

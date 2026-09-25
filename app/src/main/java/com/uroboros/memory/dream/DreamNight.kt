@@ -96,6 +96,13 @@ data class DreamNight(
      * [selfLineOutcome], и по той же причине.
      */
     val mirrorOutcome: String? = null,
+    /**
+     * Итог шага выводов этой ночи — та же строка, что в отчёте ночи (см.
+     * [ConclusionStep]). null — шага не было: ночь без кнопки или ночь прошла
+     * раньше, чем выводы появились. Пишется тем же отдельным обновлением, что
+     * [selfLineOutcome], и по той же причине, но через [ConclusionDao].
+     */
+    val conclusionsOutcome: String? = null,
 ) {
     companion object {
         fun of(nightAt: Long, night: DreamWeaver.Night) = DreamNight(

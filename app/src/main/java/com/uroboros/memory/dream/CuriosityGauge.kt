@@ -11,18 +11,20 @@ import com.uroboros.memory.StickerDao
 class CuriosityGauge(
     private val dreams: DreamDao,
     private val stickers: StickerDao,
+    private val conclusions: ConclusionDao,
 ) {
 
-    constructor(context: Context) : this(
-        MemoryDatabase.getInstance(context).dreamDao(),
-        MemoryDatabase.getInstance(context).stickerDao(),
-    )
+    constructor(context: Context) : this(MemoryDatabase.getInstance(context))
+
+    constructor(db: MemoryDatabase) : this(db.dreamDao(), db.stickerDao(), db.conclusionDao())
 
     suspend fun read(now: Long = System.currentTimeMillis()): CuriosityPressure.Result {
         // Только сны с ненулевыми счетами: остальные дали бы ноль. Записи —
         // по номеру и без отметки обращения.
         val rows = dreams.stirredSince(now - CuriosityPressure.WINDOW_MS)
         val byId = rows.flatMap { it.ids() }.distinct().associateWith { stickers.getById(it) }
-        return CuriosityPressure.measure(rows, { byId[it] }, now)
+        // Сны с принятым выводом разряжены (см. CuriosityPressure, «РАЗРЯДКА»).
+        val concluded = conclusions.acceptedKeys().toHashSet()
+        return CuriosityPressure.measure(rows, { byId[it] }, now, concluded)
     }
 }
