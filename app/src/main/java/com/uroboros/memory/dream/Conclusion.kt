@@ -61,6 +61,9 @@ object Conclusion {
         "связь", "связи", "связан", "связана", "связано", "связаны", "связывает", "связывают",
         "общее", "общий", "общая", "общего", "вместе", "похожи", "похоже", "похож", "одинаково",
         "записи", "запись",
+        // Слово самой подсказки ([SYSTEM]: «одной фразой»): модель подхватывает
+        // его и называет записи «фразами».
+        "фраза", "фразы", "фразой",
     )
 
     /** Основы [LINK_WORDS]: при проверке они не считаются лишними. */
@@ -93,7 +96,8 @@ object Conclusion {
                 else "давление любопытства ноль — связывать нечего"
             )
         }
-        val fresh = ranked.filter { ConclusionKey.of(it.dream) !in tried }
+        val triedRecords = ConclusionKey.sameRecords(tried)
+        val fresh = ranked.filter { it.dream.recordIds !in triedRecords }
         if (fresh.isEmpty()) return Pick.Silent("все сны, дающие давление, уже пробовались")
         return Pick.Dreams(fresh.take(MAX_PER_NIGHT))
     }
