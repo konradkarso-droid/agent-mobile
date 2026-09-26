@@ -249,6 +249,15 @@ class CuriosityPressureTest {
     }
 
     @Test
+    fun `вывод по тем же записям в другую ночь разряжает и новый сон`() {
+        val again = dream(1, 2, picked = 4)
+        val got = measure(listOf(again), concluded = setOf(ConclusionKey(now - 3 * day, "1,2")))
+        assertEquals(0, got.pickedUp)
+        assertEquals(1, got.concluded)
+        assertTrue(got.ranked.isEmpty())
+    }
+
+    @Test
     fun `без выводов результат прежний, и ноль разряженных печатается`() {
         val dreams = listOf(dream(1, 2, picked = 2, recalled = 1), dream(3, 4, recalled = 3))
         val before = measure(dreams)
