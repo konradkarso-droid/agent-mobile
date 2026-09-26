@@ -303,7 +303,7 @@ class MainActivity : AppCompatActivity() {
     private var curiosityAskLine: String? = null
     private var curiosityAskFailure: String? = null
 
-    /** Строка состояния агента на последнем ходе, как её увидела модель (см. SelfState). */
+    /** Строка состояния агента на последнем ходе — только для экрана, модели не идёт (см. SelfState). */
     private var selfStateLine: String? = null
 
     /**
@@ -4266,8 +4266,9 @@ class MainActivity : AppCompatActivity() {
                 val servedDreams = dreamOffer.picked.filter { p -> p.brought.any { it.id in broughtNowIds } }
                 dreamsLine = DreamRecall.meter(dreamOffer, alreadyInRibbon = associated.size - broughtNow.size)
                 // Состояние агента — только когда что-то сдвинулось с прошлого
-                // показа (см. SelfState). Сбой чтения приборов не срывает ход:
-                // строки просто нет, а на экране сказано почему.
+                // показа, и только на экран, модели не идёт (см. SelfState).
+                // Сбой чтения приборов не срывает ход: строки просто нет, а на
+                // экране сказано почему.
                 val selfSnapshot = runCatching {
                     SelfState.read(applicationContext, journal.fillPercent(CONTEXT_SIZE))
                 }
@@ -4276,7 +4277,7 @@ class MainActivity : AppCompatActivity() {
                     selfSnapshot.isFailure -> "О себе сейчас: приборы не ответили — " +
                         (selfSnapshot.exceptionOrNull()?.javaClass?.simpleName ?: "?")
                     selfLine == null -> "О себе сейчас: без перемен"
-                    else -> "О себе сейчас: $selfLine"
+                    else -> "О себе сейчас (модели не подаётся): $selfLine"
                 }
                 // Выход пружины любопытства (см. CuriosityAsk): давление
                 // перечитывается к этой реплике. Сбой чтения — не спрашивать:
@@ -4295,9 +4296,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 curiosityAskLine = CuriosityAsk.meter(askDecision)
                 val askedLeader = (askDecision as? CuriosityAsk.Decision.Ask)?.leader
+                // Строки о себе здесь нет: она только на экран (см. SelfState,
+                // «ТОЛЬКО НА ЭКРАН»).
                 val userContent = journal.composeUserContent(
-                    newRecords, userText, disputeText, selfLine,
-                    askedLeader?.let { CuriosityAsk.line(it) },
+                    newRecords, userText, disputeText,
+                    curiosityAsk = askedLeader?.let { CuriosityAsk.line(it) },
                 )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
@@ -4718,7 +4721,7 @@ class MainActivity : AppCompatActivity() {
                     // Ход состоялся: двери стареют на ход, принесённое
                     // этим ходом получает свою (см. DreamDoor).
                     DreamDoor.afterTurn(brought.map { it.id })
-                    // Состояние показано: ход лёг в ленту вместе с ним.
+                    // Состояние показано на экране этого хода.
                     selfSnapshot.getOrNull()?.let { SelfState.markShown(it) }
                     renderMetricsPanel()
                     // Ход закрыт — перерисовываем ленту целиком.
