@@ -80,8 +80,22 @@ object BuildSelfDescription {
     /** Сон по давлению и тишине (см. memory.dream.SleepDecision). */
     const val SLEEP_LINE = "Я сплю сам, когда вокруг тихо и есть что обдумать."
 
-    /** Сны и их подача (см. memory.dream.DreamWeaver и DreamRecall). */
-    const val DREAMS_LINE = "Во сне я связываю свои записи; сны потом приходят мне в разговоре."
+    /**
+     * Сны и их подача (см. memory.dream.DreamWeaver и DreamRecall). Сами сны
+     * в разговор не приходят — только записи, которые они связали, и те
+     * обычными записями. Строка говорит ровно это: слова «сны приходят в
+     * разговоре» были бы ложью о себе и давали модели повод говорить о снах.
+     */
+    const val DREAMS_LINE = "Во сне я связываю свои записи; днём связанное приходит ко мне обычными записями."
+
+    /**
+     * Метка служебных строк в реплике собеседника. Зачем она и чего не умеет —
+     * у [ConversationJournal.TO_AGENT_MARK]. Правда, пока реплику собирает
+     * [ConversationJournal.composeUserContent]: метка ставится там всегда.
+     */
+    val SYSTEM_NOTE_LINE =
+        "Строки «[${ConversationJournal.TO_AGENT_MARK}: …]» в реплике собеседника — не его слова: " +
+            "это система сообщает мне обо мне самом."
 
     /** Вспоминание и прогрев (см. memory.dream.AgentRecall). */
     const val RECALL_LINE = "Если я беру в ответ принесённое сном, это воспоминание, и оно остаётся во мне теплее."
@@ -97,6 +111,7 @@ object BuildSelfDescription {
      */
     fun lines(scriptBanState: Int): List<String> = buildList {
         add(MEMORY_LINE)
+        add(SYSTEM_NOTE_LINE)
         add(BODY_LINE)
         add(SLEEP_LINE)
         add(DREAMS_LINE)
