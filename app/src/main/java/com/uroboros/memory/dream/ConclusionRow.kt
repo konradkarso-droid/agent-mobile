@@ -44,9 +44,24 @@ data class ConclusionRow(
     val reason: String?,
 )
 
-/** Ключ сна в таблице выводов: ночь сна и строка номеров, как у [Dream]. */
+/**
+ * Ключ сна в таблице выводов: ночь сна и строка номеров, как у [Dream].
+ *
+ * СВЕРЯЕТСЯ НАБОР ЗАПИСЕЙ, А НЕ СОН. Другая ночь может свести те же записи
+ * снова, и для модели это тот же запрос: в подсказку идут тексты записей, а
+ * не ночь. Поэтому и «уже пробовался» ([Conclusion.pick]), и «разряжен
+ * выводом» ([CuriosityPressure]) смотрят только на [dreamRecordIds] через
+ * [sameRecords]. Ночь в ключе остаётся для показа: какая ночь дала вывод.
+ *
+ * Чего не умеет: те же записи в другом порядке («6,5» вместо «5,6») — другая
+ * строка и считаются другим набором.
+ */
 data class ConclusionKey(val dreamNightAt: Long, val dreamRecordIds: String) {
     companion object {
         fun of(dream: Dream) = ConclusionKey(dream.nightAt, dream.recordIds)
+
+        /** Наборы записей из ключей — то, с чем сверяется сон (см. выше). */
+        fun sameRecords(keys: Collection<ConclusionKey>): Set<String> =
+            keys.mapTo(HashSet()) { it.dreamRecordIds }
     }
 }
