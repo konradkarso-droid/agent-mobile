@@ -33,6 +33,25 @@ class BuildSelfDescriptionTest {
         }
     }
 
+    /**
+     * Строка о метке называет ту же метку, что ставит сборка реплики: разойдись
+     * они — стена объясняла бы метку, которой в реплике нет.
+     */
+    @Test
+    fun `стена объясняет ту метку, что стоит в реплике`() {
+        val marked = ConversationJournal.toAgent("x")
+        val head = marked.substringBefore("x")
+        for (state in listOf(0, 1)) {
+            assertTrue(BuildSelfDescription.SYSTEM_NOTE_LINE in BuildSelfDescription.lines(state))
+        }
+        assertTrue(BuildSelfDescription.SYSTEM_NOTE_LINE, BuildSelfDescription.SYSTEM_NOTE_LINE.contains(head))
+    }
+
+    @Test
+    fun `о снах стена не обещает разговора`() {
+        assertFalse(BuildSelfDescription.DREAMS_LINE.contains("в разговоре"))
+    }
+
     @Test
     fun `стена — текст человека, за ним строки сборки`() {
         assertEquals("стена\nа\nб", BuildSelfDescription.compose("стена", listOf("а", "б")))
