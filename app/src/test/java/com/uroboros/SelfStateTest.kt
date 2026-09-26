@@ -9,14 +9,14 @@ import org.junit.Test
  * Строка состояния агента.
  *
  * ГЛАВНОЕ ЗДЕСЬ — МОЛЧАНИЕ БЕЗ ПЕРЕМЕН: одинаковое состояние не даёт строки,
- * иначе лента забивалась бы повторами. И второе — ни слова во втором лице:
- * переписанное моделью в ответ «ты» уходит собеседнику. Время в строке
+ * иначе лента забивалась бы повторами. Второе — ни слова во втором лице:
+ * переписанное моделью в ответ «ты» уходит собеседнику. Третье — ни слова о
+ * сне (см. SelfState, «О СНЕ НЕ ГОВОРИТСЯ»). Время в строке
  * зависит от часового пояса машины, поэтому проверяются слова, а не часы.
  */
 class SelfStateTest {
 
     private val base = SelfState.Snapshot(
-        nightAt = 1_000L,
         starts = 2, aliveSince = 500L, sleepPressure = 0, ribbonPercent = 20,
     )
 
@@ -29,10 +29,9 @@ class SelfStateTest {
     }
 
     @Test
-    fun `поспал — сказано когда, без снов`() {
-        val text = SelfState.line(base, base.copy(nightAt = 2_000L))!!
-        assertTrue(text, text.contains("Я поспал в "))
-        assertFalse("сны не называются", text.contains("снов"))
+    fun `о сне не говорится ни при какой перемене`() {
+        val everything = SelfState.line(null, base.copy(starts = 3, sleepPressure = 2, ribbonPercent = 95))!!
+        assertFalse(everything, Regex("(?iu)поспал|спал |снов|снил").containsMatchIn(everything))
     }
 
     @Test
@@ -58,7 +57,6 @@ class SelfStateTest {
     fun `новый процесс говорит всё, что правда`() {
         val text = SelfState.line(null, base.copy(sleepPressure = 2))!!
         assertTrue(text, text.contains("перерыв"))
-        assertTrue(text, text.contains("Я поспал"))
         assertTrue(text, text.contains("накопилось"))
     }
 
@@ -70,7 +68,7 @@ class SelfStateTest {
 
     @Test
     fun `после установки первый подъём — не кома`() {
-        val text = SelfState.line(null, base.copy(starts = 1, nightAt = null))
+        val text = SelfState.line(null, base.copy(starts = 1))
         assertNull(text)
     }
 }
