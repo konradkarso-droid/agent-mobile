@@ -98,6 +98,12 @@ class ConclusionTest {
     }
 
     @Test
+    fun `слово подсказки «фразы» не считается лишним`() {
+        assertNull(Conclusion.check("обе фразы про кошку и дождь", listOf(cat, rain)))
+        assertNull(Conclusion.check("эти фразы связаны: кошка спит", listOf(cat, rain)))
+    }
+
+    @Test
     fun `одни связующие слова — отказ`() {
         assertEquals("в выводе нет слов записей", Conclusion.check("записи связаны вместе", listOf(cat, rain)))
         assertEquals("в выводе нет слов записей", Conclusion.check("и так", listOf(cat, rain)))
@@ -153,6 +159,20 @@ class ConclusionTest {
         val tried = setOf(ConclusionKey(1, "1,1"), ConclusionKey(3, "1,3"))
         val got = Conclusion.pick(ranked, tried) as Conclusion.Pick.Dreams
         assertEquals(listOf(ranked[1], ranked[3]), got.dreams)
+    }
+
+    @Test
+    fun `те же записи в другую ночь — уже пробовались`() {
+        val ranked = listOf(leader(5, "1,2"), leader(5, "1,3"))
+        val got = Conclusion.pick(ranked, setOf(ConclusionKey(1, "1,2"))) as Conclusion.Pick.Dreams
+        assertEquals(listOf(ranked[1]), got.dreams)
+    }
+
+    @Test
+    fun `те же записи в другом порядке — другой набор`() {
+        val ranked = listOf(leader(5, "2,1"))
+        val got = Conclusion.pick(ranked, setOf(ConclusionKey(1, "1,2"))) as Conclusion.Pick.Dreams
+        assertEquals(ranked, got.dreams)
     }
 
     @Test
