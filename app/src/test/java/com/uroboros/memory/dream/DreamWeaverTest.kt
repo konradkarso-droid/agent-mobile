@@ -185,6 +185,49 @@ class DreamWeaverTest {
         assertTrue(night.ceilingHit)
     }
 
+    /**
+     * Живой случай: записей больше, чем мест на них по старшинству. Все
+     * сказаны в одну минуту и связаны по времени каждая с каждой. Прежний
+     * порядок отдавал первые места парам самой старой записи — она была в
+     * каждом сне, а новые не снились вовсе.
+     */
+    @Test
+    fun `при нехватке мест снится каждая запись, и никто не собирает лишнего`() {
+        val letters = "бвгдклмнпрстфхц"
+        val records = (0 until 70).map { i ->
+            val word = "${letters[i / letters.length]}${letters[i % letters.length]}ааа"
+            rec(i + 1L, word, at = 0)
+        }
+        val night = DreamWeaver.weave(records)
+        assertEquals(DreamWeaver.MAX_DREAMS_PER_NIGHT, night.dreams.size)
+        assertTrue(night.ceilingHit)
+        val uses = night.dreams.flatMap { it.recordIds }.groupingBy { it }.eachCount()
+        assertEquals("каждая запись в каком-то сне", 70, uses.size)
+        assertTrue("никто не больше чем в двух: $uses", uses.values.all { it <= 2 })
+    }
+
+    @Test
+    fun `мест хватает — делёж ничего не меняет`() {
+        val dreams = listOf(
+            DreamWeaver.Woven(listOf(1L, 2L), Kind.TIME),
+            DreamWeaver.Woven(listOf(1L, 3L), Kind.TIME),
+        )
+        assertEquals(dreams, DreamWeaver.fairShare(dreams, 2))
+    }
+
+    @Test
+    fun `делёж возвращает сны в прежнем порядке`() {
+        val dreams = listOf(
+            DreamWeaver.Woven(listOf(1L, 2L), Kind.TIME),
+            DreamWeaver.Woven(listOf(1L, 3L), Kind.TIME),
+            DreamWeaver.Woven(listOf(4L, 5L), Kind.TIME),
+        )
+        assertEquals(
+            listOf(dreams[0], dreams[2]),
+            DreamWeaver.fairShare(dreams, 2),
+        )
+    }
+
     @Test
     fun `под потолком — потолок не сработал`() {
         val night = DreamWeaver.weave(
