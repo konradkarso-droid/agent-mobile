@@ -9,9 +9,11 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.text.Editable
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
+import android.text.TextWatcher
 import android.text.method.LinkMovementMethod
 import android.text.style.BackgroundColorSpan
 import android.text.style.ClickableSpan
@@ -21,6 +23,7 @@ import android.text.style.StyleSpan
 import android.util.Log
 import android.view.View
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -725,7 +728,58 @@ class MainActivity : AppCompatActivity() {
         // Подложки и черты у ленты нет намеренно: она не список записей, а
         // разговор, и блоки в ней держит пустая строка между ходами.
         applyRecordSpans(out, emptyList(), emptyList(), recordRanges, recordColumn)
+        lastJournalText = out.toString()
         return out
+    }
+
+    /**
+     * Текст последней собранной ленты — чтобы отличать разговор от всего
+     * прочего, что выводится на то же место (показ памяти, отчёты, лог).
+     * Поле результата одно, и отдельного признака «что сейчас на экране» у
+     * него нет; сверка по тексту заменяет его, не требуя помечать каждое из
+     * мест, где поле перезаписывается.
+     */
+    private var lastJournalText = ""
+
+    /**
+     * Разговор ли сейчас на экране.
+     *
+     * Сверка по началу, а не по равенству: во время генерации ответ
+     * дописывается в поле по токену поверх ленты, и сообщения об ошибке
+     * тоже дописываются к ней. Такой экран — всё ещё разговор, и уводить с
+     * него «назад» нельзя: перерисовка стёрла бы показанную часть ответа
+     * (см. toggleTurnRecords).
+     *
+     * Чего не умеет: при пустой ленте сверять не с чем, и разговором
+     * считается только пустое поле.
+     */
+    private fun feedShowsConversation(): Boolean {
+        val shown = binding.textResults.text.toString()
+        return if (lastJournalText.isEmpty()) shown.isEmpty() else shown.startsWith(lastJournalText)
+    }
+
+    /** Вернуть на место ленты разговор — из показа памяти, отчёта или лога. */
+    private fun backToConversation() {
+        binding.textResults.text = renderJournal()
+        binding.scrollResults.post { binding.scrollResults.fullScroll(View.FOCUS_DOWN) }
+        renderTurnNavVisibility()
+    }
+
+    /**
+     * Системная «назад»: из показа памяти, очереди, отчёта или лога — обратно
+     * в разговор. Когда на экране разговор, «назад» ведёт себя как обычно.
+     *
+     * Кнопка «Показать» при этом не меняется и всегда открывает показ
+     * заново: так его можно обновить одним нажатием, например после нового
+     * запроса в поле ввода.
+     */
+    private val backToConversationCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = backToConversation()
+    }
+
+    /** Включить «назад» в разговор, только когда на месте ленты не разговор. */
+    private fun syncBackToConversation() {
+        backToConversationCallback.isEnabled = !feedShowsConversation()
     }
 
     /**
@@ -3992,6 +4046,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.buttonShow.setOnClickListener { openMemoryView() }
+        onBackPressedDispatcher.addCallback(this, backToConversationCallback)
+        // Любая перезапись поля — и показ памяти, и лента, и токены ответа —
+        // проходит здесь, поэтому состояние выхода не нужно помечать в каждом
+        // из мест, где поле перезаписывается.
+        binding.textResults.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) = syncBackToConversation()
+        })
 
         binding.buttonShow.setOnLongClickListener {
             setDetailsExpanded(false)
