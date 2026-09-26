@@ -9,9 +9,9 @@ import org.junit.Test
  * Строка состояния агента.
  *
  * ГЛАВНОЕ ЗДЕСЬ — МОЛЧАНИЕ БЕЗ ПЕРЕМЕН: одинаковое состояние не даёт строки,
- * иначе лента забивалась бы повторами. Второе — ни слова во втором лице:
- * переписанное моделью в ответ «ты» уходит собеседнику. Третье — ни слова о
- * сне (см. SelfState, «О СНЕ НЕ ГОВОРИТСЯ»). Время в строке
+ * иначе перемена тонула бы в повторах. Второе и третье — ни слова во втором
+ * лице и ни слова о сне (см. SelfState, «ФОРМА — ДЛЯ ВОЗМОЖНОГО ВОЗВРАТА К
+ * МОДЕЛИ»). Время в строке
  * зависит от часового пояса машины, поэтому проверяются слова, а не часы.
  */
 class SelfStateTest {
@@ -31,13 +31,13 @@ class SelfStateTest {
     @Test
     fun `о сне не говорится ни при какой перемене`() {
         val everything = SelfState.line(null, base.copy(starts = 3, sleepPressure = 2, ribbonPercent = 95))!!
-        assertFalse(everything, Regex("(?iu)поспал|спал |снов|снил").containsMatchIn(everything))
+        assertFalse(everything, Regex("(?iu)спал|сна|сон|снов|снил|сне").containsMatchIn(everything))
     }
 
     @Test
     fun `давление — один раз на цикл`() {
         val tired = base.copy(sleepPressure = 1)
-        assertTrue(SelfState.line(base, tired)!!.contains("у меня накопилось"))
+        assertTrue(SelfState.line(base, tired)!!.contains("накопилось"))
         assertNull(SelfState.line(tired, tired.copy(sleepPressure = 5)))
     }
 
