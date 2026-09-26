@@ -28,7 +28,8 @@ import com.uroboros.memory.Sticker
  *
  * Сон с принятым выводом ([Conclusion], ключи — [ConclusionKey]) разряжен так
  * же: своих счетов давлению не даёт, лидером и в ряду не бывает, считается в
- * [Result.concluded]. Вывод закрывает связь — тянуть её дальше нечего.
+ * [Result.concluded]. Вывод закрывает связь — тянуть её дальше нечего; и сон
+ * другой ночи с теми же записями тоже разряжен (см. [ConclusionKey]).
  * Отброшенный вывод сон не разряжает. Спрошенный сон с выводом считается как
  * спрошенный, один раз.
  *
@@ -118,6 +119,7 @@ object CuriosityPressure {
         var recalled = 0
         var own = 0
         var concluded = 0
+        val concludedRecords = ConclusionKey.sameRecords(concludedKeys)
         var leader: Pair<Dream, List<Sticker>>? = null
         var leaderContribution = 0
         val stirred = mutableListOf<Leader>()
@@ -130,7 +132,7 @@ object CuriosityPressure {
                 own += dream.answeredCount
                 continue
             }
-            if (ConclusionKey.of(dream) in concludedKeys) {
+            if (dream.recordIds in concludedRecords) {
                 concluded++
                 continue
             }
