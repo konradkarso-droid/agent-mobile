@@ -298,4 +298,73 @@ class ConversationJournalTest {
         assertEquals("", raised.history().single().question)
         assertEquals("Как тебе тот сон?", raised.messagesFor("x")[1].second)
     }
+
+    // СТРОКА О СЕБЕ — системным сообщением перед репликой своего хода и
+    // никогда первым (см. ConversationJournal.messagesFor). Главная проверка —
+    // [на пустой ленте строка о себе не уходит]: системное сообщение первым
+    // оставило бы модель без стены, и ответы при этом не падают, а молча
+    // теряют всё, что в стене.
+
+    @Test
+    fun `на пустой ленте строка о себе не уходит и в ход не ложится`() {
+        val journal = ConversationJournal()
+
+        val messages = journal.messagesFor("Привет", "Я очнулся в 15:42.")
+        assertEquals(listOf(ConversationJournal.ROLE_USER to "Привет"), messages)
+
+        journal.appendTurn("Привет", "Привет!", "Привет", emptyList(), selfNote = "Я очнулся в 15:42.")
+        assertEquals(null, journal.history().single().selfNote)
+        assertEquals(ConversationJournal.ROLE_USER, journal.messagesFor("дальше").first().first)
+    }
+
+    @Test
+    fun `строка о себе стоит перед репликой своего хода и остаётся на месте`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("Привет", "Привет!", "Привет", emptyList())
+
+        val note = "Перед этим у меня был перерыв в жизни: я очнулся в 15:42."
+        val sent = journal.messagesFor("Как дела?", note)
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_USER to "Привет",
+                ConversationJournal.ROLE_ASSISTANT to "Привет!",
+                ConversationJournal.ROLE_SYSTEM to note,
+                ConversationJournal.ROLE_USER to "Как дела?",
+            ),
+            sent,
+        )
+
+        journal.appendTurn("Как дела?", "Хорошо.", "Как дела?", emptyList(), selfNote = note)
+        assertEquals(note, journal.history().last().selfNote)
+        // Следующий запрос начинается ровно тем, что ушло в прошлый раз, —
+        // иначе начало разойдётся с обсчитанным.
+        val next = journal.messagesFor("А ещё?")
+        assertEquals(sent, next.take(sent.size))
+        assertEquals(ConversationJournal.ROLE_ASSISTANT to "Хорошо.", next[sent.size])
+    }
+
+    @Test
+    fun `сохранённая у первого хода строка о себе первой не встаёт`() {
+        val raised = ConversationJournal()
+        assertTrue(
+            raised.restore(
+                listOf(ConversationJournal.Turn("Привет", "Привет!", "Привет", selfNote = "Я очнулся в 05:01.")),
+            ),
+        )
+        val messages = raised.messagesFor("дальше")
+        assertEquals(ConversationJournal.ROLE_USER, messages.first().first)
+        assertFalse(messages.any { it.first == ConversationJournal.ROLE_SYSTEM })
+    }
+
+    @Test
+    fun `в системную роль не попадает ни реплика, ни записи`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("Твои слова вчера: «Отдыхаю».\n\nПривет", "Привет!", "Привет", listOf("Твои слова вчера: «Отдыхаю»."))
+        val content = journal.composeUserContent(listOf("Твои слова сегодня: «Я был у стоматолога»."), "Что нового?")
+
+        val system = journal.messagesFor(content, "Я очнулся в 15:42.")
+            .filter { it.first == ConversationJournal.ROLE_SYSTEM }
+            .map { it.second }
+        assertEquals(listOf("Я очнулся в 15:42."), system)
+    }
 }
