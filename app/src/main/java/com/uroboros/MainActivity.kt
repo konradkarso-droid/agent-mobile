@@ -89,6 +89,7 @@ import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
 import com.uroboros.memory.nav.Clouds
 import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
@@ -276,9 +277,6 @@ class MainActivity : AppCompatActivity() {
      * чужим «я» снято (см. MirrorFilter). null — отбора на этом ходе не было.
      */
     private var mirrorSelectionLine: String? = null
-
-    /** Адрес последнего вопроса (Coordinates.addressInRibbon); null — вопроса не было. */
-    private var currentAddress: Coordinates.Address? = null
 
     /**
      * Ассоциация к последнему ответу: сколько снов подходило, сколько записей
@@ -570,8 +568,7 @@ class MainActivity : AppCompatActivity() {
         val sources = cloudSources(journalStore.readArchive())
         val now = System.currentTimeMillis()
         Clouds.section(Clouds.of(PersonKey.OWNER, sources, now), Clouds.of(PersonKey.AGENT, sources, now))
-    }.getOrElse { "ОБЛАКА
-не посчитались — ${it.javaClass.simpleName}" }
+    }.getOrElse { "ОБЛАКА\nне посчитались — ${it.javaClass.simpleName}" }
 
     /**
      * Строка хода «Облако адреса:» к последнему ответу (Clouds.addressLine).
@@ -4251,7 +4248,6 @@ class MainActivity : AppCompatActivity() {
                 val address = Coordinates.addressInRibbon(
                     journal.history().map { it.question to it.at }, userText, System.currentTimeMillis(),
                 )
-                currentAddress = address
                 // Своя речь агента — окно архива ленты, только на вопрос к
                 // агенту (см. OwnSpeech). Время старого хода — не позже
                 // закрытия разговора (Coordinates.turnTime).
@@ -4333,8 +4329,23 @@ class MainActivity : AppCompatActivity() {
                 // принесённого ниже считаются от начала списка.
                 val ownSeated = ownSaid.take(contextResult.ownSpeechSeated)
                 val ownLines = ownSeated.map { ProvenanceLabels.ownSpeechForModel(it.sentence, it.at, recordsAt) }
+                // Эпизод записи — по часам эпизодов из времён ходов ленты и
+                // архива и закрытий лент (Episodes.Clock): запись из прошлого
+                // разговора подписывается «в прошлом разговоре».
+                val episodeClock = Episodes.Clock(
+                    moments = journal.history().mapNotNull { it.at } +
+                        archive.orEmpty().mapNotNull {
+                            Coordinates.turnTime(it.at, it.question, it.archivedAt) { null }.at
+                        } + recordsAt,
+                    closures = archive.orEmpty().map { it.archivedAt }.distinct(),
+                )
+                val currentEpisode = episodeClock.episodeAt(recordsAt)
                 val allRecords = stickers.map { sticker ->
-                    ProvenanceLabels.recordForModel(sticker, recordsAt)
+                    ProvenanceLabels.recordForModel(
+                        sticker, recordsAt,
+                        recordEpisode = episodeClock.episodeAt(sticker.createdAt),
+                        currentEpisode = currentEpisode,
+                    )
                 } + ownLines
                 // Пометка «кто → о ком» к строке записи — для раскрытого списка хода.
                 val recordMarks = stickers.indices.associate { i ->
