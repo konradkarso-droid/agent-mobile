@@ -1693,8 +1693,10 @@ class LlmEngine(
     ): Flow<GenerationEvent> = guardedFlow(
         conversationMessages(messages),
         maxTokens,
-        // Лента разговора идёт без своего системного сообщения — стену ставит
-        // движок. Своё системное сообщение приносит только судья памяти. См.
+        // Лента разговора первым системного сообщения не несёт — стену ставит
+        // движок; системные сообщения посреди ленты (строка о себе, см.
+        // ConversationJournal.messagesFor) первыми не стоят никогда. Первым
+        // своё системное сообщение приносит только судья памяти. См.
         // [stateIsConversation].
         conversation = messages.firstOrNull()?.first != "system",
     )
