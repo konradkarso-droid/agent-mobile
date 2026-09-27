@@ -259,18 +259,6 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
 
-                <!-- Настройка «После комы продолжать разговор сам» — в шторке, у правого
-                     края. Меняют её раз в жизни, поэтому она не стоит на виду рядом с
-                     тем, что жмут часто, и за раскрытием шторки случайно не задевается. -->
-                <CheckBox
-                    android:id="@+id/checkAutoContinue"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="end"
-                    android:textSize="12sp"
-                    android:textColor="#3A6470"
-                    android:text="После комы продолжать разговор сам"/>
-
                 <TextView
                     android:id="@+id/textMetrics"
                     android:layout_width="match_parent"
