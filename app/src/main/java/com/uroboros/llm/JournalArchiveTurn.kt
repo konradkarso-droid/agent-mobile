@@ -66,9 +66,8 @@ import androidx.room.Query
  *   всегда.
  *
  *   Все ходы одной архивации несут одну и ту же метку — это время закрытия
- *   ленты, а не время хода. Времени самого хода в проекте не хранит никто:
- *   [JournalTurn] его не несёт. Так что восстановить, когда именно был
- *   разговор, по архиву нельзя — можно только узнать, когда его закрыли.
+ *   ленты, а не время хода. Время хода — [at]; у ходов, легших до него,
+ *   оно выводится на лету (memory.nav.Coordinates.turnTime).
  * @property selfNote строка состояния агента, ушедшая модели на этом ходе
  *   системным сообщением (см. JournalTurn.selfNote); null — не уходила.
  */
@@ -87,6 +86,10 @@ data class JournalArchiveTurn(
     val fingerprint: String,
     val archivedAt: Long,
     val selfNote: String? = null,
+    /** Когда реплика ушла в движок (см. JournalTurn.at); null — ход до столбца. */
+    val at: Long? = null,
+    /** Описание последней ночи на этом ходе (см. JournalTurn.dreamNote). */
+    val dreamNote: String? = null,
 )
 
 /**

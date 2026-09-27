@@ -83,6 +83,15 @@ class ConversationJournal {
      * собеседника. Хранится в ходе, чтобы на следующих ходах модель видела
      * её на том же месте и начало запроса не расходилось с обсчитанным.
      * Правила места — у [messagesFor].
+     *
+     * `at` — когда реплика ушла в движок: абсолютный момент, миллисекунды
+     * эпохи (от смены пояса не дрейфует). null — ход лёг до появления поля;
+     * его время выводится на лету (memory.nav.Coordinates.turnTime), а не
+     * дописывается.
+     *
+     * `dreamNote` — описание последней ночи, ушедшее модели на этом ходе
+     * системным сообщением перед репликой; null — не уходило. Те же правила
+     * места, что у `selfNote` (см. [messagesFor]).
      */
     data class Turn(
         val userContent: String,
@@ -90,6 +99,8 @@ class ConversationJournal {
         val question: String,
         val records: List<RecordUse> = emptyList(),
         val selfNote: String? = null,
+        val at: Long? = null,
+        val dreamNote: String? = null,
     )
 
     /**
@@ -405,6 +416,8 @@ class ConversationJournal {
         question: String,
         records: List<String>,
         selfNote: String? = null,
+        at: Long? = null,
+        dreamNote: String? = null,
     ) {
         val index = turns.size
         // Строка о себе на первом ходе модели не уходила (см. [messagesFor]) —
@@ -416,7 +429,8 @@ class ConversationJournal {
         // Здесь отображение ещё хранит состояние ДО этого хода, поэтому
         // отсутствие ключа и означает «новая».
         val uses = records.map { RecordUse(it, placedRecords[it] ?: index) }
-        turns += Turn(userContent, agentContent, question, uses, note)
+        val dream = dreamNote?.takeIf { index > 0 && it.isNotBlank() }
+        turns += Turn(userContent, agentContent, question, uses, note, at, dream)
         // putIfAbsent по смыслу: первый ход, на котором запись легла, не
         // должен переписываться позднейшими попаданиями той же строки.
         for (record in records) placedRecords.getOrPut(record) { index }

@@ -244,6 +244,8 @@ class JournalStore(context: Context) {
                     question = row.question,
                     records = records,
                     selfNote = row.selfNote,
+                    at = row.at,
+                    dreamNote = row.dreamNote,
                 )
             }
 
@@ -293,6 +295,8 @@ class JournalStore(context: Context) {
                         promptTokens = promptTokens,
                         fingerprint = fingerprint ?: "",
                         selfNote = turn.selfNote,
+                        at = turn.at,
+                        dreamNote = turn.dreamNote,
                     )
                 )
             }.isSuccess
@@ -413,6 +417,8 @@ class JournalStore(context: Context) {
                                 fingerprint = row.fingerprint,
                                 archivedAt = archivedAt,
                                 selfNote = row.selfNote,
+                                at = row.at,
+                                dreamNote = row.dreamNote,
                             )
                         }
                     )

@@ -366,6 +366,7 @@ class ConversationTurns(
                     question = question,
                     records = records,
                     selfNote = selfNote,
+                    at = startMs,
                 )
                 appended = true
                 onClosed(journal.history().lastIndex)

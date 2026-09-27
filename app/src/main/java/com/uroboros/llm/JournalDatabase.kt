@@ -74,7 +74,7 @@ abstract class JournalDatabase : RoomDatabase() {
          * При подъёме числа сюда же добавляется миграция: без неё база не
          * откроется (деструктивного отката здесь нет намеренно, см. выше).
          */
-        const val SCHEMA_VERSION = 4
+        const val SCHEMA_VERSION = 5
 
         /**
          * Имя файла. Отличается от `uroboros_memory.db` не только словом:
@@ -173,6 +173,22 @@ abstract class JournalDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Версия 5: столбцы `at` (когда реплика ушла в движок, миллисекунды
+         * эпохи) и `dreamNote` (описание последней ночи, ушедшее системным
+         * сообщением) в ленте и в архиве. Оба NULL у старых строк: время
+         * старого хода выводится на лету (memory.nav.Coordinates.turnTime), а
+         * описаний ночи до этой версии не подавалось.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `journal_turns` ADD COLUMN `at` INTEGER")
+                db.execSQL("ALTER TABLE `journal_turns` ADD COLUMN `dreamNote` TEXT")
+                db.execSQL("ALTER TABLE `journal_archive_turns` ADD COLUMN `at` INTEGER")
+                db.execSQL("ALTER TABLE `journal_archive_turns` ADD COLUMN `dreamNote` TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: JournalDatabase? = null
 
@@ -182,7 +198,7 @@ abstract class JournalDatabase : RoomDatabase() {
                     context.applicationContext,
                     JournalDatabase::class.java,
                     FILE_NAME
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                  .build().also { INSTANCE = it }
             }
         }
