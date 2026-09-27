@@ -133,7 +133,43 @@ class PersonFormTest {
     }
 
     @Test
-    fun `проверь не ловится как повелительное`() {
-        assertFalse(Person.IMPERATIVE in persons("Проверь настройки"))
+    fun `повелительное на мягкий знак ловится по первому слову`() {
+        for (s in listOf("Проверь настройки", "Ответь коротко", "Поставь чайник")) {
+            assertEquals(s, setOf(Person.IMPERATIVE), persons(s))
+        }
+    }
+
+    @Test
+    fun `мягкий знак не делает повелительным -шь, -сь, -ть и слово не первым`() {
+        assertFalse(Person.IMPERATIVE in persons("Знаешь дорогу?"))
+        assertFalse(Person.IMPERATIVE in persons("Надеюсь на лучшее"))
+        assertFalse(Person.IMPERATIVE in persons("Приснилось что-нибудь?"))
+        assertFalse(Person.IMPERATIVE in persons("Есть новости?"))
+        assertFalse(Person.IMPERATIVE in persons("Опять дождь"))
+        assertFalse(Person.IMPERATIVE in persons("Сегодня дверь открыта"))
+    }
+
+    @Test
+    fun `безличный вопрос о сне сохраняет адрес агент`() {
+        assertEquals(Coordinates.Address.AGENT, Coordinates.questionAddress("Приснилось что-нибудь?"))
+    }
+
+    @Test
+    fun `просьба на мягкий знак не становится вопросом к агенту`() {
+        assertEquals(Coordinates.Address.UNDEFINED, Coordinates.questionAddress("Проверь настройки"))
+        assertEquals(
+            Coordinates.Address.UNDEFINED,
+            Coordinates.questionAddress("Проверь настройки", previous = Coordinates.Address.AGENT)
+        )
+    }
+
+    @Test
+    fun `первое слово на мягкий знак — ложное повелительное`() {
+        assertTrue(Person.IMPERATIVE in persons("Теперь поговорим о погоде"))
+    }
+
+    @Test
+    fun `повелительное на -сь не ловится`() {
+        assertFalse(Person.IMPERATIVE in persons("Брось мяч"))
     }
 }
