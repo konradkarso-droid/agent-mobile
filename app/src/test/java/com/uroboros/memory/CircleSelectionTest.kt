@@ -36,7 +36,7 @@ class CircleSelectionTest {
             val excluded = searchCalls.last().excluded
             records.filter {
                 !it.reviewPending && it.layer in layers && it.content !in excluded &&
-                    (it.content.contains(q) || it.content.contains(qCap))
+                    (it.contentFolded?.contains(q) ?: (it.content.contains(q) || it.content.contains(qCap)))
             }.sortedByDescending { it.createdAt }.take(limit)
         }
         onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
@@ -160,7 +160,9 @@ class CircleSelectionTest {
     @Test
     fun `польза засчитывается окну вопроса, но не теме`() = runBlocking {
         val byQuestion = sticker(1, "рубанок из дуба", Layer.GREEN)
-        val byTheme = sticker(2, "колодка из берёзы", Layer.GREEN)
+        // Приведённый вид — как у записи, прошедшей дверь записи (Sticker.contentFolded):
+        // слова темы приходят приведёнными («березы»).
+        val byTheme = sticker(2, "колодка из берёзы", Layer.GREEN).copy(contentFolded = "колодка из березы")
         val dao = dao(byQuestion, byTheme)
         val result = HourglassMemory(dao).getContextWithSummary(
             RetrievalPurpose.ANSWERING_USER, "рубанок", 5,
@@ -251,5 +253,48 @@ class CircleSelectionTest {
         assertEquals(listOf(live.id), result.stickers.map { it.id })
         assertTrue(result.circle.contains("вопрос — нашёл 1, мест 1"))
         assertTrue(result.circle.contains("реплик ленты в исключении 26"))
+    }
+
+    // --- Зеркало в отборе ---
+
+    @Test
+    fun `на адрес агент запись с чужим я снята в отборе`() = runBlocking {
+        val world = sticker(1, "рубанок из дуба", Layer.GREEN)
+        val mine = sticker(2, "рубанок точу сегодня", Layer.GREEN)
+        val result = HourglassMemory(dao(mine, world)).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5,
+            address = com.uroboros.memory.nav.Coordinates.Address.AGENT,
+        )
+        assertEquals(listOf(world.id), result.stickers.map { it.id })
+        assertEquals(1, result.mirrorRemoved)
+    }
+
+    @Test
+    fun `без адреса отбор прежний`() = runBlocking {
+        val mine = sticker(1, "рубанок точу сегодня", Layer.GREEN)
+        val world = sticker(2, "рубанок из дуба", Layer.GREEN)
+        val result = HourglassMemory(dao(mine, world)).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5,
+        )
+        assertEquals(setOf(mine.id, world.id), result.stickers.map { it.id }.toSet())
+        assertEquals(0, result.mirrorRemoved)
+    }
+}
+
+class OwnSpeechWindowSilenceTest {
+
+    @Test
+    fun `окно своей речи молчит без адреса агент — в круге сказано, что не ищет`() = runBlocking {
+        val dao = FakeStickerDao().apply {
+            onGetExpired = { emptyList() }
+            onGetRanked = { _, _ -> emptyList() }
+            onSearchAnyCase = { _, _, _, _ -> emptyList() }
+            onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
+            onCountInLayer = { 0 }
+            onIdentityWall = { emptyList() }
+        }
+        val result = HourglassMemory(dao).getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "рубанок", 5)
+        assertTrue(result.circle.contains(DolmenCircle.OWN_SPEECH_NOT_ASKED))
+        assertEquals(0, result.ownSpeechSeated)
     }
 }

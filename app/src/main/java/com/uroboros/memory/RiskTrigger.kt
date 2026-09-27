@@ -1,5 +1,7 @@
 package com.uroboros.memory
 
+import com.uroboros.util.TextFold
+
 object RiskTrigger {
 
     private val NEGATION_MARKERS = setOf(
@@ -294,7 +296,7 @@ object RiskTrigger {
     private fun hasUncertaintyMarker(text: String): Boolean {
         val words = tokenize(text)
         return UNCERTAINTY_MARKERS.any { marker ->
-            if (marker.contains(' ')) text.lowercase().contains(marker) else words.contains(marker)
+            if (marker.contains(' ')) TextFold.fold(text).contains(marker) else words.contains(marker)
         }
     }
 
@@ -504,12 +506,15 @@ object RiskTrigger {
      *
      * Два уровня по той же причине, что у чисел: сравнивать надо основы
      * («колодка» и «колодкой» — одно слово), а показать человеку надо то,
-     * что стоит в тексте.
+     * что стоит в тексте. Поэтому основа берётся от приведённого слова
+     * (util.TextFold: «зелёный» и «зеленый» — одна основа), а показ — от
+     * слова в нижнем регистре, без приведения «ё».
      */
     private fun significantByStem(text: String): Map<String, Set<String>> =
-        tokenize(text)
-            .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
-            .groupBy({ stem(it) }, { it })
+        text.lowercase()
+            .split(Regex("[^\\p{L}\\p{N}]+"))
+            .filter { it.isNotBlank() && it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
+            .groupBy({ stem(TextFold.fold(it)) }, { it })
             .mapValues { it.value.toSet() }
 
     /**
@@ -665,9 +670,8 @@ object RiskTrigger {
      */
     private fun isFillerSentence(sentence: String): Boolean {
         if (isQuestionSentence(sentence)) return false
-        val words = sentence.lowercase()
+        val words = TextFold.fold(sentence)
             .replace("\u0301", "")
-            .replace('ё', 'е')
             .split(Regex("[^\\p{L}\\p{N}]+"))
             .filter { it.isNotEmpty() }
             .map { it.replace(REPEATED_LETTER, "$1") }
@@ -761,7 +765,7 @@ object RiskTrigger {
     fun assertsNothing(text: String): Boolean = isOnlyQuestions(text) || isOnlyRequests(text)
 
     private fun isRequestSentence(sentence: String): Boolean {
-        val words = sentence.lowercase()
+        val words = TextFold.fold(sentence)
             .replace("\u0301", "")
             .split(Regex("[^\\p{L}\\p{N}]+"))
             .filter { it.isNotEmpty() }
@@ -856,7 +860,7 @@ object RiskTrigger {
     }
 
     private fun tokenize(text: String): Set<String> =
-        text.lowercase()
+        TextFold.fold(text)
             .split(Regex("[^\\p{L}\\p{N}]+"))
             .filter { it.isNotBlank() }
             .toSet()

@@ -3,8 +3,9 @@ package com.uroboros.memory.dream
 import com.uroboros.memory.judge.SelfJudgeDecision
 
 /**
- * Шаги ночи без кнопки: строка о себе ([SelfLineStep]), зеркало ([MirrorStep])
- * и выводы ([ConclusionStep]) для ПОСЛЕДНЕЙ ночи, у которой их ещё нет. Чистое
+ * Шаги ночи без кнопки: строка о себе ([SelfLineStep]), зеркало ([MirrorStep]),
+ * выводы ([ConclusionStep]) и темы снов ([DreamTopicStep]) для ПОСЛЕДНЕЙ ночи,
+ * у которой их ещё нет. Чистое
  * решение, без базы и Android; зовёт тело агента (AgentService) раз в минуту
  * бодрствования, сразу за проверкой сна.
  *
@@ -18,8 +19,9 @@ import com.uroboros.memory.judge.SelfJudgeDecision
  * когда накопилось новое. Нет разговора — нет новых записей, нет ночей, нет и
  * шагов: заряд впустую не тратится. Сделан шаг или нет, видно по итогу в строке
  * ночи ([DreamNight.selfLineOutcome], [DreamNight.mirrorOutcome],
- * [DreamNight.conclusionsOutcome]): null — шага не было. Делаются только
- * недостающие; ночь по кнопке пишет итоги всех трёх и повторно не трогается.
+ * [DreamNight.conclusionsOutcome], [DreamNight.dreamTopics]): null — шага не
+ * было. Делаются только недостающие; ночь по кнопке пишет итоги всех и
+ * повторно не трогается.
  *
  * УСЛОВИЯ ([refusal]) — те же, что у долгой работы модели без человека, но
  * БЕЗ ЗАРЯДКИ. В отличие от суда, шаги короткие — пять обращений к модели, а
@@ -60,14 +62,20 @@ object NightSteps {
     const val HEAD = "Шаги ночи: "
 
     /** Каких шагов у ночи нет. */
-    data class Missing(val selfLine: Boolean, val mirror: Boolean, val conclusions: Boolean) {
-        val any: Boolean get() = selfLine || mirror || conclusions
+    data class Missing(
+        val selfLine: Boolean,
+        val mirror: Boolean,
+        val conclusions: Boolean,
+        val dreamTopics: Boolean = false,
+    ) {
+        val any: Boolean get() = selfLine || mirror || conclusions || dreamTopics
 
-        /** Недостающие словами: «строка о себе, зеркало, выводы». */
+        /** Недостающие словами: «строка о себе, зеркало, выводы, темы снов». */
         fun words(): String = listOfNotNull(
             "строка о себе".takeIf { selfLine },
             "зеркало".takeIf { mirror },
             "выводы".takeIf { conclusions },
+            "темы снов".takeIf { dreamTopics },
         ).joinToString(", ")
     }
 
@@ -75,6 +83,7 @@ object NightSteps {
         selfLine = night.selfLineOutcome == null,
         mirror = night.mirrorOutcome == null,
         conclusions = night.conclusionsOutcome == null,
+        dreamTopics = night.dreamTopics == null,
     )
 
     data class Inputs(

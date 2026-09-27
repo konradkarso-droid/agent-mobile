@@ -42,6 +42,7 @@ import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.CONTEXT_SIZE
 import com.uroboros.llm.GenerationEnd
+import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.AcceptCheck
@@ -52,12 +53,14 @@ import com.uroboros.memory.DisputeNotice
 import com.uroboros.memory.DolmenCircle
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
+import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.Prism
 import com.uroboros.memory.ProvenanceLabels
 import com.uroboros.memory.RecordNumber
 import com.uroboros.memory.RejectOutcome
 import com.uroboros.memory.RejectPath
 import com.uroboros.memory.RequestCensus
+import com.uroboros.memory.dream.DreamTopic
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
@@ -84,6 +87,12 @@ import com.uroboros.memory.dream.MirrorView
 import com.uroboros.memory.dream.UnpromptedLeaderGauge
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
+import com.uroboros.memory.nav.Clouds
+import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.Episodes
+import com.uroboros.memory.nav.MirrorFilter
+import com.uroboros.memory.nav.OwnSpeech
+import com.uroboros.memory.nav.PersonKey
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -264,6 +273,12 @@ class MainActivity : AppCompatActivity() {
     private var circleLine: String? = null
 
     /**
+     * Зеркало в отборе к последнему ответу: адрес вопроса и сколько записей с
+     * чужим «я» снято (см. MirrorFilter). null — отбора на этом ходе не было.
+     */
+    private var mirrorSelectionLine: String? = null
+
+    /**
      * Ассоциация к последнему ответу: сколько снов подходило, сколько записей
      * принесено, а если ноль — почему (см. [DreamRecall.meter]). Отдельной
      * строкой: «Записей к ответу» говорит, сколько записей легло, эта — что
@@ -305,6 +320,12 @@ class MainActivity : AppCompatActivity() {
 
     /** Строка состояния агента на последнем ходе, для экрана (см. SelfState). */
     private var selfStateLine: String? = null
+
+    /**
+     * Сон в зеркале к последнему ответу: сколько раз описание ночи рассказано за
+     * сутки и почему молчит в этом ходе (см. DreamTopic.meter). null — хода не было.
+     */
+    private var dreamInMirrorLine: String? = null
 
     /**
      * Последняя реплика пользователя, собранная для движка, — целиком и
@@ -515,6 +536,46 @@ class MainActivity : AppCompatActivity() {
             (mirrorCheckFailure?.let { " · последняя реплика не сверена — $it" } ?: "")
     }
 
+    /**
+     * Источники облаков (Clouds): записи памяти, кроме скрытых и отвергнутых;
+     * принятые выводы, темы снов и своя речь из архива ленты — об агенте.
+     * Считается при каждом вызове, ничего не хранит.
+     */
+    private suspend fun cloudSources(archive: List<JournalArchiveTurn>?): List<Clouds.Source> {
+        val db = MemoryDatabase.getInstance(applicationContext)
+        val out = ArrayList<Clouds.Source>()
+        db.stickerDao().getAll()
+            .filter { !it.reviewPending && it.rejectedAt == null }
+            .mapTo(out) { Clouds.fromRecord(it.content, it.source, it.createdAt) }
+        db.conclusionDao().accepted().mapTo(out) { Clouds.ofAgent(it.text, it.nightAt) }
+        for (night in db.dreamDao().nightsWithTopics()) {
+            DreamTopic.load(night.dreamTopics).mapTo(out) { Clouds.ofAgent(it, night.nightAt) }
+        }
+        val own = OwnSpeech.said(archive.orEmpty().map { row ->
+            OwnSpeech.Turn(
+                answer = row.agentContent,
+                question = row.question,
+                records = journalStore.recordTexts(row),
+                at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+            )
+        })
+        own.mapNotNullTo(out) { said -> said.at?.let { Clouds.ofAgent(said.sentence, it) } }
+        return out
+    }
+
+    /** Раздел «ОБЛАКА» в «Показать»: считается при открытии. Сбой — словами. */
+    private suspend fun cloudsSection(): String = runCatching {
+        val sources = cloudSources(journalStore.readArchive())
+        val now = System.currentTimeMillis()
+        Clouds.section(Clouds.of(PersonKey.OWNER, sources, now), Clouds.of(PersonKey.AGENT, sources, now))
+    }.getOrElse { "ОБЛАКА\nне посчитались — ${it.javaClass.simpleName}" }
+
+    /**
+     * Строка хода «Облако адреса:» к последнему ответу (Clouds.addressLine).
+     * null — хода в этом запуске не было.
+     */
+    private var cloudLine: String? = null
+
     /** Раздел «Выводы» в «Показать» и строка «Выводы:». Только чтение, см. ConclusionView. */
     private val conclusionView by lazy { ConclusionView(applicationContext) }
 
@@ -698,6 +759,8 @@ class MainActivity : AppCompatActivity() {
                 out.append("\n")
                 val lineStart = out.length
                 out.append("• ").append(origin).append(": ").append(use.text)
+                // «Кто → о ком» (Coordinates.mark) — после текста записи.
+                use.mark?.let { out.append("  [").append(it).append("]") }
                 recordRanges += lineStart to out.length
             }
         }
@@ -714,6 +777,7 @@ class MainActivity : AppCompatActivity() {
             // месте: иначе разговор на экране не совпал бы с тем, что
             // получила модель.
             turn?.selfNote?.let { out.append("[о себе: ").append(it).append("]\n") }
+            turn?.dreamNote?.let { out.append("[сон: ").append(it).append("]\n") }
             if (question.isNotEmpty()) {
                 out.append("Вы: ").append(question)
                 if (turn != null) addRecordsBlock(index, turn)
@@ -1450,6 +1514,9 @@ class MainActivity : AppCompatActivity() {
                 // Выводы — сразу за зеркалом и тоже без кнопок: их сочинила
                 // модель, и они никуда не подаются (см. ConclusionRow).
                 section(conclusionView.section(), headed = true)
+                // Облака — после выводов: считаются из записей при открытии
+                // раздела, в модель не идут (см. Clouds).
+                section(cloudsSection(), headed = true)
                 // Просьбы — отдельным разделом: это память, а не сны. Зачем тексты,
                 // а не число, — в шапке RequestCensus.
                 section(RequestCensus.section(applicationContext), headed = true)
@@ -2813,7 +2880,11 @@ class MainActivity : AppCompatActivity() {
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
         val conclusions = conclusionsLine ?: "Выводы: ещё не прочитано"
-        group("Память", recordsQuestionsLine, circleLine, touchesLine, selfLeader)
+        // Зеркало в отборе печатается всегда: «ещё не отбирали» отличается от
+        // «адрес не определён».
+        val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: в этом запуске отбора ещё не было"
+        val cloud = cloudLine ?: "Облако адреса: в этом запуске хода ещё не было"
+        group("Память", recordsQuestionsLine, circleLine, mirrorSelection, cloud, touchesLine, selfLeader)
         // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
         // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
         // отрисовке, как эхо (см. InitiativeHolder).
@@ -2822,6 +2893,7 @@ class MainActivity : AppCompatActivity() {
             "Сны, любопытство, зеркало",
             dreamsLine, recallLine, mirror, conclusions, curiosityLine(), curiosityAskMeter(),
             AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
+            dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
         group("Ход", lastMetricsLine, echoLine, disputeNoticeLine, composedLine)
         val composed = lastComposedContent
@@ -2999,6 +3071,8 @@ class MainActivity : AppCompatActivity() {
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
         circleLine = null
+        mirrorSelectionLine = null
+        cloudLine = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
@@ -3008,6 +3082,7 @@ class MainActivity : AppCompatActivity() {
         curiosityAskLine = null
         curiosityAskFailure = null
         selfStateLine = null
+        dreamInMirrorLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
         // относящаяся к нынешнему. Это тот самый хвост 20, из-за которого
@@ -4163,6 +4238,32 @@ class MainActivity : AppCompatActivity() {
                 // Прошлый ответ агента — по нему касание признаётся
                 // подсказанным (см. promptedStems в HourglassMemory.kt).
                 val ribbonQuestions = journal.history().map { it.question }
+                // Архив ленты — для своей речи агента и счёта рассказанных снов.
+                // null — не читается: оба молчат с этой причиной, ход идёт.
+                val archive = journalStore.readArchive()
+                // Адрес вопроса — о ком он (Coordinates.addressInRibbon). На
+                // адрес «агент» зеркало снимает записи с чужим «я»
+                // (MirrorFilter) — в отборе до раздачи мест и ниже, на стыке
+                // с дверью сна и ассоциацией.
+                val address = Coordinates.addressInRibbon(
+                    journal.history().map { it.question to it.at }, userText, System.currentTimeMillis(),
+                )
+                // Своя речь агента — окно архива ленты, только на вопрос к
+                // агенту (см. OwnSpeech). Время старого хода — не позже
+                // закрытия разговора (Coordinates.turnTime).
+                val ownSaid =
+                    if (address != Coordinates.Address.AGENT || archive == null) emptyList()
+                    else OwnSpeech.search(
+                        OwnSpeech.said(archive.map { row ->
+                            OwnSpeech.Turn(
+                                answer = row.agentContent,
+                                question = row.question,
+                                records = journalStore.recordTexts(row),
+                                at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+                            )
+                        }),
+                        userText,
+                    )
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
@@ -4170,7 +4271,23 @@ class MainActivity : AppCompatActivity() {
                     recentQuestions = ribbonQuestions,
                     excludedTexts = ribbonQuestions + userText,
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
+                    address = address,
+                    ownSpeechFound = if (address == Coordinates.Address.AGENT) ownSaid.size else null,
                 )
+                // Облако адреса — прибор хода; в отбор и в модель не идёт (Clouds).
+                cloudLine = if (address == Coordinates.Address.UNDEFINED) {
+                    Clouds.addressLine(address, null, null)
+                } else {
+                    runCatching {
+                        val sources = cloudSources(archive)
+                        val now = System.currentTimeMillis()
+                        Clouds.addressLine(
+                            address,
+                            Clouds.of(PersonKey.OWNER, sources, now),
+                            Clouds.of(PersonKey.AGENT, sources, now),
+                        )
+                    }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
+                }
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
                 // отбору и из холодных слоёв, если вопрос их задевает (см.
@@ -4179,7 +4296,8 @@ class MainActivity : AppCompatActivity() {
                 val behindDoor = DreamDoor.openIds().mapNotNull { id ->
                     runCatching { mediator.getRecord(id) }.getOrNull()
                 }
-                val doorRecords = DreamDoor.pick(behindDoor, contextResult.stickers, userText)
+                val (doorRecords, doorMirrored) =
+                    MirrorFilter.apply(DreamDoor.pick(behindDoor, contextResult.stickers, userText), address)
                 val answerStickers = contextResult.stickers + doorRecords
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
@@ -4199,13 +4317,44 @@ class MainActivity : AppCompatActivity() {
                 // Принесённое встаёт после записей ответа, как записи двери.
                 val answerIds = answerStickers.map { it.id }.toSet()
                 val dreamOffer = dreamRecall.offer(answerIds)
-                val associated = dreamOffer.brought
+                val (associated, associatedMirrored) = MirrorFilter.apply(dreamOffer.brought, address)
+                mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
+                    address, contextResult.mirrorRemoved + doorMirrored + associatedMirrored,
+                )
                 val stickers = answerStickers + associated
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
                 val recordsAt = System.currentTimeMillis()
+                // Своя речь — после записей и принесённого ассоциацией: индексы
+                // принесённого ниже считаются от начала списка.
+                val ownSeated = ownSaid.take(contextResult.ownSpeechSeated)
+                val ownLines = ownSeated.map { ProvenanceLabels.ownSpeechForModel(it.sentence, it.at, recordsAt) }
+                // Эпизод записи — по часам эпизодов из времён ходов ленты и
+                // архива и закрытий лент (Episodes.Clock): запись из прошлого
+                // разговора подписывается «в прошлом разговоре».
+                val episodeClock = Episodes.Clock(
+                    moments = journal.history().mapNotNull { it.at } +
+                        archive.orEmpty().mapNotNull {
+                            Coordinates.turnTime(it.at, it.question, it.archivedAt) { null }.at
+                        } + recordsAt,
+                    closures = archive.orEmpty().map { it.archivedAt }.distinct(),
+                )
+                val currentEpisode = episodeClock.episodeAt(recordsAt)
                 val allRecords = stickers.map { sticker ->
-                    ProvenanceLabels.recordForModel(sticker, recordsAt)
+                    ProvenanceLabels.recordForModel(
+                        sticker, recordsAt,
+                        recordEpisode = episodeClock.episodeAt(sticker.createdAt),
+                        currentEpisode = currentEpisode,
+                    )
+                } + ownLines
+                // Пометка «кто → о ком» к строке записи — для раскрытого списка хода.
+                val recordMarks = stickers.indices.associate { i ->
+                    val speaker = Coordinates.speakerOf(stickers[i].source)
+                    allRecords[i] to Coordinates.mark(speaker, Coordinates.aboutOf(stickers[i].content, speaker))
+                } + ownSeated.indices.associate { i ->
+                    ownLines[i] to Coordinates.mark(
+                        PersonKey.AGENT, Coordinates.aboutOf(ownSeated[i].sentence, PersonKey.AGENT),
+                    )
                 }
                 // Сверка идёт по ТЕКСТАМ записей, а не по готовым строкам
                 // выше: строка несёт провенанс и кавычки, которых правило не
@@ -4244,6 +4393,7 @@ class MainActivity : AppCompatActivity() {
                     (if (associated.isNotEmpty() || doorRecords.isNotEmpty()) {
                         " (по ассоциации: ${associated.size}, через дверь: ${doorRecords.size})"
                     } else "") +
+                    (if (ownLines.isNotEmpty()) " · своей речи: ${ownLines.size}" else "") +
                     (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
                     (if (requestsFiltered > 0) " · отсеяно просьб: $requestsFiltered" else "") +
                     " · дверей открыто: ${behindDoor.size}"
@@ -4286,6 +4436,29 @@ class MainActivity : AppCompatActivity() {
                         "О себе сейчас (первый ход разговора — модели уйдёт со следующим): $selfLine"
                     else -> "О себе сейчас (модели — отдельным сообщением): $selfLine"
                 }
+                // Описание последней ночи — узкое исключение для вопроса к
+                // агенту (см. DreamTopic): код собирает фразу из тем, принятых
+                // ночью, и подаёт её системным сообщением за строкой о себе. Не
+                // на пустой ленте и не второй раз в той же ленте.
+                val lastNightTopics = runCatching {
+                    MemoryDatabase.getInstance(applicationContext).dreamDao().lastNight()?.dreamTopics
+                }
+                val dreamCandidate = DreamTopic.line(DreamTopic.load(lastNightTopics.getOrNull()))
+                val dreamRefusal =
+                    if (lastNightTopics.isFailure) "последняя ночь не прочиталась"
+                    else DreamTopic.refusal(
+                        dreamCandidate,
+                        toAgent = address == Coordinates.Address.AGENT,
+                        ribbonEmpty = journal.history().isEmpty(),
+                        alreadyInRibbon = journal.history().any { it.dreamNote == dreamCandidate },
+                    )
+                val dreamNote = if (dreamRefusal == null) dreamCandidate else null
+                val toldBefore = journal.history().filter { it.dreamNote != null }.map { it.at } +
+                    archive.orEmpty().filter { it.dreamNote != null }.map { it.at }
+                dreamInMirrorLine = DreamTopic.meter(
+                    DreamTopic.toldWithinDay(toldBefore, System.currentTimeMillis()) + (if (dreamNote != null) 1 else 0),
+                    dreamRefusal,
+                )
                 // Выход пружины любопытства (см. CuriosityAsk): давление
                 // перечитывается к этой реплике. Сбой чтения — не спрашивать:
                 // выход терминальный, и сомнение решается в сторону молчания.
@@ -4506,6 +4679,8 @@ class MainActivity : AppCompatActivity() {
                     // списку лента отсеивает повторы.
                     records = allRecords,
                     selfNote = selfLine,
+                    recordMarks = recordMarks,
+                    dreamNote = dreamNote,
                     onAccepted = {
                         // Экран показывает всю ленту плюс начатый ход. Поле НЕ
                         // очищается: разговор копится, а не заменяется. Токены ниже

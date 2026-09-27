@@ -39,6 +39,10 @@ interface ConclusionDao {
     @Query("SELECT COUNT(*) FROM conclusions WHERE accepted = 1")
     suspend fun countAccepted(): Int
 
+    /** Принятые выводы — для облака агента (memory.nav.Clouds). */
+    @Query("SELECT * FROM conclusions WHERE accepted = 1")
+    suspend fun accepted(): List<ConclusionRow>
+
     /**
      * Дописать итог шага выводов в ночь [nightAt]. Ноль тронутых строк —
      * строки этой ночи нет (сон сорвался), итог остался только в отчёте.

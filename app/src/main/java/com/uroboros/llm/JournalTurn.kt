@@ -80,6 +80,10 @@ import androidx.room.Query
  *   отдельным системным сообщением (ConversationJournal.Turn.selfNote); null
  *   — не уходила. Строкам, легшим до появления столбца, миграция оставляет
  *   null, и это про них правда: отдельным сообщением оно тогда не уходило.
+ * @property at когда реплика ушла в движок, миллисекунды эпохи
+ *   (ConversationJournal.Turn.at); null — ход лёг до появления столбца.
+ * @property dreamNote описание последней ночи, ушедшее модели на этом ходе
+ *   системным сообщением (ConversationJournal.Turn.dreamNote); null — не уходило.
  */
 @Entity(tableName = "journal_turns")
 data class JournalTurn(
@@ -91,6 +95,8 @@ data class JournalTurn(
     val promptTokens: Int = 0,
     val fingerprint: String,
     val selfNote: String? = null,
+    val at: Long? = null,
+    val dreamNote: String? = null,
 )
 
 /**

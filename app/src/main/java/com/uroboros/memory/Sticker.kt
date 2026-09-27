@@ -159,5 +159,14 @@ data class Sticker(
     //
     // У всех остальных записей null — они ни на что не опираются. Заполняет
     // поле только предложение строки о себе (TrustedMediator.proposeSelfLine).
-    val basedOnId: Long? = null
+    val basedOnId: Long? = null,
+
+    // Содержимое, приведённое для поиска (util.TextFold): нижний регистр,
+    // «ё» и латинская «ë» → «е». Нужно потому, что SQLite сам кириллицу к
+    // нижнему регистру не приводит (см. KDoc StickerDao.searchAnyCase).
+    // Заполняет дверь записи (HourglassMemory.saveEventChecked), старым
+    // записям — проход при открытии базы (MemoryDatabase.fillFolded). null —
+    // ещё не заполнено; поиск тогда смотрит прежнее условие по content.
+    // Показ и сравнение слов владельца идут только по content.
+    val contentFolded: String? = null
 )

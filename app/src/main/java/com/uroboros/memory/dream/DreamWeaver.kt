@@ -6,6 +6,7 @@ import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.STOP_WORDS
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
+import com.uroboros.util.TextFold
 
 /**
  * Дешёвый сон: какие записи этой ночью свяжутся между собой.
@@ -293,7 +294,7 @@ object DreamWeaver {
      * STOP_WORDS), и укороченные до [WORD_PREFIX] букв вместо разбора окончаний.
      */
     internal fun wordsOf(text: String): Set<String> =
-        text.lowercase()
+        TextFold.fold(text)
             .split(Regex("[^\\p{L}\\p{N}]+"))
             .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
             .map { it.take(WORD_PREFIX) }

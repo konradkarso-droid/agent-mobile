@@ -1,5 +1,7 @@
 package com.uroboros.memory
 
+import com.uroboros.util.TextFold
+
 object Prism {
     private val LAYER_INTERVALS_MS: Map<Layer, Long?> = mapOf(
         Layer.RED to null,
@@ -79,7 +81,7 @@ object Prism {
         result += spectrum[Layer.ORANGE].orEmpty()
         result += spectrum[Layer.YELLOW].orEmpty()
         result += spectrum[Layer.GREEN].orEmpty()
-        val q = query.lowercase()
+        val q = TextFold.fold(query)
         if ("старое" in q || "прошлое" in q) {
             result += spectrum[Layer.BLUE].orEmpty()
         }
@@ -120,7 +122,7 @@ object Prism {
      * HourglassMemory.repairStuckLayers.
      */
     fun classify(sticker: Sticker): Pair<Layer, Long?> {
-        val text = sticker.content.lowercase()
+        val text = TextFold.fold(sticker.content)
         if (sticker.tag == IDENTITY_TAG) {
             return Layer.RED to LAYER_INTERVALS_MS[Layer.RED]
         }

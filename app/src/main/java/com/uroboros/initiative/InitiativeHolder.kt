@@ -3,6 +3,7 @@ package com.uroboros.initiative
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.Sentences
+import com.uroboros.util.TextFold
 
 /**
  * Инициатива в разговоре: у кого ход после реплики владельца — у него или у
@@ -186,7 +187,7 @@ object InitiativeHolder {
     private val NOT_LETTER = Regex("[^\\p{L}]+")
 
     private fun words(text: String): List<String> =
-        text.lowercase().replace('ё', 'е').split(NOT_LETTER).filter { it.isNotEmpty() }
+        TextFold.fold(text).split(NOT_LETTER).filter { it.isNotEmpty() }
 
     private fun fragment(text: String): String {
         val flat = text.replace(Regex("\\s+"), " ").trim()

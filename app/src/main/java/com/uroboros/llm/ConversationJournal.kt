@@ -83,6 +83,15 @@ class ConversationJournal {
      * собеседника. Хранится в ходе, чтобы на следующих ходах модель видела
      * её на том же месте и начало запроса не расходилось с обсчитанным.
      * Правила места — у [messagesFor].
+     *
+     * `at` — когда реплика ушла в движок: абсолютный момент, миллисекунды
+     * эпохи (от смены пояса не дрейфует). null — ход лёг до появления поля;
+     * его время выводится на лету (memory.nav.Coordinates.turnTime), а не
+     * дописывается.
+     *
+     * `dreamNote` — описание последней ночи, ушедшее модели на этом ходе
+     * системным сообщением перед репликой; null — не уходило. Те же правила
+     * места, что у `selfNote` (см. [messagesFor]).
      */
     data class Turn(
         val userContent: String,
@@ -90,6 +99,8 @@ class ConversationJournal {
         val question: String,
         val records: List<RecordUse> = emptyList(),
         val selfNote: String? = null,
+        val at: Long? = null,
+        val dreamNote: String? = null,
     )
 
     /**
@@ -114,6 +125,13 @@ class ConversationJournal {
     data class RecordUse(
         val text: String,
         val firstSeenTurn: Int,
+        /**
+         * Пометка «кто → о ком» для прибора (memory.nav.Coordinates.mark),
+         * например «владелец → владелец+агент»; null — ход лёг до пометки или
+         * её не передали. Считана на ходе и хранится как показ, не как
+         * координата: отбор её не читает.
+         */
+        val mark: String? = null,
     )
 
     private val turns = mutableListOf<Turn>()
@@ -329,20 +347,31 @@ class ConversationJournal {
      * сохраняет). Вызывающий узнаёт, ушла ли она, по [Turn.selfNote]
      * закрытого хода.
      *
+     * ОПИСАНИЕ ПОСЛЕДНЕЙ НОЧИ ([Turn.dreamNote], [currentDreamNote]) стоит по
+     * тем же правилам места, сразу за строкой о себе: не первым и не на пустой
+     * ленте. Собирает его код (memory.dream.DreamTopic.line).
+     *
      * В СИСТЕМНОЕ СООБЩЕНИЕ ИДЁТ ТОЛЬКО СОБРАННОЕ КОДОМ ИЗ ПРИБОРОВ
-     * (SelfState.line) — никогда текст человека и никогда записи памяти.
+     * (SelfState.line, DreamTopic.line) — никогда текст человека и никогда
+     * записи памяти.
      * Системная роль — голос сильнее реплики: фраза собеседника или запись,
      * положенная сюда, заговорила бы голосом системы, а права даёт код, а не
      * сказанное в разговоре.
      */
-    fun messagesFor(currentUserContent: String, currentSelfNote: String? = null): List<Pair<String, String>> {
-        val out = ArrayList<Pair<String, String>>(turns.size * 3 + 2)
+    fun messagesFor(
+        currentUserContent: String,
+        currentSelfNote: String? = null,
+        currentDreamNote: String? = null,
+    ): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>(turns.size * 4 + 3)
         turns.forEachIndexed { index, turn ->
             if (index > 0 && !turn.selfNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.selfNote
+            if (index > 0 && !turn.dreamNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.dreamNote
             out += ROLE_USER to turn.userContent
             out += ROLE_ASSISTANT to turn.agentContent
         }
         if (turns.isNotEmpty() && !currentSelfNote.isNullOrBlank()) out += ROLE_SYSTEM to currentSelfNote
+        if (turns.isNotEmpty() && !currentDreamNote.isNullOrBlank()) out += ROLE_SYSTEM to currentDreamNote
         out += ROLE_USER to currentUserContent
         return out
     }
@@ -405,6 +434,9 @@ class ConversationJournal {
         question: String,
         records: List<String>,
         selfNote: String? = null,
+        at: Long? = null,
+        dreamNote: String? = null,
+        marks: Map<String, String> = emptyMap(),
     ) {
         val index = turns.size
         // Строка о себе на первом ходе модели не уходила (см. [messagesFor]) —
@@ -415,8 +447,9 @@ class ConversationJournal {
         // двух местах, экран однажды разойдётся с тем, что ушло в модель.
         // Здесь отображение ещё хранит состояние ДО этого хода, поэтому
         // отсутствие ключа и означает «новая».
-        val uses = records.map { RecordUse(it, placedRecords[it] ?: index) }
-        turns += Turn(userContent, agentContent, question, uses, note)
+        val uses = records.map { RecordUse(it, placedRecords[it] ?: index, marks[it]) }
+        val dream = dreamNote?.takeIf { index > 0 && it.isNotBlank() }
+        turns += Turn(userContent, agentContent, question, uses, note, at, dream)
         // putIfAbsent по смыслу: первый ход, на котором запись легла, не
         // должен переписываться позднейшими попаданиями той же строки.
         for (record in records) placedRecords.getOrPut(record) { index }

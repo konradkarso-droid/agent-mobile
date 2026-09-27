@@ -1,6 +1,7 @@
 package com.uroboros.will
 
 import com.uroboros.memory.RiskTrigger
+import com.uroboros.util.ImperativeForm
 
 /**
  * Item 9: классификатор входящих запросов пользователя на швах TOTE-цикла.
@@ -23,24 +24,8 @@ object QueryUrgencyClassifier {
     // не эмерджентная часть — тот же принцип, что и жёсткий потолок в item 8a.
     private val OVERRIDE_WORDS = setOf("стоп", "срочно", "важно")
 
-    // Черновая заглушка (2026-08-18) — НЕ словарь смысловых слов, а морфологический
-    // паттерн: первое слово запроса заканчивается на характерное окончание
-    // повелительного наклонения. Тот же стиль, что RiskTrigger.SUFFIXES: дешёвая
-    // эвристика без реальной морфологии.
-    //
-    // Обновление (2026-08-18, после первого прогона тестов): добавлена одиночная
-    // "и" (например, "останови") — сознательно расширяет риск ложных HEAVY
-    // (существительные/прилагательные тоже часто оканчиваются на "и"), но это
-    // соответствует уже принятому в проекте принципу "при неоднозначности — heavy":
-    // ложный HEAVY стоит лишней паузы, ложный LIGHT стоит пропущенной реальной
-    // команды (например, "стоп"/"останови"), которую по чистой лексике (Jaccard)
-    // поймать нечем — короткая голая команда обычно не пересекается по словам
-    // ни с ошибкой, ни с описанием задачи.
-    //
-    // Список/порог подлежит калибровке позже через consolidation pass (item 6),
-    // как и gray-zone в item 8a.
-    private val IMPERATIVE_SUFFIXES = listOf("айте", "яйте", "уйте", "ите", "ьте", "ай", "яй", "уй", "и")
-    private const val IMPERATIVE_MIN_ROOT_LENGTH = 3
+    // Повелительное по первому слову — общее правило util.ImperativeForm (там
+    // же — почему в списке одиночная «и» и чего правило не умеет).
 
     // Заглушки-пороги (2026-08-18, не финальные) — та же логика, что 8a gray-zone:
     // начинаем с грубого placeholder, уточняем позже по накопленным данным.
@@ -81,10 +66,7 @@ object QueryUrgencyClassifier {
             .firstOrNull { it.isNotBlank() }
             ?: return GrammarSignal.AMBIGUOUS
 
-        val looksImperative = IMPERATIVE_SUFFIXES.any { suffix ->
-            firstWord.length - suffix.length >= IMPERATIVE_MIN_ROOT_LENGTH && firstWord.endsWith(suffix)
-        }
-        if (looksImperative) return GrammarSignal.HEAVY
+        if (ImperativeForm.looksImperative(firstWord)) return GrammarSignal.HEAVY
 
         if (text.trimEnd().endsWith("?")) return GrammarSignal.LIGHT
 

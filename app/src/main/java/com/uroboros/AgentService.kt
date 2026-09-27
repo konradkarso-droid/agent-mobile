@@ -27,6 +27,7 @@ import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.dream.Conclusion
 import com.uroboros.memory.dream.ConclusionStep
+import com.uroboros.memory.dream.DreamTopicStep
 import com.uroboros.memory.dream.Mirror
 import com.uroboros.memory.dream.MirrorStep
 import com.uroboros.memory.dream.NightStart
@@ -718,6 +719,11 @@ class AgentService : Service() {
                 if (missing.conclusions) {
                     outcomes += noteConclusions(db, nightAt, ConclusionStep.run(db, objects.llmEngine, nightAt) { why() })
                 }
+                // Темы снов — после выводов (см. DreamTopicStep); шаг сам пишет
+                // темы в строку ночи.
+                if (missing.dreamTopics) {
+                    outcomes += DreamTopicStep.run(db, objects.llmEngine, nightAt) { why() }
+                }
                 stepsSummary = NightSteps.summary(outcomes)
                 outcomes.joinToString("\n\n")
             } catch (cancelled: CancellationException) {
@@ -949,7 +955,15 @@ class AgentService : Service() {
                 } else {
                     null
                 }
-                listOfNotNull(judged, selfLine, mirror, conclusions).joinToString("\n\n")
+                // Темы снов — после выводов и при тех же условиях (см. DreamTopicStep).
+                val dreamTopics = if (dreamFirst) {
+                    DreamTopicStep.run(db, objects.llmEngine, nightAt) {
+                        whyModelCannotRun(applicationContext)
+                    }
+                } else {
+                    null
+                }
+                listOfNotNull(judged, selfLine, mirror, conclusions, dreamTopics).joinToString("\n\n")
             } catch (cancelled: CancellationException) {
                 STOPPED_REPORT
             } finally {

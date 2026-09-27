@@ -2,6 +2,9 @@ package com.uroboros.memory
 
 import android.util.Log
 import com.uroboros.memory.dream.SelfLine
+import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.MirrorFilter
+import com.uroboros.util.TextFold
 
 /**
  * Строка важности → число для сортировки, по убыванию: LOW=0, MEDIUM=1, HIGH=2.
@@ -191,6 +194,10 @@ internal const val MIN_WORD_LENGTH = 4
  * два места из шести и раздули знаменатель доли вопроса до отсева нужной
  * записи. Это достройка уже начатого — именительные "какой/какая/моя"
  * в списке были с самого начала, — а не новое правило под один случай.
+ *
+ * Местоимения здесь — шум для поиска темы. Определитель лица
+ * (memory.nav.PersonForm) читает те же слова как сигнал «о ком»; списки лиц
+ * живут там, этот список их не повторяет и не заменяет.
  */
 internal val STOP_WORDS = setOf(
     "что", "чтобы", "если", "или", "как", "какой", "какая", "какое", "какие",
@@ -241,7 +248,7 @@ internal const val MAX_SEARCH_WORDS = 6
  * реплик (DolmenCircle.themeWords), и определение у них обязано быть одно.
  */
 internal fun meaningfulWords(query: String): List<String> =
-    query.lowercase()
+    TextFold.fold(query)
         .split(Regex("[^\\p{L}\\p{N}]+"))
         .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
         .distinct()
@@ -469,6 +476,13 @@ data class ContextResult(
     val coldIds: Set<Long> = emptySet(),
     /** Касания владельца на этом отборе — подсказанные и нет (см. [promptedStems]). */
     val touches: UserTouches = UserTouches(0, 0, emptySet()),
+    /**
+     * Сколько кандидатов трёх окон снято зеркалом (nav.MirrorFilter) до раздачи
+     * мест. Ноль и при адресе не «агент» — там фильтр не действует.
+     */
+    val mirrorRemoved: Int = 0,
+    /** Сколько мест отдано своей речи (0 или 1) — строки берёт вызывающий. */
+    val ownSpeechSeated: Int = 0,
 )
 
 /**
@@ -838,6 +852,18 @@ class HourglassMemory(
          * засчитывается вовсе.
          */
         previousAnswer: String? = null,
+        /**
+         * Адрес вопроса (nav.Coordinates.questionAddress). На адрес «агент»
+         * зеркало снимает записи с чужим «я» до раздачи мест (nav.MirrorFilter).
+         * По умолчанию «не определён» — отбор как прежде.
+         */
+        address: Coordinates.Address = Coordinates.Address.UNDEFINED,
+        /**
+         * Сколько нашло окно своей речи (nav.OwnSpeech) — ищет вызывающий, у
+         * которого есть архив ленты. null — окно не искало (вопрос не к
+         * агенту); раздача мест тогда прежняя.
+         */
+        ownSpeechFound: Int? = null,
     ): ContextResult {
         migrateExpired()
 
@@ -898,11 +924,22 @@ class HourglassMemory(
             )
         cold?.let { trace += "окно холода:"; trace += it.trace }
 
+        // Зеркало — до раздачи мест, чтобы место досталось следующему кандидату
+        // (nav.MirrorFilter). Одна запись может найтись в двух окнах — снятые
+        // считаются по номерам записей.
+        val (questionKept, _) = MirrorFilter.apply(question?.stickers.orEmpty(), address)
+        val (themeKept, _) = MirrorFilter.apply(theme?.stickers.orEmpty(), address)
+        val (coldKept, _) = MirrorFilter.apply(cold?.stickers.orEmpty(), address)
+        val mirrorRemoved = (question?.stickers.orEmpty() + theme?.stickers.orEmpty() + cold?.stickers.orEmpty())
+            .filterNot { MirrorFilter.keeps(it, address) }
+            .mapTo(HashSet()) { it.id }.size
+
         val seating = DolmenCircle.seat(
             limit,
-            question?.stickers.orEmpty(),
-            theme?.stickers.orEmpty(),
-            cold?.stickers.orEmpty(),
+            questionKept,
+            themeKept,
+            coldKept,
+            ownSpeech = ownSpeechFound ?: 0,
         )
         val result = seating.all
         val coldIds = seating.cold.mapTo(HashSet()) { it.id }
@@ -990,6 +1027,8 @@ class HourglassMemory(
             coldByTheme = coldByTheme,
             red = dao.countInLayer(Layer.RED.name),
             ribbonExcluded = excluded.texts.size,
+            ownSpeech = ownSpeechFound?.let { DolmenCircle.ownSpeechPart(it, seating.ownSpeech) }
+                ?: DolmenCircle.OWN_SPEECH_NOT_ASKED,
         )
 
         // Строка итога и счёт отсеянных — по окну вопроса, как и прежде: она
@@ -1009,6 +1048,8 @@ class HourglassMemory(
             circle = circle,
             coldIds = coldIds,
             touches = UserTouches(toMark.size, promptedCount, promptedBy),
+            mirrorRemoved = mirrorRemoved,
+            ownSpeechSeated = seating.ownSpeech,
         )
     }
 
@@ -1471,8 +1512,7 @@ class HourglassMemory(
      * фраза, и различает их только то, чем человек закончил ввод.
      */
     private fun normalizeExact(text: String): String =
-        text.lowercase()
-            .replace('ё', 'е')
+        TextFold.fold(text)
             .replace(Regex("\\s+"), " ")
             .trim()
             .trimEnd('.', ',', ';', ':', '!', '?', '-', '\u2014', '\u2013', ' ')
@@ -1491,8 +1531,7 @@ class HourglassMemory(
      * значим — переставленные слова дают разные строки.
      */
     private fun normalizeLoose(text: String): String =
-        text.lowercase()
-            .replace('ё', 'е')
+        TextFold.fold(text)
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
 
@@ -1665,7 +1704,8 @@ class HourglassMemory(
 
         sticker.reviewPending = sticker.reviewPending || entry == ReviewEntry.FAILURE
 
-        val id = dao.insert(sticker)
+        // Приведённый вид — для поиска (см. Sticker.contentFolded); content не меняется.
+        val id = dao.insert(sticker.copy(contentFolded = TextFold.fold(sticker.content)))
 
         return if (nearTwin == null) SaveOutcome.Saved(id)
         else SaveOutcome.SavedNearDuplicate(id, nearTwin.id, nearTwin.createdAt)

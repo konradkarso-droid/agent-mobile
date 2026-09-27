@@ -244,6 +244,8 @@ class JournalStore(context: Context) {
                     question = row.question,
                     records = records,
                     selfNote = row.selfNote,
+                    at = row.at,
+                    dreamNote = row.dreamNote,
                 )
             }
 
@@ -293,6 +295,8 @@ class JournalStore(context: Context) {
                         promptTokens = promptTokens,
                         fingerprint = fingerprint ?: "",
                         selfNote = turn.selfNote,
+                        at = turn.at,
+                        dreamNote = turn.dreamNote,
                     )
                 )
             }.isSuccess
@@ -413,6 +417,8 @@ class JournalStore(context: Context) {
                                 fingerprint = row.fingerprint,
                                 archivedAt = archivedAt,
                                 selfNote = row.selfNote,
+                                at = row.at,
+                                dreamNote = row.dreamNote,
                             )
                         }
                     )
@@ -427,6 +433,29 @@ class JournalStore(context: Context) {
             }
         }
     }
+
+    /**
+     * Весь архив ленты по порядку, или `null`, если он не читается. В той же
+     * очереди, что записи, по той же причине, что [counts]: чтение не должно
+     * обогнать начатое закрытие разговора.
+     *
+     * Архив — десятки и сотни коротких ходов; читается целиком, без кэша:
+     * держать копию значило бы завести второе место, которое разойдётся с
+     * диском после закрытия разговора.
+     */
+    suspend fun readArchive(): List<JournalArchiveTurn>? = gate.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching { archiveDao.all() }.getOrNull()
+        }
+    }
+
+    /**
+     * Тексты записей, поданных в ход архива (RecordUse.text). Испорченный
+     * список — пустой: своей речи он нужен только чтобы отличить пересказ
+     * записи от своих слов, и порча одного хода не должна ронять поиск.
+     */
+    fun recordTexts(row: JournalArchiveTurn): List<String> =
+        parseRecords(row.recordsJson)?.map { it.text }.orEmpty()
 
     /**
      * Оба числа диска разом: активная лента и архив.
@@ -464,6 +493,7 @@ class JournalStore(context: Context) {
                 JSONObject()
                     .put(KEY_TEXT, record.text)
                     .put(KEY_FIRST_SEEN, record.firstSeenTurn)
+                    .apply { record.mark?.let { put(KEY_MARK, it) } }
             )
         }
         return array.toString()
@@ -483,6 +513,8 @@ class JournalStore(context: Context) {
                 out += ConversationJournal.RecordUse(
                     text = item.getString(KEY_TEXT),
                     firstSeenTurn = item.getInt(KEY_FIRST_SEEN),
+                    // Пометки нет у ходов, легших до неё, — это не порча.
+                    mark = if (item.has(KEY_MARK)) item.getString(KEY_MARK) else null,
                 )
             }
             out
@@ -491,5 +523,6 @@ class JournalStore(context: Context) {
     private companion object {
         const val KEY_TEXT = "text"
         const val KEY_FIRST_SEEN = "firstSeenTurn"
+        const val KEY_MARK = "mark"
     }
 }

@@ -234,6 +234,8 @@ class DreamRecallTest {
         override suspend fun setSelfLineOutcome(nightAt: Long, outcome: String): Int = error("отбор не пишет итог шага")
         override suspend fun lastSelfLineOutcome(): String? = error("отбор не читает итог шага")
         override suspend fun setMirrorOutcome(nightAt: Long, outcome: String): Int = error("отбор не пишет итог зеркала")
+        override suspend fun setDreamTopics(nightAt: Long, topics: String): Int = error("отбор не пишет темы снов")
+        override suspend fun nightsWithTopics(): List<DreamNight> = error("отбор не читает темы снов")
         override suspend fun lastMirrorOutcome(): String? = error("отбор не читает итог зеркала")
     }
 

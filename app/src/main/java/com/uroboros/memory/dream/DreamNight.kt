@@ -103,6 +103,13 @@ data class DreamNight(
      * [selfLineOutcome], и по той же причине, но через [ConclusionDao].
      */
     val conclusionsOutcome: String? = null,
+    /**
+     * Темы снов этой ночи, названные моделью и принятые проверкой (см.
+     * [DreamTopicStep]), через перевод строки. null — шага не было; пустая
+     * строка — шаг был, ни одна тема не принята. Из них код собирает описание
+     * последней ночи для вопроса, адресованного агенту.
+     */
+    val dreamTopics: String? = null,
 ) {
     companion object {
         fun of(nightAt: Long, night: DreamWeaver.Night) = DreamNight(
