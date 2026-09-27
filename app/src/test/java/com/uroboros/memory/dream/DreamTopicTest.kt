@@ -55,8 +55,8 @@ class DreamTopicTest {
     @Test
     fun `подаётся только на вопрос к агенту`() {
         val line = "Этой ночью мне снилось: радуга."
-        assertNull(DreamTopic.refusal(line, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false))
-        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent = false, ribbonEmpty = false, alreadyInRibbon = false))
+        assertNull(DreamTopic.refusal(line, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = "тема"))
+        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent = false, ribbonEmpty = false, alreadyInRibbon = false, stored = "тема"))
     }
 
     @Test
@@ -64,7 +64,7 @@ class DreamTopicTest {
         val line = "Этой ночью мне снилось: радуга."
         assertEquals(
             "лента пуста — первым системное не ставится",
-            DreamTopic.refusal(line, toAgent = true, ribbonEmpty = true, alreadyInRibbon = false),
+            DreamTopic.refusal(line, toAgent = true, ribbonEmpty = true, alreadyInRibbon = false, stored = "тема"),
         )
     }
 
@@ -73,13 +73,14 @@ class DreamTopicTest {
         val line = "Этой ночью мне снилось: радуга."
         assertEquals(
             "уже рассказан в этой ленте",
-            DreamTopic.refusal(line, toAgent = true, ribbonEmpty = false, alreadyInRibbon = true),
+            DreamTopic.refusal(line, toAgent = true, ribbonEmpty = false, alreadyInRibbon = true, stored = "тема"),
         )
     }
 
     @Test
     fun `без тем молчит с причиной`() {
-        assertEquals("тем последней ночи нет", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false))
+        assertEquals("шага тем у последней ночи не было", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = null))
+        assertEquals("ночью ни одна тема не принята", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = ""))
     }
 
     @Test
@@ -87,7 +88,7 @@ class DreamTopicTest {
         val address = com.uroboros.memory.nav.Coordinates.questionAddress("Расскажи сон")
         val line = "Этой ночью мне снилось: радуга."
         val toAgent = address == com.uroboros.memory.nav.Coordinates.Address.AGENT
-        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent, ribbonEmpty = false, alreadyInRibbon = false))
+        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent, ribbonEmpty = false, alreadyInRibbon = false, stored = "тема"))
     }
 
     // --- Прибор ---
@@ -105,5 +106,12 @@ class DreamTopicTest {
             "Сон в зеркале: рассказан за сутки: 0 · в этом ходе молчу — вопрос не к агенту",
             DreamTopic.meter(0, "вопрос не к агенту"),
         )
+    }
+
+    @Test
+    fun `сны спрашиваются с самой новой записи`() {
+        val dreams = listOf("10,11", "100,101", "100,102", "104,187", "5,187")
+        val ordered = DreamTopic.newestFirst(dreams, { it.split(",").map(String::toLong) }, { it })
+        assertEquals(listOf("104,187", "5,187", "100,102", "100,101", "10,11"), ordered)
     }
 }
