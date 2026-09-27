@@ -23,8 +23,6 @@ class InitiativeDecisionTest {
         zoneNormal = true,
         watchdogRefusal = null,
         engineBusy = false,
-        journalNotRaised = false,
-        autoContinue = true,
         timesUnreadable = null,
         ownerReplyAt = now - 61 * minute,
         lastInitiativeAt = null,
@@ -71,15 +69,6 @@ class InitiativeDecisionTest {
     @Test
     fun `занятая модель удерживает`() {
         assertEquals("модель занята", refusal(ready.copy(engineBusy = true)))
-    }
-
-    @Test
-    fun `неподнятая лента удерживает, только когда решает владелец`() {
-        assertEquals(
-            "разговор с диска не поднят — решает владелец",
-            refusal(ready.copy(journalNotRaised = true, autoContinue = false)),
-        )
-        assertNull("настройка включена — лента поднимется сама", refusal(ready.copy(journalNotRaised = true)))
     }
 
     @Test
