@@ -89,8 +89,7 @@ import java.util.Locale
  * САМА СЛУЖБА ЗАГОВАРИВАЕТ ПЕРВОЙ. Третьей проверкой той же минуты — пора ли
  * написать владельцу самой (условия — в [InitiativeDecision], что сказать —
  * у источника, [InitiativeSource]). Модель грузится так же, как для суда;
- * при включённой настройке «После комы продолжать разговор сам» следом
- * поднимается лента ([ConversationTurns.resumeSaved]). Ход — тот же
+ * следом поднимается лента ([ConversationTurns.resumeSaved]). Ход — тот же
  * [ConversationTurns.run], что у экрана; сообщение уходит уведомлением в
  * отдельный канал через ворота действий. Итог — строка «Первым:» в шторке
  * экрана ([initiativeLine]).
@@ -312,10 +311,6 @@ class AgentService : Service() {
         val watchdog = objects.watchdog
         val turns = objects.turns
         val times = runCatching { conversationTimes.read() }
-        // Диск спрашивается только при пустой ленте в памяти: непустая заведомо
-        // поднята. Счёт не прочитался — лента считается неподнятой: сомнение
-        // решается в сторону молчания.
-        val journalNotRaised = turns.journal.isEmpty && (turns.store.counts()?.active ?: 1) > 0
         val offer = runCatching { initiativeSource.offer() }.getOrElse {
             InitiativeSource.Offer.Silent("не прочиталось, что сказать (${it.javaClass.simpleName})")
         }
@@ -330,8 +325,6 @@ class AgentService : Service() {
                 // Замок хода — тоже занятость: экран может вести ход или
                 // поднимать ленту, ещё не дойдя до движка.
                 engineBusy = engine.activity.busy || turns.busy.value,
-                journalNotRaised = journalNotRaised,
-                autoContinue = ConversationPrefs.autoContinue(applicationContext),
                 timesUnreadable = times.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName },
                 ownerReplyAt = snapshot?.ownerReplyAt,
                 lastInitiativeAt = snapshot?.initiative?.at,
@@ -388,9 +381,8 @@ class AgentService : Service() {
         }
 
         // Лента поднимается следом за моделью: без загруженной модели
-        // сохранённую ленту не с чем сверить (отпечаток загрузки). Настройка
-        // выключена — решает владелец, и неподнятая лента уже названа отказом.
-        if (objects.turns.journal.isEmpty && ConversationPrefs.autoContinue(applicationContext)) {
+        // сохранённую ленту не с чем сверить (отпечаток загрузки).
+        if (objects.turns.journal.isEmpty) {
             val resumed = objects.turns.resumeSaved()
             if (resumed is ConversationTurns.Resume.Refused) {
                 showInitiative("разговор с диска не поднят: ${resumed.reason}", first.times)
