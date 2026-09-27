@@ -1,0 +1,183 @@
+package com.uroboros.memory.nav
+
+import com.uroboros.memory.Sentences
+import com.uroboros.util.ImperativeForm
+import com.uroboros.util.TextFold
+
+/**
+ * О ком предложение — ПО ФОРМЕ: местоимения и окончания глаголов, без словаря.
+ * Словарная морфология отвергнута сознательно: она потребовала бы второй
+ * модели в памяти телефона.
+ *
+ * Лицо здесь — направление, а не человек: [Person.FIRST] — «тот, кто сказал»,
+ * [Person.SECOND] — «тот, кому сказано». Кто это на самом деле, решают
+ * координаты (см. [Coordinates]) от точки отправления.
+ *
+ * Запись делится на предложения через [Sentences.split]: куски — вид на
+ * запись, сама запись остаётся целой. У записи получается набор ответов по
+ * предложениям и их свёртка [RecordForm].
+ *
+ * Правила (все слова — после util.TextFold):
+ *  - FIRST: местоимения [FIRST_PRONOUNS]; глагол 1-го лица единственного числа
+ *    по окончанию — слово не короче [MIN_VERB_LENGTH] букв на -ю/-у (сюда же
+ *    -аю/-яю/-ую) или возвратное -юсь/-усь («займусь», «надеюсь»), не стоящее
+ *    сразу после предлога;
+ *  - SECOND: местоимения [SECOND_PRONOUNS]; глагол на -ешь/-ишь (и «-ёшь»,
+ *    приведённое к «-ешь»), слово не короче [MIN_SECOND_VERB_LENGTH] букв;
+ *  - IMPERATIVE: первое слово предложения похоже на повелительное
+ *    (util.ImperativeForm). Это адресат, а не тема: «Назови цвета радуги» —
+ *    просьба к собеседнику, а не рассказ о нём, поэтому SECOND не ставится;
+ *  - WE_WITH_YOU: «наш…» или «мы/нас/нам/нами» вместе с SECOND в одном
+ *    предложении («мы с тобой»). SECOND тогда поглощается;
+ *  - UNCLEAR: голое «мы» — местоимение или глагол 1-го лица множественного
+ *    числа на -ем/-им/-емся/-имся без SECOND («тренируемся», «сможем»): в
+ *    живых записях это бывает владелец с клубом, а не с агентом. И прошедшее
+ *    время мужского или женского рода (-л, -ла, -лся, -лась) в предложении
+ *    без других лиц («спал», «уточнил»): у прошедшего времени лица нет;
+ *  - NONE: ничего из перечисленного.
+ *
+ * Сомнение — в UNCLEAR: догадка без уверенности не выдаётся за ответ.
+ *
+ * ЧЕГО НЕ УМЕЕТ (по форме, а не по смыслу):
+ *  - существительные и прилагательные на -у/-ю/-ую («Купил колодку», «новую»)
+ *    дают ложное FIRST. Ошибка в сторону лишнего: запись владельца один ход
+ *    не придёт на вопрос к агенту, вопрос получит адрес «владелец»;
+ *  - прилагательные на -им/-ем («другим», «синем») дают ложное голое «мы»;
+ *  - обобщённое «ты» («Всегда носи с собой полотенце») читается как «о
+ *    собеседнике», хотя это о мире;
+ *  - ирония и чужая речь («он сказал: я устал») — ошибка или UNCLEAR;
+ *  - «надеюсь», «я думал» в записи об агенте делают её «об обоих»;
+ *  - повелительное — только по первому слову предложения и с пробелами
+ *    правила util.ImperativeForm («проверь» не ловится).
+ */
+object PersonForm {
+
+    enum class Person { FIRST, SECOND, WE_WITH_YOU, IMPERATIVE, NONE, UNCLEAR }
+
+    /** Лица одного предложения. Пустым не бывает: нет ничего — [Person.NONE]. */
+    data class SentenceForm(val sentence: String, val persons: Set<Person>)
+
+    /** Лица записи по предложениям и свёртка. */
+    data class RecordForm(val sentences: List<SentenceForm>) {
+        private val all: Set<Person> = sentences.flatMapTo(HashSet()) { it.persons }
+
+        /** Сказано о том, кто говорит (FIRST или «мы с тобой»). */
+        val aboutSpeaker: Boolean get() = Person.FIRST in all || Person.WE_WITH_YOU in all
+
+        /** Сказано о том, кому сказано (SECOND или «мы с тобой»). */
+        val aboutAddressee: Boolean get() = Person.SECOND in all || Person.WE_WITH_YOU in all
+
+        /** Хоть в одном предложении лицо не определить. */
+        val unclear: Boolean get() = Person.UNCLEAR in all
+
+        /** Есть просьба к собеседнику (повелительное). */
+        val imperative: Boolean get() = Person.IMPERATIVE in all
+    }
+
+    /**
+     * Местоимения, которые определитель читает как сигнал. Поиск те же слова
+     * выбрасывает как шум (memory.STOP_WORDS в HourglassMemory): одни слова,
+     * противоположная роль. Список лиц живёт здесь.
+     */
+    val FIRST_PRONOUNS = setOf(
+        "я", "меня", "мне", "мной", "мною",
+        "мой", "моя", "мое", "мои", "моего", "моей", "моему", "моим", "моими", "моих", "мою",
+    )
+    val SECOND_PRONOUNS = setOf(
+        "ты", "тебя", "тебе", "тобой", "тобою",
+        "твой", "твоя", "твое", "твои", "твоего", "твоей", "твоему", "твоим", "твоими", "твоих", "твою",
+    )
+    val WE_PRONOUNS = setOf("мы", "нас", "нам", "нами")
+    val OUR_PRONOUNS = setOf(
+        "наш", "наша", "наше", "наши", "нашего", "нашей", "нашему", "нашим", "нашими", "наших", "нашу",
+    )
+
+    /** После предлога слово на -у/-ю — падеж существительного, а не глагол. */
+    private val PREPOSITIONS = setOf(
+        "в", "во", "на", "к", "ко", "по", "о", "об", "обо", "у", "с", "со", "за", "под", "над",
+        "из", "от", "до", "для", "при", "про", "без", "через", "перед", "между",
+    )
+
+    /**
+     * Служебные слова на -у/-ю и -ем/-им, которые окончание приняло бы за
+     * глагол. Не словарь смысла — короткий список частых слов той же природы,
+     * что STOP_WORDS.
+     */
+    private val NOT_VERBS = setOf(
+        "почему", "потому", "поэтому", "сразу", "кому", "чему", "тому", "всему", "нему", "ему",
+        "никому", "ничему", "внизу", "наверху", "вверху", "снизу", "сверху",
+        "совсем", "затем", "зачем", "всем", "чем", "нем", "тем", "им",
+    )
+
+    /** Объявленные числа, не подобранные. */
+    const val MIN_VERB_LENGTH = 4
+    const val MIN_SECOND_VERB_LENGTH = 5
+    const val MIN_WE_VERB_LENGTH = 5
+
+    private val NOT_LETTER = Regex("[^\\p{L}]+")
+
+    fun of(text: String): RecordForm =
+        RecordForm(Sentences.split(text).map { SentenceForm(it, ofSentence(it)) })
+
+    fun ofSentence(sentence: String): Set<Person> {
+        val words = TextFold.fold(sentence).split(NOT_LETTER).filter { it.isNotEmpty() }
+        val out = HashSet<Person>()
+
+        var first = false
+        var second = false
+        var bareWe = false
+        var our = false
+        var pastWithoutPerson = false
+        for ((i, w) in words.withIndex()) {
+            val afterPreposition = i > 0 && words[i - 1] in PREPOSITIONS
+            when {
+                w in FIRST_PRONOUNS -> first = true
+                w in SECOND_PRONOUNS -> second = true
+                w in WE_PRONOUNS -> bareWe = true
+                w in OUR_PRONOUNS -> our = true
+                w in NOT_VERBS -> Unit
+                isFirstPersonVerb(w) && !afterPreposition -> first = true
+                isSecondPersonVerb(w) -> second = true
+                isWeVerb(w) -> bareWe = true
+                isPersonalPast(w) -> pastWithoutPerson = true
+            }
+        }
+
+        if (our || (bareWe && second)) {
+            out += Person.WE_WITH_YOU
+        } else {
+            if (second) out += Person.SECOND
+            if (bareWe) out += Person.UNCLEAR
+        }
+        if (first) out += Person.FIRST
+        if (words.isNotEmpty() && ImperativeForm.looksImperative(words.first())) out += Person.IMPERATIVE
+        if (pastWithoutPerson && out.none { it == Person.FIRST || it == Person.SECOND || it == Person.WE_WITH_YOU }) {
+            out += Person.UNCLEAR
+        }
+        if (out.isEmpty()) out += Person.NONE
+        return out
+    }
+
+    private fun isFirstPersonVerb(w: String): Boolean =
+        w.length >= MIN_VERB_LENGTH && !w.endsWith("ому") && !w.endsWith("ему") &&
+            (w.endsWith("у") || w.endsWith("ю") || w.endsWith("усь") || w.endsWith("юсь"))
+
+    private fun isSecondPersonVerb(w: String): Boolean =
+        w.length >= MIN_SECOND_VERB_LENGTH && (w.endsWith("ешь") || w.endsWith("ишь"))
+
+    private fun isWeVerb(w: String): Boolean =
+        w.length >= MIN_WE_VERB_LENGTH &&
+            (w.endsWith("емся") || w.endsWith("имся") || w.endsWith("ем") || w.endsWith("им"))
+
+    /** Прошедшее время мужского или женского рода: у «я/ты» оно такое же. */
+    private fun isPersonalPast(w: String): Boolean =
+        w.length >= MIN_VERB_LENGTH &&
+            (PAST_ENDINGS.any { w.endsWith(it) })
+
+    private val PAST_ENDINGS = listOf(
+        "ал", "ял", "ил", "ел", "ыл", "ул",
+        "ала", "яла", "ила", "ела", "ыла", "ула",
+        "ался", "ялся", "ился", "елся", "улся",
+        "алась", "ялась", "илась", "елась", "улась",
+    )
+}
