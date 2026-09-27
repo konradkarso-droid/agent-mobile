@@ -303,7 +303,7 @@ class MainActivity : AppCompatActivity() {
     private var curiosityAskLine: String? = null
     private var curiosityAskFailure: String? = null
 
-    /** Строка состояния агента на последнем ходе — только для экрана, модели не идёт (см. SelfState). */
+    /** Строка состояния агента на последнем ходе, для экрана (см. SelfState). */
     private var selfStateLine: String? = null
 
     /**
@@ -710,6 +710,10 @@ class MainActivity : AppCompatActivity() {
             // нечего. Служебная строка, ушедшая модели вместо реплики, на
             // экран не выводится, как и записи в обычной реплике; строки
             // записей у такого хода тоже нет — отбора не было.
+            // Строка о себе, ушедшая модели перед репликой, видна на своём
+            // месте: иначе разговор на экране не совпал бы с тем, что
+            // получила модель.
+            turn?.selfNote?.let { out.append("[о себе: ").append(it).append("]\n") }
             if (question.isNotEmpty()) {
                 out.append("Вы: ").append(question)
                 if (turn != null) addRecordsBlock(index, turn)
@@ -4266,9 +4270,10 @@ class MainActivity : AppCompatActivity() {
                 val servedDreams = dreamOffer.picked.filter { p -> p.brought.any { it.id in broughtNowIds } }
                 dreamsLine = DreamRecall.meter(dreamOffer, alreadyInRibbon = associated.size - broughtNow.size)
                 // Состояние агента — только когда что-то сдвинулось с прошлого
-                // показа, и только на экран, модели не идёт (см. SelfState).
-                // Сбой чтения приборов не срывает ход: строки просто нет, а на
-                // экране сказано почему.
+                // показа (см. SelfState). Модели оно идёт системным сообщением
+                // перед репликой, но не на пустой ленте (см.
+                // ConversationJournal.messagesFor). Сбой чтения приборов не
+                // срывает ход: строки просто нет, а на экране сказано почему.
                 val selfSnapshot = runCatching {
                     SelfState.read(applicationContext, journal.fillPercent(CONTEXT_SIZE))
                 }
@@ -4277,7 +4282,9 @@ class MainActivity : AppCompatActivity() {
                     selfSnapshot.isFailure -> "О себе сейчас: приборы не ответили — " +
                         (selfSnapshot.exceptionOrNull()?.javaClass?.simpleName ?: "?")
                     selfLine == null -> "О себе сейчас: без перемен"
-                    else -> "О себе сейчас (модели не подаётся): $selfLine"
+                    journal.history().isEmpty() ->
+                        "О себе сейчас (первый ход разговора — модели уйдёт со следующим): $selfLine"
+                    else -> "О себе сейчас (модели — отдельным сообщением): $selfLine"
                 }
                 // Выход пружины любопытства (см. CuriosityAsk): давление
                 // перечитывается к этой реплике. Сбой чтения — не спрашивать:
@@ -4296,8 +4303,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 curiosityAskLine = CuriosityAsk.meter(askDecision)
                 val askedLeader = (askDecision as? CuriosityAsk.Decision.Ask)?.leader
-                // Строки о себе здесь нет: она только на экран (см. SelfState,
-                // «ТОЛЬКО НА ЭКРАН»).
+                // Строки о себе здесь нет: она уходит отдельным сообщением
+                // (selfNote в turns.run ниже).
                 val userContent = journal.composeUserContent(
                     newRecords, userText, disputeText,
                     curiosityAsk = askedLeader?.let { CuriosityAsk.line(it) },
@@ -4498,6 +4505,7 @@ class MainActivity : AppCompatActivity() {
                     // Принесённое ассоциацией лежит здесь же: по этому
                     // списку лента отсеивает повторы.
                     records = allRecords,
+                    selfNote = selfLine,
                     onAccepted = {
                         // Экран показывает всю ленту плюс начатый ход. Поле НЕ
                         // очищается: разговор копится, а не заменяется. Токены ниже
@@ -4721,8 +4729,13 @@ class MainActivity : AppCompatActivity() {
                     // Ход состоялся: двери стареют на ход, принесённое
                     // этим ходом получает свою (см. DreamDoor).
                     DreamDoor.afterTurn(brought.map { it.id })
-                    // Состояние показано на экране этого хода.
-                    selfSnapshot.getOrNull()?.let { SelfState.markShown(it) }
+                    // Состояние показано, если перемен не было или строка ушла
+                    // модели. На пустой ленте она не уходит (см.
+                    // ConversationJournal.messagesFor) — тогда показ не
+                    // отмечается, и следующий ход скажет всё, что правда.
+                    if (selfLine == null || journal.history().lastOrNull()?.selfNote != null) {
+                        selfSnapshot.getOrNull()?.let { SelfState.markShown(it) }
+                    }
                     renderMetricsPanel()
                     // Ход закрыт — перерисовываем ленту целиком.
                     //
