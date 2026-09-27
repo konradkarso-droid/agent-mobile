@@ -368,3 +368,33 @@ class ConversationJournalTest {
         assertEquals(listOf("Я очнулся в 15:42."), system)
     }
 }
+
+class ConversationJournalDreamNoteTest {
+
+    @Test
+    fun `описание ночи не ставится первым и не хранится у первого хода`() {
+        val journal = ConversationJournal()
+        val first = journal.messagesFor("привет", currentDreamNote = "Этой ночью мне снилось: радуга.")
+        assertEquals(listOf(ConversationJournal.ROLE_USER to "привет"), first)
+        journal.appendTurn("привет", "здравствуй", "привет", emptyList(), dreamNote = "Этой ночью мне снилось: радуга.")
+        assertEquals(null, journal.history()[0].dreamNote)
+    }
+
+    @Test
+    fun `описание ночи — системным сообщением перед репликой, за строкой о себе`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("привет", "здравствуй", "привет", emptyList())
+        val messages = journal.messagesFor("что снилось?", "Я бодр.", "Этой ночью мне снилось: радуга.")
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_SYSTEM to "Я бодр.",
+                ConversationJournal.ROLE_SYSTEM to "Этой ночью мне снилось: радуга.",
+                ConversationJournal.ROLE_USER to "что снилось?",
+            ),
+            messages.takeLast(3),
+        )
+        journal.appendTurn("что снилось?", "радуга", "что снилось?", emptyList(), dreamNote = "Этой ночью мне снилось: радуга.", at = 5L)
+        assertEquals("Этой ночью мне снилось: радуга.", journal.history()[1].dreamNote)
+        assertEquals(5L, journal.history()[1].at)
+    }
+}

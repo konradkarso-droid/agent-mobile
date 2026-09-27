@@ -347,20 +347,31 @@ class ConversationJournal {
      * сохраняет). Вызывающий узнаёт, ушла ли она, по [Turn.selfNote]
      * закрытого хода.
      *
+     * ОПИСАНИЕ ПОСЛЕДНЕЙ НОЧИ ([Turn.dreamNote], [currentDreamNote]) стоит по
+     * тем же правилам места, сразу за строкой о себе: не первым и не на пустой
+     * ленте. Собирает его код (memory.dream.DreamTopic.line).
+     *
      * В СИСТЕМНОЕ СООБЩЕНИЕ ИДЁТ ТОЛЬКО СОБРАННОЕ КОДОМ ИЗ ПРИБОРОВ
-     * (SelfState.line) — никогда текст человека и никогда записи памяти.
+     * (SelfState.line, DreamTopic.line) — никогда текст человека и никогда
+     * записи памяти.
      * Системная роль — голос сильнее реплики: фраза собеседника или запись,
      * положенная сюда, заговорила бы голосом системы, а права даёт код, а не
      * сказанное в разговоре.
      */
-    fun messagesFor(currentUserContent: String, currentSelfNote: String? = null): List<Pair<String, String>> {
-        val out = ArrayList<Pair<String, String>>(turns.size * 3 + 2)
+    fun messagesFor(
+        currentUserContent: String,
+        currentSelfNote: String? = null,
+        currentDreamNote: String? = null,
+    ): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>(turns.size * 4 + 3)
         turns.forEachIndexed { index, turn ->
             if (index > 0 && !turn.selfNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.selfNote
+            if (index > 0 && !turn.dreamNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.dreamNote
             out += ROLE_USER to turn.userContent
             out += ROLE_ASSISTANT to turn.agentContent
         }
         if (turns.isNotEmpty() && !currentSelfNote.isNullOrBlank()) out += ROLE_SYSTEM to currentSelfNote
+        if (turns.isNotEmpty() && !currentDreamNote.isNullOrBlank()) out += ROLE_SYSTEM to currentDreamNote
         out += ROLE_USER to currentUserContent
         return out
     }

@@ -24,7 +24,12 @@ class NightStepsTest {
         modelChosen = true,
     )
 
-    private fun night(self: String? = null, mirror: String? = null, conclusions: String? = null) =
+    private fun night(
+        self: String? = null,
+        mirror: String? = null,
+        conclusions: String? = null,
+        topics: String? = null,
+    ) =
         DreamNight(
             nightAt = 1_000L,
             dreams = 3,
@@ -40,6 +45,7 @@ class NightStepsTest {
             selfLineOutcome = self,
             mirrorOutcome = mirror,
             conclusionsOutcome = conclusions,
+            dreamTopics = topics,
         )
 
     @Test
@@ -72,12 +78,12 @@ class NightStepsTest {
     fun `новая ночь без итогов — нужны все три`() {
         val missing = NightSteps.missing(night())
         assertTrue(missing.any)
-        assertEquals("строка о себе, зеркало, выводы", missing.words())
+        assertEquals("строка о себе, зеркало, выводы, темы снов", missing.words())
     }
 
     @Test
     fun `молчание — ночь по кнопке с итогами всех трёх не трогается`() {
-        val missing = NightSteps.missing(night("Строка о себе: …", "Зеркало: …", "Выводы: …"))
+        val missing = NightSteps.missing(night("Строка о себе: …", "Зеркало: …", "Выводы: …", topics = ""))
         assertFalse(missing.any)
         assertEquals("", missing.words())
     }
@@ -86,7 +92,7 @@ class NightStepsTest {
     fun `отказ «не делаю» — тоже итог, шаг не повторяется`() {
         val missing = NightSteps.missing(night(self = "Строка о себе: не предлагаю — …"))
         assertFalse(missing.selfLine)
-        assertEquals("зеркало, выводы", missing.words())
+        assertEquals("зеркало, выводы, темы снов", missing.words())
     }
 
     @Test

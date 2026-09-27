@@ -152,4 +152,12 @@ interface JournalArchiveDao {
      */
     @Query("SELECT COALESCE(MAX(archiveIndex), -1) + 1 FROM journal_archive_turns")
     fun nextArchiveIndex(): Int
+
+    /**
+     * Весь архив по порядку: архивация, потом ход. Читают его место поиска
+     * «своя речь» (memory.nav.OwnSpeech) и счёт рассказанных снов; до них
+     * архив только писался.
+     */
+    @Query("SELECT * FROM journal_archive_turns ORDER BY archiveIndex, turnIndex")
+    fun all(): List<JournalArchiveTurn>
 }

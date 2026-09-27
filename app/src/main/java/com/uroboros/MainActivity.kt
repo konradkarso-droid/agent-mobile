@@ -52,12 +52,14 @@ import com.uroboros.memory.DisputeNotice
 import com.uroboros.memory.DolmenCircle
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.HourglassMemory
+import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.Prism
 import com.uroboros.memory.ProvenanceLabels
 import com.uroboros.memory.RecordNumber
 import com.uroboros.memory.RejectOutcome
 import com.uroboros.memory.RejectPath
 import com.uroboros.memory.RequestCensus
+import com.uroboros.memory.dream.DreamTopic
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
@@ -316,6 +318,12 @@ class MainActivity : AppCompatActivity() {
 
     /** Строка состояния агента на последнем ходе, для экрана (см. SelfState). */
     private var selfStateLine: String? = null
+
+    /**
+     * Сон в зеркале к последнему ответу: сколько раз описание ночи рассказано за
+     * сутки и почему молчит в этом ходе (см. DreamTopic.meter). null — хода не было.
+     */
+    private var dreamInMirrorLine: String? = null
 
     /**
      * Последняя реплика пользователя, собранная для движка, — целиком и
@@ -727,6 +735,7 @@ class MainActivity : AppCompatActivity() {
             // месте: иначе разговор на экране не совпал бы с тем, что
             // получила модель.
             turn?.selfNote?.let { out.append("[о себе: ").append(it).append("]\n") }
+            turn?.dreamNote?.let { out.append("[сон: ").append(it).append("]\n") }
             if (question.isNotEmpty()) {
                 out.append("Вы: ").append(question)
                 if (turn != null) addRecordsBlock(index, turn)
@@ -2838,6 +2847,7 @@ class MainActivity : AppCompatActivity() {
             "Сны, любопытство, зеркало",
             dreamsLine, recallLine, mirror, conclusions, curiosityLine(), curiosityAskMeter(),
             AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
+            dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
         group("Ход", lastMetricsLine, echoLine, disputeNoticeLine, composedLine)
         val composed = lastComposedContent
@@ -3025,6 +3035,7 @@ class MainActivity : AppCompatActivity() {
         curiosityAskLine = null
         curiosityAskFailure = null
         selfStateLine = null
+        dreamInMirrorLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
         // относящаяся к нынешнему. Это тот самый хвост 20, из-за которого
@@ -4180,6 +4191,9 @@ class MainActivity : AppCompatActivity() {
                 // Прошлый ответ агента — по нему касание признаётся
                 // подсказанным (см. promptedStems в HourglassMemory.kt).
                 val ribbonQuestions = journal.history().map { it.question }
+                // Архив ленты — для своей речи агента и счёта рассказанных снов.
+                // null — не читается: оба молчат с этой причиной, ход идёт.
+                val archive = journalStore.readArchive()
                 // Адрес вопроса — о ком он (Coordinates.addressInRibbon). На
                 // адрес «агент» зеркало снимает записи с чужим «я»
                 // (MirrorFilter) — в отборе до раздачи мест и ниже, на стыке
@@ -4321,6 +4335,29 @@ class MainActivity : AppCompatActivity() {
                         "О себе сейчас (первый ход разговора — модели уйдёт со следующим): $selfLine"
                     else -> "О себе сейчас (модели — отдельным сообщением): $selfLine"
                 }
+                // Описание последней ночи — узкое исключение для вопроса к
+                // агенту (см. DreamTopic): код собирает фразу из тем, принятых
+                // ночью, и подаёт её системным сообщением за строкой о себе. Не
+                // на пустой ленте и не второй раз в той же ленте.
+                val lastNightTopics = runCatching {
+                    MemoryDatabase.getInstance(applicationContext).dreamDao().lastNight()?.dreamTopics
+                }
+                val dreamCandidate = DreamTopic.line(DreamTopic.load(lastNightTopics.getOrNull()))
+                val dreamRefusal =
+                    if (lastNightTopics.isFailure) "последняя ночь не прочиталась"
+                    else DreamTopic.refusal(
+                        dreamCandidate,
+                        toAgent = address == Coordinates.Address.AGENT,
+                        ribbonEmpty = journal.history().isEmpty(),
+                        alreadyInRibbon = journal.history().any { it.dreamNote == dreamCandidate },
+                    )
+                val dreamNote = if (dreamRefusal == null) dreamCandidate else null
+                val toldBefore = journal.history().filter { it.dreamNote != null }.map { it.at } +
+                    archive.orEmpty().filter { it.dreamNote != null }.map { it.at }
+                dreamInMirrorLine = DreamTopic.meter(
+                    DreamTopic.toldWithinDay(toldBefore, System.currentTimeMillis()) + (if (dreamNote != null) 1 else 0),
+                    dreamRefusal,
+                )
                 // Выход пружины любопытства (см. CuriosityAsk): давление
                 // перечитывается к этой реплике. Сбой чтения — не спрашивать:
                 // выход терминальный, и сомнение решается в сторону молчания.
@@ -4542,6 +4579,7 @@ class MainActivity : AppCompatActivity() {
                     records = allRecords,
                     selfNote = selfLine,
                     recordMarks = recordMarks,
+                    dreamNote = dreamNote,
                     onAccepted = {
                         // Экран показывает всю ленту плюс начатый ход. Поле НЕ
                         // очищается: разговор копится, а не заменяется. Токены ниже

@@ -86,4 +86,11 @@ interface DreamDao {
             "ORDER BY nightAt DESC LIMIT 1"
     )
     suspend fun lastMirrorOutcome(): String?
+
+    /**
+     * Дописать темы снов в ночь [nightAt] (см. [DreamNight.dreamTopics]).
+     * Ноль тронутых строк — как у [setSelfLineOutcome].
+     */
+    @Query("UPDATE nights SET dreamTopics = :topics WHERE nightAt = :nightAt")
+    suspend fun setDreamTopics(nightAt: Long, topics: String): Int
 }
