@@ -84,6 +84,8 @@ import com.uroboros.memory.dream.MirrorView
 import com.uroboros.memory.dream.UnpromptedLeaderGauge
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
+import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -262,6 +264,15 @@ class MainActivity : AppCompatActivity() {
      * null прячет строку: отбора на этом ходе не было.
      */
     private var circleLine: String? = null
+
+    /**
+     * Зеркало в отборе к последнему ответу: адрес вопроса и сколько записей с
+     * чужим «я» снято (см. MirrorFilter). null — отбора на этом ходе не было.
+     */
+    private var mirrorSelectionLine: String? = null
+
+    /** Адрес последнего вопроса (Coordinates.addressInRibbon); null — вопроса не было. */
+    private var currentAddress: Coordinates.Address? = null
 
     /**
      * Ассоциация к последнему ответу: сколько снов подходило, сколько записей
@@ -698,6 +709,8 @@ class MainActivity : AppCompatActivity() {
                 out.append("\n")
                 val lineStart = out.length
                 out.append("• ").append(origin).append(": ").append(use.text)
+                // «Кто → о ком» (Coordinates.mark) — после текста записи.
+                use.mark?.let { out.append("  [").append(it).append("]") }
                 recordRanges += lineStart to out.length
             }
         }
@@ -2813,7 +2826,10 @@ class MainActivity : AppCompatActivity() {
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
         val conclusions = conclusionsLine ?: "Выводы: ещё не прочитано"
-        group("Память", recordsQuestionsLine, circleLine, touchesLine, selfLeader)
+        // Зеркало в отборе печатается всегда: «ещё не отбирали» отличается от
+        // «адрес не определён».
+        val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: в этом запуске отбора ещё не было"
+        group("Память", recordsQuestionsLine, circleLine, mirrorSelection, touchesLine, selfLeader)
         // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
         // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
         // отрисовке, как эхо (см. InitiativeHolder).
@@ -2999,6 +3015,7 @@ class MainActivity : AppCompatActivity() {
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
         circleLine = null
+        mirrorSelectionLine = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
@@ -4163,6 +4180,14 @@ class MainActivity : AppCompatActivity() {
                 // Прошлый ответ агента — по нему касание признаётся
                 // подсказанным (см. promptedStems в HourglassMemory.kt).
                 val ribbonQuestions = journal.history().map { it.question }
+                // Адрес вопроса — о ком он (Coordinates.addressInRibbon). На
+                // адрес «агент» зеркало снимает записи с чужим «я»
+                // (MirrorFilter) — в отборе до раздачи мест и ниже, на стыке
+                // с дверью сна и ассоциацией.
+                val address = Coordinates.addressInRibbon(
+                    journal.history().map { it.question to it.at }, userText, System.currentTimeMillis(),
+                )
+                currentAddress = address
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
@@ -4170,6 +4195,7 @@ class MainActivity : AppCompatActivity() {
                     recentQuestions = ribbonQuestions,
                     excludedTexts = ribbonQuestions + userText,
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
+                    address = address,
                 )
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
@@ -4179,7 +4205,8 @@ class MainActivity : AppCompatActivity() {
                 val behindDoor = DreamDoor.openIds().mapNotNull { id ->
                     runCatching { mediator.getRecord(id) }.getOrNull()
                 }
-                val doorRecords = DreamDoor.pick(behindDoor, contextResult.stickers, userText)
+                val (doorRecords, doorMirrored) =
+                    MirrorFilter.apply(DreamDoor.pick(behindDoor, contextResult.stickers, userText), address)
                 val answerStickers = contextResult.stickers + doorRecords
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
@@ -4199,13 +4226,21 @@ class MainActivity : AppCompatActivity() {
                 // Принесённое встаёт после записей ответа, как записи двери.
                 val answerIds = answerStickers.map { it.id }.toSet()
                 val dreamOffer = dreamRecall.offer(answerIds)
-                val associated = dreamOffer.brought
+                val (associated, associatedMirrored) = MirrorFilter.apply(dreamOffer.brought, address)
+                mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
+                    address, contextResult.mirrorRemoved + doorMirrored + associatedMirrored,
+                )
                 val stickers = answerStickers + associated
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
                 val recordsAt = System.currentTimeMillis()
                 val allRecords = stickers.map { sticker ->
                     ProvenanceLabels.recordForModel(sticker, recordsAt)
+                }
+                // Пометка «кто → о ком» к строке записи — для раскрытого списка хода.
+                val recordMarks = stickers.indices.associate { i ->
+                    val speaker = Coordinates.speakerOf(stickers[i].source)
+                    allRecords[i] to Coordinates.mark(speaker, Coordinates.aboutOf(stickers[i].content, speaker))
                 }
                 // Сверка идёт по ТЕКСТАМ записей, а не по готовым строкам
                 // выше: строка несёт провенанс и кавычки, которых правило не
@@ -4506,6 +4541,7 @@ class MainActivity : AppCompatActivity() {
                     // списку лента отсеивает повторы.
                     records = allRecords,
                     selfNote = selfLine,
+                    recordMarks = recordMarks,
                     onAccepted = {
                         // Экран показывает всю ленту плюс начатый ход. Поле НЕ
                         // очищается: разговор копится, а не заменяется. Токены ниже

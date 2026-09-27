@@ -164,6 +164,27 @@ object Coordinates {
         }
     }
 
+    /**
+     * Адрес нового вопроса с учётом прошлых вопросов владельца той же ленты:
+     * адреса считаются по порядку, продолжение наследует адрес прошлого
+     * вопроса только в том же эпизоде (Episodes.startsNew — тишина дольше
+     * часа его обрывает). Ходы, начатые агентом (пустой вопрос), пропускаются.
+     *
+     * @param history вопросы ленты и время их хода (null — неизвестно).
+     */
+    fun addressInRibbon(history: List<Pair<String, Long?>>, question: String, now: Long): Address {
+        var previous: Address? = null
+        var prevAt: Long? = null
+        for ((q, at) in history) {
+            if (q.isBlank()) continue
+            if (Episodes.startsNew(prevAt, at, closedBetween = false)) previous = null
+            previous = questionAddress(q, previous)
+            if (at != null) prevAt = at
+        }
+        if (Episodes.startsNew(prevAt, now, closedBetween = false)) previous = null
+        return questionAddress(question, previous)
+    }
+
     /** Слова адреса для прибора. */
     fun addressLabel(address: Address): String = when (address) {
         Address.AGENT -> "агент"

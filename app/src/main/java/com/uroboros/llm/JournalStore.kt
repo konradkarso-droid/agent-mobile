@@ -470,6 +470,7 @@ class JournalStore(context: Context) {
                 JSONObject()
                     .put(KEY_TEXT, record.text)
                     .put(KEY_FIRST_SEEN, record.firstSeenTurn)
+                    .apply { record.mark?.let { put(KEY_MARK, it) } }
             )
         }
         return array.toString()
@@ -489,6 +490,8 @@ class JournalStore(context: Context) {
                 out += ConversationJournal.RecordUse(
                     text = item.getString(KEY_TEXT),
                     firstSeenTurn = item.getInt(KEY_FIRST_SEEN),
+                    // Пометки нет у ходов, легших до неё, — это не порча.
+                    mark = if (item.has(KEY_MARK)) item.getString(KEY_MARK) else null,
                 )
             }
             out
@@ -497,5 +500,6 @@ class JournalStore(context: Context) {
     private companion object {
         const val KEY_TEXT = "text"
         const val KEY_FIRST_SEEN = "firstSeenTurn"
+        const val KEY_MARK = "mark"
     }
 }

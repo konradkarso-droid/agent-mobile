@@ -2,6 +2,8 @@ package com.uroboros.memory
 
 import android.util.Log
 import com.uroboros.memory.dream.SelfLine
+import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.util.TextFold
 
 /**
@@ -474,6 +476,11 @@ data class ContextResult(
     val coldIds: Set<Long> = emptySet(),
     /** Касания владельца на этом отборе — подсказанные и нет (см. [promptedStems]). */
     val touches: UserTouches = UserTouches(0, 0, emptySet()),
+    /**
+     * Сколько кандидатов трёх окон снято зеркалом (nav.MirrorFilter) до раздачи
+     * мест. Ноль и при адресе не «агент» — там фильтр не действует.
+     */
+    val mirrorRemoved: Int = 0,
 )
 
 /**
@@ -843,6 +850,12 @@ class HourglassMemory(
          * засчитывается вовсе.
          */
         previousAnswer: String? = null,
+        /**
+         * Адрес вопроса (nav.Coordinates.questionAddress). На адрес «агент»
+         * зеркало снимает записи с чужим «я» до раздачи мест (nav.MirrorFilter).
+         * По умолчанию «не определён» — отбор как прежде.
+         */
+        address: Coordinates.Address = Coordinates.Address.UNDEFINED,
     ): ContextResult {
         migrateExpired()
 
@@ -903,11 +916,21 @@ class HourglassMemory(
             )
         cold?.let { trace += "окно холода:"; trace += it.trace }
 
+        // Зеркало — до раздачи мест, чтобы место досталось следующему кандидату
+        // (nav.MirrorFilter). Одна запись может найтись в двух окнах — снятые
+        // считаются по номерам записей.
+        val (questionKept, _) = MirrorFilter.apply(question?.stickers.orEmpty(), address)
+        val (themeKept, _) = MirrorFilter.apply(theme?.stickers.orEmpty(), address)
+        val (coldKept, _) = MirrorFilter.apply(cold?.stickers.orEmpty(), address)
+        val mirrorRemoved = (question?.stickers.orEmpty() + theme?.stickers.orEmpty() + cold?.stickers.orEmpty())
+            .filterNot { MirrorFilter.keeps(it, address) }
+            .mapTo(HashSet()) { it.id }.size
+
         val seating = DolmenCircle.seat(
             limit,
-            question?.stickers.orEmpty(),
-            theme?.stickers.orEmpty(),
-            cold?.stickers.orEmpty(),
+            questionKept,
+            themeKept,
+            coldKept,
         )
         val result = seating.all
         val coldIds = seating.cold.mapTo(HashSet()) { it.id }
@@ -1014,6 +1037,7 @@ class HourglassMemory(
             circle = circle,
             coldIds = coldIds,
             touches = UserTouches(toMark.size, promptedCount, promptedBy),
+            mirrorRemoved = mirrorRemoved,
         )
     }
 

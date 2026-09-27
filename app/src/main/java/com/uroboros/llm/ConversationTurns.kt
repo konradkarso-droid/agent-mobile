@@ -253,6 +253,7 @@ class ConversationTurns(
         question: String,
         records: List<String>,
         selfNote: String? = null,
+        recordMarks: Map<String, String> = emptyMap(),
         onAccepted: () -> Unit = {},
         onStarted: (at: Long, engineReturn: String?) -> Unit = { _, _ -> },
         onEvent: (GenerationEvent) -> Unit = {},
@@ -260,7 +261,7 @@ class ConversationTurns(
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, selfNote, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
+            runLocked(content, question, records, selfNote, recordMarks, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -275,6 +276,7 @@ class ConversationTurns(
         question: String,
         records: List<String>,
         selfNote: String?,
+        recordMarks: Map<String, String>,
         onAccepted: () -> Unit,
         onStarted: (at: Long, engineReturn: String?) -> Unit,
         onEvent: (GenerationEvent) -> Unit,
@@ -367,6 +369,7 @@ class ConversationTurns(
                     records = records,
                     selfNote = selfNote,
                     at = startMs,
+                    marks = recordMarks,
                 )
                 appended = true
                 onClosed(journal.history().lastIndex)

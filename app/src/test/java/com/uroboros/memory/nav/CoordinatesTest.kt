@@ -148,3 +148,31 @@ class CoordinatesTest {
         assertEquals(Place.SCREEN, Place.values().first())
     }
 }
+
+class AddressInRibbonTest {
+
+    private val hour = Episodes.EPISODE_SILENCE_MS
+
+    @Test
+    fun `продолжение наследует адрес в том же эпизоде`() {
+        val history = listOf("Как меня зовут?" to 0L)
+        assertEquals(Address.OWNER, Coordinates.addressInRibbon(history, "А про чай?", 60_000L))
+    }
+
+    @Test
+    fun `после часа тишины продолжение не наследует`() {
+        val history = listOf("Как меня зовут?" to 0L)
+        assertEquals(Address.AGENT, Coordinates.addressInRibbon(history, "А про чай?", hour + 1))
+    }
+
+    @Test
+    fun `ход агента первым пропускается`() {
+        val history = listOf("Как меня зовут?" to 0L, "" to 30_000L)
+        assertEquals(Address.OWNER, Coordinates.addressInRibbon(history, "А про чай?", 60_000L))
+    }
+
+    @Test
+    fun `пустая лента — правило без лица`() {
+        assertEquals(Address.AGENT, Coordinates.addressInRibbon(emptyList(), "Что снилось?", 0L))
+    }
+}

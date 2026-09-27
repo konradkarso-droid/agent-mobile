@@ -125,6 +125,13 @@ class ConversationJournal {
     data class RecordUse(
         val text: String,
         val firstSeenTurn: Int,
+        /**
+         * Пометка «кто → о ком» для прибора (memory.nav.Coordinates.mark),
+         * например «владелец → владелец+агент»; null — ход лёг до пометки или
+         * её не передали. Считана на ходе и хранится как показ, не как
+         * координата: отбор её не читает.
+         */
+        val mark: String? = null,
     )
 
     private val turns = mutableListOf<Turn>()
@@ -418,6 +425,7 @@ class ConversationJournal {
         selfNote: String? = null,
         at: Long? = null,
         dreamNote: String? = null,
+        marks: Map<String, String> = emptyMap(),
     ) {
         val index = turns.size
         // Строка о себе на первом ходе модели не уходила (см. [messagesFor]) —
@@ -428,7 +436,7 @@ class ConversationJournal {
         // двух местах, экран однажды разойдётся с тем, что ушло в модель.
         // Здесь отображение ещё хранит состояние ДО этого хода, поэтому
         // отсутствие ключа и означает «новая».
-        val uses = records.map { RecordUse(it, placedRecords[it] ?: index) }
+        val uses = records.map { RecordUse(it, placedRecords[it] ?: index, marks[it]) }
         val dream = dreamNote?.takeIf { index > 0 && it.isNotBlank() }
         turns += Turn(userContent, agentContent, question, uses, note, at, dream)
         // putIfAbsent по смыслу: первый ход, на котором запись легла, не

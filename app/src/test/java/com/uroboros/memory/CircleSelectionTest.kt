@@ -254,4 +254,29 @@ class CircleSelectionTest {
         assertTrue(result.circle.contains("вопрос — нашёл 1, мест 1"))
         assertTrue(result.circle.contains("реплик ленты в исключении 26"))
     }
+
+    // --- Зеркало в отборе ---
+
+    @Test
+    fun `на адрес агент запись с чужим я снята в отборе`() = runBlocking {
+        val world = sticker(1, "рубанок из дуба", Layer.GREEN)
+        val mine = sticker(2, "рубанок точу сегодня", Layer.GREEN)
+        val result = HourglassMemory(dao(mine, world)).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5,
+            address = com.uroboros.memory.nav.Coordinates.Address.AGENT,
+        )
+        assertEquals(listOf(world.id), result.stickers.map { it.id })
+        assertEquals(1, result.mirrorRemoved)
+    }
+
+    @Test
+    fun `без адреса отбор прежний`() = runBlocking {
+        val mine = sticker(1, "рубанок точу сегодня", Layer.GREEN)
+        val world = sticker(2, "рубанок из дуба", Layer.GREEN)
+        val result = HourglassMemory(dao(mine, world)).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5,
+        )
+        assertEquals(setOf(mine.id, world.id), result.stickers.map { it.id }.toSet())
+        assertEquals(0, result.mirrorRemoved)
+    }
 }
