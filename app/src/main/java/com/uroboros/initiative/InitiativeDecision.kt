@@ -65,10 +65,6 @@ object InitiativeDecision {
         /** Отказ сторожа словами (DeviceSafetyWatchdog.longRunBlockReason); null — можно. */
         val watchdogRefusal: String?,
         val engineBusy: Boolean,
-        /** Лента в памяти пуста, а на диске лежит сохранённый разговор. */
-        val journalNotRaised: Boolean,
-        /** Настройка «После комы продолжать разговор сам». */
-        val autoContinue: Boolean,
         /** Почему не прочитались времена с диска; null — прочитались. */
         val timesUnreadable: String?,
         /** Последняя реплика владельца; null — ни одной на диске. */
@@ -92,9 +88,6 @@ object InitiativeDecision {
             !i.zoneNormal -> "зона не «норма»"
             i.watchdogRefusal != null -> i.watchdogRefusal
             i.engineBusy -> "модель занята"
-            // При включённой настройке лента поднимется сама после загрузки
-            // модели; не поднимется — тело назовёт почему.
-            i.journalNotRaised && !i.autoContinue -> "разговор с диска не поднят — решает владелец"
             i.timesUnreadable != null -> "не прочиталось, когда писал владелец — ${i.timesUnreadable}"
             silentMs == null -> "владелец ещё не писал — молчание не с чего считать"
             silentMs < SILENCE_MS -> "владелец молчит ${minutes(silentMs)} мин из ${minutes(SILENCE_MS)}"
