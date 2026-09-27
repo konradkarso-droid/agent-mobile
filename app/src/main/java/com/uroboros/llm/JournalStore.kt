@@ -243,6 +243,7 @@ class JournalStore(context: Context) {
                     agentContent = row.agentContent,
                     question = row.question,
                     records = records,
+                    selfNote = row.selfNote,
                 )
             }
 
@@ -291,6 +292,7 @@ class JournalStore(context: Context) {
                         recordsJson = renderRecords(turn.records),
                         promptTokens = promptTokens,
                         fingerprint = fingerprint ?: "",
+                        selfNote = turn.selfNote,
                     )
                 )
             }.isSuccess
@@ -410,6 +412,7 @@ class JournalStore(context: Context) {
                                 promptTokens = row.promptTokens,
                                 fingerprint = row.fingerprint,
                                 archivedAt = archivedAt,
+                                selfNote = row.selfNote,
                             )
                         }
                     )
