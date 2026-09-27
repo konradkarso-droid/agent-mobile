@@ -236,6 +236,11 @@ class ConversationTurns(
      *
      * @param question что показать как реплику в ленте (см. [ConversationJournal.appendTurn]).
      * @param records строки записей и снов этого хода — по ним лента отсеивает повторы.
+     * @param selfNote строка состояния агента для системного сообщения перед
+     *   репликой (см. [ConversationJournal.messagesFor]); null — перемен нет.
+     *   Ушла ли она, видно по [ConversationJournal.Turn.selfNote] закрытого хода:
+     *   на пустой ленте она не уходит. Сторож места ([gate]) её не считает:
+     *   это десятки токенов против запаса на ответ.
      * @param onAccepted обе проверки края пройдены, реплика сейчас уйдёт.
      * @param onStarted выдача начинается в момент `at`; `engineReturn` — строка
      *   о возврате движка после чужой работы или null, если возврата не было.
@@ -247,6 +252,7 @@ class ConversationTurns(
         content: String,
         question: String,
         records: List<String>,
+        selfNote: String? = null,
         onAccepted: () -> Unit = {},
         onStarted: (at: Long, engineReturn: String?) -> Unit = { _, _ -> },
         onEvent: (GenerationEvent) -> Unit = {},
@@ -254,7 +260,7 @@ class ConversationTurns(
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
+            runLocked(content, question, records, selfNote, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -268,6 +274,7 @@ class ConversationTurns(
         content: String,
         question: String,
         records: List<String>,
+        selfNote: String?,
         onAccepted: () -> Unit,
         onStarted: (at: Long, engineReturn: String?) -> Unit,
         onEvent: (GenerationEvent) -> Unit,
@@ -275,7 +282,7 @@ class ConversationTurns(
         onClosed: (Int) -> Unit,
     ): Outcome {
         gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT)?.let { return it }
-        val messages = journal.messagesFor(content)
+        val messages = journal.messagesFor(content, selfNote)
         onAccepted()
 
         // Движок брал кто-то другой — разбор памяти или цикл, — и разговора в
@@ -358,6 +365,7 @@ class ConversationTurns(
                     agentContent = answer.toString(),
                     question = question,
                     records = records,
+                    selfNote = selfNote,
                 )
                 appended = true
                 onClosed(journal.history().lastIndex)
