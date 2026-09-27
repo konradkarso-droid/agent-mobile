@@ -31,17 +31,18 @@ class ConclusionView(
         MemoryDatabase.getInstance(context).stickerDao(),
     )
 
-    suspend fun section(): String {
-        val rows = conclusions.lastNights(NIGHTS)
+    suspend fun section(): String = render(conclusions.lastOutcome(), items(conclusions.lastNights(NIGHTS)))
+
+    /** Выводы [rows] с их снами и записями звеньев — для показа и для доски (memory.desk). */
+    suspend fun items(rows: List<ConclusionRow>): List<Item> {
         val nights = HashMap<Long, Map<String, Dream>>()
-        val items = rows.map { row ->
+        return rows.map { row ->
             val ofNight = nights.getOrPut(row.dreamNightAt) {
                 dreams.ofNight(row.dreamNightAt).associateBy { it.recordIds }
             }
             val dream = ofNight[row.dreamRecordIds]
             Item(row, dream, dream?.ids().orEmpty().map { stickers.getById(it) })
         }
-        return render(conclusions.lastOutcome(), items)
     }
 
     suspend fun meter(): String = meter(conclusions.lastOutcome(), conclusions.countAccepted())
@@ -53,7 +54,13 @@ class ConclusionView(
      *   молчит: проверить звенья нечем).
      * @property records записи звеньев по порядку; null — записи нет.
      */
-    data class Item(val row: ConclusionRow, val dream: Dream?, val records: List<Sticker?>)
+    data class Item(val row: ConclusionRow, val dream: Dream?, val records: List<Sticker?>) {
+        /**
+         * Вывод молчит: сна нет, записей нет или звено молчит. Правило одно —
+         * для раздела и для доски.
+         */
+        val silent: Boolean get() = dream == null || records.isEmpty() || records.any { Dream.silences(it) }
+    }
 
     companion object {
 
@@ -91,7 +98,7 @@ class ConclusionView(
                 }
                 append("\n")
                 val dream = item.dream
-                if (dream == null || item.records.isEmpty() || item.records.any { Dream.silences(it) }) {
+                if (item.silent || dream == null) {
                     append(SILENT)
                     continue
                 }
