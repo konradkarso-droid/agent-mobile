@@ -42,6 +42,7 @@ import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.CONTEXT_SIZE
 import com.uroboros.llm.GenerationEnd
+import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.AcceptCheck
@@ -86,6 +87,7 @@ import com.uroboros.memory.dream.MirrorView
 import com.uroboros.memory.dream.UnpromptedLeaderGauge
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
+import com.uroboros.memory.nav.Clouds
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnSpeech
@@ -535,6 +537,47 @@ class MainActivity : AppCompatActivity() {
             .getOrElse { "Зеркало: не прочиталось — ${it.javaClass.simpleName}" } +
             (mirrorCheckFailure?.let { " · последняя реплика не сверена — $it" } ?: "")
     }
+
+    /**
+     * Источники облаков (Clouds): записи памяти, кроме скрытых и отвергнутых;
+     * принятые выводы, темы снов и своя речь из архива ленты — об агенте.
+     * Считается при каждом вызове, ничего не хранит.
+     */
+    private suspend fun cloudSources(archive: List<JournalArchiveTurn>?): List<Clouds.Source> {
+        val db = MemoryDatabase.getInstance(applicationContext)
+        val out = ArrayList<Clouds.Source>()
+        db.stickerDao().getAll()
+            .filter { !it.reviewPending && it.rejectedAt == null }
+            .mapTo(out) { Clouds.fromRecord(it.content, it.source, it.createdAt) }
+        db.conclusionDao().accepted().mapTo(out) { Clouds.ofAgent(it.text, it.nightAt) }
+        for (night in db.dreamDao().nightsWithTopics()) {
+            DreamTopic.load(night.dreamTopics).mapTo(out) { Clouds.ofAgent(it, night.nightAt) }
+        }
+        val own = OwnSpeech.said(archive.orEmpty().map { row ->
+            OwnSpeech.Turn(
+                answer = row.agentContent,
+                question = row.question,
+                records = journalStore.recordTexts(row),
+                at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+            )
+        })
+        own.mapNotNullTo(out) { said -> said.at?.let { Clouds.ofAgent(said.sentence, it) } }
+        return out
+    }
+
+    /** Раздел «ОБЛАКА» в «Показать»: считается при открытии. Сбой — словами. */
+    private suspend fun cloudsSection(): String = runCatching {
+        val sources = cloudSources(journalStore.readArchive())
+        val now = System.currentTimeMillis()
+        Clouds.section(Clouds.of(PersonKey.OWNER, sources, now), Clouds.of(PersonKey.AGENT, sources, now))
+    }.getOrElse { "ОБЛАКА
+не посчитались — ${it.javaClass.simpleName}" }
+
+    /**
+     * Строка хода «Облако адреса:» к последнему ответу (Clouds.addressLine).
+     * null — хода в этом запуске не было.
+     */
+    private var cloudLine: String? = null
 
     /** Раздел «Выводы» в «Показать» и строка «Выводы:». Только чтение, см. ConclusionView. */
     private val conclusionView by lazy { ConclusionView(applicationContext) }
@@ -1474,6 +1517,9 @@ class MainActivity : AppCompatActivity() {
                 // Выводы — сразу за зеркалом и тоже без кнопок: их сочинила
                 // модель, и они никуда не подаются (см. ConclusionRow).
                 section(conclusionView.section(), headed = true)
+                // Облака — после выводов: считаются из записей при открытии
+                // раздела, в модель не идут (см. Clouds).
+                section(cloudsSection(), headed = true)
                 // Просьбы — отдельным разделом: это память, а не сны. Зачем тексты,
                 // а не число, — в шапке RequestCensus.
                 section(RequestCensus.section(applicationContext), headed = true)
@@ -2840,7 +2886,8 @@ class MainActivity : AppCompatActivity() {
         // Зеркало в отборе печатается всегда: «ещё не отбирали» отличается от
         // «адрес не определён».
         val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: в этом запуске отбора ещё не было"
-        group("Память", recordsQuestionsLine, circleLine, mirrorSelection, touchesLine, selfLeader)
+        val cloud = cloudLine ?: "Облако адреса: в этом запуске хода ещё не было"
+        group("Память", recordsQuestionsLine, circleLine, mirrorSelection, cloud, touchesLine, selfLeader)
         // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
         // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
         // отрисовке, как эхо (см. InitiativeHolder).
@@ -3028,6 +3075,7 @@ class MainActivity : AppCompatActivity() {
         recordsQuestionsLine = null
         circleLine = null
         mirrorSelectionLine = null
+        cloudLine = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
@@ -4230,6 +4278,20 @@ class MainActivity : AppCompatActivity() {
                     address = address,
                     ownSpeechFound = if (address == Coordinates.Address.AGENT) ownSaid.size else null,
                 )
+                // Облако адреса — прибор хода; в отбор и в модель не идёт (Clouds).
+                cloudLine = if (address == Coordinates.Address.UNDEFINED) {
+                    Clouds.addressLine(address, null, null)
+                } else {
+                    runCatching {
+                        val sources = cloudSources(archive)
+                        val now = System.currentTimeMillis()
+                        Clouds.addressLine(
+                            address,
+                            Clouds.of(PersonKey.OWNER, sources, now),
+                            Clouds.of(PersonKey.AGENT, sources, now),
+                        )
+                    }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
+                }
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
                 // отбору и из холодных слоёв, если вопрос их задевает (см.

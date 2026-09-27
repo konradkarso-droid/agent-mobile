@@ -93,4 +93,8 @@ interface DreamDao {
      */
     @Query("UPDATE nights SET dreamTopics = :topics WHERE nightAt = :nightAt")
     suspend fun setDreamTopics(nightAt: Long, topics: String): Int
+
+    /** Ночи с принятыми темами снов — для облака агента (memory.nav.Clouds). */
+    @Query("SELECT * FROM nights WHERE dreamTopics IS NOT NULL AND dreamTopics != ''")
+    suspend fun nightsWithTopics(): List<DreamNight>
 }
