@@ -74,7 +74,7 @@ abstract class JournalDatabase : RoomDatabase() {
          * При подъёме числа сюда же добавляется миграция: без неё база не
          * откроется (деструктивного отката здесь нет намеренно, см. выше).
          */
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 4
 
         /**
          * Имя файла. Отличается от `uroboros_memory.db` не только словом:
@@ -155,6 +155,24 @@ abstract class JournalDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Версия 4: столбец `selfNote` в ленте и в архиве — строка состояния
+         * агента, ушедшая модели отдельным системным сообщением
+         * (ConversationJournal.messagesFor).
+         *
+         * Столбец необязательный (NULL), без значения по умолчанию — так его
+         * ждёт Room по полю `String? = null`. Старым строкам NULL — правда: до
+         * этой версии отдельным сообщением состояние не уходило. В архиве
+         * столбец нужен по той же причине, что и остальные: архив хранит то,
+         * что получила модель.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `journal_turns` ADD COLUMN `selfNote` TEXT")
+                db.execSQL("ALTER TABLE `journal_archive_turns` ADD COLUMN `selfNote` TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: JournalDatabase? = null
 
@@ -164,7 +182,7 @@ abstract class JournalDatabase : RoomDatabase() {
                     context.applicationContext,
                     JournalDatabase::class.java,
                     FILE_NAME
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                  .build().also { INSTANCE = it }
             }
         }
