@@ -113,9 +113,14 @@ interface StickerDao {
      * середине предложения бывает почти только в начале слова. ВЕСЬ КАПС и
      * заглавные внутри слова остаются ненайденными. Общего решения в SQLite
      * нет: UPPER() и LOWER() там такие же ASCII-only, как и сам LIKE, поэтому
-     * второй вариант обязан прийти готовым из Kotlin. Настоящая починка — это
-     * отдельная колонка с приведённым содержимым и миграция схемы; заводить её
-     * ради случая, который пока не наблюдался, преждевременно.
+     * второй вариант обязан прийти готовым из Kotlin.
+     *
+     * ПРИВЕДЁННАЯ КОЛОНКА. Настоящая починка — [Sticker.contentFolded]: там
+     * содержимое уже приведено (util.TextFold), и слово вопроса, приведённое
+     * тем же правилом, находит и ВЕСЬ КАПС, и латинскую «ë». Два LIKE по
+     * content остаются только для записей, у которых колонка ещё не заполнена
+     * (между обновлением и проходом MemoryDatabase.fillFolded), — чтобы в этот
+     * промежуток ничего не пропало.
      *
      * Два LIKE вместо одного полный скан не удваивают: скан и так один, просто
      * на каждой строке проверяются два условия вместо одного.
@@ -144,8 +149,9 @@ interface StickerDao {
      */
     @Query(
         "SELECT * FROM stickers WHERE reviewPending = 0 AND layer IN (:layers) " +
-            "AND (content LIKE '%' || :query || '%' " +
-            "OR content LIKE '%' || :queryCapitalized || '%') " +
+            "AND (contentFolded LIKE '%' || :query || '%' " +
+            "OR (contentFolded IS NULL AND (content LIKE '%' || :query || '%' " +
+            "OR content LIKE '%' || :queryCapitalized || '%'))) " +
             "AND content NOT IN (:excluded) " +
             "ORDER BY createdAt DESC LIMIT :limit"
     )
@@ -187,8 +193,9 @@ interface StickerDao {
     @Query(
         "SELECT id, layer FROM stickers WHERE reviewPending = 1 AND rejectedAt IS NULL " +
             "AND layer IN (:layers) " +
-            "AND (content LIKE '%' || :query || '%' " +
-            "OR content LIKE '%' || :queryCapitalized || '%') " +
+            "AND (contentFolded LIKE '%' || :query || '%' " +
+            "OR (contentFolded IS NULL AND (content LIKE '%' || :query || '%' " +
+            "OR content LIKE '%' || :queryCapitalized || '%'))) " +
             "ORDER BY createdAt DESC LIMIT :limit"
     )
     suspend fun searchHiddenAnyCase(

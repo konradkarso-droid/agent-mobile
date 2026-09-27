@@ -36,7 +36,7 @@ class CircleSelectionTest {
             val excluded = searchCalls.last().excluded
             records.filter {
                 !it.reviewPending && it.layer in layers && it.content !in excluded &&
-                    (it.content.contains(q) || it.content.contains(qCap))
+                    (it.contentFolded?.contains(q) ?: (it.content.contains(q) || it.content.contains(qCap)))
             }.sortedByDescending { it.createdAt }.take(limit)
         }
         onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
@@ -160,7 +160,9 @@ class CircleSelectionTest {
     @Test
     fun `польза засчитывается окну вопроса, но не теме`() = runBlocking {
         val byQuestion = sticker(1, "рубанок из дуба", Layer.GREEN)
-        val byTheme = sticker(2, "колодка из берёзы", Layer.GREEN)
+        // Приведённый вид — как у записи, прошедшей дверь записи (Sticker.contentFolded):
+        // слова темы приходят приведёнными («березы»).
+        val byTheme = sticker(2, "колодка из берёзы", Layer.GREEN).copy(contentFolded = "колодка из березы")
         val dao = dao(byQuestion, byTheme)
         val result = HourglassMemory(dao).getContextWithSummary(
             RetrievalPurpose.ANSWERING_USER, "рубанок", 5,

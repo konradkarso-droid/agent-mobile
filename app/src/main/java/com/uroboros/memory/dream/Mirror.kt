@@ -2,6 +2,7 @@ package com.uroboros.memory.dream
 
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.memory.RiskTrigger
+import com.uroboros.util.TextFold
 
 /**
  * Зеркало: модель со случайной выдачей смотрит на конец разговора и сочиняет
@@ -147,7 +148,7 @@ object Mirror {
             line = line.trim { it.isWhitespace() || it in QUOTES }
             if (line.isEmpty()) continue
             val stems = RiskTrigger.significantStems(line)
-            val key: Any = stems.ifEmpty { line.lowercase() }
+            val key: Any = stems.ifEmpty { TextFold.fold(line) }
             if (!seen.add(key)) continue
             out += line
             if (out.size == MAX_VARIANTS) break

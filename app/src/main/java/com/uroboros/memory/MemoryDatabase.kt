@@ -1,6 +1,7 @@
 package com.uroboros.memory
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -17,13 +18,14 @@ import com.uroboros.memory.dream.MirrorDao
 import com.uroboros.memory.dream.MirrorVariant
 import com.uroboros.memory.judge.JudgeVerdict
 import com.uroboros.memory.judge.JudgeVerdictDao
+import com.uroboros.util.TextFold
 
 @Database(
     entities = [
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class, MirrorVariant::class, ConclusionRow::class,
     ],
-    version = 26,
+    version = 27,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -343,6 +345,46 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Приведённое содержимое записи для поиска (Sticker.contentFolded) и темы
+        // снов ночи (DreamNight.dreamTopics). Обе колонки NULL у прежних строк:
+        // SQL приводить кириллицу не умеет, поэтому записи заполняет Kotlin —
+        // проход fillFolded при открытии базы. content не меняется.
+        val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE stickers ADD COLUMN contentFolded TEXT")
+                db.execSQL("ALTER TABLE nights ADD COLUMN dreamTopics TEXT")
+            }
+        }
+
+        /**
+         * Один проход при открытии базы: записям с `contentFolded IS NULL`
+         * пишется приведённое содержимое. Тихо, итог — в лог. Сюда попадают
+         * записи, сохранённые до колонки, и записи, вставленные мимо двери
+         * записи. Упавший проход базу не роняет: поиск у незаполненных записей
+         * идёт по прежнему условию.
+         */
+        internal fun fillFolded(db: SupportSQLiteDatabase): Int {
+            val pending = mutableListOf<Pair<Long, String>>()
+            db.query("SELECT id, content FROM stickers WHERE contentFolded IS NULL").use { c ->
+                while (c.moveToNext()) pending += c.getLong(0) to c.getString(1)
+            }
+            for ((id, content) in pending) {
+                db.execSQL(
+                    "UPDATE stickers SET contentFolded = ? WHERE id = ?",
+                    arrayOf<Any>(TextFold.fold(content), id)
+                )
+            }
+            return pending.size
+        }
+
+        private val FILL_FOLDED = object : RoomDatabase.Callback() {
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                runCatching { fillFolded(db) }
+                    .onSuccess { if (it > 0) Log.i("MemoryDatabase", "приведено записей для поиска: $it") }
+                    .onFailure { Log.w("MemoryDatabase", "приведение записей для поиска не удалось", it) }
+            }
+        }
+
         // Здесь НЕТ fallbackToDestructiveMigration, и это осознанно.
         //
         // Он выглядит подстраховкой для древних версий, но срабатывает не на них:
@@ -369,7 +411,8 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27)
+                 .addCallback(FILL_FOLDED)
                  .build().also { INSTANCE = it }
             }
         }

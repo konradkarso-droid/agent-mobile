@@ -114,7 +114,7 @@ class DolmenCircleTest {
         // «старый рубанок забыт» — четвёртая с конца непустая, за окном темы.
         assertTrue("рубанок" !in words)
         assertTrue("лезвие" !in words)
-        assertEquals(setOf("острое", "берёза", "крепкая", "колодка", "рубанка"), words.toSet())
+        assertEquals(setOf("острое", "береза", "крепкая", "колодка", "рубанка"), words.toSet())
     }
 
     @Test

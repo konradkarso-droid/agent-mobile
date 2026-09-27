@@ -2,6 +2,7 @@ package com.uroboros.memory
 
 import android.util.Log
 import com.uroboros.memory.dream.SelfLine
+import com.uroboros.util.TextFold
 
 /**
  * Строка важности → число для сортировки, по убыванию: LOW=0, MEDIUM=1, HIGH=2.
@@ -241,7 +242,7 @@ internal const val MAX_SEARCH_WORDS = 6
  * реплик (DolmenCircle.themeWords), и определение у них обязано быть одно.
  */
 internal fun meaningfulWords(query: String): List<String> =
-    query.lowercase()
+    TextFold.fold(query)
         .split(Regex("[^\\p{L}\\p{N}]+"))
         .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
         .distinct()
@@ -1471,8 +1472,7 @@ class HourglassMemory(
      * фраза, и различает их только то, чем человек закончил ввод.
      */
     private fun normalizeExact(text: String): String =
-        text.lowercase()
-            .replace('ё', 'е')
+        TextFold.fold(text)
             .replace(Regex("\\s+"), " ")
             .trim()
             .trimEnd('.', ',', ';', ':', '!', '?', '-', '\u2014', '\u2013', ' ')
@@ -1491,8 +1491,7 @@ class HourglassMemory(
      * значим — переставленные слова дают разные строки.
      */
     private fun normalizeLoose(text: String): String =
-        text.lowercase()
-            .replace('ё', 'е')
+        TextFold.fold(text)
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
 
@@ -1665,7 +1664,8 @@ class HourglassMemory(
 
         sticker.reviewPending = sticker.reviewPending || entry == ReviewEntry.FAILURE
 
-        val id = dao.insert(sticker)
+        // Приведённый вид — для поиска (см. Sticker.contentFolded); content не меняется.
+        val id = dao.insert(sticker.copy(contentFolded = TextFold.fold(sticker.content)))
 
         return if (nearTwin == null) SaveOutcome.Saved(id)
         else SaveOutcome.SavedNearDuplicate(id, nearTwin.id, nearTwin.createdAt)
