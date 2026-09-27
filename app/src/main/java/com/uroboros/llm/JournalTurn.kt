@@ -76,6 +76,10 @@ import androidx.room.Query
  *   поднялась бы молча, и обе стороны отчитались бы об успехе. Значение
  *   одинаково во всех строках одной ленты — расхождение внутри таблицы
  *   само по себе признак порчи.
+ * @property selfNote строка состояния агента, ушедшая модели на этом ходе
+ *   отдельным системным сообщением (ConversationJournal.Turn.selfNote); null
+ *   — не уходила. Строкам, легшим до появления столбца, миграция оставляет
+ *   null, и это про них правда: отдельным сообщением оно тогда не уходило.
  */
 @Entity(tableName = "journal_turns")
 data class JournalTurn(
@@ -86,6 +90,7 @@ data class JournalTurn(
     val recordsJson: String,
     val promptTokens: Int = 0,
     val fingerprint: String,
+    val selfNote: String? = null,
 )
 
 /**
