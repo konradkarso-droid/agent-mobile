@@ -4451,6 +4451,7 @@ class MainActivity : AppCompatActivity() {
                         toAgent = address == Coordinates.Address.AGENT,
                         ribbonEmpty = journal.history().isEmpty(),
                         alreadyInRibbon = journal.history().any { it.dreamNote == dreamCandidate },
+                        stored = lastNightTopics.getOrNull(),
                     )
                 val dreamNote = if (dreamRefusal == null) dreamCandidate else null
                 val toldBefore = journal.history().filter { it.dreamNote != null }.map { it.at } +
