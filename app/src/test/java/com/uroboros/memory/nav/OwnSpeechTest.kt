@@ -66,6 +66,29 @@ class OwnSpeechTest {
         assertEquals(listOf(OwnSpeech.Said("Рассказывал про цвета радуги подробно.", 7L)), said)
     }
 
+    @Test
+    fun `слова агента о собеседнике в свою речь не идут`() {
+        val said = OwnSpeech.said(
+            listOf(
+                OwnSpeech.Turn(
+                    "Что у тебя с садом и грядками? Ты давно копаешь землю. Мы с тобой говорили о саде. Люблю думать о грядках и земле.",
+                    "Вожусь с твоим садом и грядками",
+                    emptyList(),
+                    7L,
+                )
+            ),
+        )
+        assertEquals(listOf(OwnSpeech.Said("Люблю думать о грядках и земле.", 7L)), said)
+    }
+
+    @Test
+    fun `неясное лицо остаётся своим`() {
+        val said = OwnSpeech.said(
+            listOf(OwnSpeech.Turn("Тренируемся рисовать радугу каждый вечер.", "", emptyList(), 7L)),
+        )
+        assertEquals(1, said.size)
+    }
+
     // --- Места ---
 
     private fun sticker(id: Long) = Sticker(id = id, content = "запись $id", layer = Layer.GREEN.name)
