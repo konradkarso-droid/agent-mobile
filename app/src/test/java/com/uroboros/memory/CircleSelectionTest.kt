@@ -280,3 +280,21 @@ class CircleSelectionTest {
         assertEquals(0, result.mirrorRemoved)
     }
 }
+
+class OwnSpeechWindowSilenceTest {
+
+    @Test
+    fun `окно своей речи молчит без адреса агент — в круге сказано, что не ищет`() = runBlocking {
+        val dao = FakeStickerDao().apply {
+            onGetExpired = { emptyList() }
+            onGetRanked = { _, _ -> emptyList() }
+            onSearchAnyCase = { _, _, _, _ -> emptyList() }
+            onSearchHiddenAnyCase = { _, _, _, _ -> emptyList() }
+            onCountInLayer = { 0 }
+            onIdentityWall = { emptyList() }
+        }
+        val result = HourglassMemory(dao).getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "рубанок", 5)
+        assertTrue(result.circle.contains(DolmenCircle.OWN_SPEECH_NOT_ASKED))
+        assertEquals(0, result.ownSpeechSeated)
+    }
+}

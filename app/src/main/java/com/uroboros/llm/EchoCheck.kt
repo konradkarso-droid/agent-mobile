@@ -188,6 +188,35 @@ object EchoCheck {
     }
 
     /**
+     * Предложения ответа агента, которые — его собственная речь, а не чужие
+     * слова. Для места поиска «своя речь» (memory.nav.OwnSpeech).
+     *
+     * ЧЕМ ОТЛИЧАЕТСЯ ОТ [check]. Та же мера — разбиение [Sentences], основы
+     * [RiskTrigger.echoStems], доля [MIN_SHARE], не меньше [MIN_STEMS] основ, —
+     * но другой вопрос. Прибору эха пересказ записи — законный ответ, а не эхо,
+     * и он сверяет только с `question`. Здесь пересказ записи и эхо реплики —
+     * одинаково не своё: это слова владельца («Сегодня я отдыхаю — выходной»),
+     * и в «своей речи» они вернули бы чужое лицо. Поэтому предложение не своё,
+     * если оно собрано из слов реплики владельца этого хода или из слов одной
+     * из записей, поданных в этот ход.
+     *
+     * Предложение короче [MIN_STEMS] основ своим не считается: из одной основы
+     * («Помню.») не отличить свою речь от чужой, а искать по нему нечего.
+     *
+     * ЧЕГО НЕ УМЕЕТ: пересказ записи своими словами останется «своим».
+     */
+    fun ownSentences(answer: String, question: String, records: List<String>): List<String> {
+        val questionStems = if (question.isBlank()) emptySet() else RiskTrigger.echoStems(question)
+        val recordStems = records.map { RiskTrigger.echoStems(it) }.filter { it.isNotEmpty() }
+        return Sentences.split(answer).filter { sentence ->
+            val stems = RiskTrigger.echoStems(sentence)
+            stems.size >= MIN_STEMS &&
+                !(questionStems.isNotEmpty() && covered(stems, questionStems, MIN_SHARE)) &&
+                recordStems.none { covered(stems, it, MIN_SHARE) }
+        }
+    }
+
+    /**
      * Строка прибора «Эхо:» к последнему ответу. Печатается всегда: «нет»
      * должно отличаться от «не считалось».
      */

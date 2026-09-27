@@ -49,6 +49,13 @@ object DolmenCircle {
     const val COLD_SEATS = 1
 
     /**
+     * Гарантированных мест у окна своей речи (nav.OwnSpeech). Берётся из мест
+     * окна вопроса: на вопросе к агенту со своей речью у вопроса 2, а не 3;
+     * общий потолок не меняется. Больше одного места своя речь не получает.
+     */
+    const val OWN_SPEECH_SEATS = 1
+
+    /**
      * Из скольких последних реплик владельца берётся тема. Объявленное число,
      * не подобранное: столько обычно длится разговор об одном (то же, что
      * срок двери сна).
@@ -68,6 +75,8 @@ object DolmenCircle {
         val question: List<Sticker>,
         val theme: List<Sticker>,
         val cold: List<Sticker>,
+        /** Сколько мест усажено своей речи: 0 или [OWN_SPEECH_SEATS]. */
+        val ownSpeech: Int = 0,
     ) {
         /** Всё, что уходит в ответ: сперва вопрос, потом тема, потом холод. */
         val all: List<Sticker> get() = question + theme + cold
@@ -85,8 +94,19 @@ object DolmenCircle {
      * Запись, найденная ранним окном, в позднем не считается второй раз —
      * даже если раннее окно само её не усадило. Так одна запись не занимает
      * два места, и тема не возвращает то, что вопрос уже взвесил.
+     *
+     * [ownSpeech] — сколько нашло окно своей речи (только на вопросе к
+     * агенту). Нашло — оно получает одно гарантированное место из мест
+     * вопроса ([OWN_SPEECH_SEATS]), свободных мест сверх него не берёт. Ноль
+     * (по умолчанию) — раздача прежняя.
      */
-    fun seat(limit: Int, question: List<Sticker>, theme: List<Sticker>, cold: List<Sticker>): Seating {
+    fun seat(
+        limit: Int,
+        question: List<Sticker>,
+        theme: List<Sticker>,
+        cold: List<Sticker>,
+        ownSpeech: Int = 0,
+    ): Seating {
         val q = question.distinctBy { it.id }
         val seen = q.mapTo(HashSet()) { it.id }
         val t = theme.filter { it.id !in seen }.distinctBy { it.id }
@@ -96,14 +116,16 @@ object DolmenCircle {
         var left = limit.coerceAtLeast(0)
         fun take(want: Int): Int = minOf(want, left).also { left -= it }
 
-        var qTaken = take(minOf(QUESTION_SEATS, q.size))
+        val ownWant = minOf(OWN_SPEECH_SEATS, ownSpeech.coerceAtLeast(0))
+        var qTaken = take(minOf(QUESTION_SEATS - ownWant, q.size))
+        val oTaken = take(ownWant)
         var tTaken = take(minOf(THEME_SEATS, t.size))
         var cTaken = take(minOf(COLD_SEATS, c.size))
         qTaken += take(q.size - qTaken)
         tTaken += take(t.size - tTaken)
         cTaken += take(c.size - cTaken)
 
-        return Seating(q.take(qTaken), t.take(tTaken), c.take(cTaken))
+        return Seating(q.take(qTaken), t.take(tTaken), c.take(cTaken), oTaken)
     }
 
     /**
@@ -164,14 +186,21 @@ object DolmenCircle {
         coldByTheme: Boolean,
         red: Int,
         ribbonExcluded: Int = 0,
+        ownSpeech: String = OWN_SPEECH_NOT_ASKED,
     ): String {
         val themeName = if (themeWords.isEmpty()) "тема" else "тема (${themeWords.joinToString(", ")})"
         val coldName = if (coldByTheme && cold !is Window.LayerEmpty) "холод по словам темы" else "холод"
         val excludedPart = if (ribbonExcluded > 0) " · реплик ленты в исключении $ribbonExcluded" else ""
         return "Круг: вопрос — ${say(question)} · $themeName — ${say(theme)} · " +
-            "$coldName — ${say(cold)} · красный: $red — в ответ не идут, идут в стену" +
+            "$coldName — ${say(cold)} · $ownSpeech · красный: $red — в ответ не идут, идут в стену" +
             excludedPart
     }
+
+    /** Часть «Круг:» про окно своей речи — печатается всегда, и при нуле. */
+    fun ownSpeechPart(found: Int, seated: Int): String = "своя речь: нашло $found, усажено $seated"
+
+    /** Окно своей речи не искало: вопрос не к агенту или отбор не для ответа. */
+    const val OWN_SPEECH_NOT_ASKED = "своя речь: не ищет — вопрос не к агенту"
 
     /** Строка круга, когда вопроса не было: отбор не собирался. */
     const val NOT_GATHERED = "Круг: не собирался — вопроса не было, показан срез памяти по рангу."

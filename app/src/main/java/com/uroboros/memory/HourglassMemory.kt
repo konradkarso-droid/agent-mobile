@@ -481,6 +481,8 @@ data class ContextResult(
      * мест. Ноль и при адресе не «агент» — там фильтр не действует.
      */
     val mirrorRemoved: Int = 0,
+    /** Сколько мест отдано своей речи (0 или 1) — строки берёт вызывающий. */
+    val ownSpeechSeated: Int = 0,
 )
 
 /**
@@ -856,6 +858,12 @@ class HourglassMemory(
          * По умолчанию «не определён» — отбор как прежде.
          */
         address: Coordinates.Address = Coordinates.Address.UNDEFINED,
+        /**
+         * Сколько нашло окно своей речи (nav.OwnSpeech) — ищет вызывающий, у
+         * которого есть архив ленты. null — окно не искало (вопрос не к
+         * агенту); раздача мест тогда прежняя.
+         */
+        ownSpeechFound: Int? = null,
     ): ContextResult {
         migrateExpired()
 
@@ -931,6 +939,7 @@ class HourglassMemory(
             questionKept,
             themeKept,
             coldKept,
+            ownSpeech = ownSpeechFound ?: 0,
         )
         val result = seating.all
         val coldIds = seating.cold.mapTo(HashSet()) { it.id }
@@ -1018,6 +1027,8 @@ class HourglassMemory(
             coldByTheme = coldByTheme,
             red = dao.countInLayer(Layer.RED.name),
             ribbonExcluded = excluded.texts.size,
+            ownSpeech = ownSpeechFound?.let { DolmenCircle.ownSpeechPart(it, seating.ownSpeech) }
+                ?: DolmenCircle.OWN_SPEECH_NOT_ASKED,
         )
 
         // Строка итога и счёт отсеянных — по окну вопроса, как и прежде: она
@@ -1038,6 +1049,7 @@ class HourglassMemory(
             coldIds = coldIds,
             touches = UserTouches(toMark.size, promptedCount, promptedBy),
             mirrorRemoved = mirrorRemoved,
+            ownSpeechSeated = seating.ownSpeech,
         )
     }
 

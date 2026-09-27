@@ -88,6 +88,8 @@ import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.MirrorFilter
+import com.uroboros.memory.nav.OwnSpeech
+import com.uroboros.memory.nav.PersonKey
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -4202,6 +4204,22 @@ class MainActivity : AppCompatActivity() {
                     journal.history().map { it.question to it.at }, userText, System.currentTimeMillis(),
                 )
                 currentAddress = address
+                // Своя речь агента — окно архива ленты, только на вопрос к
+                // агенту (см. OwnSpeech). Время старого хода — не позже
+                // закрытия разговора (Coordinates.turnTime).
+                val ownSaid =
+                    if (address != Coordinates.Address.AGENT || archive == null) emptyList()
+                    else OwnSpeech.search(
+                        OwnSpeech.said(archive.map { row ->
+                            OwnSpeech.Turn(
+                                answer = row.agentContent,
+                                question = row.question,
+                                records = journalStore.recordTexts(row),
+                                at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+                            )
+                        }),
+                        userText,
+                    )
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
@@ -4210,6 +4228,7 @@ class MainActivity : AppCompatActivity() {
                     excludedTexts = ribbonQuestions + userText,
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
                     address = address,
+                    ownSpeechFound = if (address == Coordinates.Address.AGENT) ownSaid.size else null,
                 )
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
@@ -4248,13 +4267,21 @@ class MainActivity : AppCompatActivity() {
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
                 val recordsAt = System.currentTimeMillis()
+                // Своя речь — после записей и принесённого ассоциацией: индексы
+                // принесённого ниже считаются от начала списка.
+                val ownSeated = ownSaid.take(contextResult.ownSpeechSeated)
+                val ownLines = ownSeated.map { ProvenanceLabels.ownSpeechForModel(it.sentence, it.at, recordsAt) }
                 val allRecords = stickers.map { sticker ->
                     ProvenanceLabels.recordForModel(sticker, recordsAt)
-                }
+                } + ownLines
                 // Пометка «кто → о ком» к строке записи — для раскрытого списка хода.
                 val recordMarks = stickers.indices.associate { i ->
                     val speaker = Coordinates.speakerOf(stickers[i].source)
                     allRecords[i] to Coordinates.mark(speaker, Coordinates.aboutOf(stickers[i].content, speaker))
+                } + ownSeated.indices.associate { i ->
+                    ownLines[i] to Coordinates.mark(
+                        PersonKey.AGENT, Coordinates.aboutOf(ownSeated[i].sentence, PersonKey.AGENT),
+                    )
                 }
                 // Сверка идёт по ТЕКСТАМ записей, а не по готовым строкам
                 // выше: строка несёт провенанс и кавычки, которых правило не
@@ -4293,6 +4320,7 @@ class MainActivity : AppCompatActivity() {
                     (if (associated.isNotEmpty() || doorRecords.isNotEmpty()) {
                         " (по ассоциации: ${associated.size}, через дверь: ${doorRecords.size})"
                     } else "") +
+                    (if (ownLines.isNotEmpty()) " · своей речи: ${ownLines.size}" else "") +
                     (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
                     (if (requestsFiltered > 0) " · отсеяно просьб: $requestsFiltered" else "") +
                     " · дверей открыто: ${behindDoor.size}"

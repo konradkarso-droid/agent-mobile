@@ -81,6 +81,27 @@ object ProvenanceLabels {
         return "$head: «${sticker.content}»."
     }
 
+    /**
+     * Строка своей речи агента для модели (nav.OwnSpeech): «Я говорил в
+     * прошлом разговоре, вчера вечером: «…».». От первого лица агента — по той
+     * же причине, что вся шапка. Время — время хода ([ageForModel]); не
+     * известно — «когда-то». Своя речь ищется только в архиве, то есть всегда
+     * в прошлом эпизоде ([pastEpisode] по умолчанию истина).
+     */
+    fun ownSpeechForModel(
+        sentence: String,
+        at: Long?,
+        now: Long,
+        zone: ZoneId = ZoneId.systemDefault(),
+        pastEpisode: Boolean = true,
+    ): String {
+        val age = at?.let { ageForModel(it, now, zone) } ?: "когда-то"
+        val time = if (pastEpisode) "$PAST_EPISODE, $age" else age
+        return "$OWN_SPEECH_FOR_MODEL $time: «$sentence»."
+    }
+
+    const val OWN_SPEECH_FOR_MODEL = "Я говорил"
+
     /** Приставка записи из прошлого эпизода. */
     const val PAST_EPISODE = "в прошлом разговоре"
 
