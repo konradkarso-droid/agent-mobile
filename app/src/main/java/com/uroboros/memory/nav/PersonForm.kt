@@ -25,8 +25,10 @@ import com.uroboros.util.TextFold
  *  - SECOND: местоимения [SECOND_PRONOUNS]; глагол на -ешь/-ишь (и «-ёшь»,
  *    приведённое к «-ешь»), слово не короче [MIN_SECOND_VERB_LENGTH] букв;
  *  - IMPERATIVE: первое слово предложения похоже на повелительное
- *    (util.ImperativeForm). Это адресат, а не тема: «Назови цвета радуги» —
- *    просьба к собеседнику, а не рассказ о нём, поэтому SECOND не ставится;
+ *    (util.ImperativeForm) или кончается на мягкий знак (см.
+ *    [looksSoftSignImperative]). Это адресат, а не тема: «Назови цвета
+ *    радуги» — просьба к собеседнику, а не рассказ о нём, поэтому SECOND не
+ *    ставится;
  *  - WE_WITH_YOU: «наш…» или «мы/нас/нам/нами» вместе с SECOND в одном
  *    предложении («мы с тобой»). SECOND тогда поглощается;
  *  - UNCLEAR: голое «мы» — местоимение или глагол 1-го лица множественного
@@ -47,8 +49,10 @@ import com.uroboros.util.TextFold
  *    собеседнике», хотя это о мире;
  *  - ирония и чужая речь («он сказал: я устал») — ошибка или UNCLEAR;
  *  - «надеюсь», «я думал» в записи об агенте делают её «об обоих»;
- *  - повелительное — только по первому слову предложения и с пробелами
- *    правила util.ImperativeForm («проверь» не ловится).
+ *  - повелительное — только по первому слову предложения. Мягкий знак даёт
+ *    ложное повелительное у первого слова-существительного или наречия
+ *    («Теперь…», «Семь…») и не ловит повелительное на «-сь» («Брось»), —
+ *    цена правила [looksSoftSignImperative].
  */
 object PersonForm {
 
@@ -113,6 +117,7 @@ object PersonForm {
     const val MIN_VERB_LENGTH = 4
     const val MIN_SECOND_VERB_LENGTH = 5
     const val MIN_WE_VERB_LENGTH = 5
+    const val MIN_SOFT_SIGN_IMPERATIVE_LENGTH = 4
 
     private val NOT_LETTER = Regex("[^\\p{L}]+")
 
@@ -150,13 +155,41 @@ object PersonForm {
             if (bareWe) out += Person.UNCLEAR
         }
         if (first) out += Person.FIRST
-        if (words.isNotEmpty() && ImperativeForm.looksImperative(words.first())) out += Person.IMPERATIVE
+        if (words.isNotEmpty() &&
+            (ImperativeForm.looksImperative(words.first()) || looksSoftSignImperative(words.first()))
+        ) out += Person.IMPERATIVE
         if (pastWithoutPerson && out.none { it == Person.FIRST || it == Person.SECOND || it == Person.WE_WITH_YOU }) {
             out += Person.UNCLEAR
         }
         if (out.isEmpty()) out += Person.NONE
         return out
     }
+
+    /**
+     * Повелительное на мягкий знак («проверь», «ответь», «поставь») — правило
+     * только этого определителя, первого слова предложения.
+     *
+     * Почему здесь, а не в util.ImperativeForm: там список общий со срочностью
+     * запроса, и «-ь» поменял бы её. Здесь ошибка идёт в безопасную сторону:
+     * ложное повелительное у предложения без лиц даёт адрес «не определён», то
+     * есть отбор как до навигации — без зеркала, описания ночи и своей речи.
+     * Пропущенное повелительное, наоборот, делает просьбу вопросом без лица, то
+     * есть вопросом к агенту, и к просьбе приходит описание ночи.
+     *
+     * Исключения нужны не против любой ошибки, а против той, что отнимет у
+     * вопроса к агенту его адрес: безличные вопросы, начатые с таких слов.
+     *  - «-сь» — прошедшее на «-лось» («Снилось что-нибудь?», «Получилось?»):
+     *    без исключения именно вопрос о сне лишился бы адреса «агент». Цена —
+     *    «брось», «садись» не ловятся;
+     *  - «-шь» — второе лицо («знаешь»), его и так ловит SECOND;
+     *  - «-ть», кроме «-еть» — «есть», «опять» («Есть новости?»). «-еть»
+     *    оставлено ради «ответь»; инфинитив на «-еть» первым словом
+     *    («Смотреть…») даёт ложное повелительное, это безопасная сторона.
+     */
+    private fun looksSoftSignImperative(w: String): Boolean =
+        w.length >= MIN_SOFT_SIGN_IMPERATIVE_LENGTH && w.endsWith("ь") &&
+            !w.endsWith("шь") && !w.endsWith("сь") &&
+            (!w.endsWith("ть") || w.endsWith("еть"))
 
     private fun isFirstPersonVerb(w: String): Boolean =
         w.length >= MIN_VERB_LENGTH && !w.endsWith("ому") && !w.endsWith("ему") &&
