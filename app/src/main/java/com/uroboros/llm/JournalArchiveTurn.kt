@@ -69,6 +69,8 @@ import androidx.room.Query
  *   ленты, а не время хода. Времени самого хода в проекте не хранит никто:
  *   [JournalTurn] его не несёт. Так что восстановить, когда именно был
  *   разговор, по архиву нельзя — можно только узнать, когда его закрыли.
+ * @property selfNote строка состояния агента, ушедшая модели на этом ходе
+ *   системным сообщением (см. JournalTurn.selfNote); null — не уходила.
  */
 @Entity(
     tableName = "journal_archive_turns",
@@ -84,6 +86,7 @@ data class JournalArchiveTurn(
     val promptTokens: Int,
     val fingerprint: String,
     val archivedAt: Long,
+    val selfNote: String? = null,
 )
 
 /**
