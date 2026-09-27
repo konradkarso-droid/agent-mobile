@@ -82,6 +82,7 @@ import com.uroboros.memory.dream.DreamPickup
 import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.dream.ConclusionView
+import com.uroboros.memory.desk.DeskView
 import com.uroboros.memory.dream.MirrorChecker
 import com.uroboros.memory.dream.MirrorView
 import com.uroboros.memory.dream.UnpromptedLeaderGauge
@@ -589,6 +590,21 @@ class MainActivity : AppCompatActivity() {
     private suspend fun refreshConclusions() {
         conclusionsLine = runCatching { conclusionView.meter() }
             .getOrElse { "Выводы: не прочиталось — ${it.javaClass.simpleName}" }
+    }
+
+    /** Доска агента, см. Desk. Только чтение. */
+    private val deskView by lazy { DeskView(applicationContext) }
+
+    /**
+     * Строка «Доска:», прочитанная из базы при последнем показе; null — ещё не
+     * читалась. Собирается из базы (см. Desk), поле — только место.
+     */
+    private var deskLine: String? = null
+
+    /** Перечитать строку «Доска:». Сбой чтения называется в самой строке. */
+    private suspend fun refreshDesk() {
+        deskLine = runCatching { deskView.meter() }
+            .getOrElse { "Доска: не прочиталось — ${it.javaClass.simpleName}" }
     }
 
     /**
@@ -1514,6 +1530,9 @@ class MainActivity : AppCompatActivity() {
                 // Выводы — сразу за зеркалом и тоже без кнопок: их сочинила
                 // модель, и они никуда не подаются (см. ConclusionRow).
                 section(conclusionView.section(), headed = true)
+                // Доска — сразу за выводами: собирается и из них, и тоже без
+                // кнопок — пункты не хранятся, вычёркивать нечего (см. Desk).
+                section(runCatching { deskView.section() }.getOrElse { "ДОСКА\nне собралась — ${it.javaClass.simpleName}" }, headed = true)
                 // Облака — после выводов: считаются из записей при открытии
                 // раздела, в модель не идут (см. Clouds).
                 section(cloudsSection(), headed = true)
@@ -2892,6 +2911,7 @@ class MainActivity : AppCompatActivity() {
         group(
             "Сны, любопытство, зеркало",
             dreamsLine, recallLine, mirror, conclusions, curiosityLine(), curiosityAskMeter(),
+            deskLine ?: "Доска: ещё не прочитано",
             AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
             dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
@@ -3822,6 +3842,7 @@ class MainActivity : AppCompatActivity() {
                     refreshSelfLeader()
                     refreshMirror()
                     refreshConclusions()
+                    refreshDesk()
                     renderMetricsPanel()
                 }
             }
@@ -3866,6 +3887,7 @@ class MainActivity : AppCompatActivity() {
             refreshSelfLeader()
             refreshMirror()
             refreshConclusions()
+            refreshDesk()
             renderMetricsPanel()
         }
 
@@ -4902,6 +4924,7 @@ class MainActivity : AppCompatActivity() {
                     // Реплика этого хода могла сбыть вариант зеркала.
                     refreshMirror()
                     refreshConclusions()
+                    refreshDesk()
                     // Ход состоялся: двери стареют на ход, принесённое
                     // этим ходом получает свою (см. DreamDoor).
                     DreamDoor.afterTurn(brought.map { it.id })
