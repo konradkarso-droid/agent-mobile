@@ -3418,112 +3418,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Предлагает поднять сохранённый разговор — если его есть чем поднять.
+     * Поднимает сохранённый разговор сам, без спроса: агент живёт постоянно, и
+     * закрытое приложение для него — кома, а не конец разговора. Закрыть
+     * разговор может только владелец — кнопкой «Начать заново».
      *
-     * Порядок важен: сперва хранилище проверяет отпечаток загрузки, целость
-     * нумерации и сохранность записей, и только потом спрашивают человека.
-     * Наоборот было бы хуже — получить согласие и отказать после него.
+     * Путь подъёма один с телом агента (ConversationTurns.resumeSaved): кто бы
+     * ни поднял процесс, лента поднимается одинаково и не дважды.
      *
      * Ничего не делает при непустой ленте: подъём поверх живого разговора
      * сбил бы нумерацию ходов.
+     *
+     * ЧЕГО НЕ УМЕЕТ: цену подъёма заранее не называет. Обсчитанное движком
+     * начало с диска не поднимается, если сохранённая точка не подошла, и
+     * тогда первый ход после подъёма пересчитывает разговор целиком — при
+     * длинном разговоре это минуты. Что вышло, видно строкой «Точка:».
      */
     private fun maybeOfferRestore() {
         if (!journal.isEmpty) return
-        // Настройка «После комы продолжать разговор сам» (ConversationPrefs):
-        // диалога нет, лента поднимается тем же путём, что у тела агента.
-        if (ConversationPrefs.autoContinue(applicationContext)) {
-            lifecycleScope.launch {
-                journalRestoreLine = when (val result = turns.resumeSaved()) {
-                    is ConversationTurns.Resume.Raised -> "Разговор поднят с диска сам: ходов ${result.count}" +
-                        if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
-                    is ConversationTurns.Resume.Refused -> "Разговор: ${result.reason}"
-                    // Пусто на диске или ленту уже подняло тело агента —
-                    // прежняя строка остаётся.
-                    else -> journalRestoreLine
-                }
-                showRaisedJournal()
-            }
-            return
-        }
         lifecycleScope.launch {
-            when (val result = turns.loadSaved()) {
-                is JournalStore.LoadResult.Empty -> Unit
-                is JournalStore.LoadResult.Refused -> {
-                    journalRestoreLine = "Разговор: ${result.reason}"
-                    renderMetricsPanel()
-                }
-                is JournalStore.LoadResult.Restored ->
-                    showRestoreDialog(result.turns, result.promptTokens)
+            journalRestoreLine = when (val result = turns.resumeSaved()) {
+                is ConversationTurns.Resume.Raised -> "Разговор поднят с диска сам: ходов ${result.count}" +
+                    if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
+                is ConversationTurns.Resume.Refused -> "Разговор: ${result.reason}"
+                // Пусто на диске или ленту уже подняло тело агента —
+                // прежняя строка остаётся.
+                else -> journalRestoreLine
             }
+            showRaisedJournal()
         }
-    }
-
-    /**
-     * Выбор человека: продолжить сохранённый разговор или стереть его.
-     *
-     * ЦЕНА ПОДЪЁМА НАЗВАНА В САМОМ ДИАЛОГЕ. Текст ленты с диска поднимается,
-     * а обсчитанное движком начало — нет: это контрольные точки, они не
-     * написаны. Значит первый ход после подъёма оплачивает пересчёт всего
-     * разговора. Молча отнять у человека минуту нельзя, поэтому и
-     * спрашиваем.
-     *
-     * ОТМЕНИТЬ НЕЛЬЗЯ, и это не строгость. Оставь человек выбор несделанным
-     * — лента в памяти пуста, следующий ход ляжет под нулевым номером
-     * поверх сохранённого, и на диске окажется смесь двух разговоров.
-     * Поэтому исхода ровно два, оба необратимые, и оба названы.
-     */
-    private fun showRestoreDialog(
-        saved: List<ConversationJournal.Turn>,
-        promptTokens: Int,
-    ) {
-        // Спрашиваем ДО вопроса человеку, а поднимаем — после согласия.
-        // Проверка дешёвая: файл либо есть, либо нет. Обещать быстрый первый
-        // ответ и не суметь хуже, чем честно предупредить о пересчёте.
-        val costText = if (llmEngine.hasStateCheckpoint) {
-            "Рядом лежит сохранённое состояние движка. Если оно подойдёт к этому " +
-                "разговору, первый ответ придёт как обычно; если не подойдёт, движок " +
-                "пересчитает разговор целиком, и первый ответ будет заметно дольше. " +
-                "Что вышло — увидите строкой «Точка:» в шторке «Подробно»."
-        } else {
-            "Движку придётся пересчитать его целиком: первый ответ придёт заметно " +
-                "дольше обычного, при длинном разговоре это минуты. Дальше скорость " +
-                "обычная."
-        }
-        // Шов показывается здесь, до выбора: продолжать разговор под другой
-        // стеной безопасно (см. LlmEngine.loadFingerprint), но решать, нужно ли
-        // это, человеку, а для решения ему надо знать, что стена сменилась.
-        val wallText = if (llmEngine.wallChangedAtLoad) {
-            "С прошлого запуска сменилась системная стена — текст, который агент " +
-                "читает перед разговором. Если продолжить, разговор пойдёт под новой: " +
-                "прежние ответы агента писались при старой.\n\n"
-        } else {
-            ""
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Сохранённый разговор")
-            .setMessage(
-                "На диске лежит разговор из ${saved.size} ходов.\n\n" +
-                    wallText +
-                    "Если продолжить, $costText\n\n" +
-                    "Начать заново — значит закрыть этот разговор: его ${saved.size} ходов " +
-                    "уйдут в архив на устройстве, но ни на экран, ни к агенту не вернутся."
-            )
-            .setPositiveButton("Продолжить разговор") { _, _ ->
-                // Лента и следом за ней точка движка — одним путём подъёма
-                // (ConversationTurns.raise); почему точка только следом — там.
-                lifecycleScope.launch {
-                    journalRestoreLine = if (turns.raise(saved, promptTokens)) {
-                        "Разговор поднят с диска: ходов ${saved.size}" +
-                            if (llmEngine.wallChangedAtLoad) " · под новой стеной" else ""
-                    } else {
-                        "Разговор с диска не поднят: лента уже не пуста"
-                    }
-                    showRaisedJournal()
-                }
-            }
-            .setNegativeButton("Начать заново") { _, _ -> archiveSavedConversation() }
-            .setCancelable(false)
-            .show()
     }
 
     /** Лента только что поднята с диска (или не поднята): показать её и исход точки. */
@@ -3540,9 +3462,8 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Закрыть сохранённый, но не поднятый разговор: лента в памяти пуста, её
-     * ходы лежат только на диске и уходят в архив прямо оттуда. Один путь для
-     * «Начать заново» в диалоге «Сохранённый разговор» и одноимённой кнопки
-     * при пустой ленте.
+     * ходы лежат только на диске и уходят в архив прямо оттуда — путь кнопки
+     * «Начать заново» при пустой ленте.
      */
     private fun archiveSavedConversation() {
         // Точка уходит вместе с лентой. Останься она — при следующем
@@ -3935,10 +3856,6 @@ class MainActivity : AppCompatActivity() {
         // один (см. restartBlocked).
         lifecycleScope.launch {
             turns.busy.collect { busy -> binding.buttonRestart.isEnabled = !busy }
-        }
-        binding.checkAutoContinue.isChecked = ConversationPrefs.autoContinue(applicationContext)
-        binding.checkAutoContinue.setOnCheckedChangeListener { _, on ->
-            ConversationPrefs.setAutoContinue(applicationContext, on)
         }
         // Строка «Первым:» приходит от тела агента (AgentService.initiativeLine).
         lifecycleScope.launch {
