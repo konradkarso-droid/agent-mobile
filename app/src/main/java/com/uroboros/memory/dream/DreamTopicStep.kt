@@ -10,8 +10,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
 /**
- * Шаг ночи «темы снов»: у снов ночи (не больше [DreamTopic.MAX_DREAMS])
- * спросить модель тему, проверить и записать принятые в строку ночи
+ * Шаг ночи «темы снов»: спрашивать модель тему снов ночи по порядку
+ * [DreamTopic.newestFirst], пока не принято [DreamTopic.MAX_DREAMS] тем или не
+ * спрошено [DreamTopic.MAX_ATTEMPTS] снов, и записать принятые в строку ночи
  * ([DreamNight.dreamTopics]). Правило целиком — в [DreamTopic]; здесь база,
  * модель и порядок.
  *
@@ -55,7 +56,7 @@ object DreamTopicStep {
         whyNot: () -> String?,
     ): String {
         val stickers = db.stickerDao()
-        val dreams = db.dreamDao().ofNight(nightAt).sortedBy { it.recordIds }
+        val dreams = DreamTopic.newestFirst(db.dreamDao().ofNight(nightAt), { it.ids() }, { it.recordIds })
         if (dreams.isEmpty()) {
             db.dreamDao().setDreamTopics(nightAt, "")
             return DreamTopic.silentOutcome("снов этой ночи нет")
@@ -64,7 +65,7 @@ object DreamTopicStep {
             val records = dream.ids().map { stickers.getById(it) }
             if (records.any { it == null || it.reviewPending || it.rejectedAt != null }) null
             else records.map { it!!.content }
-        }.take(DreamTopic.MAX_DREAMS)
+        }.take(DreamTopic.MAX_ATTEMPTS)
         if (usable.isEmpty()) {
             db.dreamDao().setDreamTopics(nightAt, "")
             return DreamTopic.silentOutcome("во всех снах есть скрытые записи")
@@ -74,6 +75,7 @@ object DreamTopicStep {
         val dropped = mutableListOf<String>()
         var stoppedBy: String? = null
         for (texts in usable) {
+            if (accepted.size >= DreamTopic.MAX_DREAMS) break
             val why = whyNot()
             if (why != null) {
                 stoppedBy = why
