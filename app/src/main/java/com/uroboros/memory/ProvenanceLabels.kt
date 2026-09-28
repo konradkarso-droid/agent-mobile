@@ -73,12 +73,48 @@ object ProvenanceLabels {
         recordEpisode: Int? = null,
         currentEpisode: Int? = null,
     ): String {
-        val age = ageForModel(sticker.createdAt, now, zone)
-        val past = recordEpisode != null && currentEpisode != null && recordEpisode < currentEpisode
-        val time = if (past) "$PAST_EPISODE, $age" else age
+        val time = recordTime(sticker, now, zone, recordEpisode, currentEpisode)
         val who = forModel(sticker.source)
         val head = if (who == UNKNOWN_FOR_MODEL) "Записано $time, источник не записан" else "$who $time"
         return "$head: «${sticker.content}»."
+    }
+
+    /**
+     * Строка развёрнутой записи владельца (memory.nav.Retelling) для модели:
+     * «С твоих слов в прошлом разговоре, вчера днём: ты …». Время и эпизод —
+     * как в [recordForModel]. Без кавычек: это пересказ со стороны агента, а
+     * не цитата — местоимения в [retold] уже повёрнуты.
+     *
+     * Почему «С твоих слов», а не «Твои слова», как у остальных записей
+     * владельца. Замер стендом (модель 3B, вопрос «Что знаешь обо мне?», 24
+     * ответа на вариант): при том же развёрнутом тексте «Твои слова» давали 7
+     * верных ответов, «С твоих слов» — 15; подпись от лица агента («Пересказываю
+     * тебя — …») — 6. Почему так, замер не объясняет — менять подпись только
+     * после нового замера. Пол собеседника подпись не называет (правило в
+     * шапке). Форма без эпизода («С твоих слов вчера днём: …») не мерена.
+     */
+    fun retoldForModel(
+        sticker: Sticker,
+        retold: String,
+        now: Long,
+        zone: ZoneId = ZoneId.systemDefault(),
+        recordEpisode: Int? = null,
+        currentEpisode: Int? = null,
+    ): String = "$RETOLD_FOR_MODEL ${recordTime(sticker, now, zone, recordEpisode, currentEpisode)}: $retold"
+
+    const val RETOLD_FOR_MODEL = "С твоих слов"
+
+    /** Время записи для подписи: возраст и, для прошлого эпизода, приставка [PAST_EPISODE]. */
+    private fun recordTime(
+        sticker: Sticker,
+        now: Long,
+        zone: ZoneId,
+        recordEpisode: Int?,
+        currentEpisode: Int?,
+    ): String {
+        val age = ageForModel(sticker.createdAt, now, zone)
+        val past = recordEpisode != null && currentEpisode != null && recordEpisode < currentEpisode
+        return if (past) "$PAST_EPISODE, $age" else age
     }
 
     /**
