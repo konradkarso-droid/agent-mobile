@@ -74,7 +74,7 @@ abstract class JournalDatabase : RoomDatabase() {
          * При подъёме числа сюда же добавляется миграция: без неё база не
          * откроется (деструктивного отката здесь нет намеренно, см. выше).
          */
-        const val SCHEMA_VERSION = 5
+        const val SCHEMA_VERSION = 6
 
         /**
          * Имя файла. Отличается от `uroboros_memory.db` не только словом:
@@ -189,6 +189,19 @@ abstract class JournalDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Версия 6: столбец `recall` в ленте и в архиве — записи памяти,
+         * ушедшие модели сообщением агента перед репликой
+         * (ConversationJournal.recallOf). NULL у старых строк — правда: у них
+         * записи стоят внутри `userContent`, и так они в модель и уходят.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `journal_turns` ADD COLUMN `recall` TEXT")
+                db.execSQL("ALTER TABLE `journal_archive_turns` ADD COLUMN `recall` TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: JournalDatabase? = null
 
@@ -198,7 +211,7 @@ abstract class JournalDatabase : RoomDatabase() {
                     context.applicationContext,
                     JournalDatabase::class.java,
                     FILE_NAME
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                  .build().also { INSTANCE = it }
             }
         }
