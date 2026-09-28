@@ -6,8 +6,9 @@ import com.uroboros.util.TextFold
 
 /**
  * О ком предложение — ПО ФОРМЕ: местоимения и окончания глаголов, без словаря.
- * Словарная морфология отвергнута сознательно: она потребовала бы второй
- * модели в памяти телефона.
+ * Таблицу глаголов (см. [RetellTable]) определитель лица не использует — она
+ * нужна только развороту смешанных записей; почему там таблица, а не
+ * окончания, — в [Retelling].
  *
  * Лицо здесь — направление, а не человек: [Person.FIRST] — «тот, кто сказал»,
  * [Person.SECOND] — «тот, кому сказано». Кто это на самом деле, решают
@@ -24,9 +25,7 @@ import com.uroboros.util.TextFold
  *    сразу после предлога;
  *  - SECOND: местоимения [SECOND_PRONOUNS]; глагол на -ешь/-ишь (и «-ёшь»,
  *    приведённое к «-ешь»), слово не короче [MIN_SECOND_VERB_LENGTH] букв;
- *  - IMPERATIVE: первое слово предложения похоже на повелительное
- *    (util.ImperativeForm) или кончается на мягкий знак (см.
- *    [looksSoftSignImperative]). Это адресат, а не тема: «Назови цвета
+ *  - IMPERATIVE: первое слово — просьба ([firstWordIsRequest]). Это адресат, а не тема: «Назови цвета
  *    радуги» — просьба к собеседнику, а не рассказ о нём, поэтому SECOND не
  *    ставится;
  *  - WE_WITH_YOU: «наш…» или «мы/нас/нам/нами» вместе с SECOND в одном
@@ -193,15 +192,27 @@ object PersonForm {
             if (bareWe) out += Person.UNCLEAR
         }
         if (first) out += Person.FIRST
-        if (words.isNotEmpty() &&
-            (ImperativeForm.looksImperative(words.first()) || looksSoftSignImperative(words.first()))
-        ) out += Person.IMPERATIVE
+        if (words.isNotEmpty() && isRequestWord(words.first())) out += Person.IMPERATIVE
         if (pastWithoutPerson && out.none { it == Person.FIRST || it == Person.SECOND || it == Person.WE_WITH_YOU }) {
             out += Person.UNCLEAR
         }
         if (out.isEmpty()) out += Person.NONE
         return out
     }
+
+    /**
+     * Первое слово предложения похоже на просьбу: повелительное по окончанию
+     * (util.ImperativeForm) или на мягкий знак ([looksSoftSignImperative]).
+     * Одно правило на определитель лица и разворот (см. [Retelling]).
+     * Слово берётся после util.TextFold, дефис его рвёт («Когда-нибудь» → «когда»).
+     */
+    fun firstWordIsRequest(sentence: String): Boolean {
+        val first = TextFold.fold(sentence).split(NOT_LETTER).firstOrNull { it.isNotEmpty() } ?: return false
+        return isRequestWord(first)
+    }
+
+    private fun isRequestWord(w: String): Boolean =
+        ImperativeForm.looksImperative(w) || looksSoftSignImperative(w)
 
     /**
      * Повелительное на мягкий знак («проверь», «ответь», «поставь») — правило
