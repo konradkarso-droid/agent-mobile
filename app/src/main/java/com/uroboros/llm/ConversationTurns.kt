@@ -243,6 +243,9 @@ class ConversationTurns(
      * @param recordMarks пометки «кто → о ком» к строкам [records] (для экрана).
      * @param dreamNote описание последней ночи — системным сообщением сразу за
      *   строкой о себе, по тем же правилам места; null — не подаётся.
+     * @param recall записи памяти этого хода сообщением агента перед репликой
+     *   (см. [ConversationJournal.recallOf]); null — записей нет. Сторож места
+     *   считает его вместе с [content].
      * @param onAccepted обе проверки края пройдены, реплика сейчас уйдёт.
      * @param onStarted выдача начинается в момент `at`; `engineReturn` — строка
      *   о возврате движка после чужой работы или null, если возврата не было.
@@ -257,6 +260,7 @@ class ConversationTurns(
         selfNote: String? = null,
         recordMarks: Map<String, String> = emptyMap(),
         dreamNote: String? = null,
+        recall: String? = null,
         onAccepted: () -> Unit = {},
         onStarted: (at: Long, engineReturn: String?) -> Unit = { _, _ -> },
         onEvent: (GenerationEvent) -> Unit = {},
@@ -264,7 +268,7 @@ class ConversationTurns(
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, selfNote, recordMarks, dreamNote, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
+            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -281,14 +285,15 @@ class ConversationTurns(
         selfNote: String?,
         recordMarks: Map<String, String>,
         dreamNote: String?,
+        recall: String?,
         onAccepted: () -> Unit,
         onStarted: (at: Long, engineReturn: String?) -> Unit,
         onEvent: (GenerationEvent) -> Unit,
         afterSend: suspend () -> Unit,
         onClosed: (Int) -> Unit,
     ): Outcome {
-        gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT)?.let { return it }
-        val messages = journal.messagesFor(content, selfNote, dreamNote)
+        gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall)?.let { return it }
+        val messages = journal.messagesFor(content, selfNote, dreamNote, recall)
         onAccepted()
 
         // Движок брал кто-то другой — разбор памяти или цикл, — и разговора в
@@ -375,6 +380,7 @@ class ConversationTurns(
                     at = startMs,
                     dreamNote = dreamNote,
                     marks = recordMarks,
+                    recall = recall,
                 )
                 appended = true
                 onClosed(journal.history().lastIndex)
@@ -441,15 +447,23 @@ class ConversationTurns(
          * цене: первое закрывает разговор, второе просит сократить одно
          * сообщение.
          *
-         * Меряется вся реплика, а не набранный вопрос: в движок уходит [content]
-         * вместе с подложенными записями.
+         * Меряется всё, что этот ход добавит, а не набранный вопрос: в движок
+         * уходит [content] и перед ним [recall] — записи памяти голосом агента
+         * (ConversationJournal.recallOf). Знаки считаются вместе, одним числом.
          *
          * @return [Outcome.JournalFull], [Outcome.TooLong] или null — можно.
          */
-        fun gate(journal: ConversationJournal, content: String, contextSize: Int, answerLimit: Int): Outcome? {
+        fun gate(
+            journal: ConversationJournal,
+            content: String,
+            contextSize: Int,
+            answerLimit: Int,
+            recall: String? = null,
+        ): Outcome? {
             if (journal.roomLeft(contextSize, answerLimit) <= 0) return Outcome.JournalFull
             val maxChars = journal.maxContentChars(contextSize, answerLimit)
-            if (content.length > maxChars) return Outcome.TooLong(content.length, maxChars)
+            val chars = content.length + (recall?.length ?: 0)
+            if (chars > maxChars) return Outcome.TooLong(chars, maxChars)
             return null
         }
     }
