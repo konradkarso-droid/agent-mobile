@@ -152,5 +152,9 @@ class MirrorFilterTest {
             "адрес не определён · снято смешанных: 2 · разворот: таблица загружается",
             MirrorFilter.meterLine(Address.UNDEFINED, 2, 0, loading),
         )
+        assertEquals(
+            "адрес — владелец · снято смешанных: 3 · разворот: выключен",
+            MirrorFilter.meterLine(Address.OWNER, 3, 0, RetellHolder.State.Off),
+        )
     }
 }
