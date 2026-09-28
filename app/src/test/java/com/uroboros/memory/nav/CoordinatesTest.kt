@@ -103,8 +103,62 @@ class CoordinatesTest {
 
     @Test
     fun `оба лица — оба`() {
-        assertEquals(Address.BOTH, Coordinates.questionAddress("Что знаешь обо мне?"))
         assertEquals(Address.BOTH, Coordinates.questionAddress("Что мы с тобой обсуждали?"))
+        assertEquals(Address.BOTH, Coordinates.questionAddress("Ты помнишь, что я говорил?"))
+    }
+
+    // --- Оборот темы: «обо мне», «о тебе», «о нас» ---
+    //
+    // Глагол на -ешь в таком вопросе — рамка (кого спрашивают), а не тема.
+    // Прежде «Что знаешь обо мне?» читался «оба», и на него приходили слова
+    // владельца об агенте, занимая места фактов о владельце.
+
+    @Test
+    fun `обо мне — владелец, даже с глаголом второго лица`() {
+        assertEquals(Address.OWNER, Coordinates.questionAddress("Что знаешь обо мне?"))
+        assertEquals(Address.OWNER, Coordinates.questionAddress("Что ты помнишь про меня?"))
+        assertEquals(Address.OWNER, Coordinates.questionAddress("Что думаешь о моей работе?"))
+    }
+
+    @Test
+    fun `о тебе — агент, даже с первым лицом`() {
+        assertEquals(Address.AGENT, Coordinates.questionAddress("Что я говорил о тебе?"))
+        assertEquals(Address.AGENT, Coordinates.questionAddress("Расскажи про тебя"))
+    }
+
+    @Test
+    fun `о нас или оба оборота — оба`() {
+        assertEquals(Address.BOTH, Coordinates.questionAddress("Что знаешь о нас?"))
+        assertEquals(Address.BOTH, Coordinates.questionAddress("Что помнишь обо мне и о тебе?"))
+        assertEquals(Address.BOTH, Coordinates.questionAddress("Что знаешь о наших планах?"))
+    }
+
+    @Test
+    fun `без оборота темы правило прежнее`() {
+        assertEquals(Address.AGENT, Coordinates.questionAddress("Что нового у тебя?"))
+        assertEquals(Address.OWNER, Coordinates.questionAddress("Как меня зовут?"))
+        assertEquals(Address.AGENT, Coordinates.questionAddress("Что знаешь о себе?"))
+        assertEquals(Address.AGENT, Coordinates.questionAddress("А про чай?"))
+    }
+
+    // --- Адрес последнего хода ленты — для прибора ---
+
+    @Test
+    fun `адрес последнего хода считается с его прошлыми вопросами`() {
+        val history = listOf("Как меня зовут?" to 0L, "А про чай?" to 30_000L)
+        assertEquals(Address.OWNER, Coordinates.lastRibbonAddress(history, 60_000L))
+    }
+
+    @Test
+    fun `ход агента первым в конце ленты пропускается`() {
+        val history = listOf("Что знаешь обо мне?" to 0L, "" to 30_000L)
+        assertEquals(Address.OWNER, Coordinates.lastRibbonAddress(history, 60_000L))
+    }
+
+    @Test
+    fun `нет хода с вопросом — адреса нет`() {
+        assertNull(Coordinates.lastRibbonAddress(emptyList(), 0L))
+        assertNull(Coordinates.lastRibbonAddress(listOf("" to 0L), 0L))
     }
 
     @Test
