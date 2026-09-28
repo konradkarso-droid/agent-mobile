@@ -90,6 +90,8 @@ data class JournalArchiveTurn(
     val at: Long? = null,
     /** Описание последней ночи на этом ходе (см. JournalTurn.dreamNote). */
     val dreamNote: String? = null,
+    /** Записи памяти сообщением агента на этом ходе (см. JournalTurn.recall). */
+    val recall: String? = null,
 )
 
 /**
