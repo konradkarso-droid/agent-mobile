@@ -172,4 +172,21 @@ class PersonFormTest {
     fun `повелительное на -сь не ловится`() {
         assertFalse(Person.IMPERATIVE in persons("Брось мяч"))
     }
+
+    // --- Оборот темы ---
+
+    @Test
+    fun `оборот темы — лицо после предлога темы`() {
+        assertEquals(setOf(PersonForm.Person.FIRST), PersonForm.topicPersons("Что знаешь обо мне?"))
+        assertEquals(setOf(PersonForm.Person.SECOND), PersonForm.topicPersons("Что я говорил про тебя?"))
+        assertEquals(setOf(PersonForm.Person.WE_WITH_YOU), PersonForm.topicPersons("Расскажи о нас"))
+    }
+
+    @Test
+    fun `без оборота темы — пусто`() {
+        assertEquals(emptySet<PersonForm.Person>(), PersonForm.topicPersons("Как меня зовут?"))
+        assertEquals(emptySet<PersonForm.Person>(), PersonForm.topicPersons("Расскажи о себе"))
+        assertEquals(emptySet<PersonForm.Person>(), PersonForm.topicPersons("Что знаешь о радуге?"))
+        assertEquals(emptySet<PersonForm.Person>(), PersonForm.topicPersons("Мне бы про чай"))
+    }
 }
