@@ -39,7 +39,7 @@ class ConversationJournalTest {
     fun `на первом ходе пометки нет`() {
         val journal = ConversationJournal()
 
-        val content = journal.composeUserContent(emptyList(), "Сколько звёзд на небе?")
+        val content = journal.composeUserContent("Сколько звёзд на небе?")
 
         assertEquals("Сколько звёзд на небе?", content)
     }
@@ -54,7 +54,7 @@ class ConversationJournalTest {
             records = emptyList(),
         )
 
-        val content = journal.composeUserContent(emptyList(), "Где обедал воробей?")
+        val content = journal.composeUserContent("Где обедал воробей?")
 
         assertEquals(note + "\n\n" + "Где обедал воробей?", content)
     }
@@ -69,13 +69,13 @@ class ConversationJournalTest {
             records = listOf("Пользователь сказал: «Правило есть.»"),
         )
 
-        val content = journal.composeUserContent(emptyList(), "Где обедал воробей?")
+        val content = journal.composeUserContent("Где обедал воробей?")
 
         assertEquals("Где обедал воробей?", content)
     }
 
     @Test
-    fun `пометка стоит перед записями, а не вместо них`() {
+    fun `записи в реплику не идут, пометка в ней на месте`() {
         val journal = ConversationJournal()
         journal.appendTurn(
             userContent = "Сколько звёзд на небе?",
@@ -84,17 +84,10 @@ class ConversationJournalTest {
             records = emptyList(),
         )
 
-        val content = journal.composeUserContent(
-            listOf("Пользователь сказал: «Правило есть.»"),
-            "Какое правило?",
-        )
+        val content = journal.composeUserContent("Какое правило?")
 
-        assertEquals(
-            note + "\n\n" +
-                "Пользователь сказал: «Правило есть.»" + "\n\n" +
-                "Какое правило?",
-            content,
-        )
+        assertEquals(note + "\n\n" + "Какое правило?", content)
+        assertFalse(content.contains("Правило есть"))
     }
 
     @Test
@@ -109,7 +102,7 @@ class ConversationJournalTest {
             )
         }
 
-        val content = journal.composeUserContent(emptyList(), "четвёртый вопрос")
+        val content = journal.composeUserContent("четвёртый вопрос")
 
         assertEquals(1, content.split(note).size - 1)
     }
@@ -130,7 +123,7 @@ class ConversationJournalTest {
             records = listOf("Пользователь сказал: «Правило есть.»"),
         )
 
-        val content = journal.composeUserContent(emptyList(), "третий вопрос")
+        val content = journal.composeUserContent("третий вопрос")
 
         assertFalse(content.contains(note))
     }
@@ -248,31 +241,28 @@ class ConversationJournalTest {
         )
 
         journal.dropLastTurn()
-        val content = journal.composeUserContent(emptyList(), "следующий вопрос")
+        val content = journal.composeUserContent("следующий вопрос")
 
         assertEquals(note + "\n\n" + "следующий вопрос", content)
     }
 
     @Test
-    fun `предложение спросить стоит до записей и под меткой, вопрос — последним`() {
+    fun `предложение спросить стоит под меткой, вопрос — последним`() {
         val journal = ConversationJournal()
 
         val content = journal.composeUserContent(
-            listOf("Пользователь сказал: «Правило есть.»"),
             "Какое правило?",
             curiosityAsk = "Меня занимает, как связано.",
         )
 
         assertEquals(
-            "[Мне от системы: Меня занимает, как связано.]" + "\n\n" +
-                "Пользователь сказал: «Правило есть.»" + "\n\n" +
-                "Какое правило?",
+            "[Мне от системы: Меня занимает, как связано.]" + "\n\n" + "Какое правило?",
             content,
         )
         assertEquals(
             "без предложения блока нет",
             "Какое правило?",
-            journal.composeUserContent(emptyList(), "Какое правило?", curiosityAsk = null),
+            journal.composeUserContent("Какое правило?", curiosityAsk = null),
         )
     }
 
@@ -360,9 +350,10 @@ class ConversationJournalTest {
     fun `в системную роль не попадает ни реплика, ни записи`() {
         val journal = ConversationJournal()
         journal.appendTurn("Твои слова вчера: «Отдыхаю».\n\nПривет", "Привет!", "Привет", listOf("Твои слова вчера: «Отдыхаю»."))
-        val content = journal.composeUserContent(listOf("Твои слова сегодня: «Я был у стоматолога»."), "Что нового?")
+        val fresh = "Твои слова сегодня: «Я был у стоматолога»."
+        val content = journal.composeUserContent("Что нового?")
 
-        val system = journal.messagesFor(content, "Я очнулся в 15:42.")
+        val system = journal.messagesFor(content, "Я очнулся в 15:42.", null, journal.recallOf(listOf(fresh)))
             .filter { it.first == ConversationJournal.ROLE_SYSTEM }
             .map { it.second }
         assertEquals(listOf("Я очнулся в 15:42."), system)
@@ -396,5 +387,100 @@ class ConversationJournalDreamNoteTest {
         journal.appendTurn("что снилось?", "радуга", "что снилось?", emptyList(), dreamNote = "Этой ночью мне снилось: радуга.", at = 5L)
         assertEquals("Этой ночью мне снилось: радуга.", journal.history()[1].dreamNote)
         assertEquals(5L, journal.history()[1].at)
+    }
+}
+
+class ConversationJournalRecallTest {
+
+    // ЗАПИСИ ГОЛОСОМ АГЕНТА — сообщением агента перед репликой своего хода
+    // (см. ConversationJournal.recallOf). Главная проверка —
+    // [старый ход без вспоминания уходит как был]: лента только дописывается,
+    // и лишнее сообщение у старого хода сдвинуло бы всё обсчитанное начало.
+
+    private val rec1 = "Твои слова вчера: «Правило есть.»."
+    private val rec2 = "Я говорил на днях: «Мне снилось море.»."
+
+    @Test
+    fun `нет записей — нет вспоминания`() {
+        assertEquals(null, ConversationJournal().recallOf(emptyList()))
+    }
+
+    @Test
+    fun `вспоминание — записи строками, в том же порядке`() {
+        assertEquals(rec1 + "\n" + rec2, ConversationJournal().recallOf(listOf(rec1, rec2)))
+    }
+
+    @Test
+    fun `вспоминание стоит сообщением агента за системными и перед репликой`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("Привет", "Привет!", "Привет", emptyList())
+
+        val sent = journal.messagesFor("Какое правило?", "Я очнулся в 15:42.", null, rec1)
+
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_USER to "Привет",
+                ConversationJournal.ROLE_ASSISTANT to "Привет!",
+                ConversationJournal.ROLE_SYSTEM to "Я очнулся в 15:42.",
+                ConversationJournal.ROLE_ASSISTANT to rec1,
+                ConversationJournal.ROLE_USER to "Какое правило?",
+            ),
+            sent,
+        )
+    }
+
+    /** Стену движок ставит, когда первое сообщение не системное; сообщение агента первым быть может. */
+    @Test
+    fun `на пустой ленте вспоминание уходит первым`() {
+        val sent = ConversationJournal().messagesFor("Какое правило?", currentRecall = rec1)
+
+        assertEquals(
+            listOf(ConversationJournal.ROLE_ASSISTANT to rec1, ConversationJournal.ROLE_USER to "Какое правило?"),
+            sent,
+        )
+    }
+
+    @Test
+    fun `вспоминание ложится в ход и уходит на своём месте после подъёма`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("Какое правило?", "Такое.", "Какое правило?", listOf(rec1), recall = rec1)
+
+        assertEquals(rec1, journal.history().single().recall)
+        val raised = ConversationJournal()
+        assertTrue(raised.restore(journal.history()))
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_ASSISTANT to rec1,
+                ConversationJournal.ROLE_USER to "Какое правило?",
+                ConversationJournal.ROLE_ASSISTANT to "Такое.",
+                ConversationJournal.ROLE_USER to "дальше",
+            ),
+            raised.messagesFor("дальше"),
+        )
+    }
+
+    /** Проверка на молчание: старый ход с записями внутри реплики лишнего сообщения не получает. */
+    @Test
+    fun `старый ход без вспоминания уходит как был`() {
+        val journal = ConversationJournal()
+        journal.appendTurn(rec1 + "\n\nКакое правило?", "Такое.", "Какое правило?", listOf(rec1))
+
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_USER to rec1 + "\n\nКакое правило?",
+                ConversationJournal.ROLE_ASSISTANT to "Такое.",
+                ConversationJournal.ROLE_USER to "дальше",
+            ),
+            journal.messagesFor("дальше"),
+        )
+    }
+
+    @Test
+    fun `пустое вспоминание в ход не ложится и не уходит`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("Привет", "Привет!", "Привет", emptyList(), recall = "  ")
+
+        assertEquals(null, journal.history().single().recall)
+        assertEquals(2 + 1, journal.messagesFor("дальше", currentRecall = "").size)
     }
 }
