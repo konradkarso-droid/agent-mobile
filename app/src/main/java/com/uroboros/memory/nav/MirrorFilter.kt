@@ -95,6 +95,8 @@ object MirrorFilter {
             is RetellHolder.State.Ready -> " · развёрнуто: $retold"
             RetellHolder.State.Loading -> " · разворот: таблица загружается"
             is RetellHolder.State.Failed -> " · разворот: таблица не загрузилась: ${retellState.reason}"
+            // Остаётся выключенный разворот (RetellHolder.ENABLED, состояние Off).
+            else -> " · разворот: выключен"
         }
         return when (address) {
             Address.AGENT -> "адрес — агент · снято записей с чужим «я»: $removed"
