@@ -2997,9 +2997,11 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Реплика, ушедшая в модель")
             .setMessage(
-                "Ниже — реплика пользователя целиком, в том виде, в каком она ушла " +
-                    "в движок: пометка об ответе без опоры (если была), записи " +
-                    "памяти, блок сверки, вопрос — через пустую строку.\n\n" +
+                "Ниже — то, что ушло в движок на этом ходе. Если были записи " +
+                    "памяти, первым идёт вспоминание агента — записи его голосом, " +
+                    "отдельным сообщением. За ним реплика пользователя целиком: " +
+                    "пометка об ответе без опоры (если была), блок сверки, вопрос — " +
+                    "через пустую строку.\n\n" +
                     "ЭТО НЕ ВЕСЬ ЗАПРОС. Здесь нет системной стены: она ставится " +
                     "отдельно при загрузке модели и может смениться на лету, без " +
                     "перезагрузки модели. Нет и прошлых ходов разговора: " +
@@ -4419,15 +4421,19 @@ class MainActivity : AppCompatActivity() {
                 // Строки о себе здесь нет: она уходит отдельным сообщением
                 // (selfNote в turns.run ниже).
                 val userContent = journal.composeUserContent(
-                    newRecords, userText, disputeText,
+                    userText, disputeText,
                     curiosityAsk = askedLeader?.let { CuriosityAsk.line(it) },
                 )
+                // Записи — не в реплике, а сообщением агента перед ней (см.
+                // ConversationJournal.recallOf).
+                val recall = journal.recallOf(newRecords)
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
                 // отчёта о прогоне не будет, а реплика уже собрана. Перерисовка
                 // нужна тем же движением — панель обновляется по событиям, и
                 // на обоих ранних выходах её обновить больше некому.
-                lastComposedContent = userContent
+                lastComposedContent = recall?.let { "$COMPOSED_RECALL_HEAD\n$it\n\n$COMPOSED_USER_HEAD\n$userContent" }
+                    ?: userContent
                 renderMetricsPanel()
 
                 // Состав запроса, показанный человеку. Причина появления
@@ -4474,14 +4480,15 @@ class MainActivity : AppCompatActivity() {
                 // сверка сработала, а смотрят на эту строку именно там.
                 val recordsChars =
                     if (newRecords.isEmpty()) 0 else newRecords.joinToString("\n").length
-                // Всё остальное, что не вопрос и не записи: пометка, блок
+                // Всё остальное в реплике, что не вопрос: пометка, блок
                 // сверки, разделители между блоками. ОДНИМ числом намеренно —
                 // разложить его по слагаемым значило бы завести на панели три
                 // счётчика вместо одного, а что именно там лежит, показывает
-                // сама реплика по ссылке ниже. Величина выводится вычитанием,
-                // поэтому отрицательной стать не может: вопрос и записи входят
-                // в реплику целиком.
-                val otherChars = userContent.length - userText.length - recordsChars
+                // сама реплика по ссылке ниже. Записей в реплике нет — они во
+                // вспоминании агента (см. ConversationJournal.recallOf), —
+                // поэтому вычитается только вопрос. Отрицательной величина
+                // стать не может: вопрос входит в реплику целиком.
+                val otherChars = userContent.length - userText.length
                 val otherPart = if (otherChars > 0) " · прочее $otherChars зн." else ""
                 val promptShape = if (newRecords.isEmpty()) {
                     val skipped = allRecords.size
@@ -4621,6 +4628,7 @@ class MainActivity : AppCompatActivity() {
                     selfNote = selfLine,
                     recordMarks = recordMarks,
                     dreamNote = dreamNote,
+                    recall = recall,
                     onAccepted = {
                         // Экран показывает всю ленту плюс начатый ход. Поле НЕ
                         // очищается: разговор копится, а не заменяется. Токены ниже
@@ -5051,6 +5059,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** Подписи двух частей в «Показать реплику целиком», когда записи были. */
+        private const val COMPOSED_RECALL_HEAD = "[Агент вспоминает — отдельным сообщением]"
+        private const val COMPOSED_USER_HEAD = "[Реплика пользователя]"
+
         /** Слово-ссылка в строке «О себе от сборки», см. showBuildSelfDialog. */
         private const val BUILD_SELF_LINK_WORD = "показать"
         private const val BUILD_SELF_LINK = " — $BUILD_SELF_LINK_WORD"
