@@ -2900,10 +2900,22 @@ class MainActivity : AppCompatActivity() {
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
         val conclusions = conclusionsLine ?: "Выводы: ещё не прочитано"
-        // Зеркало в отборе печатается всегда: «ещё не отбирали» отличается от
-        // «адрес не определён».
-        val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: в этом запуске отбора ещё не было"
-        val cloud = cloudLine ?: "Облако адреса: в этом запуске хода ещё не было"
+        // Зеркало в отборе и облако печатаются всегда: пустая строка на экране
+        // не отличалась бы от сломанного прибора.
+        // Строки хода живут, пока открыт экран: после выгрузки или возврата в
+        // приложение экран создаётся заново, и они пусты, хотя ход был. Адрес
+        // пересчитывается по ленте (Coordinates.lastRibbonAddress), а числа
+        // хода — сколько снято, веса облака — не восстановить, и строка так и
+        // говорит. Пуста строка и в начале нового хода: прежние числа стёрты
+        // (clearRunMetrics), адрес пока показан от последнего хода ленты.
+        val ribbonAddress = if (mirrorSelectionLine != null && cloudLine != null) null else
+            Coordinates.lastRibbonAddress(journal.history().map { it.question to it.at }, System.currentTimeMillis())
+        val lostNote = ribbonAddress?.let {
+            "чисел хода на экране нет · адрес последнего хода ленты — " +
+                Coordinates.addressLabel(it) + " (пересчитан по ленте)"
+        } ?: "в ленте нет хода с вопросом владельца"
+        val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: $lostNote"
+        val cloud = cloudLine ?: "Облако адреса: $lostNote"
         group("Память", recordsQuestionsLine, circleLine, mirrorSelection, cloud, touchesLine, selfLeader)
         // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
         // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
