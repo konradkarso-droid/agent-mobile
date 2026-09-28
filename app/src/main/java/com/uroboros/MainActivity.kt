@@ -94,6 +94,7 @@ import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
+import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -2916,7 +2917,12 @@ class MainActivity : AppCompatActivity() {
         } ?: "в ленте нет хода с вопросом владельца"
         val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: $lostNote"
         val cloud = cloudLine ?: "Облако адреса: $lostNote"
-        group("Память", recordsQuestionsLine, circleLine, mirrorSelection, cloud, touchesLine, selfLeader)
+        // Строка таблицы разворота — только когда таблица загружена; пока нет,
+        // причину печатает строка зеркала в отборе.
+        group(
+            "Память", recordsQuestionsLine, circleLine, mirrorSelection, RetellHolder.meterLine(), cloud,
+            touchesLine, selfLeader,
+        )
         // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
         // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
         // отрисовке, как эхо (см. InitiativeHolder).
@@ -3827,6 +3833,15 @@ class MainActivity : AppCompatActivity() {
             renderMetricsPanel()
         }
 
+        // Таблица разворота смешанных записей владельца (nav.RetellHolder):
+        // один раз за процесс, не в главном потоке. Пока она не загружена или
+        // не загрузилась, зеркало снимает смешанные записи, как без разворота;
+        // причина видна в строке «Зеркало в отборе:».
+        lifecycleScope.launch(Dispatchers.IO) {
+            RetellHolder.load { assets.open(RETELL_TABLE_ASSET) }
+            withContext(Dispatchers.Main) { renderMetricsPanel() }
+        }
+
         // Лента переживает пересоздание активности (она одна на процесс), а
         // поле результата — нет: оно создаётся заново и приходит пустым.
         // Поэтому разговор надо отрисовать здесь, иначе после поворота
@@ -4250,8 +4265,11 @@ class MainActivity : AppCompatActivity() {
                 val behindDoor = DreamDoor.openIds().mapNotNull { id ->
                     runCatching { mediator.getRecord(id) }.getOrNull()
                 }
+                // Разворот смешанных записей владельца (nav.Retelling): таблица
+                // берётся один раз на ход — для зеркала и для строк модели.
+                val retell = RetellHolder.table
                 val (doorRecords, doorMirrored) =
-                    MirrorFilter.apply(DreamDoor.pick(behindDoor, contextResult.stickers, userText), address)
+                    MirrorFilter.apply(DreamDoor.pick(behindDoor, contextResult.stickers, userText), address, retell)
                 val answerStickers = contextResult.stickers + doorRecords
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
@@ -4271,10 +4289,7 @@ class MainActivity : AppCompatActivity() {
                 // Принесённое встаёт после записей ответа, как записи двери.
                 val answerIds = answerStickers.map { it.id }.toSet()
                 val dreamOffer = dreamRecall.offer(answerIds)
-                val (associated, associatedMirrored) = MirrorFilter.apply(dreamOffer.brought, address)
-                mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
-                    address, contextResult.mirrorRemoved + doorMirrored + associatedMirrored,
-                )
+                val (associated, associatedMirrored) = MirrorFilter.apply(dreamOffer.brought, address, retell)
                 val stickers = answerStickers + associated
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
@@ -4294,13 +4309,30 @@ class MainActivity : AppCompatActivity() {
                     closures = archive.orEmpty().map { it.archivedAt }.distinct(),
                 )
                 val currentEpisode = episodeClock.episodeAt(recordsAt)
+                // Смешанная запись владельца идёт пересказом, со стороны агента
+                // (MirrorFilter.retold); сама запись не меняется — счёт пользы,
+                // пометка «кто → о ком» и сны берут её текст как есть.
+                var retoldCount = 0
                 val allRecords = stickers.map { sticker ->
-                    ProvenanceLabels.recordForModel(
-                        sticker, recordsAt,
-                        recordEpisode = episodeClock.episodeAt(sticker.createdAt),
-                        currentEpisode = currentEpisode,
-                    )
+                    val recordEpisode = episodeClock.episodeAt(sticker.createdAt)
+                    val retold = MirrorFilter.retold(sticker, address, retell)
+                    if (retold != null) {
+                        retoldCount++
+                        ProvenanceLabels.retoldForModel(
+                            sticker, retold, recordsAt,
+                            recordEpisode = recordEpisode, currentEpisode = currentEpisode,
+                        )
+                    } else {
+                        ProvenanceLabels.recordForModel(
+                            sticker, recordsAt,
+                            recordEpisode = recordEpisode, currentEpisode = currentEpisode,
+                        )
+                    }
                 } + ownLines
+                mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
+                    address, contextResult.mirrorRemoved + doorMirrored + associatedMirrored,
+                    retoldCount, RetellHolder.state,
+                )
                 // Пометка «кто → о ком» к строке записи — для раскрытого списка хода.
                 val recordMarks = stickers.indices.associate { i ->
                     val speaker = Coordinates.speakerOf(stickers[i].source)
@@ -5072,6 +5104,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** Таблица глаголов для разворота (nav.RetellTable) в app/src/main/assets. */
+        private const val RETELL_TABLE_ASSET = "verb_person_pairs.txt"
         /** Подписи двух частей в «Показать реплику целиком», когда записи были. */
         private const val COMPOSED_RECALL_HEAD = "[Агент вспоминает — отдельным сообщением]"
         private const val COMPOSED_USER_HEAD = "[Реплика пользователя]"
