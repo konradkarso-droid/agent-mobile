@@ -136,6 +136,11 @@ object Coordinates {
     /**
      * Адрес вопроса от точки отправления (на экране говорит владелец, отвечает
      * агент):
+     *  - есть оборот темы («обо мне», «про тебя», «о нас» — PersonForm.topicPersons)
+     *    → адрес по нему, лица остального вопроса не смотрятся: в «Что знаешь
+     *    обо мне?» глагол «знаешь» — рамка вопроса, а не его тема. «Обо мне» →
+     *    владелец, «о тебе» → агент, оба оборота или «о нас» → оба;
+     *  - иначе по лицам всего вопроса (PersonForm.of):
      *  - SECOND → агент; FIRST без SECOND → владелец; оба или «мы с тобой» → оба;
      *  - только повелительное → не определён: это просьба, а не вопрос о ком-то;
      *  - «не ясно» (голое «мы», прошедшее без местоимения) → не определён:
@@ -151,6 +156,16 @@ object Coordinates {
      * @param previous адрес прошлого вопроса владельца В ТОМ ЖЕ ЭПИЗОДЕ, или null.
      */
     fun questionAddress(question: String, previous: Address? = null, place: Place = Place.SCREEN): Address {
+        val topic = PersonForm.topicPersons(question)
+        if (topic.isNotEmpty()) {
+            val owner = PersonForm.Person.FIRST in topic
+            val agent = PersonForm.Person.SECOND in topic
+            return when {
+                PersonForm.Person.WE_WITH_YOU in topic || (owner && agent) -> Address.BOTH
+                owner -> Address.OWNER
+                else -> Address.AGENT
+            }
+        }
         val form = PersonForm.of(question)
         return when {
             form.aboutSpeaker && form.aboutAddressee -> Address.BOTH
@@ -183,6 +198,22 @@ object Coordinates {
         }
         if (Episodes.startsNew(prevAt, now, closedBetween = false)) previous = null
         return questionAddress(question, previous)
+    }
+
+    /**
+     * Адрес последнего хода ленты, начатого владельцем, — пересчётом по
+     * [addressInRibbon] с его же прошлыми вопросами. null — такого хода нет.
+     *
+     * Для прибора: строки хода живут, пока открыт экран, а адрес — чистый
+     * расчёт по ленте, его можно показать и после того, как экран создан
+     * заново. Считается по нынешнему правилу, не по тому, что стояло в момент
+     * хода (см. описание объекта). Время хода неизвестно — берётся [now].
+     */
+    fun lastRibbonAddress(history: List<Pair<String, Long?>>, now: Long): Address? {
+        val last = history.indexOfLast { it.first.isNotBlank() }
+        if (last < 0) return null
+        val (question, at) = history[last]
+        return addressInRibbon(history.subList(0, last), question, at ?: now)
     }
 
     /** Слова адреса для прибора. */
