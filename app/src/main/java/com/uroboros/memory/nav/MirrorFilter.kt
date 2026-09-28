@@ -84,14 +84,6 @@ object MirrorFilter {
         return kept to (records.size - kept.size)
     }
 
-    /** Прежняя строка прибора — пока экран не перешёл на строку с разворотом; уходит следующим коммитом. */
-    fun meterLine(address: Address, removed: Int): String = when (address) {
-        Address.AGENT -> "адрес — агент · снято записей с чужим «я»: $removed"
-        Address.OWNER -> "адрес — владелец · снято смешанных: $removed"
-        Address.BOTH -> "адрес — владелец и агент · снято смешанных: $removed"
-        Address.UNDEFINED -> "адрес не определён · снято смешанных: $removed"
-    }
-
     /**
      * Строка прибора «Зеркало в отборе:». Печатается всегда, и при нулях.
      * [retold] — сколько записей реально ушло модели развёрнутыми в этот ход;
