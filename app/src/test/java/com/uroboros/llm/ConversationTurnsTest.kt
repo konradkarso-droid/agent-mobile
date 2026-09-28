@@ -41,4 +41,16 @@ class ConversationTurnsTest {
             ConversationTurns.gate(j, "x".repeat(max + 1), context, answer),
         )
     }
+
+    /** Записи уходят вспоминанием агента, мимо реплики, — сторож меряет их вместе с ней. */
+    @Test
+    fun `вспоминание считается вместе с репликой`() {
+        val j = journal(1000)
+        val max = j.maxContentChars(context, answer)
+        assertNull(ConversationTurns.gate(j, "x".repeat(max - 10), context, answer))
+        assertEquals(
+            ConversationTurns.Outcome.TooLong(max + 1, max),
+            ConversationTurns.gate(j, "x".repeat(max - 10), context, answer, recall = "y".repeat(11)),
+        )
+    }
 }
