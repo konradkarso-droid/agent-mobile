@@ -201,7 +201,7 @@ class EchoCheckTest {
         )
         val echo = EchoCheck.ofLast(journal.history())!!
         assertTrue(echo.mirror != null && echo.selfRepeat != null)
-        assertEquals("Хорошо.", journal.composeUserContent(emptyList(), "Хорошо."))
+        assertEquals("Хорошо.", journal.composeUserContent("Хорошо."))
     }
 
     /** Пометка об опоре не тронута: после хода без записей она на месте, эха рядом нет. */
@@ -212,7 +212,7 @@ class EchoCheckTest {
         }
         assertEquals(
             ConversationJournal.ANSWER_WITHOUT_SUPPORT + "\n\nХорошо.",
-            journal.composeUserContent(emptyList(), "Хорошо."),
+            journal.composeUserContent("Хорошо."),
         )
     }
 }
