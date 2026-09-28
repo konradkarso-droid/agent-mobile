@@ -4,6 +4,7 @@ import android.util.Log
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.MirrorFilter
+import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.util.TextFold
 
 /**
@@ -928,15 +929,18 @@ class HourglassMemory(
         // (nav.MirrorFilter). Одна запись может найтись в двух окнах — снятые
         // считаются по номерам записей. Только для ответа: зеркало защищает
         // модель, а человек в просмотре памяти видит все свои записи.
+        // Смешанная запись владельца проходит, если доступен разворот (таблица
+        // загружена): модель получит её пересказом (nav.Retelling).
         val mirrorOn = purpose == RetrievalPurpose.ANSWERING_USER
+        val retell = RetellHolder.table
         fun mirrored(found: List<Sticker>): List<Sticker> =
-            if (mirrorOn) MirrorFilter.apply(found, address).first else found
+            if (mirrorOn) MirrorFilter.apply(found, address, retell).first else found
         val questionKept = mirrored(question?.stickers.orEmpty())
         val themeKept = mirrored(theme?.stickers.orEmpty())
         val coldKept = mirrored(cold?.stickers.orEmpty())
         val mirrorRemoved = if (!mirrorOn) 0 else
             (question?.stickers.orEmpty() + theme?.stickers.orEmpty() + cold?.stickers.orEmpty())
-                .filterNot { MirrorFilter.keeps(it, address) }
+                .filterNot { MirrorFilter.keeps(it, address, retell) }
                 .mapTo(HashSet()) { it.id }.size
 
         val seating = DolmenCircle.seat(
