@@ -72,11 +72,22 @@ class RetellTable private constructor(
  *
  * Память, которую таблица занимает на телефоне, не мерена; прибор показывает
  * число пар и время загрузки, чтобы это было видно.
+ *
+ * ВЫКЛЮЧАТЕЛЬ [ENABLED]. Пока он false, таблица не читается, разворот
+ * недоступен и зеркало снимает смешанные записи, как без разворота; прибор
+ * пишет «разворот: выключен». Выключен потому, что стенд на живом ходе показал:
+ * пересказ смешанного предложения-обрывка («вспомню в процессе, - ты понял»)
+ * растит путаницу — модель выдаёт строки стены за слова собеседника. Включать
+ * после правила, какие предложения смешанной записи брать, проверенного
+ * стендом. Сам механизм тесты проверяют на своих таблицах и при выключенном.
  */
 object RetellHolder {
 
+    const val ENABLED = false
+
     sealed class State {
         object Loading : State()
+        object Off : State()
         data class Failed(val reason: String) : State()
         data class Ready(val table: RetellTable, val millis: Long) : State()
     }
@@ -105,6 +116,10 @@ object RetellHolder {
         synchronized(this) {
             if (started) return
             started = true
+        }
+        if (!ENABLED) {
+            state = State.Off
+            return
         }
         val t0 = System.nanoTime()
         state = try {
