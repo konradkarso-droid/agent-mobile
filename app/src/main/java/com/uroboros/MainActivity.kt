@@ -94,6 +94,7 @@ import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
+import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
@@ -577,6 +578,15 @@ class MainActivity : AppCompatActivity() {
      * null — хода в этом запуске не было.
      */
     private var cloudLine: String? = null
+
+    /**
+     * Строка хода «О собеседнике:» к последнему ответу (Portrait.meterLine) и
+     * предложения портрета, как они пошли бы модели. null — хода в этом
+     * запуске не было; строк нет и тогда, когда на этом адресе портрет не
+     * ищется.
+     */
+    private var portraitLine: String? = null
+    private var portraitShown: List<String>? = null
 
     /** Раздел «Выводы» в «Показать» и строка «Выводы:». Только чтение, см. ConclusionView. */
     private val conclusionView by lazy { ConclusionView(applicationContext) }
@@ -2917,12 +2927,17 @@ class MainActivity : AppCompatActivity() {
         } ?: "в ленте нет хода с вопросом владельца"
         val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: $lostNote"
         val cloud = cloudLine ?: "Облако адреса: $lostNote"
+        val portraitMeter = portraitLine ?: "О собеседнике: $lostNote"
         // Строка таблицы разворота — только когда таблица загружена; пока нет,
         // причину печатает строка зеркала в отборе.
         group(
-            "Память", recordsQuestionsLine, circleLine, mirrorSelection, RetellHolder.meterLine(), cloud,
+            "Память", recordsQuestionsLine, circleLine, mirrorSelection, portraitMeter, RetellHolder.meterLine(), cloud,
             touchesLine, selfLeader,
         )
+        // Портрет — отдельной группой, а не в раскрытом списке хода: тот
+        // список говорит, что модель получила, а портрет ей пока не подаётся.
+        // Смешай их — и на экране не отличить поданное от показанного.
+        portraitShown?.let { group("Портрет собеседника — только прибор, модели не подано", *it.toTypedArray()) }
         // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
         // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
         // отрисовке, как эхо (см. InitiativeHolder).
@@ -3114,6 +3129,8 @@ class MainActivity : AppCompatActivity() {
         circleLine = null
         mirrorSelectionLine = null
         cloudLine = null
+        portraitLine = null
+        portraitShown = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
@@ -4256,6 +4273,26 @@ class MainActivity : AppCompatActivity() {
                             Clouds.of(PersonKey.AGENT, sources, now),
                         )
                     }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
+                }
+                // Портрет собеседника — пока только прибор: в модель не идёт
+                // (Portrait). Только чтение базы: записи не греются. Сбой
+                // поиска — словами в строке, ход идёт.
+                if (Portrait.searched(address)) {
+                    val found = runCatching {
+                        Portrait.of(MemoryDatabase.getInstance(applicationContext).stickerDao().getAll())
+                    }
+                    val portraitAt = System.currentTimeMillis()
+                    portraitLine = "О собеседнике: " + Portrait.meterLine(
+                        address, found.getOrNull(), fed = false,
+                        failure = found.exceptionOrNull()?.javaClass?.simpleName,
+                    )
+                    portraitShown = found.getOrNull()?.chosen?.map {
+                        "№${it.recordId} · ${ProvenanceLabels.ageForModel(it.createdAt, portraitAt)}" +
+                            (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
+                    }
+                } else {
+                    portraitLine = "О собеседнике: " + Portrait.meterLine(address, null, fed = false)
+                    portraitShown = null
                 }
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
