@@ -95,6 +95,7 @@ import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
+import com.uroboros.memory.nav.Retelling
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
@@ -2934,10 +2935,11 @@ class MainActivity : AppCompatActivity() {
             "Память", recordsQuestionsLine, circleLine, mirrorSelection, portraitMeter, RetellHolder.meterLine(), cloud,
             touchesLine, selfLeader,
         )
-        // Портрет — отдельной группой, а не в раскрытом списке хода: тот
-        // список говорит, что модель получила, а портрет ей пока не подаётся.
-        // Смешай их — и на экране не отличить поданное от показанного.
-        portraitShown?.let { group("Портрет собеседника — только прибор, модели не подано", *it.toTypedArray()) }
+        // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
+        // и откуда (давность, касания, архив); в раскрытом списке хода — что
+        // из этого ушло модели (строки, уже лежавшие в ленте, второй раз не
+        // уходят).
+        portraitShown?.let { group("Портрет собеседника", *it.toTypedArray()) }
         // Инициатива — сразу за «Первым:»: та пишет, когда владелец молчит,
         // эта говорит, у кого ход, когда он пишет. Считается по ленте при каждой
         // отрисовке, как эхо (см. InitiativeHolder).
@@ -4274,27 +4276,19 @@ class MainActivity : AppCompatActivity() {
                         )
                     }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
                 }
-                // Портрет собеседника — пока только прибор: в модель не идёт
-                // (Portrait). Только чтение базы: записи не греются. Сбой
-                // поиска — словами в строке, ход идёт.
-                if (Portrait.searched(address)) {
-                    val found = runCatching {
-                        Portrait.of(MemoryDatabase.getInstance(applicationContext).stickerDao().getAll())
+                // Портрет собеседника — его слова о себе по провенансу, на
+                // вопрос о нём (Portrait). Только чтение базы: записи не
+                // греются. Сбой поиска — словами в строке прибора, ход идёт
+                // без портрета.
+                val portraitFound: Result<Pair<Portrait.Result, Map<Long, Sticker>>>? =
+                    if (!Portrait.searched(address)) null else runCatching {
+                        val all = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
+                        Portrait.of(all) to all.associateBy { it.id }
                     }
-                    val portraitAt = System.currentTimeMillis()
-                    portraitLine = "О собеседнике: " + Portrait.meterLine(
-                        address, found.getOrNull(), fed = false,
-                        failure = found.exceptionOrNull()?.javaClass?.simpleName,
-                    )
-                    portraitShown = found.getOrNull()?.chosen?.map {
-                        "№${it.recordId} · ${ProvenanceLabels.ageForModel(it.createdAt, portraitAt)}" +
-                            " · касаний ${it.touches}" +
-                            (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
-                    }
-                } else {
-                    portraitLine = "О собеседнике: " + Portrait.meterLine(address, null, fed = false)
-                    portraitShown = null
-                }
+                val portrait = portraitFound?.getOrNull()?.first
+                // Запись из портрета общим отбором этого хода не подаётся
+                // (см. Portrait, «КАК ИДЁТ МОДЕЛИ»).
+                val portraitIds = portrait?.chosen?.mapTo(HashSet()) { it.recordId }.orEmpty()
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
                 // отбору и из холодных слоёв, если вопрос их задевает (см.
@@ -4308,7 +4302,7 @@ class MainActivity : AppCompatActivity() {
                 val retell = RetellHolder.table
                 val (doorRecords, doorMirrored) =
                     MirrorFilter.apply(DreamDoor.pick(behindDoor, contextResult.stickers, userText), address, retell)
-                val answerStickers = contextResult.stickers + doorRecords
+                val answerStickers = (contextResult.stickers + doorRecords).filterNot { it.id in portraitIds }
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
                 // хвост генерации). Причина — сказанным считается то, что
@@ -4328,7 +4322,8 @@ class MainActivity : AppCompatActivity() {
                 val answerIds = answerStickers.map { it.id }.toSet()
                 val dreamOffer = dreamRecall.offer(answerIds)
                 val (associated, associatedMirrored) = MirrorFilter.apply(dreamOffer.brought, address, retell)
-                val stickers = answerStickers + associated
+                val associatedShown = associated.filterNot { it.id in portraitIds }
+                val stickers = answerStickers + associatedShown
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
                 val recordsAt = System.currentTimeMillis()
@@ -4347,35 +4342,76 @@ class MainActivity : AppCompatActivity() {
                     closures = archive.orEmpty().map { it.archivedAt }.distinct(),
                 )
                 val currentEpisode = episodeClock.episodeAt(recordsAt)
-                // Смешанная запись владельца идёт пересказом, со стороны агента
-                // (MirrorFilter.retold); сама запись не меняется — счёт пользы,
-                // пометка «кто → о ком» и сны берут её текст как есть.
+                // Текст записи для модели решает зеркало (MirrorFilter.shown):
+                // на вопрос о собеседнике — без предложений, обращённых к
+                // агенту; смешанная — пересказом, если разворот смешанных
+                // включён. Сама запись не меняется — счёт пользы, пометка «кто →
+                // о ком» и сны берут её текст как есть.
                 var retoldCount = 0
-                val allRecords = stickers.map { sticker ->
+                val stickerLines = stickers.map { sticker ->
                     val recordEpisode = episodeClock.episodeAt(sticker.createdAt)
-                    val retold = MirrorFilter.retold(sticker, address, retell)
-                    if (retold != null) {
+                    val shown = MirrorFilter.shown(sticker, address, retell)
+                    if (shown != null && shown.retold) {
                         retoldCount++
                         ProvenanceLabels.retoldForModel(
-                            sticker, retold, recordsAt,
+                            sticker, shown.text, recordsAt,
                             recordEpisode = recordEpisode, currentEpisode = currentEpisode,
                         )
                     } else {
                         ProvenanceLabels.recordForModel(
-                            sticker, recordsAt,
+                            if (shown == null) sticker else sticker.copy(content = shown.text), recordsAt,
                             recordEpisode = recordEpisode, currentEpisode = currentEpisode,
                         )
                     }
-                } + ownLines
+                }
+                // Строки портрета — пересказом, по таблице разворота мимо
+                // выключателя смешанных (RetellHolder.loaded). Нет таблицы —
+                // портрет модели не подаётся, прибор говорит почему.
+                val portraitTable = RetellHolder.loaded
+                val portraitNotFed: String? = when {
+                    portrait == null -> null
+                    portraitTable == null -> "таблица разворота не готова"
+                    else -> null
+                }
+                val portraitLines = if (portrait == null || portraitTable == null) emptyList() else {
+                    val byId = portraitFound!!.getOrNull()!!.second
+                    portrait.chosen.mapNotNull { line ->
+                        val sticker = byId[line.recordId] ?: return@mapNotNull null
+                        val retold = Retelling.retell(line.sentence, portraitTable).text ?: return@mapNotNull null
+                        ProvenanceLabels.retoldForModel(
+                            sticker, retold, recordsAt,
+                            recordEpisode = episodeClock.episodeAt(sticker.createdAt), currentEpisode = currentEpisode,
+                        )
+                    }
+                }
+                // Портрет первым: так его строки и собираются в сообщение
+                // (Portrait.recall).
+                val allRecords = portraitLines + stickerLines + ownLines
+                if (portraitFound == null) {
+                    portraitLine = "О собеседнике: " + Portrait.meterLine(address, null, fed = false)
+                    portraitShown = null
+                } else {
+                    portraitLine = "О собеседнике: " + Portrait.meterLine(
+                        address, portrait, fed = portraitNotFed == null,
+                        failure = portraitFound.exceptionOrNull()?.javaClass?.simpleName,
+                        whyNotFed = portraitNotFed,
+                    )
+                    portraitShown = portrait?.chosen?.map {
+                        "№${it.recordId} · ${ProvenanceLabels.ageForModel(it.createdAt, recordsAt)}" +
+                            " · касаний ${it.touches}" +
+                            (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
+                    }
+                }
                 mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
                     address, contextResult.mirrorRemoved + doorMirrored + associatedMirrored,
                     retoldCount, RetellHolder.state,
                 )
                 // Пометка «кто → о ком» к строке записи — для раскрытого списка хода.
-                val recordMarks = stickers.indices.associate { i ->
-                    val speaker = Coordinates.speakerOf(stickers[i].source)
-                    allRecords[i] to Coordinates.mark(speaker, Coordinates.aboutOf(stickers[i].content, speaker))
-                } + ownSeated.indices.associate { i ->
+                val recordMarks = portraitLines.associateWith { "владелец → владелец · портрет" } +
+                    stickers.indices.associate { i ->
+                        val speaker = Coordinates.speakerOf(stickers[i].source)
+                        stickerLines[i] to Coordinates.mark(speaker, Coordinates.aboutOf(stickers[i].content, speaker))
+                    } + ownSeated.indices.associate { i ->
                     ownLines[i] to Coordinates.mark(
                         PersonKey.AGENT, Coordinates.aboutOf(ownSeated[i].sentence, PersonKey.AGENT),
                     )
@@ -4435,14 +4471,14 @@ class MainActivity : AppCompatActivity() {
                 // же отсевом. Строки принесённого стоят в allRecords за
                 // записями ответа, в том же порядке.
                 val newLines = newRecords.toHashSet()
-                val broughtNow = associated.filterIndexed { i, _ ->
-                    allRecords[answerStickers.size + i] in newLines
+                val broughtNow = stickers.drop(answerStickers.size).filterIndexed { i, _ ->
+                    stickerLines[answerStickers.size + i] in newLines
                 }
                 val broughtNowIds = broughtNow.mapTo(HashSet()) { it.id }
                 // Сон подан, если хоть одна запись, которую принёс именно
                 // он, ушла в движок.
                 val servedDreams = dreamOffer.picked.filter { p -> p.brought.any { it.id in broughtNowIds } }
-                dreamsLine = DreamRecall.meter(dreamOffer, alreadyInRibbon = associated.size - broughtNow.size)
+                dreamsLine = DreamRecall.meter(dreamOffer, alreadyInRibbon = associatedShown.size - broughtNow.size)
                 // Состояние агента — только когда что-то сдвинулось с прошлого
                 // показа (см. SelfState). Модели оно идёт системным сообщением
                 // перед репликой, но не на пустой ленте (см.
@@ -4509,7 +4545,12 @@ class MainActivity : AppCompatActivity() {
                 )
                 // Записи — не в реплике, а сообщением агента перед ней (см.
                 // ConversationJournal.recallOf).
-                val recall = journal.recallOf(newRecords)
+                // На вопрос о собеседнике — портрет под своей подписью, затем
+                // остальные записи (Portrait.recall); иначе как прежде.
+                val recall = if (portrait == null) journal.recallOf(newRecords) else Portrait.recall(
+                    newRecords, portraitLines.toSet(),
+                    nothing = portrait.chosen.isEmpty() && portraitNotFed == null,
+                )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
                 // отчёта о прогоне не будет, а реплика уже собрана. Перерисовка
