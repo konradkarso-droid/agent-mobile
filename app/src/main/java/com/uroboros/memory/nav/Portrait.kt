@@ -34,9 +34,17 @@ import com.uroboros.util.TextFold
  *     заодно реплики момента, в живой речи его обычно опускают («Да, скоро
  *     ложусь», «Надеюсь, всё получится», «Хочу обсуждать погоду»).
  *
- * ПОРЯДОК: свежие записи первыми (по времени записи), внутри записи —
- * предложения как сказаны. Слой в порядок не входит: остывание портрет не
- * чистит, реплики момента отсекает проверка 3.
+ * ПОРЯДОК — два рода мест, и разведены они намеренно:
+ *  - первые [FRESH] мест — самые свежие записи, по одному предложению с
+ *    каждой: люди меняются, свежее сказанное о себе актуальнее;
+ *  - остальные — по касаниям (Sticker.userMatchCount: сколько раз запись
+ *    совпала со словами реплик собеседника), при равенстве свежие выше:
+ *    факт, к которому разговор возвращается, держится в портрете, даже когда
+ *    он старый.
+ *  Только свежесть вытеснила бы старые устойчивые факты шестёркой последних
+ *  дней; только касания вытеснили бы всё недавно сказанное — у нового касаний
+ *  ещё нет. Слой в порядок не входит: остывание портрет не чистит, реплики
+ *  момента отсекает проверка 3.
  *
  * ПОРТРЕТ ЗАПИСИ НЕ ГРЕЕТ. Здесь только чтение: ни счёт обращений, ни слой не
  * меняются, ни за то, что предложение нашлось, ни за то, что агент его потом
@@ -55,9 +63,13 @@ import com.uroboros.util.TextFold
  *  - «мы», сказанное о себе и других людях («мы в клубе»), снимается вместе с
  *    неясным «мы»;
  *  - время — когда сказано, а не когда это было правдой;
- *  - собеседник о себе в третьем лице («Админ работает…») не узнаётся.
+ *  - собеседник о себе в третьем лице («Админ работает…») не узнаётся;
+ *  - касания считают и подсказанное: собеседник повторил тему, которую
+ *    только что назвал агент, — касание засчитано. Чистый счёт
+ *    (userMatchUnpromptedCount) на молодой памяти почти весь нулевой, опереться
+ *    на него пока нельзя.
  *
- * ЧИСЛА [LIMIT] и [PER_RECORD] объявлены, не измерены. Проверены на ходах
+ * ЧИСЛА [LIMIT], [PER_RECORD] и [FRESH] объявлены, не измерены. Проверены на ходах
  * одного владельца с памятью меньше месяца; перепроверять по прибору
  * «О собеседнике:», когда портрет пойдёт модели.
  *
@@ -71,14 +83,26 @@ object Portrait {
     /** Сколько предложений одной записи идёт модели — не больше. */
     const val PER_RECORD = 2
 
-    /** Предложение портрета. [fromArchive] — запись лежит в фиолетовом слое. */
-    data class Line(val recordId: Long, val sentence: String, val createdAt: Long, val fromArchive: Boolean)
+    /** Сколько мест отдано самым свежим записям (по предложению с каждой). */
+    const val FRESH = 3
+
+    /**
+     * Предложение портрета. [fromArchive] — запись лежит в фиолетовом слое;
+     * [touches] — касания записи (Sticker.userMatchCount).
+     */
+    data class Line(
+        val recordId: Long,
+        val sentence: String,
+        val createdAt: Long,
+        val fromArchive: Boolean,
+        val touches: Int = 0,
+    )
 
     /**
      * Итог поиска: сколько записей собеседника и предложений в них
      * просмотрено, сколько снято каждой проверкой, что прошло (все, свежие
-     * первыми) и что из прошедшего идёт модели ([chosen], в пределах
-     * [LIMIT] и [PER_RECORD]).
+     * первыми) и что из прошедшего идёт модели ([chosen], порядок — в
+     * описании объекта, в пределах [LIMIT] и [PER_RECORD]).
      */
     data class Result(
         val records: Int,
@@ -116,18 +140,29 @@ object Portrait {
                         PersonForm.Person.IMPERATIVE in p ||
                         PersonForm.Person.UNCLEAR in p -> notStatement++
                     !hasFirstPronoun(s.sentence) -> noFirst++
-                    else -> passed += Line(record.id, s.sentence, record.createdAt, record.layer == Layer.PURPLE.name)
+                    else -> passed += Line(
+                        record.id, s.sentence, record.createdAt,
+                        fromArchive = record.layer == Layer.PURPLE.name,
+                        touches = record.userMatchCount,
+                    )
                 }
             }
         }
         return Result(own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed))
     }
 
-    /** Свежие первыми, не больше [PER_RECORD] с записи и [LIMIT] всего. */
+    /**
+     * [FRESH] свежих записей по предложению, затем остальное по касаниям;
+     * не больше [PER_RECORD] с записи и [LIMIT] всего. [passed] — свежие
+     * первыми; сортировка устойчивая, поэтому при равных касаниях свежие
+     * остаются выше.
+     */
     private fun choose(passed: List<Line>): List<Line> {
+        val fresh = passed.distinctBy { it.recordId }.take(FRESH)
+        val rest = passed.filter { it !in fresh }.sortedByDescending { it.touches }
         val perRecord = HashMap<Long, Int>()
         val out = ArrayList<Line>()
-        for (line in passed) {
+        for (line in fresh + rest) {
             if (out.size >= LIMIT) break
             val n = perRecord[line.recordId] ?: 0
             if (n >= PER_RECORD) continue
