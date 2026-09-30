@@ -4288,6 +4288,7 @@ class MainActivity : AppCompatActivity() {
                     )
                     portraitShown = found.getOrNull()?.chosen?.map {
                         "№${it.recordId} · ${ProvenanceLabels.ageForModel(it.createdAt, portraitAt)}" +
+                            " · касаний ${it.touches}" +
                             (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
                     }
                 } else {
