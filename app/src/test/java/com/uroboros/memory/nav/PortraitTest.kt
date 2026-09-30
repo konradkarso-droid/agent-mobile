@@ -116,11 +116,39 @@ class PortraitTest {
                 record(4, "Я работаю по субботам."),
             ),
         )
-        val line = Portrait.meterLine(Address.OWNER, result, fed = false)
+        val line = Portrait.meterLine(Address.OWNER, result, fed = false, whyNotFed = "таблица разворота не готова")
         assertTrue(line, line.contains("обращение к агенту 1"))
         assertTrue(line, line.contains("вопрос/просьба/«мы» 1"))
         assertTrue(line, line.contains("без «я/мой» 1"))
         assertTrue(line, line.contains("в портрет 1"))
-        assertTrue(line, line.contains("только прибор"))
+        assertTrue(line, line.contains("модели не подано — таблица разворота не готова"))
+        assertTrue(Portrait.meterLine(Address.OWNER, result, fed = true).contains("подано модели"))
+    }
+
+    @Test
+    fun `сообщение с записями - портрет под подписью, пустая строка, остальное`() {
+        val p1 = "С твоих слов: ты работаешь по субботам."
+        val g1 = "Твои слова: «Всегда носи с собой полотенце.»."
+        assertEquals(
+            "${Portrait.HEADER}\n$p1\n\n$g1",
+            Portrait.recall(listOf(p1, g1), setOf(p1), nothing = false),
+        )
+    }
+
+    @Test
+    fun `сообщение без новых строк портрета - без подписи`() {
+        val g1 = "Твои слова: «Всегда носи с собой полотенце.»."
+        assertEquals(g1, Portrait.recall(listOf(g1), setOf("уже в ленте"), nothing = false))
+        assertEquals(null, Portrait.recall(emptyList(), emptySet(), nothing = false))
+    }
+
+    @Test
+    fun `пустой портрет - строка ничего не знаю`() {
+        assertEquals(Portrait.NOTHING, Portrait.recall(emptyList(), emptySet(), nothing = true))
+    }
+
+    @Test
+    fun `местоимение в предложном падеже - о моём`() {
+        assertEquals(listOf("В моём клубе фехтуют."), passed("В моём клубе фехтуют."))
     }
 }
