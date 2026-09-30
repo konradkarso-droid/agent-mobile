@@ -66,14 +66,20 @@ class PortraitTest {
     }
 
     @Test
-    fun `свежие первыми, не больше двух с записи и шести всего`() {
-        val records = listOf(
-            record(1, "Я старый. Я очень старый. Я совсем старый.", at = 10),
-            record(2, "Я новый. Я очень новый. Я совсем новый.", at = 20),
-        ) + (3L..8L).map { record(it, "Я запись $it.", at = 5) }
-        val chosen = Portrait.of(records).chosen.map { it.sentence }
+    fun `три свежие записи по предложению, потом по касаниям, не больше двух с записи и шести всего`() {
+        val old = record(1, "Я держу рубанок. Я работаю по субботам. Я фехтую.", at = 1).copy(userMatchCount = 5)
+        val warm = record(2, "Я был у врача.", at = 2).copy(userMatchCount = 1)
+        val fresh = (10L..14L).map { record(it, "Я новость $it. Я ещё новость $it.", at = it) }
+        val chosen = Portrait.of(listOf(old, warm) + fresh).chosen.map { it.sentence }
+        assertEquals(
+            listOf(
+                "Я новость 14.", "Я новость 13.", "Я новость 12.",
+                "Я держу рубанок.", "Я работаю по субботам.",
+                "Я был у врача.",
+            ),
+            chosen,
+        )
         assertEquals(Portrait.LIMIT, chosen.size)
-        assertEquals(listOf("Я новый.", "Я очень новый.", "Я старый.", "Я очень старый."), chosen.take(4))
     }
 
     @Test
