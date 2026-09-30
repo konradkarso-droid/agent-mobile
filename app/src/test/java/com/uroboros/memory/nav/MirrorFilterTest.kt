@@ -39,22 +39,60 @@ class MirrorFilterTest {
     private val table = RetellTable.parse(
         sequenceOf("работаю работаешь", "отдыхаю отдыхаешь", "займусь займёшься")
     )
-    private val notAgent = listOf(Address.OWNER, Address.BOTH, Address.UNDEFINED)
+    private val aboutOwnerAddresses = listOf(Address.OWNER, Address.BOTH)
 
     @Test
-    fun `без разворота смешанная снимается на любой адрес`() {
-        for (a in Address.values()) {
+    fun `без разворота смешанная снимается на адрес агент и не определён`() {
+        for (a in listOf(Address.AGENT, Address.UNDEFINED)) {
             assertFalse(a.name, MirrorFilter.keeps(mixed, a))
             assertFalse(a.name, MirrorFilter.keeps(mixedTwoSentences, a))
         }
     }
 
     @Test
-    fun `с разворотом смешанная владельца проходит на адреса кроме агента`() {
-        for (a in notAgent) {
-            assertTrue(a.name, MirrorFilter.keeps(mixed, a, table))
-            assertTrue(a.name, MirrorFilter.keeps(mixedTwoSentences, a, table))
+    fun `с разворотом смешанная владельца проходит пересказом на адрес не определён`() {
+        assertTrue(MirrorFilter.keeps(mixed, Address.UNDEFINED, table))
+        assertEquals(
+            MirrorFilter.Shown("работаешь над моей памятью.", retold = true),
+            MirrorFilter.shown(mixed, Address.UNDEFINED, table),
+        )
+    }
+
+    // Граница (правило 0): на вопрос о собеседнике из записи владельца уходят
+    // предложения, обращённые к агенту, — с таблицей и без.
+
+    @Test
+    fun `граница снимает запись владельца только из обращений к агенту`() {
+        for (a in aboutOwnerAddresses) for (t in listOf(null, table)) {
+            assertNull(a.name, MirrorFilter.shown(mixed, a, t))
+            assertNull(a.name, MirrorFilter.shown(record(20, "У тебя есть сны. Ты не знаешь цвета радуги?"), a, t))
+            assertNull(a.name, MirrorFilter.shown(record(24, "Хорошо, что помнишь сны. А какие цвета?"), a, t))
         }
+    }
+
+    @Test
+    fun `граница оставляет от записи предложения не к агенту, цитатой`() {
+        for (a in aboutOwnerAddresses) for (t in listOf(null, table)) {
+            assertEquals(a.name, MirrorFilter.Shown("Сегодня отдыхаю.", retold = false), MirrorFilter.shown(mixedTwoSentences, a, t))
+            assertEquals(a.name, MirrorFilter.Shown(aboutOwner.content, retold = false), MirrorFilter.shown(aboutOwner, a, t))
+        }
+    }
+
+    @Test
+    fun `граница не снимает просьбу без местоимения и мы с тобой`() {
+        val advice = record(21, "Всегда носи с собой полотенце.")
+        val us = record(22, "Мы с тобой говорили о саде")
+        for (a in aboutOwnerAddresses) {
+            assertEquals(a.name, advice.content, MirrorFilter.shown(advice, a)?.text)
+            assertEquals(a.name, us.content, MirrorFilter.shown(us, a)?.text)
+        }
+    }
+
+    @Test
+    fun `граница не трогает записи агента и адрес агент`() {
+        val agentAboutOwner = record(23, "Ты любишь чай", SourceKind.AGENT_INFERRED)
+        assertEquals(agentAboutOwner.content, MirrorFilter.shown(agentAboutOwner, Address.OWNER)?.text)
+        assertTrue(MirrorFilter.keeps(aboutAgent, Address.AGENT))
     }
 
     @Test
@@ -73,7 +111,7 @@ class MirrorFilterTest {
     fun `запись владельца только из вопросов и просьб снимается и с разворотом`() {
         val onlyAsks = record(12, "Проверь мою память. Ты помнишь, что я говорил?")
         assertTrue(MirrorFilter.isMixed(onlyAsks.content))
-        for (a in notAgent) assertFalse(a.name, MirrorFilter.keeps(onlyAsks, a, table))
+        assertFalse(MirrorFilter.keeps(onlyAsks, Address.UNDEFINED, table))
     }
 
     @Test
@@ -86,8 +124,8 @@ class MirrorFilterTest {
     }
 
     @Test
-    fun `apply с разворотом не снимает смешанную владельца`() {
-        assertEquals(0, MirrorFilter.apply(listOf(mixed, aboutOwner), Address.OWNER, table).second)
+    fun `apply с разворотом не снимает смешанную владельца на адрес не определён`() {
+        assertEquals(0, MirrorFilter.apply(listOf(mixed, aboutOwner), Address.UNDEFINED, table).second)
     }
 
     @Test
@@ -101,7 +139,7 @@ class MirrorFilterTest {
     @Test
     fun `мы с тобой смешанной не считается`() {
         assertFalse(MirrorFilter.isMixed("Мы с тобой говорили о саде"))
-        assertTrue(MirrorFilter.keeps(record(8, "Мы с тобой говорили о саде"), Address.OWNER))
+        assertTrue(MirrorFilter.keeps(record(8, "Мы с тобой говорили о саде"), Address.UNDEFINED))
     }
 
     @Test
@@ -122,15 +160,18 @@ class MirrorFilterTest {
     fun `строка прибора на каждый адрес при загруженной таблице`() {
         assertEquals("адрес — агент · снято записей с чужим «я»: 2", MirrorFilter.meterLine(Address.AGENT, 2, 0, ready))
         assertEquals(
-            "адрес — владелец · снято смешанных: 0 · развёрнуто: 0",
+            "адрес — владелец · снято границей (обращения к агенту): 0",
             MirrorFilter.meterLine(Address.OWNER, 0, 0, ready),
         )
         assertEquals(
-            "адрес — владелец и агент · снято смешанных: 1 · развёрнуто: 2",
-            MirrorFilter.meterLine(Address.BOTH, 1, 2, ready),
+            "адрес — владелец и агент · снято границей (обращения к агенту): 1",
+            MirrorFilter.meterLine(Address.BOTH, 1, 0, ready),
         )
+        // Таблица загружена, но разворот смешанных выключен (RetellHolder.MIXED):
+        // строка не должна читаться как «развернуть было нечего».
+        assertFalse(RetellHolder.MIXED)
         assertEquals(
-            "адрес не определён · снято смешанных: 0 · развёрнуто: 1",
+            "адрес не определён · снято смешанных: 0 · разворот смешанных: выключен",
             MirrorFilter.meterLine(Address.UNDEFINED, 0, 1, ready),
         )
     }
@@ -141,20 +182,16 @@ class MirrorFilterTest {
         val failed = RetellHolder.State.Failed("FileNotFoundException")
         assertEquals("адрес — агент · снято записей с чужим «я»: 0", MirrorFilter.meterLine(Address.AGENT, 0, 0, failed))
         assertEquals(
-            "адрес — владелец · снято смешанных: 1 · разворот: таблица загружается",
-            MirrorFilter.meterLine(Address.OWNER, 1, 0, loading),
-        )
-        assertEquals(
-            "адрес — владелец и агент · снято смешанных: 0 · разворот: таблица не загрузилась: FileNotFoundException",
-            MirrorFilter.meterLine(Address.BOTH, 0, 0, failed),
-        )
-        assertEquals(
             "адрес не определён · снято смешанных: 2 · разворот: таблица загружается",
             MirrorFilter.meterLine(Address.UNDEFINED, 2, 0, loading),
         )
         assertEquals(
-            "адрес — владелец · снято смешанных: 3 · разворот: выключен",
-            MirrorFilter.meterLine(Address.OWNER, 3, 0, RetellHolder.State.Off),
+            "адрес не определён · снято смешанных: 0 · разворот: таблица не загрузилась: FileNotFoundException",
+            MirrorFilter.meterLine(Address.UNDEFINED, 0, 0, failed),
+        )
+        assertEquals(
+            "адрес не определён · снято смешанных: 3 · разворот: выключен",
+            MirrorFilter.meterLine(Address.UNDEFINED, 3, 0, RetellHolder.State.Off),
         )
     }
 }
