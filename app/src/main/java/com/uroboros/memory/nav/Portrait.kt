@@ -19,11 +19,11 @@ import com.uroboros.util.TextFold
  * КАКОЕ ПРЕДЛОЖЕНИЕ БЕРЁТСЯ. Запись режется на предложения (Sentences.split,
  * через PersonForm.of), и каждое проходит три проверки по порядку; первая
  * не пройденная — причина, по которой оно снято (её и считает прибор):
- *  1. ГРАНИЦА — нет обращения к агенту: ни второго лица («ты», «тебя»,
- *     «твой», глагол второго лица — «запомнишь»), ни «мы с тобой»
- *     (PersonForm.Person.SECOND, WE_WITH_YOU).
- *     Предложение, где собеседник говорит агенту о нём самом («Работаю над
- *     твоей памятью»), малая модель переворачивает и произносит как своё.
+ *  1. ГРАНИЦА — нет обращения к агенту (MirrorFilter.addressesAgent — тот
+ *     же признак, что у общего отбора) и нет «мы с тобой»: портрет — о нём
+ *     самом, а не о них двоих. Предложение, где собеседник говорит агенту о
+ *     нём самом («Работаю над твоей памятью»), малая модель переворачивает и
+ *     произносит как своё.
  *  2. УТВЕРЖДЕНИЕ — не вопрос (кончается на «?»), не просьба (начинается с
  *     повелительного, PersonForm.Person.IMPERATIVE), без «мы», чьё «мы» не
  *     ясно (PersonForm.Person.UNCLEAR).
@@ -69,9 +69,19 @@ import com.uroboros.util.TextFold
  *    (userMatchUnpromptedCount) на молодой памяти почти весь нулевой, опереться
  *    на него пока нельзя.
  *
+ * КАК ИДЁТ МОДЕЛИ. Пересказом со стороны агента («С твоих слов …: ты
+ * работаешь по субботам» — ProvenanceLabels.retoldForModel, разворот
+ * Retelling по таблице RetellHolder.loaded), под подписью [HEADER], первым
+ * абзацем записей хода; строки общего отбора — следующим абзацем ([recall]).
+ * Цитатой («Твои слова: «Я работаю…»») малая модель переворачивает «я»
+ * собеседника в своё — пересказ поворачивает лицо кодом. Таблица не
+ * загружена — портрет модели не подаётся, прибор говорит почему.
+ * Запись, попавшая в портрет, из общего отбора того же хода не подаётся:
+ * одна запись дважды — цитатой и пересказом — только путает.
+ *
  * ЧИСЛА [LIMIT], [PER_RECORD] и [FRESH] объявлены, не измерены. Проверены на ходах
  * одного владельца с памятью меньше месяца; перепроверять по прибору
- * «О собеседнике:», когда портрет пойдёт модели.
+ * «О собеседнике:».
  *
  * Чистый объект: ни базы, ни Android.
  */
@@ -114,6 +124,36 @@ object Portrait {
         val chosen: List<Line>,
     )
 
+    /** Подпись над строками портрета в записях хода. */
+    const val HEADER = "О собеседнике я знаю только это:"
+
+    /**
+     * Строка вместо портрета, когда ни одно предложение собеседника о себе не
+     * прошло: модель говорит «знаю мало» и может спросить, а не заполняет
+     * пустоту строками стены о самом агенте.
+     */
+    const val NOTHING = "О собеседнике я пока ничего не знаю с его слов."
+
+    /**
+     * Сообщение с записями хода (голосом агента): портрет под [HEADER], пустая
+     * строка, остальные записи. [newLines] — строки, которых в ленте ещё нет
+     * (ConversationJournal.unseenRecords), в порядке подачи; из них портретные
+     * — те, что есть в [portraitLines]. Подпись ставится, только если новые
+     * строки портрета есть: ушедшие в ленту раньше лежат выше вместе со своей
+     * подписью. [nothing] — портрет искался и пуст: вместо него [NOTHING].
+     * null — сообщения не будет.
+     */
+    fun recall(newLines: List<String>, portraitLines: Set<String>, nothing: Boolean): String? {
+        val (portrait, rest) = newLines.partition { it in portraitLines }
+        val parts = ArrayList<String>()
+        when {
+            portrait.isNotEmpty() -> parts += (listOf(HEADER) + portrait).joinToString("\n")
+            nothing -> parts += NOTHING
+        }
+        if (rest.isNotEmpty()) parts += rest.joinToString("\n")
+        return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+    }
+
     /** Ищется ли портрет на вопрос с этим адресом. */
     fun searched(address: Address): Boolean = address == Address.OWNER || address == Address.BOTH
 
@@ -135,7 +175,7 @@ object Portrait {
                 sentences++
                 val p = s.persons
                 when {
-                    PersonForm.Person.SECOND in p || PersonForm.Person.WE_WITH_YOU in p -> toAgent++
+                    MirrorFilter.addressesAgent(s) || PersonForm.Person.WE_WITH_YOU in p -> toAgent++
                     s.sentence.trimEnd().endsWith('?') ||
                         PersonForm.Person.IMPERATIVE in p ||
                         PersonForm.Person.UNCLEAR in p -> notStatement++
@@ -181,9 +221,16 @@ object Portrait {
     /**
      * Строка прибора «О собеседнике:». Печатается всегда. [result] — null,
      * если на этом адресе портрет не ищется; [failure] — имя сбоя, если
-     * поиск упал (ход при этом идёт). [fed] — поданы ли строки модели.
+     * поиск упал (ход при этом идёт). [fed] — поданы ли строки модели;
+     * [whyNotFed] — почему нет, если причина известна.
      */
-    fun meterLine(address: Address, result: Result?, fed: Boolean, failure: String? = null): String {
+    fun meterLine(
+        address: Address,
+        result: Result?,
+        fed: Boolean,
+        failure: String? = null,
+        whyNotFed: String? = null,
+    ): String {
         val head = "адрес — ${Coordinates.addressLabel(address)}"
         if (!searched(address)) return "$head · не ищется"
         if (failure != null) return "$head · не посчитался — $failure"
@@ -193,7 +240,7 @@ object Portrait {
             " · снято: обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
             " без «я/мой» ${result.noFirstPronoun}" +
             " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" +
-            (if (fed) " · подано модели" else " · модели не подано — только прибор") +
+            (if (fed) " · подано модели" else " · модели не подано" + (whyNotFed?.let { " — $it" } ?: "")) +
             " · не грелось"
     }
 }
