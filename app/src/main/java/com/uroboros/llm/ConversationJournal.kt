@@ -384,23 +384,37 @@ class ConversationJournal {
      * Системная роль — голос сильнее реплики: фраза собеседника или запись,
      * положенная сюда, заговорила бы голосом системы, а права даёт код, а не
      * сказанное в разговоре.
+     *
+     * [without] — номера ходов, которых в запросе быть не должно; сама лента
+     * не меняется. Нужно второй попытке ответа ([EchoIntercept]): ход-образец,
+     * который модель скопировала, выкидывается из запроса целиком — реплика,
+     * записи, строки о себе и ответ. Правило «системное не первым» считается
+     * по уже собранному, а не по номеру хода: если выкинут первый ход,
+     * системная строка второго иначе встала бы в начало запроса.
+     *
+     * ЧЕГО [without] НЕ ДЕЛАЕТ: не проверяет, что выкидывается конец ленты.
+     * Выкинутый ход сдвигает весь текст за собой, и движок пересчитает от
+     * него до конца (см. [dropLastTurn]); дёшево это лишь тогда, когда
+     * выкидываемое близко к концу. Держать это — дело вызывающего.
      */
     fun messagesFor(
         currentUserContent: String,
         currentSelfNote: String? = null,
         currentDreamNote: String? = null,
         currentRecall: String? = null,
+        without: Set<Int> = emptySet(),
     ): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>(turns.size * 5 + 4)
         turns.forEachIndexed { index, turn ->
-            if (index > 0 && !turn.selfNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.selfNote
-            if (index > 0 && !turn.dreamNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.dreamNote
+            if (index in without) return@forEachIndexed
+            if (out.isNotEmpty() && !turn.selfNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.selfNote
+            if (out.isNotEmpty() && !turn.dreamNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.dreamNote
             if (!turn.recall.isNullOrBlank()) out += ROLE_ASSISTANT to turn.recall
             out += ROLE_USER to turn.userContent
             out += ROLE_ASSISTANT to turn.agentContent
         }
-        if (turns.isNotEmpty() && !currentSelfNote.isNullOrBlank()) out += ROLE_SYSTEM to currentSelfNote
-        if (turns.isNotEmpty() && !currentDreamNote.isNullOrBlank()) out += ROLE_SYSTEM to currentDreamNote
+        if (out.isNotEmpty() && !currentSelfNote.isNullOrBlank()) out += ROLE_SYSTEM to currentSelfNote
+        if (out.isNotEmpty() && !currentDreamNote.isNullOrBlank()) out += ROLE_SYSTEM to currentDreamNote
         if (!currentRecall.isNullOrBlank()) out += ROLE_ASSISTANT to currentRecall
         out += ROLE_USER to currentUserContent
         return out
