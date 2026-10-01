@@ -3047,6 +3047,23 @@ class MainActivity : AppCompatActivity() {
             if (intercept.secondRepeats) add("тоже повтор")
             if (intercept.secondDamage.isNotEmpty()) add("порча «${intercept.secondDamage.joinToString(", ")}»")
         }.joinToString(", ")
+        val third = intercept.third
+        if (third != null) {
+            val list = third.variants.mapIndexed { i, (v, why) ->
+                "№${i + 1} «${oneLine(v)}» — ${why ?: "годен"}"
+            }.joinToString("; ").ifEmpty { "вариантов нет" }
+            val thirdTokens = third.tokens?.let { "$it ток." } ?: "токенов движок не назвал"
+            val dry = if (third.dryFed > 0) "DRY видел ${third.dryFed} ток. прошлых ответов" else "DRY прошлых ответов НЕ видел"
+            val thirdHead = "$head · вторая: $secondFaults → три варианта · " +
+                "${"%.1f".format(third.ms / 1000.0)} с, $thirdTokens, $dry · $list"
+            return if (third.chosen != null) {
+                "$thirdHead · взят годный · отброшено: «${oneLine(rejected ?: "")}»"
+            } else {
+                val kept = if (intercept.replaced) "оставлена вторая, с пометкой" else "оставлен первый ответ"
+                val why = if (third.end == GenerationEnd.COMPLETED) "годного нет" else "выдача не дошла до конца"
+                "$thirdHead · $why — $kept"
+            }
+        }
         if (!intercept.replaced) {
             val why = when {
                 secondFaults.isNotEmpty() -> "вторая не лучше: $secondFaults"
@@ -4888,6 +4905,16 @@ class MainActivity : AppCompatActivity() {
                                 is ConversationTurns.Cause.Damage -> "Испорчено слово — повторная выборка"
                             }
                         )
+                        autoScrollIfAtBottom()
+                    },
+                    onThird = {
+                        // Вторая попытка тоже не годна: её текст убирается, а три
+                        // варианта на экран не идут — ход покажется закрытым,
+                        // когда код выберет вариант. Что выбрано и почему —
+                        // в «Подробно» (строка «Перехват:»).
+                        binding.textResults.text = renderJournal(pendingQuestion = userText)
+                        firstTokenShown = false
+                        showProgress("Подбираю ответ без повтора — три варианта")
                         autoScrollIfAtBottom()
                     },
                 )
