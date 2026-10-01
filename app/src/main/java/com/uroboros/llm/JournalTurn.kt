@@ -89,6 +89,9 @@ import androidx.room.Query
  *   не было или ход лёг до появления столбца, и тогда записи внутри
  *   [userContent]. Строкам до столбца миграция оставляет null, и это про
  *   них правда.
+ * @property rejected первый ответ хода, пойманный перехватом повтора и
+ *   заменённый (ConversationJournal.Turn.rejected — там же, почему в модель
+ *   он не идёт); null — перехвата не было или ход лёг до появления столбца.
  */
 @Entity(tableName = "journal_turns")
 data class JournalTurn(
@@ -103,6 +106,7 @@ data class JournalTurn(
     val at: Long? = null,
     val dreamNote: String? = null,
     val recall: String? = null,
+    val rejected: String? = null,
 )
 
 /**
