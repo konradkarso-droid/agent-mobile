@@ -92,6 +92,8 @@ data class JournalArchiveTurn(
     val dreamNote: String? = null,
     /** Записи памяти сообщением агента на этом ходе (см. JournalTurn.recall). */
     val recall: String? = null,
+    /** Ответ, заменённый перехватом повтора (см. JournalTurn.rejected). */
+    val rejected: String? = null,
 )
 
 /**
