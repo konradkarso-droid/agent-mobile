@@ -226,8 +226,39 @@ class ConversationTurns(
             val generationEnd: GenerationEnd,
             val appended: Boolean,
             val failure: Throwable?,
+            /** Был перехват повтора — что с ним стало; null — не было. Числа выше — первой попытки. */
+            val intercept: Intercept? = null,
         ) : Outcome()
     }
+
+    /**
+     * Перехват повтора на этом ходе ([EchoIntercept]): первый ответ повторил
+     * прошлый, прошла вторая попытка без ходов-образцов.
+     *
+     * @property sentence первое повторённое предложение первого ответа.
+     * @property without номера ходов, выкинутых из запроса второй попытки.
+     * @property secondAnswer текст второй попытки, как выдан (возможно, оборванный).
+     * @property secondEnd чем кончилась вторая попытка.
+     * @property secondMs сколько она шла, от запуска до конца выдачи.
+     * @property secondTokens сколько токенов она выдала.
+     * @property replaced в ленту лёг второй ответ, а первый — отброшенным. false —
+     *   вторая попытка не состоялась (оборвана, сбой, ноль токенов), и в ленту
+     *   лёг первый ответ как есть, без пометки.
+     * @property secondRepeats второй ответ тоже повтор той же мерой. Он всё равно
+     *   остаётся в ленте: честная строка была бы текстом-заглушкой, а их модель
+     *   копирует (стенд 5 окна 56); пометка нужна, чтобы частота тупиков была
+     *   видна на экране.
+     */
+    data class Intercept(
+        val sentence: String,
+        val without: Set<Int>,
+        val secondAnswer: String,
+        val secondEnd: GenerationEnd,
+        val secondMs: Long,
+        val secondTokens: Int,
+        val replaced: Boolean,
+        val secondRepeats: Boolean,
+    )
 
     /**
      * Провести ход: реплика [content] уходит в движок вслед за лентой, ответ
@@ -251,7 +282,11 @@ class ConversationTurns(
      *   о возврате движка после чужой работы или null, если возврата не было.
      * @param onEvent каждое событие выдачи, как есть.
      * @param afterSend реплика ушла в движок и выдача кончилась — до закрытия хода
-     *   в ленте. Зовётся и на нуле токенов: реплика всё равно сказана.
+     *   в ленте. Зовётся и на нуле токенов: реплика всё равно сказана. Зовётся
+     *   один раз — после первой попытки: реплика сказана тогда.
+     * @param onRetry первый ответ пойман на повторе, сейчас начнётся вторая
+     *   попытка; её события пойдут в [onEvent] так же, как первой. Экрану —
+     *   убрать показанный первый ответ, иначе второй допишется к нему.
      */
     suspend fun run(
         content: String,
@@ -265,10 +300,11 @@ class ConversationTurns(
         onStarted: (at: Long, engineReturn: String?) -> Unit = { _, _ -> },
         onEvent: (GenerationEvent) -> Unit = {},
         afterSend: suspend () -> Unit = {},
+        onRetry: (EchoIntercept.Retry) -> Unit = {},
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend) { closedIndex = it }
+            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -290,6 +326,7 @@ class ConversationTurns(
         onStarted: (at: Long, engineReturn: String?) -> Unit,
         onEvent: (GenerationEvent) -> Unit,
         afterSend: suspend () -> Unit,
+        onRetry: (EchoIntercept.Retry) -> Unit,
         onClosed: (Int) -> Unit,
     ): Outcome {
         gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall)?.let { return it }
@@ -333,6 +370,26 @@ class ConversationTurns(
         var failure: Throwable? = null
         var appended = false
         var generationEnd: GenerationEnd? = null
+        var retry: EchoIntercept.Retry? = null
+
+        // Закрыть ход в ленте. Одно место для обеих попыток: правило
+        // дословности ([answer] выше) одно и то же.
+        fun close(agentContent: String, rejected: String?) {
+            journal.appendTurn(
+                userContent = content,
+                agentContent = agentContent,
+                question = question,
+                records = records,
+                selfNote = selfNote,
+                at = startMs,
+                dreamNote = dreamNote,
+                marks = recordMarks,
+                recall = recall,
+                rejected = rejected,
+            )
+            appended = true
+            onClosed(journal.history().lastIndex)
+        }
 
         try {
             engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
@@ -370,22 +427,27 @@ class ConversationTurns(
                 // диск вместе с этим числом. Обнови счётчик после — и в строку
                 // ушло бы значение предыдущего хода, расхождение на один ход,
                 // которое ничем себя не выдаёт.
+                //
+                // Число — первой попытки и при перехвате: запрос второй короче
+                // на выкинутые ходы, а следующий ход пойдёт с полной лентой.
+                // Сторож места ([gate]) должен считать от полной.
                 metrics?.let { journal.notePromptTokens(it.tokensEvaluated) }
-                journal.appendTurn(
-                    userContent = content,
-                    agentContent = answer.toString(),
-                    question = question,
-                    records = records,
-                    selfNote = selfNote,
-                    at = startMs,
-                    dreamNote = dreamNote,
-                    marks = recordMarks,
-                    recall = recall,
-                )
-                appended = true
-                onClosed(journal.history().lastIndex)
+                // Перехват — только у ответа, выданного до конца: оборванный
+                // (сторож, отмена, сбой) показывает не то, что модель хотела
+                // сказать, и второй прогон после обрыва сторожем — тот самый
+                // нагрев, от которого обрывали.
+                retry = if (failure == null && generationEnd == GenerationEnd.COMPLETED) {
+                    EchoIntercept.decide(answer.toString(), question, journal.history())
+                } else {
+                    null
+                }
+                if (retry == null) close(answer.toString(), null)
             }
         }
+
+        // Сюда ход доходит, только если первую попытку не отменили (отмена
+        // брошена выше, и ход уже закрыт первым ответом).
+        val intercept = retry?.let { r -> secondAttempt(r, content, selfNote, dreamNote, recall, question, answer.toString(), onRetry, onEvent, ::close) }
         // Стена ставится в начале запроса разговора (LlmEngine.applyWall), то
         // есть уже случилась или не случилась к этому месту.
         val wallChange = engine.takeAppliedWallChange()
@@ -403,6 +465,77 @@ class ConversationTurns(
             generationEnd = generationEnd!!,
             appended = appended,
             failure = failure,
+            intercept = intercept,
+        )
+    }
+
+    /**
+     * Вторая попытка после перехвата: тот же ход, запрос без ходов-образцов
+     * ([ConversationJournal.messagesFor], `without`). Закрывает ход сам — при
+     * любом исходе, в том числе при отмене.
+     *
+     * ЧТО ЛОЖИТСЯ В ЛЕНТУ. Второй ответ выдан до конца — он, а первый в поле
+     * «отброшенный» (модели не подаётся, см. [ConversationJournal.Turn]). Вторая
+     * попытка оборвана, сбилась или пуста — первый ответ как есть: человек его
+     * уже видел целиком, а оборванный второй ответом не является.
+     *
+     * ЧЕГО НЕ ДЕЛАЕТ:
+     *  - третьей попытки нет. Второй ответ, снова пойманный на повторе, остаётся:
+     *    честная строка вместо него была бы текстом-заглушкой, а их модель
+     *    копирует. Это видно в [Intercept.secondRepeats];
+     *  - сбой второй попытки наружу не бросается: ход состоялся первым ответом,
+     *    сбой назван в [Intercept.secondEnd].
+     */
+    private suspend fun secondAttempt(
+        retry: EchoIntercept.Retry,
+        content: String,
+        selfNote: String?,
+        dreamNote: String?,
+        recall: String?,
+        question: String,
+        first: String,
+        onRetry: (EchoIntercept.Retry) -> Unit,
+        onEvent: (GenerationEvent) -> Unit,
+        close: (String, String?) -> Unit,
+    ): Intercept {
+        // История снимается ДО закрытия хода: мера второго ответа — против тех
+        // же трёх прошлых ответов, что и у первого.
+        val history = journal.history()
+        val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = retry.without)
+        onRetry(retry)
+        val startedAt = System.currentTimeMillis()
+        val second = StringBuilder()
+        var tokens = 0
+        var failed = false
+        var end = GenerationEnd.UNEXPLAINED
+        var replaced = false
+        try {
+            engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
+                if (event is GenerationEvent.Token) {
+                    tokens++
+                    second.append(event.text)
+                }
+                onEvent(event)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            failed = true
+            Log.w(TAG, "вторая попытка сорвалась", e)
+        } finally {
+            end = engine.lastGenerationEnd
+            replaced = tokens > 0 && !failed && end == GenerationEnd.COMPLETED
+            if (replaced) close(second.toString(), first) else close(first, null)
+        }
+        return Intercept(
+            sentence = retry.sentence,
+            without = retry.without,
+            secondAnswer = second.toString(),
+            secondEnd = end,
+            secondMs = System.currentTimeMillis() - startedAt,
+            secondTokens = tokens,
+            replaced = replaced,
+            secondRepeats = replaced && EchoIntercept.decide(second.toString(), question, history) != null,
         )
     }
 
