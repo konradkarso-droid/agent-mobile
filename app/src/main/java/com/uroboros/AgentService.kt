@@ -438,6 +438,12 @@ class AgentService : Service() {
             }
             is ConversationTurns.Outcome.Ran -> outcome
         }
+        // Ход скрыт (ConversationJournal.Hidden): годного ответа нет, в ленту и в
+        // уведомление не идёт ничего. Проверка раньше «ни знака»: токены были.
+        if (ran.hidden) {
+            showInitiative("не написал: годного ответа без повтора и порчи нет — ход скрыт", null)
+            return
+        }
         if (!ran.appended) {
             showInitiative(
                 "модель не выдала ни знака" + (ran.failure?.let { " (сбой: ${it.javaClass.simpleName})" } ?: ""),
@@ -452,7 +458,8 @@ class AgentService : Service() {
         // Оборванное сообщение в ленте остаётся, как у экрана, но уведомлением
         // не уходит: обрывок, присланный на телефон, читался бы как целое.
         val delivery = if (ran.failure == null && ran.generationEnd == GenerationEnd.COMPLETED) {
-            deliver(ran.answer)
+            // Уходит то, что легло в ленту, а не первая попытка (Outcome.Ran.kept).
+            deliver(ran.kept ?: ran.answer)
         } else {
             "уведомления нет: ${objects.llmEngine.getGenerationEndReport()} Сообщение в ленте"
         }
