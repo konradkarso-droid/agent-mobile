@@ -484,3 +484,76 @@ class ConversationJournalRecallTest {
         assertEquals(2 + 1, journal.messagesFor("дальше", currentRecall = "").size)
     }
 }
+
+/**
+ * Скрытый ход (ConversationJournal.Hidden). Ошибка здесь молчалива: скрытый
+ * вопрос или заглушка, попавшие в запрос, выглядят как обычный разговор, а
+ * заглушка становится образцом для копирования.
+ */
+class ConversationJournalHiddenTest {
+
+    private fun journalWithTwoTurns() = ConversationJournal().apply {
+        appendTurn("Привет", "Привет, рад тебя слышать.", "Привет", listOf("запись А"))
+        appendTurn("Как дела?", "Хорошо.", "Как дела?", emptyList())
+    }
+
+    @Test
+    fun `скрытый ход не уходит модели и не лежит в ленте`() {
+        val journal = journalWithTwoTurns()
+        journal.hideTurn("Скрытый вопрос", "повтор", listOf(ConversationJournal.Rejected("первый", "Копия")))
+
+        val sent = journal.messagesFor("Новый вопрос").joinToString("\n") { it.second }
+
+        assertFalse(sent.contains("Скрытый вопрос"))
+        assertFalse(sent.contains(ConversationJournal.STUB))
+        assertFalse(sent.contains("Копия"))
+        assertEquals(2, journal.history().size)
+        assertEquals(2, journal.hidden().single().afterTurn)
+    }
+
+    @Test
+    fun `записи скрытого хода не помечаются уложенными`() {
+        val journal = journalWithTwoTurns()
+        journal.hideTurn("Скрытый вопрос", "повтор", emptyList())
+
+        assertEquals(listOf("запись Б"), journal.unseenRecords(listOf("запись Б")))
+    }
+
+    @Test
+    fun `отрезание хода уносит скрытые ходы после него и только их`() {
+        val journal = journalWithTwoTurns()
+        journal.dropLastTurn()
+        journal.hideTurn("после первого", "повтор", emptyList())
+        journal.appendTurn("Как дела?", "Хорошо.", "Как дела?", emptyList())
+        journal.hideTurn("после второго", "повтор", emptyList())
+        journal.appendTurn("Ещё", "Ответ.", "Ещё", emptyList())
+
+        journal.dropLastTurn()
+        assertEquals(listOf("после первого", "после второго"), journal.hidden().map { it.question })
+
+        journal.dropLastTurn()
+        assertEquals(listOf("после первого"), journal.hidden().map { it.question })
+    }
+
+    @Test
+    fun `последний скрытый убирается, только если стоит последним`() {
+        val journal = journalWithTwoTurns()
+        journal.hideTurn("Скрытый вопрос", "повтор", emptyList())
+        journal.appendTurn("Ещё", "Ответ.", "Ещё", emptyList())
+
+        assertEquals(null, journal.dropLastHidden())
+        journal.dropLastTurn()
+        assertEquals("Скрытый вопрос", journal.dropLastHidden()?.question)
+        assertEquals(2, journal.history().size)
+    }
+
+    @Test
+    fun `закрытие разговора убирает и скрытые ходы`() {
+        val journal = journalWithTwoTurns()
+        journal.hideTurn("Скрытый вопрос", "повтор", emptyList())
+
+        journal.clear()
+
+        assertTrue(journal.hidden().isEmpty())
+    }
+}
