@@ -74,7 +74,7 @@ abstract class JournalDatabase : RoomDatabase() {
          * При подъёме числа сюда же добавляется миграция: без неё база не
          * откроется (деструктивного отката здесь нет намеренно, см. выше).
          */
-        const val SCHEMA_VERSION = 6
+        const val SCHEMA_VERSION = 7
 
         /**
          * Имя файла. Отличается от `uroboros_memory.db` не только словом:
@@ -202,6 +202,19 @@ abstract class JournalDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Версия 7: столбец `rejected` в ленте и в архиве — ответ, пойманный
+         * перехватом повтора и заменённый второй попыткой
+         * (ConversationJournal.Turn.rejected). NULL у старых строк — правда:
+         * перехвата тогда не было.
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `journal_turns` ADD COLUMN `rejected` TEXT")
+                db.execSQL("ALTER TABLE `journal_archive_turns` ADD COLUMN `rejected` TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: JournalDatabase? = null
 
@@ -211,7 +224,7 @@ abstract class JournalDatabase : RoomDatabase() {
                     context.applicationContext,
                     JournalDatabase::class.java,
                     FILE_NAME
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                  .build().also { INSTANCE = it }
             }
         }
