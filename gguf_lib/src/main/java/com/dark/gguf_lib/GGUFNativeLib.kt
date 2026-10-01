@@ -59,6 +59,8 @@ internal object GGUFNativeLib {
     external fun nativeUpdateSamplerParams(paramsJson: String): Boolean
     external fun nativeSetLogitBias(biasJson: String)
     external fun nativeSetConversationGloss(on: Boolean)
+    external fun nativeSetDryHistory(text: String)
+    external fun nativeGetLastDryFed(): Int
 
     external fun nativeGenerateStream(
         prompt: String, maxTokens: Int, callback: StreamCallback,
