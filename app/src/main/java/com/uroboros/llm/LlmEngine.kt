@@ -838,6 +838,13 @@ class LlmEngine(
     /** Стена, стоящая в движке; null — модель не загружена. Под [wallLock]. */
     private var currentWall: String? = null
 
+    /**
+     * Стена, стоящая в движке, — для чтения снаружи; null — модель не загружена.
+     * Детектору порчи (ConversationTurns): слова стены — слова запроса, и имя
+     * агента из стены порчей не считается.
+     */
+    val wallText: String? get() = synchronized(wallLock) { currentWall }
+
     /** Стена, ждущая начала следующего запроса разговора; null — не ждёт. Под [wallLock]. */
     private var pendingWall: String? = null
 
