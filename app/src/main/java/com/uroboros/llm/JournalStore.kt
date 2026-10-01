@@ -247,6 +247,7 @@ class JournalStore(context: Context) {
                     at = row.at,
                     dreamNote = row.dreamNote,
                     recall = row.recall,
+                    rejected = row.rejected,
                 )
             }
 
@@ -299,6 +300,7 @@ class JournalStore(context: Context) {
                         at = turn.at,
                         dreamNote = turn.dreamNote,
                         recall = turn.recall,
+                        rejected = turn.rejected,
                     )
                 )
             }.isSuccess
@@ -422,6 +424,7 @@ class JournalStore(context: Context) {
                                 at = row.at,
                                 dreamNote = row.dreamNote,
                                 recall = row.recall,
+                                rejected = row.rejected,
                             )
                         }
                     )
