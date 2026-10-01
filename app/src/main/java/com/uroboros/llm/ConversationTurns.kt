@@ -215,7 +215,9 @@ class ConversationTurns(
 
         /**
          * Реплика ушла в движок. [appended] — ход лёг в ленту (выдан хотя бы
-         * один токен). [failure] — сбой посреди выдачи; вызывающий бросает его
+         * один токен). [hidden] — ход скрыт: годного ответа лестница не нашла,
+         * в ленту он не лёг, на экране заглушка (ConversationJournal.Hidden);
+         * [appended] тогда false, хотя токены были. [failure] — сбой посреди выдачи; вызывающий бросает его
          * после своих дел, как бросал бы сбой изнутри хода.
          */
         data class Ran(
@@ -228,6 +230,16 @@ class ConversationTurns(
             val failure: Throwable?,
             /** Был перехват (повтор или порча) — что с ним стало; null — не было. Числа выше — первой попытки. */
             val intercept: Intercept? = null,
+            val hidden: Boolean = false,
+            /**
+             * Ответ, легший в ленту, дословно; null — ход не лёг (ноль токенов
+             * или скрыт). При перехвате это НЕ [answer]: [answer] — первая
+             * попытка, а в ленте вторая или вариант. Всё, что судит об ответе
+             * хода после его закрытия (уведомление, вспоминание записей), берёт
+             * этот текст: судить по отброшенному — судить о том, чего агент не
+             * говорил.
+             */
+            val kept: String? = null,
         ) : Outcome()
     }
 
@@ -258,7 +270,8 @@ class ConversationTurns(
      * @property secondTokens сколько токенов она выдала — по отчёту движка; null —
      *   отчёта не пришло. Счёт событий Token токенами не является: движок шлёт
      *   текст пачками, по нескольку токенов в событии.
-     * @property replaced в ленту лёг второй ответ, а первый — отброшенным. false —
+     * @property replaced в ленту лёг второй ответ (или вариант третьей ступени), а
+     *   первый — отброшенным. false у скрытого хода ([Third.hidden]) и когда —
      *   в ленту лёг первый ответ как есть: вторая попытка не состоялась (оборвана,
      *   сбой, ноль токенов) или, при порче, сама оказалась не лучше (см. [secondAttempt]).
      * @property secondRepeats второй ответ — повтор той же мерой, что у прибора эха.
@@ -287,8 +300,10 @@ class ConversationTurns(
      *
      * @property variants варианты по порядку и почему каждый отброшен; null у
      *   причины — вариант годен (взят первый годный).
-     * @property chosen взятый вариант; null — годного не нашлось, в ленте то,
-     *   что было бы без третьей ступени (см. [thirdAttempt]).
+     * @property chosen взятый вариант; null — годного не нашлось (см. [hidden]).
+     * @property hidden годного нет, выдача дошла до конца — ход скрыт
+     *   (ConversationJournal.Hidden). false при [chosen] = null — выдача оборвана
+     *   или сбилась, в ленте то, что было бы без третьей ступени.
      * @property end чем кончилась выдача вариантов.
      * @property ms сколько она шла.
      * @property tokens сколько токенов выдано — по отчёту движка; null — отчёта нет.
@@ -302,6 +317,7 @@ class ConversationTurns(
         val ms: Long,
         val tokens: Int?,
         val dryFed: Int,
+        val hidden: Boolean = false,
     )
 
     /**
@@ -428,6 +444,7 @@ class ConversationTurns(
 
         // Закрыть ход в ленте. Одно место для обеих попыток: правило
         // дословности ([answer] выше) одно и то же.
+        var kept: String? = null
         fun close(agentContent: String, rejected: String?) {
             journal.appendTurn(
                 userContent = content,
@@ -442,7 +459,15 @@ class ConversationTurns(
                 rejected = rejected,
             )
             appended = true
+            kept = agentContent
             onClosed(journal.history().lastIndex)
+        }
+
+        // Скрыть ход: годного ответа нет (см. ConversationJournal.Hidden).
+        var hidden = false
+        fun hide(reason: String, rejected: List<ConversationJournal.Rejected>) {
+            journal.hideTurn(question, reason, rejected)
+            hidden = true
         }
 
         try {
@@ -501,7 +526,7 @@ class ConversationTurns(
 
         // Сюда ход доходит, только если первую попытку не отменили (отмена
         // брошена выше, и ход уже закрыт первым ответом).
-        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, onRetry, onThird, onEvent, ::close) }
+        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, onRetry, onThird, onEvent, ::close, ::hide) }
         // Стена ставится в начале запроса разговора (LlmEngine.applyWall), то
         // есть уже случилась или не случилась к этому месту.
         val wallChange = engine.takeAppliedWallChange()
@@ -520,6 +545,8 @@ class ConversationTurns(
             appended = appended,
             failure = failure,
             intercept = intercept,
+            hidden = hidden,
+            kept = kept,
         )
     }
 
@@ -577,6 +604,7 @@ class ConversationTurns(
         onThird: () -> Unit,
         onEvent: (GenerationEvent) -> Unit,
         close: (String, String?) -> Unit,
+        hide: (String, List<ConversationJournal.Rejected>) -> Unit,
     ): Intercept {
         // История снимается ДО закрытия хода: мера второго ответа — против тех
         // же трёх прошлых ответов, что и у первого.
@@ -632,10 +660,10 @@ class ConversationTurns(
         }
         val secondMs = System.currentTimeMillis() - startedAt
         // Без третьей ступени в ленте лежало бы: при повторе — вторая (с пометкой),
-        // при порче — первая. Это же остаётся, если и третья не найдёт годного.
+        // при порче — первая. Это же остаётся, если третья оборвётся или собьётся.
         val fallback = if (replaced) second.toString() to first else first to null
         val third = if (needThird) {
-            thirdAttempt(cause, content, selfNote, dreamNote, recall, question, history, request, fallback, first, onThird, close)
+            thirdAttempt(cause, content, selfNote, dreamNote, recall, question, history, request, fallback, first, second.toString(), onThird, close, hide)
         } else {
             null
         }
@@ -645,7 +673,8 @@ class ConversationTurns(
             secondEnd = end,
             secondMs = secondMs,
             secondTokens = metrics?.tokensPredicted,
-            replaced = replaced || third?.chosen != null,
+            // Скрытый ход в ленту не лёг вовсе — ни второй ответ, ни первый.
+            replaced = third?.hidden != true && (replaced || third?.chosen != null),
             secondRepeats = repeats,
             secondDamage = damage,
             third = third,
@@ -671,17 +700,23 @@ class ConversationTurns(
      * само ночное зеркало в ответ по-прежнему не пишет, здесь взят только разбор.
      *
      * В ЛЕНТУ — взятый вариант, а первый ответ хода — в поле «отброшенный».
-     * Годного нет (или выдача оборвана, сбилась) — то, что лежало бы без третьей
-     * ступени ([fallback]).
+     * Выдача дошла до конца, а годного нет — ХОД СКРЫВАЕТСЯ: в ленту не ложится
+     * ничего, на экране вопрос и заглушка, модели не подаётся ни то, ни другое
+     * (ConversationJournal.Hidden — почему). Выдача оборвана или сбилась — то, что
+     * лежало бы без третьей ступени ([fallback]): обрыв сторожем — нагрев, и
+     * ответа нет не потому, что сказать нечего.
      *
      * ЧЕГО НЕ УМЕЕТ:
      *  - непонимание вопроса («твои воспоминания» вместо «мои о тебе») не видит:
      *    это не повтор и не порча;
      *  - на ходе, где модели нечего сказать, годный вариант находится примерно в
-     *    половине случаев (стенды на модели 3B); остальное — [fallback];
-     *  - вторая попытка и отброшенные варианты в ленте не хранятся: в поле
-     *    «отброшенный» лежит только первый ответ хода; варианты видны лишь в
-     *    «Подробно» до пересоздания экрана.
+     *    половине случаев (стенды на модели 3B); остальное — скрытый ход;
+     *  - скрытый ход модель не видит вовсе: на вопрос «почему не ответил?» она не
+     *    поймёт, о чём речь. Отличить заглушку от ответа можно только в «Подробно»;
+     *  - когда вариант взят, вторая попытка и отброшенные варианты в ленте не
+     *    хранятся: в поле «отброшенный» лежит только первый ответ хода; варианты
+     *    видны лишь в «Подробно» до пересоздания экрана. У скрытого хода все
+     *    отброшенные тексты держатся в памяти до перезапуска и на диск не идут;
      */
     private suspend fun thirdAttempt(
         cause: Cause,
@@ -694,8 +729,10 @@ class ConversationTurns(
         request: () -> Set<String>,
         fallback: Pair<String, String?>,
         first: String,
+        second: String,
         onThird: () -> Unit,
         close: (String, String?) -> Unit,
+        hide: (String, List<ConversationJournal.Rejected>) -> Unit,
     ): Third {
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
         val sources = if (without.isNotEmpty()) {
@@ -711,6 +748,7 @@ class ConversationTurns(
         val variants = mutableListOf<Pair<String, String?>>()
         var chosen: String? = null
         var dryFed = 0
+        var hidden = false
         try {
             onThird()
             val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without) +
@@ -730,7 +768,8 @@ class ConversationTurns(
         } finally {
             end = engine.lastGenerationEnd
             dryFed = engine.lastDryFed
-            if (!failed && end == GenerationEnd.COMPLETED) {
+            val completed = !failed && end == GenerationEnd.COMPLETED
+            if (completed) {
                 for (raw in com.uroboros.memory.dream.Mirror.parse(text.toString())) {
                     val v = raw.replaceFirst(AGENT_PREFIX, "").trim()
                     if (v.isEmpty()) continue
@@ -745,7 +784,14 @@ class ConversationTurns(
                 }
             }
             val pick = chosen
-            if (pick != null) close(pick, first) else close(fallback.first, fallback.second)
+            when {
+                pick != null -> close(pick, first)
+                completed -> {
+                    hidden = true
+                    hide(reasonOf(cause), rejectedOf(first, second, variants, text.toString()))
+                }
+                else -> close(fallback.first, fallback.second)
+            }
         }
         return Third(
             variants = variants,
@@ -754,7 +800,36 @@ class ConversationTurns(
             ms = System.currentTimeMillis() - startedAt,
             tokens = metrics?.tokensPredicted,
             dryFed = dryFed,
+            hidden = hidden,
         )
+    }
+
+    /** Причина скрытия словами — для «Подробно». */
+    private fun reasonOf(cause: Cause): String = when (cause) {
+        is Cause.Repeat -> "повтор «${cause.sentence}»"
+        is Cause.Damage -> "порча слов «${cause.words.joinToString(", ")}»"
+    }
+
+    /**
+     * Все отброшенные тексты скрытого хода по порядку — для «Подробно». Ответ
+     * третьей ступени, не разобранный ни на один вариант, идёт целиком: иначе от
+     * неё не осталось бы ничего.
+     */
+    private fun rejectedOf(
+        first: String,
+        second: String,
+        variants: List<Pair<String, String?>>,
+        thirdRaw: String,
+    ): List<ConversationJournal.Rejected> = buildList {
+        add(ConversationJournal.Rejected("первый", first))
+        add(ConversationJournal.Rejected("вторая попытка", second))
+        if (variants.isEmpty()) {
+            add(ConversationJournal.Rejected("три варианта, не разобраны", thirdRaw))
+        } else {
+            variants.forEachIndexed { i, (v, why) ->
+                add(ConversationJournal.Rejected("вариант ${i + 1} (${why ?: "годен"})", v))
+            }
+        }
     }
 
     companion object {
