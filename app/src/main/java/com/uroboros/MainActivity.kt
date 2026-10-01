@@ -45,6 +45,7 @@ import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
+import com.uroboros.llm.WordDamageHolder
 import com.uroboros.memory.AcceptCheck
 import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.DatabaseExporter
@@ -2960,7 +2961,7 @@ class MainActivity : AppCompatActivity() {
             AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
             dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
-        group("Ход", lastMetricsLine, echoLine, interceptMeter(), disputeNoticeLine, composedLine)
+        group("Ход", lastMetricsLine, echoLine, interceptMeter(), WordDamageHolder.meterLine(), disputeNoticeLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -3032,22 +3033,34 @@ class MainActivity : AppCompatActivity() {
     /** Строка перехвата по исходу хода; null у [intercept] — перехвата не было. */
     private fun interceptLineOf(intercept: ConversationTurns.Intercept?, rejected: String?): String {
         if (intercept == null) return "Перехват: на этом ходе не было"
-        // Номера ходов — как на экране, с единицы.
-        val turnsCut = intercept.without.sorted().joinToString(", ") { (it + 1).toString() }
         val tokens = intercept.secondTokens?.let { "$it ток." } ?: "токенов движок не назвал"
-        val head = "Перехват: повтор «${intercept.sentence}» → вторая попытка без ходов $turnsCut · " +
-            "${"%.1f".format(intercept.secondMs / 1000.0)} с, $tokens"
-        if (!intercept.replaced) {
-            val why = when (intercept.secondEnd) {
-                GenerationEnd.WATCHDOG_CRITICAL, GenerationEnd.WATCHDOG_TIMEOUT -> "оборвана сторожем"
-                GenerationEnd.CANCELLED, GenerationEnd.STOPPED_BY_CALLER -> "остановлена"
-                GenerationEnd.ENGINE_ERROR -> "сбой движка"
-                GenerationEnd.COMPLETED -> "пустая"
-                else -> "неясно, чем кончилась"
-            }
-            return "$head · не состоялась ($why) — оставлен первый ответ"
+        val cause = when (val c = intercept.cause) {
+            // Номера ходов — как на экране, с единицы.
+            is ConversationTurns.Cause.Repeat ->
+                "повтор «${c.sentence}» → вторая попытка без ходов " +
+                    c.without.sorted().joinToString(", ") { (it + 1).toString() }
+            is ConversationTurns.Cause.Damage ->
+                "порча слов «${c.words.joinToString(", ")}» → повторная выборка"
         }
-        val again = if (intercept.secondRepeats) " · вторая тоже повтор — оставлена" else ""
+        val head = "Перехват: $cause · ${"%.1f".format(intercept.secondMs / 1000.0)} с, $tokens"
+        val secondFaults = buildList {
+            if (intercept.secondRepeats) add("тоже повтор")
+            if (intercept.secondDamage.isNotEmpty()) add("порча «${intercept.secondDamage.joinToString(", ")}»")
+        }.joinToString(", ")
+        if (!intercept.replaced) {
+            val why = when {
+                secondFaults.isNotEmpty() -> "вторая не лучше: $secondFaults"
+                else -> when (intercept.secondEnd) {
+                    GenerationEnd.WATCHDOG_CRITICAL, GenerationEnd.WATCHDOG_TIMEOUT -> "оборвана сторожем"
+                    GenerationEnd.CANCELLED, GenerationEnd.STOPPED_BY_CALLER -> "остановлена"
+                    GenerationEnd.ENGINE_ERROR -> "сбой движка"
+                    GenerationEnd.COMPLETED -> "пустая"
+                    else -> "неясно, чем кончилась"
+                }
+            }
+            return "$head · не заменила ($why) — оставлен первый ответ"
+        }
+        val again = if (secondFaults.isNotEmpty()) " · вторая: $secondFaults — оставлена" else ""
         return "$head$again · отброшено: «${oneLine(rejected ?: "")}»"
     }
 
@@ -3908,6 +3921,14 @@ class MainActivity : AppCompatActivity() {
         // причина видна в строке «Зеркало в отборе:».
         lifecycleScope.launch(Dispatchers.IO) {
             RetellHolder.load { assets.open(RETELL_TABLE_ASSET) }
+            withContext(Dispatchers.Main) { renderMetricsPanel() }
+        }
+
+        // Детектор порчи слов (llm.WordDamageHolder): один раз за процесс, не в
+        // главном потоке. Пока не загружен или не загрузился, перехват ловит
+        // только повтор; строка детектора в «Подробно» говорит, какой случай.
+        lifecycleScope.launch(Dispatchers.IO) {
+            WordDamageHolder.load { assets.open(WORD_STENCIL_ASSET) }
             withContext(Dispatchers.Main) { renderMetricsPanel() }
         }
 
@@ -4853,15 +4874,20 @@ class MainActivity : AppCompatActivity() {
                         }
                     },
                     afterSend = { afterSent() },
-                    onRetry = {
-                        // Первый ответ пойман на повторе: он уже на экране, а
-                        // вторая попытка допишется следом. Лента перерисовывается
+                    onRetry = { cause ->
+                        // Первый ответ пойман: он уже на экране, а вторая
+                        // попытка допишется следом. Лента перерисовывается
                         // с пустым «Агент: », как при начале хода, — иначе два
                         // ответа слились бы в один. Отброшенный виден в
                         // «Подробно» (строка «Перехват:»).
                         binding.textResults.text = renderJournal(pendingQuestion = userText)
                         firstTokenShown = false
-                        showProgress("Повтор — вторая попытка")
+                        showProgress(
+                            when (cause) {
+                                is ConversationTurns.Cause.Repeat -> "Повтор — вторая попытка"
+                                is ConversationTurns.Cause.Damage -> "Испорчено слово — повторная выборка"
+                            }
+                        )
                         autoScrollIfAtBottom()
                     },
                 )
@@ -5247,6 +5273,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         /** Таблица глаголов для разворота (nav.RetellTable) в app/src/main/assets. */
         private const val RETELL_TABLE_ASSET = "verb_person_pairs.txt"
+
+        /** Трафарет детектора порчи слов (llm.WordDamage) в app/src/main/assets. */
+        private const val WORD_STENCIL_ASSET = "word_stencil6.bin"
         /** Подписи двух частей в «Показать реплику целиком», когда записи были. */
         private const val COMPOSED_RECALL_HEAD = "[Агент вспоминает — отдельным сообщением]"
         private const val COMPOSED_USER_HEAD = "[Реплика пользователя]"
