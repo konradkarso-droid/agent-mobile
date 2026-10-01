@@ -15,6 +15,9 @@ import org.junit.Test
  * дальше трёх последних, не перехватывается; ход, чей ответ не скопирован,
  * из второй попытки не выкидывается. Перехват, срабатывающий на всё, в
  * проверках «ловит» выглядел бы правильным.
+ *
+ * Сама вторая попытка ([ConversationTurns]) здесь не проверяется: она ходит в
+ * движок, а движка в тестах нет. Её проверка — на телефоне.
  */
 class EchoInterceptTest {
 
@@ -92,6 +95,28 @@ class EchoInterceptTest {
             turn("Как дела?", "Сегодня спокойный день, работы немного."),
         )
         assertEquals(setOf(0), EchoIntercept.decide(copiedAnswer, "А всё-таки?", history)!!.without)
+    }
+
+    // --- Строка «Эхо:» после перехвата ---
+
+    @Test
+    fun `строка эха меряет отброшенный ответ, а не легший на его место`() {
+        val earlier = turn("Какое твоё самое раннее воспоминание?", memoryAnswer)
+        val intercepted = ConversationJournal.Turn(
+            userContent = "А всё-таки?", agentContent = "Вчера мне снились черепахи.",
+            question = "А всё-таки?", rejected = copiedAnswer,
+        )
+        assertEquals(
+            "Особого раннего воспоминания в моей памяти нет.",
+            EchoCheck.ofLast(listOf(earlier, intercepted))!!.selfRepeat,
+        )
+    }
+
+    @Test
+    fun `без перехвата строка эха меряет сам ответ`() {
+        val earlier = turn("Какое твоё самое раннее воспоминание?", memoryAnswer)
+        val plain = turn("Что снилось?", "Вчера мне снились черепахи.")
+        assertNull(EchoCheck.ofLast(listOf(earlier, plain))!!.selfRepeat)
     }
 
     // --- Запрос без выкинутых ходов ---
