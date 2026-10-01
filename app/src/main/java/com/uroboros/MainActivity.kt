@@ -240,6 +240,14 @@ class MainActivity : AppCompatActivity() {
     private var disputeNoticeLine: String? = null
 
     /**
+     * Строка перехвата повтора к последнему ходу этого экрана (см.
+     * ConversationTurns.Intercept): что поймано, без каких ходов шла вторая
+     * попытка, чем кончилась. Живёт, пока открыт экран; после пересоздания
+     * экрана строка собирается по ленте беднее — см. [interceptMeter].
+     */
+    private var interceptLine: String? = null
+
+    /**
      * Сколько записей отбор дал к последнему ответу и сколько из них — одни
      * вопросы. Прибор без механизма: по нему решается, что делать с записями-
      * вопросами при выдаче, и пока решение не принято, он ничего не меняет.
@@ -2951,7 +2959,7 @@ class MainActivity : AppCompatActivity() {
             AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
             dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
-        group("Ход", lastMetricsLine, echoLine, disputeNoticeLine, composedLine)
+        group("Ход", lastMetricsLine, echoLine, interceptMeter(), disputeNoticeLine, composedLine)
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -3005,6 +3013,44 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Закрыть", null)
             .show()
     }
+
+    /**
+     * Строка «Перехват:» для «Подробно». Печатается всегда: прибор, молчащий
+     * при нуле, неотличим от неподключённого. Подробности хода (без каких
+     * ходов, сколько шла вторая попытка) живут только в памяти экрана; после
+     * его пересоздания остаётся то, что лежит в ленте, — отброшенный ответ.
+     */
+    private fun interceptMeter(): String {
+        interceptLine?.let { return it }
+        val last = journal.history().lastOrNull() ?: return "Перехват: ответа ещё нет"
+        val rejected = last.rejected ?: return "Перехват: на последнем ходе не было"
+        return "Перехват: был на последнем ходе (подробности на экране не сохранились) · " +
+            "отброшено: «${oneLine(rejected)}»"
+    }
+
+    /** Строка перехвата по исходу хода; null у [intercept] — перехвата не было. */
+    private fun interceptLineOf(intercept: ConversationTurns.Intercept?, rejected: String?): String {
+        if (intercept == null) return "Перехват: на этом ходе не было"
+        // Номера ходов — как на экране, с единицы.
+        val turnsCut = intercept.without.sorted().joinToString(", ") { (it + 1).toString() }
+        val head = "Перехват: повтор «${intercept.sentence}» → вторая попытка без ходов $turnsCut · " +
+            "${"%.1f".format(intercept.secondMs / 1000.0)} с, ${intercept.secondTokens} ток."
+        if (!intercept.replaced) {
+            val why = when (intercept.secondEnd) {
+                GenerationEnd.WATCHDOG_CRITICAL, GenerationEnd.WATCHDOG_TIMEOUT -> "оборвана сторожем"
+                GenerationEnd.CANCELLED, GenerationEnd.STOPPED_BY_CALLER -> "остановлена"
+                GenerationEnd.ENGINE_ERROR -> "сбой движка"
+                GenerationEnd.COMPLETED -> "пустая"
+                else -> "неясно, чем кончилась"
+            }
+            return "$head · не состоялась ($why) — оставлен первый ответ"
+        }
+        val again = if (intercept.secondRepeats) " · вторая тоже повтор — оставлена" else ""
+        return "$head$again · отброшено: «${oneLine(rejected ?: "")}»"
+    }
+
+    // Ответ в строке прибора — в одну строку: переводы строк разорвали бы её.
+    private fun oneLine(text: String): String = text.trim().replace(Regex("\\s+"), " ")
 
     private fun composedContentLine(): String {
         val content = lastComposedContent
@@ -3126,6 +3172,8 @@ class MainActivity : AppCompatActivity() {
         // описывает ход, который может не состояться, и оставшись на экране,
         // читалась бы как относящаяся к следующему.
         disputeNoticeLine = null
+        // Строка перехвата — по той же причине, что и строка сверки.
+        interceptLine = null
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
         circleLine = null
@@ -4803,6 +4851,17 @@ class MainActivity : AppCompatActivity() {
                         }
                     },
                     afterSend = { afterSent() },
+                    onRetry = {
+                        // Первый ответ пойман на повторе: он уже на экране, а
+                        // вторая попытка допишется следом. Лента перерисовывается
+                        // с пустым «Агент: », как при начале хода, — иначе два
+                        // ответа слились бы в один. Отброшенный виден в
+                        // «Подробно» (строка «Перехват:»).
+                        binding.textResults.text = renderJournal(pendingQuestion = userText)
+                        firstTokenShown = false
+                        showProgress("Повтор — вторая попытка")
+                        autoScrollIfAtBottom()
+                    },
                 )
                 val ran = when (outcome) {
                     ConversationTurns.Outcome.JournalFull -> {
@@ -4824,6 +4883,7 @@ class MainActivity : AppCompatActivity() {
                 val engineMetrics = ran.metrics
                 val firstTokenAtMs = ran.firstTokenAtMs
                 val answerText = ran.answer
+                interceptLine = interceptLineOf(ran.intercept, journal.history().lastOrNull()?.rejected)
 
                 // Хвост 19 (27.08.2026): движок отдаёт ноль токенов при
                 // ТОЧНОМ, до последнего знака, повторе предыдущего запроса.
