@@ -2582,9 +2582,10 @@ class MainActivity : AppCompatActivity() {
                     "${journal.lastPromptTokens} из ${CONTEXT_SIZE} токенов. " +
                     "Продолжать нельзя: движок начнёт молча выбрасывать середину разговора.\n\n" +
                     "Начать заново — значит закрыть разговор: все ${journal.turnCount} ходов " +
-                    "уйдут в архив на этом устройстве и с экрана исчезнут. Из архива они не " +
-                    "возвращаются ни в разговор, ни в память агента — это хранилище, а не " +
-                    "откат.\n\n" +
+                    "уйдут в архив на этом устройстве и с экрана исчезнут. В разговор из " +
+                    "архива они не возвращаются — это хранилище, а не откат. Но свои прежние " +
+                    "слова агент в архиве находит: на вопрос о нём самом найденное подаётся " +
+                    "модели как его речь.\n\n" +
                     "Набранный текст в память НЕ записан: он никуда не ушёл, значит " +
                     "сказанным не считается. Нужно его запомнить — нажмите «Сохранить»."
             )
@@ -3033,8 +3034,9 @@ class MainActivity : AppCompatActivity() {
         if (intercept == null) return "Перехват: на этом ходе не было"
         // Номера ходов — как на экране, с единицы.
         val turnsCut = intercept.without.sorted().joinToString(", ") { (it + 1).toString() }
+        val tokens = intercept.secondTokens?.let { "$it ток." } ?: "токенов движок не назвал"
         val head = "Перехват: повтор «${intercept.sentence}» → вторая попытка без ходов $turnsCut · " +
-            "${"%.1f".format(intercept.secondMs / 1000.0)} с, ${intercept.secondTokens} ток."
+            "${"%.1f".format(intercept.secondMs / 1000.0)} с, $tokens"
         if (!intercept.replaced) {
             val why = when (intercept.secondEnd) {
                 GenerationEnd.WATCHDOG_CRITICAL, GenerationEnd.WATCHDOG_TIMEOUT -> "оборвана сторожем"
