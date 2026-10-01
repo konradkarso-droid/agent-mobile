@@ -240,7 +240,9 @@ class ConversationTurns(
      * @property secondAnswer текст второй попытки, как выдан (возможно, оборванный).
      * @property secondEnd чем кончилась вторая попытка.
      * @property secondMs сколько она шла, от запуска до конца выдачи.
-     * @property secondTokens сколько токенов она выдала.
+     * @property secondTokens сколько токенов она выдала — по отчёту движка; null —
+     *   отчёта не пришло. Счёт событий Token токенами не является: движок шлёт
+     *   текст пачками, по нескольку токенов в событии.
      * @property replaced в ленту лёг второй ответ, а первый — отброшенным. false —
      *   вторая попытка не состоялась (оборвана, сбой, ноль токенов), и в ленту
      *   лёг первый ответ как есть, без пометки.
@@ -255,7 +257,7 @@ class ConversationTurns(
         val secondAnswer: String,
         val secondEnd: GenerationEnd,
         val secondMs: Long,
-        val secondTokens: Int,
+        val secondTokens: Int?,
         val replaced: Boolean,
         val secondRepeats: Boolean,
     )
@@ -505,15 +507,22 @@ class ConversationTurns(
         onRetry(retry)
         val startedAt = System.currentTimeMillis()
         val second = StringBuilder()
-        var tokens = 0
+        // Пачки текста, а не токены (см. Intercept.secondTokens): годятся только
+        // на «выдано ли хоть что-то».
+        var pieces = 0
+        var metrics: DecodingMetrics? = null
         var failed = false
         var end = GenerationEnd.UNEXPLAINED
         var replaced = false
         try {
             engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
-                if (event is GenerationEvent.Token) {
-                    tokens++
-                    second.append(event.text)
+                when (event) {
+                    is GenerationEvent.Token -> {
+                        pieces++
+                        second.append(event.text)
+                    }
+                    is GenerationEvent.Metrics -> metrics = event.metrics
+                    else -> Unit
                 }
                 onEvent(event)
             }
@@ -524,7 +533,7 @@ class ConversationTurns(
             Log.w(TAG, "вторая попытка сорвалась", e)
         } finally {
             end = engine.lastGenerationEnd
-            replaced = tokens > 0 && !failed && end == GenerationEnd.COMPLETED
+            replaced = pieces > 0 && !failed && end == GenerationEnd.COMPLETED
             if (replaced) close(second.toString(), first) else close(first, null)
         }
         return Intercept(
@@ -533,7 +542,7 @@ class ConversationTurns(
             secondAnswer = second.toString(),
             secondEnd = end,
             secondMs = System.currentTimeMillis() - startedAt,
-            secondTokens = tokens,
+            secondTokens = metrics?.tokensPredicted,
             replaced = replaced,
             secondRepeats = replaced && EchoIntercept.decide(second.toString(), question, history) != null,
         )
