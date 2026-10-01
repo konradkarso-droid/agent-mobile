@@ -94,12 +94,17 @@ object EchoCheck {
     /**
      * Эхо в ответе последнего хода ленты, или null — ходов нет.
      *
+     * Меряется ПЕРВЫЙ ответ хода: при перехвате ([EchoIntercept]) — отброшенный
+     * (`rejected`), а не тот, что лёг на его место. Иначе перехват стирал бы
+     * с экрана ровно то, что ловит, и частота повторов модели стала бы не
+     * видна. Прошлые ответы — те, что видела модель (`agentContent`).
+     *
      * @param turns ходы ленты от старых к новым.
      */
     fun ofLast(turns: List<ConversationJournal.Turn>): Result? {
         val last = turns.lastOrNull() ?: return null
         val earlier = turns.dropLast(1).takeLast(EARLIER_ANSWERS).map { it.agentContent }
-        return check(last.agentContent, last.question, earlier, serviceBlocks(last))
+        return check(last.rejected ?: last.agentContent, last.question, earlier, serviceBlocks(last))
     }
 
     /**
