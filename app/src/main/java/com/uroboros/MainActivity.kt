@@ -825,9 +825,19 @@ class MainActivity : AppCompatActivity() {
             if (answer != null) out.append(answer)
         }
 
+        // Скрытые ходы (ConversationJournal.Hidden) встают на своё место среди
+        // ходов ленты: вопрос и заглушка, без строки записей — записи этого
+        // хода модели не ушли. Скрытый ход агента (пустой вопрос) не выводится:
+        // заглушка без вопроса ничего бы не значила.
+        val hiddenByPlace = journal.hidden().filter { it.question.isNotEmpty() }.groupBy { it.afterTurn }
+        fun addHidden(afterTurn: Int) {
+            hiddenByPlace[afterTurn]?.forEach { addTurn(it.question, ConversationJournal.STUB, null, -1) }
+        }
         journal.history().forEachIndexed { index, turn ->
+            addHidden(index)
             addTurn(turn.question, turn.agentContent, turn, index)
         }
+        addHidden(journal.turnCount)
         // У начатого хода записей ещё нет: они помечаются уложенными только
         // после того, как ответ получен.
         if (pendingQuestion != null) addTurn(pendingQuestion, null, null, -1)
@@ -2449,7 +2459,9 @@ class MainActivity : AppCompatActivity() {
      * Сама строка видна, если видна хоть одна кнопка в ней.
      */
     private fun renderTurnNavVisibility() {
-        val turns = journal.turnCount
+        // Считаются ходы на экране — вместе со скрытыми: прыжки и «Убрать ход»
+        // работают по тому, что видно.
+        val turns = journal.turnCount + journal.hidden().count { it.question.isNotEmpty() }
         val jumps = if (turns >= TURN_NAV_MIN_TURNS) View.VISIBLE else View.GONE
         binding.buttonTurnPrev.visibility = jumps
         binding.buttonTurnNext.visibility = jumps
@@ -3031,7 +3043,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Строка перехвата по исходу хода; null у [intercept] — перехвата не было. */
-    private fun interceptLineOf(intercept: ConversationTurns.Intercept?, rejected: String?): String {
+    private fun interceptLineOf(
+        intercept: ConversationTurns.Intercept?,
+        rejected: String?,
+        hidden: ConversationJournal.Hidden? = null,
+    ): String {
         if (intercept == null) return "Перехват: на этом ходе не было"
         val tokens = intercept.secondTokens?.let { "$it ток." } ?: "токенов движок не назвал"
         val cause = when (val c = intercept.cause) {
@@ -3056,6 +3072,12 @@ class MainActivity : AppCompatActivity() {
             val dry = if (third.dryFed > 0) "DRY видел ${third.dryFed} ток. прошлых ответов" else "DRY прошлых ответов НЕ видел"
             val thirdHead = "$head · вторая: $secondFaults → три варианта · " +
                 "${"%.1f".format(third.ms / 1000.0)} с, $thirdTokens, $dry · $list"
+            if (third.hidden) {
+                // Варианты уже в строке выше; здесь — первый ответ и вторая попытка.
+                val earlier = hidden?.rejected?.take(2)?.joinToString("; ") { "${it.label} «${oneLine(it.text)}»" }
+                return "$thirdHead · годного нет — ход скрыт от агента, на экране заглушка" +
+                    (earlier?.let { " · отброшено: $it" } ?: "")
+            }
             return if (third.chosen != null) {
                 "$thirdHead · взят годный · отброшено: «${oneLine(rejected ?: "")}»"
             } else {
@@ -3655,6 +3677,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Убрать скрытый ход, стоящий последним на экране (ConversationJournal.Hidden).
+     * Модели он не подавался и на диске его нет, поэтому лента, диск и точка
+     * движка не трогаются — уходят только вопрос и заглушка с экрана.
+     */
+    private fun showDropHiddenDialog(hidden: ConversationJournal.Hidden) {
+        val preview = hidden.question.take(DROP_PREVIEW_CHARS).replace("\n", " ")
+        val tail = if (hidden.question.length > DROP_PREVIEW_CHARS) "…" else ""
+        AlertDialog.Builder(this)
+            .setTitle("Убрать последний вопрос?")
+            .setMessage(
+                "Уйдёт вопрос без ответа:\n\n«$preview$tail»\n\n" +
+                    "Агенту он не был подан, разговор для него не изменится. " +
+                    "Вопрос стирается с экрана, вернуть его нечем."
+            )
+            .setPositiveButton("Убрать") { _, _ ->
+                journal.dropLastHidden()
+                navTurnIndex = -1
+                journalRestoreLine = "Разговор: вопрос без ответа убран"
+                binding.textResults.text = renderJournal()
+                renderTurnNavVisibility()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /**
      * Спрашивает и убирает последний ход из ленты.
      *
      * ПОДТВЕРЖДЕНИЕ ОБЯЗАТЕЛЬНО. Механизм терминальный: ниже нет никого,
@@ -3673,6 +3721,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun showDropTurnDialog() {
         if (!binding.buttonSend.isEnabled) return
+        // Последним на экране стоит скрытый ход — убирается он, а не ход
+        // ленты перед ним.
+        journal.hidden().lastOrNull()?.takeIf { it.afterTurn == journal.turnCount && it.question.isNotEmpty() }?.let {
+            showDropHiddenDialog(it)
+            return
+        }
         val last = journal.history().lastOrNull() ?: return
         val index = journal.turnCount - 1
         val preview = last.agentContent.take(DROP_PREVIEW_CHARS).replace("\n", " ")
@@ -4937,8 +4991,14 @@ class MainActivity : AppCompatActivity() {
                 val tokensSeen = ran.tokensSeen
                 val engineMetrics = ran.metrics
                 val firstTokenAtMs = ran.firstTokenAtMs
-                val answerText = ran.answer
-                interceptLine = interceptLineOf(ran.intercept, journal.history().lastOrNull()?.rejected)
+                // Ответ, легший в ленту (при перехвате — не первая попытка, см.
+                // Outcome.Ran.kept). Ход в ленту не лёг — ниже ответ не читается.
+                val answerText = ran.kept ?: ran.answer
+                interceptLine = if (ran.hidden) {
+                    interceptLineOf(ran.intercept, null, journal.hidden().lastOrNull())
+                } else {
+                    interceptLineOf(ran.intercept, journal.history().lastOrNull()?.rejected)
+                }
 
                 // Хвост 19 (27.08.2026): движок отдаёт ноль токенов при
                 // ТОЧНОМ, до последнего знака, повторе предыдущего запроса.
@@ -5029,6 +5089,13 @@ class MainActivity : AppCompatActivity() {
                                 "нажатия."
                         )
                     }
+                } else if (ran.hidden) {
+                    // Ход скрыт (ConversationJournal.Hidden): годного ответа
+                    // нет, модели не ушло ничего. Поэтому и дела закрытого хода
+                    // ниже не делаются — как у хода с нулём токенов: греть
+                    // записи, старить двери и ждать подхвата за ответ, которого
+                    // не было, нечестно. На экране — вопрос и заглушка.
+                    binding.textResults.text = renderJournal()
                 } else {
                     // Вспомнил ли агент принесённое ассоциацией — по готовому
                     // ответу, после закрытия хода: вспоминание греет
