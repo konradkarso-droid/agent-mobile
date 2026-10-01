@@ -348,6 +348,13 @@ static struct {
     uint64_t                      last_gloss_spans = 0;  // см. count_gloss_span
     bool                          last_token_cjk   = false;
 
+    // Текст, который штраф DRY должен «помнить» до ответа (см.
+    // nativeSetDryHistory). Разовый: забирается следующей генерацией разговора
+    // и очищается, даже если DRY выключен. last_dry_fed — сколько токенов
+    // проведено через цепочку в последней генерации разговора (0 — не было).
+    std::string                   dry_history;
+    int                           last_dry_fed     = 0;
+
     std::string system_prompt;
     std::string chat_template_override;
 
@@ -2200,6 +2207,25 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     rebuild_sampler();
 
+    // Память штрафа DRY. Цепочка выборки только что собрана заново и пуста:
+    // токены запроса через неё не проводятся, поэтому DRY видит лишь то, что
+    // модель пишет сейчас, и копию ответа из ленты не замечает вовсе. Текст,
+    // заданный вызывающим (прошлые ответы агента), проводится через цепочку
+    // так же, как проводится каждый выбранный токен, — без генерации и без
+    // правила перевода (accept_grammar = false). Теперь DRY штрафует
+    // продолжение этих последовательностей с первых токенов копии.
+    // Задание разовое: очищается здесь при любом исходе.
+    g_state.last_dry_fed = 0;
+    if (!g_state.dry_history.empty()) {
+        if (g_state.sampler) {
+            auto fed = tokenize_string(g_state.dry_history, false);
+            for (llama_token t : fed) common_sampler_accept(g_state.sampler, t, false);
+            g_state.last_dry_fed = (int)fed.size();
+            LOGI("DRY history: %d tokens fed", g_state.last_dry_fed);
+        }
+        g_state.dry_history.clear();
+    }
+
     auto t_start = std::chrono::high_resolution_clock::now();
 
     // only evaluate tokens beyond the cached prefix
@@ -2569,6 +2595,27 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetConversationGloss(
         JNIEnv *, jobject, jboolean on) {
     g_state.gloss_requested = (on == JNI_TRUE);
     mark_sampler_dirty();
+}
+
+// Текст, который штраф DRY должен «помнить» в СЛЕДУЮЩЕЙ генерации разговора
+// (см. место подачи после rebuild_sampler в nativeGenerateStreamMultiTurn).
+// Разовый: следующая генерация разговора забирает его и очищает. Сам DRY
+// включает вызывающий (dry_multiplier в nativeUpdateSamplerParams); без него
+// поданный текст ни на что не влияет.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetDryHistory(
+        JNIEnv * env, jobject, jstring jtext) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    const char * cstr = env->GetStringUTFChars(jtext, nullptr);
+    g_state.dry_history = cstr ? std::string(cstr) : std::string();
+    if (cstr) env->ReleaseStringUTFChars(jtext, cstr);
+}
+
+// Сколько токенов поданного текста прошло через цепочку в последней генерации
+// разговора; 0 — текста не было (или модели не было).
+extern "C" JNIEXPORT jint JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDryFed(JNIEnv *, jobject) {
+    return (jint)g_state.last_dry_fed;
 }
 
 // Заменяет logit_bias вызывающего целиком. Запрет письменностей здесь не
