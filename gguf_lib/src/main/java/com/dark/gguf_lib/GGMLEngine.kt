@@ -425,6 +425,18 @@ class GGMLEngine {
      */
     fun setConversationGloss(on: Boolean) = GGUFNativeLib.nativeSetConversationGloss(on)
 
+    /**
+     * Текст, который штраф DRY «помнит» в следующей генерации разговора: он
+     * проводится через цепочку выборки до ответа, как уже выданный. Разовый —
+     * следующая генерация разговора его забирает. Сам DRY включается отдельно
+     * (dry_multiplier в [updateSamplerParams]). Зачем и чего не умеет — у
+     * `nativeSetDryHistory` в `gguf_lib.cpp`.
+     */
+    fun setDryHistory(text: String) = GGUFNativeLib.nativeSetDryHistory(text)
+
+    /** Сколько токенов поданного [setDryHistory] прошло через цепочку в последней генерации разговора. */
+    fun lastDryFed(): Int = GGUFNativeLib.nativeGetLastDryFed()
+
     /** Set the system prompt prepended to every chat. */
     fun setSystemPrompt(prompt: String) = GGUFNativeLib.nativeSetSystemPrompt(prompt)
 
