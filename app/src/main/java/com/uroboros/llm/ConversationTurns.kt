@@ -226,17 +226,32 @@ class ConversationTurns(
             val generationEnd: GenerationEnd,
             val appended: Boolean,
             val failure: Throwable?,
-            /** Был перехват повтора — что с ним стало; null — не было. Числа выше — первой попытки. */
+            /** Был перехват (повтор или порча) — что с ним стало; null — не было. Числа выше — первой попытки. */
             val intercept: Intercept? = null,
         ) : Outcome()
     }
 
+    /** Почему первый ответ хода перехвачен. */
+    sealed class Cause {
+        /**
+         * Повтор своего прошлого ответа ([EchoIntercept]): вторая попытка без
+         * ходов-образцов [without]. [sentence] — первое повторённое предложение.
+         */
+        data class Repeat(val sentence: String, val without: Set<Int>) : Cause()
+
+        /**
+         * Порча слов без повтора ([WordDamage]): повторная выборка на той же
+         * ленте. Запрос тот же, поэтому пересчёта ленты нет — платится только
+         * сам ответ. Другим ответ выходит потому, что у каждого ответа
+         * разговора своё зерно (LlmEngine.guardedFlow). [words] — найденные
+         * куски, как их показать.
+         */
+        data class Damage(val words: List<String>) : Cause()
+    }
+
     /**
-     * Перехват повтора на этом ходе ([EchoIntercept]): первый ответ повторил
-     * прошлый, прошла вторая попытка без ходов-образцов.
+     * Перехват на этом ходе: первый ответ пойман ([cause]), прошла вторая попытка.
      *
-     * @property sentence первое повторённое предложение первого ответа.
-     * @property without номера ходов, выкинутых из запроса второй попытки.
      * @property secondAnswer текст второй попытки, как выдан (возможно, оборванный).
      * @property secondEnd чем кончилась вторая попытка.
      * @property secondMs сколько она шла, от запуска до конца выдачи.
@@ -244,23 +259,32 @@ class ConversationTurns(
      *   отчёта не пришло. Счёт событий Token токенами не является: движок шлёт
      *   текст пачками, по нескольку токенов в событии.
      * @property replaced в ленту лёг второй ответ, а первый — отброшенным. false —
-     *   вторая попытка не состоялась (оборвана, сбой, ноль токенов), и в ленту
-     *   лёг первый ответ как есть, без пометки.
-     * @property secondRepeats второй ответ тоже повтор той же мерой. Он всё равно
-     *   остаётся в ленте: честная строка была бы текстом-заглушкой, а их модель
-     *   копирует (стенд 5 окна 56); пометка нужна, чтобы частота тупиков была
-     *   видна на экране.
+     *   в ленту лёг первый ответ как есть: вторая попытка не состоялась (оборвана,
+     *   сбой, ноль токенов) или, при порче, сама оказалась не лучше (см. [secondAttempt]).
+     * @property secondRepeats второй ответ — повтор той же мерой, что у прибора эха.
+     *   При повторе он всё равно остаётся в ленте: честная строка была бы
+     *   текстом-заглушкой, а их модель копирует; пометка нужна, чтобы частота
+     *   тупиков была видна на экране.
+     * @property secondDamage порча во втором ответе (пусто — нет или детектор не
+     *   работает). При повторе второй ответ остаётся в ленте и с ней: заменить его
+     *   пока нечем.
      */
     data class Intercept(
-        val sentence: String,
-        val without: Set<Int>,
+        val cause: Cause,
         val secondAnswer: String,
         val secondEnd: GenerationEnd,
         val secondMs: Long,
         val secondTokens: Int?,
         val replaced: Boolean,
         val secondRepeats: Boolean,
-    )
+        val secondDamage: List<String>,
+    ) {
+        // ПЕРЕХОДНОЕ: старые поля для экрана, собранного до [cause]. Нужны, чтобы
+        // файлы грузились по одному без красной сборки между ними; убираются
+        // со следующей правкой этого файла.
+        val sentence: String get() = (cause as? Cause.Repeat)?.sentence ?: ""
+        val without: Set<Int> get() = (cause as? Cause.Repeat)?.without ?: emptySet()
+    }
 
     /**
      * Провести ход: реплика [content] уходит в движок вслед за лентой, ответ
@@ -286,9 +310,10 @@ class ConversationTurns(
      * @param afterSend реплика ушла в движок и выдача кончилась — до закрытия хода
      *   в ленте. Зовётся и на нуле токенов: реплика всё равно сказана. Зовётся
      *   один раз — после первой попытки: реплика сказана тогда.
-     * @param onRetry первый ответ пойман на повторе, сейчас начнётся вторая
-     *   попытка; её события пойдут в [onEvent] так же, как первой. Экрану —
-     *   убрать показанный первый ответ, иначе второй допишется к нему.
+     * @param onRetry первый ответ пойман (повтор или порча — [Cause]), сейчас
+     *   начнётся вторая попытка; её события пойдут в [onEvent] так же, как
+     *   первой. Экрану — убрать показанный первый ответ, иначе второй
+     *   допишется к нему.
      */
     suspend fun run(
         content: String,
@@ -302,7 +327,7 @@ class ConversationTurns(
         onStarted: (at: Long, engineReturn: String?) -> Unit = { _, _ -> },
         onEvent: (GenerationEvent) -> Unit = {},
         afterSend: suspend () -> Unit = {},
-        onRetry: (EchoIntercept.Retry) -> Unit = {},
+        onRetry: (Cause) -> Unit = {},
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
@@ -328,7 +353,7 @@ class ConversationTurns(
         onStarted: (at: Long, engineReturn: String?) -> Unit,
         onEvent: (GenerationEvent) -> Unit,
         afterSend: suspend () -> Unit,
-        onRetry: (EchoIntercept.Retry) -> Unit,
+        onRetry: (Cause) -> Unit,
         onClosed: (Int) -> Unit,
     ): Outcome {
         gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall)?.let { return it }
@@ -372,7 +397,11 @@ class ConversationTurns(
         var failure: Throwable? = null
         var appended = false
         var generationEnd: GenerationEnd? = null
-        var retry: EchoIntercept.Retry? = null
+        var cause: Cause? = null
+        // Слова запроса для детектора порчи: всё, что модель видела, вместе со
+        // стеной. Слово ответа, стоящее там в той же форме (имя, термин из
+        // записи), порчей не считается. Собирается, только если понадобится.
+        val request by lazy { WordDamage.requestWords(messages.joinToString("\n") { it.second } + "\n" + (engine.wallText ?: "")) }
 
         // Закрыть ход в ленте. Одно место для обеих попыток: правило
         // дословности ([answer] выше) одно и то же.
@@ -438,18 +467,18 @@ class ConversationTurns(
                 // (сторож, отмена, сбой) показывает не то, что модель хотела
                 // сказать, и второй прогон после обрыва сторожем — тот самый
                 // нагрев, от которого обрывали.
-                retry = if (failure == null && generationEnd == GenerationEnd.COMPLETED) {
-                    EchoIntercept.decide(answer.toString(), question, journal.history())
+                cause = if (failure == null && generationEnd == GenerationEnd.COMPLETED) {
+                    causeOf(answer.toString(), question, journal.history()) { request }
                 } else {
                     null
                 }
-                if (retry == null) close(answer.toString(), null)
+                if (cause == null) close(answer.toString(), null)
             }
         }
 
         // Сюда ход доходит, только если первую попытку не отменили (отмена
         // брошена выше, и ход уже закрыт первым ответом).
-        val intercept = retry?.let { r -> secondAttempt(r, content, selfNote, dreamNote, recall, question, answer.toString(), onRetry, onEvent, ::close) }
+        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, onRetry, onEvent, ::close) }
         // Стена ставится в начале запроса разговора (LlmEngine.applyWall), то
         // есть уже случилась или не случилась к этому месту.
         val wallChange = engine.takeAppliedWallChange()
@@ -472,39 +501,63 @@ class ConversationTurns(
     }
 
     /**
-     * Вторая попытка после перехвата: тот же ход, запрос без ходов-образцов
-     * ([ConversationJournal.messagesFor], `without`). Закрывает ход сам — при
-     * любом исходе, в том числе при отмене.
+     * Почему перехватывать готовый ответ, или null — не надо. Повтор проверяется
+     * первым: при повторе ответ уходит целиком, и его порча уже не важна.
+     * Детектор не загружен ([WordDamageHolder]) — порча не проверяется вовсе,
+     * и об этом говорит его строка в «Подробно».
+     */
+    private fun causeOf(
+        answer: String,
+        question: String,
+        history: List<ConversationJournal.Turn>,
+        request: () -> Set<String>,
+    ): Cause? {
+        EchoIntercept.decide(answer, question, history)?.let { return Cause.Repeat(it.sentence, it.without) }
+        val damage = WordDamageHolder.damage?.check(answer, request()).orEmpty()
+        return if (damage.isEmpty()) null else Cause.Damage(damage)
+    }
+
+    /**
+     * Вторая попытка после перехвата. При повторе — запрос без ходов-образцов
+     * ([ConversationJournal.messagesFor], `without`); при порче — тот же запрос,
+     * то есть повторная выборка. Закрывает ход сам — при любом исходе, в том
+     * числе при отмене.
      *
-     * ЧТО ЛОЖИТСЯ В ЛЕНТУ. Второй ответ выдан до конца — он, а первый в поле
-     * «отброшенный» (модели не подаётся, см. [ConversationJournal.Turn]). Вторая
-     * попытка оборвана, сбилась или пуста — первый ответ как есть: человек его
-     * уже видел целиком, а оборванный второй ответом не является.
+     * ЧТО ЛОЖИТСЯ В ЛЕНТУ. Второй ответ выдан до конца — при ПОВТОРЕ он, а первый
+     * в поле «отброшенный» (модели не подаётся, см. [ConversationJournal.Turn]).
+     * При ПОРЧЕ второй берётся, только если он чист: без порчи и не повтор. Иначе
+     * остаётся первый — повторная выборка, давшая повтор вместо порчи, хуже: копия
+     * размножается по ленте, а порча — нет. Вторая попытка оборвана, сбилась или
+     * пуста — первый ответ как есть: человек его уже видел целиком, а оборванный
+     * второй ответом не является.
      *
      * ЧЕГО НЕ ДЕЛАЕТ:
-     *  - третьей попытки нет. Второй ответ, снова пойманный на повторе, остаётся:
-     *    честная строка вместо него была бы текстом-заглушкой, а их модель
-     *    копирует. Это видно в [Intercept.secondRepeats];
+     *  - третьей попытки нет. Второй ответ, снова пойманный на повторе или на
+     *    порче, остаётся при повторе, а при порче остаётся испорченный первый:
+     *    честная строка вместо них была бы текстом-заглушкой, а их модель копирует.
+     *    Это видно в [Intercept.secondRepeats] и [Intercept.secondDamage];
      *  - сбой второй попытки наружу не бросается: ход состоялся первым ответом,
      *    сбой назван в [Intercept.secondEnd].
      */
     private suspend fun secondAttempt(
-        retry: EchoIntercept.Retry,
+        cause: Cause,
         content: String,
         selfNote: String?,
         dreamNote: String?,
         recall: String?,
         question: String,
         first: String,
-        onRetry: (EchoIntercept.Retry) -> Unit,
+        request: () -> Set<String>,
+        onRetry: (Cause) -> Unit,
         onEvent: (GenerationEvent) -> Unit,
         close: (String, String?) -> Unit,
     ): Intercept {
         // История снимается ДО закрытия хода: мера второго ответа — против тех
         // же трёх прошлых ответов, что и у первого.
         val history = journal.history()
-        val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = retry.without)
-        onRetry(retry)
+        val without = (cause as? Cause.Repeat)?.without ?: emptySet()
+        val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without)
+        onRetry(cause)
         val startedAt = System.currentTimeMillis()
         val second = StringBuilder()
         // Пачки текста, а не токены (см. Intercept.secondTokens): годятся только
@@ -514,6 +567,8 @@ class ConversationTurns(
         var failed = false
         var end = GenerationEnd.UNEXPLAINED
         var replaced = false
+        var repeats = false
+        var damage = emptyList<String>()
         try {
             engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
                 when (event) {
@@ -533,18 +588,26 @@ class ConversationTurns(
             Log.w(TAG, "вторая попытка сорвалась", e)
         } finally {
             end = engine.lastGenerationEnd
-            replaced = pieces > 0 && !failed && end == GenerationEnd.COMPLETED
+            val done = pieces > 0 && !failed && end == GenerationEnd.COMPLETED
+            if (done) {
+                repeats = EchoIntercept.decide(second.toString(), question, history) != null
+                damage = WordDamageHolder.damage?.check(second.toString(), request()).orEmpty()
+            }
+            replaced = when (cause) {
+                is Cause.Repeat -> done
+                is Cause.Damage -> done && !repeats && damage.isEmpty()
+            }
             if (replaced) close(second.toString(), first) else close(first, null)
         }
         return Intercept(
-            sentence = retry.sentence,
-            without = retry.without,
+            cause = cause,
             secondAnswer = second.toString(),
             secondEnd = end,
             secondMs = System.currentTimeMillis() - startedAt,
             secondTokens = metrics?.tokensPredicted,
             replaced = replaced,
-            secondRepeats = replaced && EchoIntercept.decide(second.toString(), question, history) != null,
+            secondRepeats = repeats,
+            secondDamage = damage,
         )
     }
 
