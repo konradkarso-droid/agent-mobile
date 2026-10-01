@@ -845,6 +845,13 @@ class LlmEngine(
      */
     val wallText: String? get() = synchronized(wallLock) { currentWall }
 
+    /**
+     * Сколько токенов текста для DRY прошло через цепочку выборки в последней
+     * генерации разговора; 0 — не подавалось. Прибор: DRY, не увидевший
+     * текста, ленты не видит вовсе, и это должно быть различимо на экране.
+     */
+    val lastDryFed: Int get() = engine.lastDryFed()
+
     /** Стена, ждущая начала следующего запроса разговора; null — не ждёт. Под [wallLock]. */
     private var pendingWall: String? = null
 
@@ -1697,9 +1704,11 @@ class LlmEngine(
     fun generateConversationFlow(
         messages: List<Pair<String, String>>,
         maxTokens: Int = 512,
+        dryAgainst: String? = null,
     ): Flow<GenerationEvent> = guardedFlow(
         conversationMessages(messages),
         maxTokens,
+        dryAgainst = dryAgainst,
         // Лента разговора первым системного сообщения не несёт — стену ставит
         // движок; системные сообщения посреди ленты (строка о себе, см.
         // ConversationJournal.messagesFor) первыми не стоят никогда. Первым
@@ -1721,6 +1730,12 @@ class LlmEngine(
         messagesJson: String,
         maxTokens: Int,
         conversation: Boolean,
+        /**
+         * Текст, против копий которого включается DRY на этот прогон (прошлые
+         * ответы агента); null — DRY выключен. Только разговору. Числа и
+         * границы — у [DRY_PARAMS_JSON].
+         */
+        dryAgainst: String? = null,
     ): Flow<GenerationEvent> = channelFlow {
         // Движок уходит от разговора к чужой работе — сперва точка разговора
         // на диск. Зачем и чего не умеет — у [conversationDisplaced].
@@ -1746,6 +1761,11 @@ class LlmEngine(
         // [withDeterministicSampling]): разрешив это, ответ разговора посреди
         // прогона судьи сбросил бы ему повторяемую выдачу.
         if (conversation) withContext(Dispatchers.IO) { applyChatSampling() }
+        val dry = conversation && dryAgainst != null
+        if (dry) withContext(Dispatchers.IO) {
+            engine.updateSamplerParams(DRY_PARAMS_JSON)
+            engine.setDryHistory(dryAgainst!!)
+        }
         // Первым делом, до всякой работы движка: с этого момента состояние в
         // нём принадлежит этому запросу, как бы он ни кончился.
         stateIsConversation = conversation
@@ -1914,6 +1934,9 @@ class LlmEngine(
             // на экране это выглядело бы необъяснимым обрывом без причины.
             clock.cancel()
             recordGenerationEnd(GenerationEnd.UNEXPLAINED)
+            // DRY выключается сразу за своим прогоном: следующий может быть не
+            // разговором (судья, задача) и общие настройки не переставлять.
+            if (dry) withContext(NonCancellable + Dispatchers.IO) { engine.updateSamplerParams(SAMPLER_PARAMS_JSON) }
             val endedAtMs = System.currentTimeMillis()
             // Хвост: от последней проверки до конца потока. Без него прибор
             // молчал бы про отрезок, на котором барьер не смотрит уже ни
@@ -2496,7 +2519,25 @@ class LlmEngine(
          * Возвращено на 1.05, потому что за 1.1 платит русская речь, а
          * выигрыша нет. Записано подробно, чтобы через месяц никто не
          * прошёл этот круг заново.
+         *
+         * DRY ВЫКЛЮЧЕН ЗДЕСЬ ЯВНО (dry_multiplier 0). Включает его только третья
+         * попытка хода ([DRY_PARAMS_JSON]); эта строка ставится перед каждым
+         * ответом разговора и после повторяемой выдачи, поэтому включённый DRY не
+         * переживает своего прогона ни при каком исходе.
          */
-        const val SAMPLER_PARAMS_JSON = "{\"repeat_penalty\":1.05,\"penaltyLastN\":64}"
+        const val SAMPLER_PARAMS_JSON = "{\"repeat_penalty\":1.05,\"penaltyLastN\":64,\"dry_multiplier\":0.0}"
+
+        /**
+         * Штраф DRY для третьей попытки хода (ConversationTurns): числа те, что
+         * стенды мерили на этой модели (0,8 / 1,75 / 2; окно — весь контекст).
+         *
+         * ЧЕГО НЕ УМЕЕТ. Включённый на любой ответ, DRY портит слова: модель
+         * обходит штраф написанием («людьмами», латиница внутри слова), а прибор
+         * эха такую копию не узнаёт. Поэтому он стоит только там, где ответ
+         * проверяет детектор порчи ([WordDamage]), и никогда — сам по себе.
+         * Без поданного текста ([GGMLEngine.setDryHistory]) DRY ленту не видит
+         * вовсе: запрос через цепочку выборки не проводится.
+         */
+        const val DRY_PARAMS_JSON = "{\"dry_multiplier\":0.8,\"dry_base\":1.75,\"dryAllowedLength\":2,\"dryPenaltyLastN\":-1}"
     }
 }
