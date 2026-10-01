@@ -266,8 +266,9 @@ class ConversationTurns(
      *   текстом-заглушкой, а их модель копирует; пометка нужна, чтобы частота
      *   тупиков была видна на экране.
      * @property secondDamage порча во втором ответе (пусто — нет или детектор не
-     *   работает). При повторе второй ответ остаётся в ленте и с ней: заменить его
-     *   пока нечем.
+     *   работает).
+     * @property third третья ступень — три варианта; null — не понадобилась
+     *   (вторая чиста) или вторая не состоялась.
      */
     data class Intercept(
         val cause: Cause,
@@ -278,13 +279,30 @@ class ConversationTurns(
         val replaced: Boolean,
         val secondRepeats: Boolean,
         val secondDamage: List<String>,
-    ) {
-        // ПЕРЕХОДНОЕ: старые поля для экрана, собранного до [cause]. Нужны, чтобы
-        // файлы грузились по одному без красной сборки между ними; убираются
-        // со следующей правкой этого файла.
-        val sentence: String get() = (cause as? Cause.Repeat)?.sentence ?: ""
-        val without: Set<Int> get() = (cause as? Cause.Repeat)?.without ?: emptySet()
-    }
+        val third: Third? = null,
+    )
+
+    /**
+     * Третья ступень: три варианта в одном ответе с включённым DRY, отбор кодом.
+     *
+     * @property variants варианты по порядку и почему каждый отброшен; null у
+     *   причины — вариант годен (взят первый годный).
+     * @property chosen взятый вариант; null — годного не нашлось, в ленте то,
+     *   что было бы без третьей ступени (см. [thirdAttempt]).
+     * @property end чем кончилась выдача вариантов.
+     * @property ms сколько она шла.
+     * @property tokens сколько токенов выдано — по отчёту движка; null — отчёта нет.
+     * @property dryFed сколько токенов прошлых ответов DRY увидел до выдачи; 0 —
+     *   текст не дошёл до движка, и DRY ленты не видел.
+     */
+    data class Third(
+        val variants: List<Pair<String, String?>>,
+        val chosen: String?,
+        val end: GenerationEnd,
+        val ms: Long,
+        val tokens: Int?,
+        val dryFed: Int,
+    )
 
     /**
      * Провести ход: реплика [content] уходит в движок вслед за лентой, ответ
@@ -314,6 +332,9 @@ class ConversationTurns(
      *   начнётся вторая попытка; её события пойдут в [onEvent] так же, как
      *   первой. Экрану — убрать показанный первый ответ, иначе второй
      *   допишется к нему.
+     * @param onThird вторая попытка тоже не годна, сейчас пойдёт третья — три
+     *   варианта. Её текст в [onEvent] не идёт (три варианта подряд — не ответ);
+     *   экрану — убрать показанную вторую попытку и ждать закрытия хода.
      */
     suspend fun run(
         content: String,
@@ -328,10 +349,11 @@ class ConversationTurns(
         onEvent: (GenerationEvent) -> Unit = {},
         afterSend: suspend () -> Unit = {},
         onRetry: (Cause) -> Unit = {},
+        onThird: () -> Unit = {},
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry) { closedIndex = it }
+            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry, onThird) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -354,6 +376,7 @@ class ConversationTurns(
         onEvent: (GenerationEvent) -> Unit,
         afterSend: suspend () -> Unit,
         onRetry: (Cause) -> Unit,
+        onThird: () -> Unit,
         onClosed: (Int) -> Unit,
     ): Outcome {
         gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall)?.let { return it }
@@ -478,7 +501,7 @@ class ConversationTurns(
 
         // Сюда ход доходит, только если первую попытку не отменили (отмена
         // брошена выше, и ход уже закрыт первым ответом).
-        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, onRetry, onEvent, ::close) }
+        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, onRetry, onThird, onEvent, ::close) }
         // Стена ставится в начале запроса разговора (LlmEngine.applyWall), то
         // есть уже случилась или не случилась к этому месту.
         val wallChange = engine.takeAppliedWallChange()
@@ -531,13 +554,15 @@ class ConversationTurns(
      * пуста — первый ответ как есть: человек его уже видел целиком, а оборванный
      * второй ответом не является.
      *
+     * ВТОРАЯ ВЫДАНА ДО КОНЦА, НО НЕ ГОДНА (повтор или порча) — ход закрывает
+     * третья ступень ([thirdAttempt]). Пересчёта ленты она не добавляет: её запрос
+     * — запрос второй попытки плюс одна просьба в конце.
+     *
      * ЧЕГО НЕ ДЕЛАЕТ:
-     *  - третьей попытки нет. Второй ответ, снова пойманный на повторе или на
-     *    порче, остаётся при повторе, а при порче остаётся испорченный первый:
-     *    честная строка вместо них была бы текстом-заглушкой, а их модель копирует.
-     *    Это видно в [Intercept.secondRepeats] и [Intercept.secondDamage];
      *  - сбой второй попытки наружу не бросается: ход состоялся первым ответом,
-     *    сбой назван в [Intercept.secondEnd].
+     *    сбой назван в [Intercept.secondEnd]. Оборванная или сбившаяся вторая
+     *    третьей не зовёт: обрыв сторожем — нагрев, и ещё один прогон был бы
+     *    тем самым нагревом.
      */
     private suspend fun secondAttempt(
         cause: Cause,
@@ -549,6 +574,7 @@ class ConversationTurns(
         first: String,
         request: () -> Set<String>,
         onRetry: (Cause) -> Unit,
+        onThird: () -> Unit,
         onEvent: (GenerationEvent) -> Unit,
         close: (String, String?) -> Unit,
     ): Intercept {
@@ -569,6 +595,7 @@ class ConversationTurns(
         var replaced = false
         var repeats = false
         var damage = emptyList<String>()
+        var needThird = false
         try {
             engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
                 when (event) {
@@ -593,26 +620,156 @@ class ConversationTurns(
                 repeats = EchoIntercept.decide(second.toString(), question, history) != null
                 damage = WordDamageHolder.damage?.check(second.toString(), request()).orEmpty()
             }
+            needThird = done && (repeats || damage.isNotEmpty())
             replaced = when (cause) {
                 is Cause.Repeat -> done
                 is Cause.Damage -> done && !repeats && damage.isEmpty()
             }
-            if (replaced) close(second.toString(), first) else close(first, null)
+            // Третья ступень закроет ход сама — при любом своём исходе.
+            if (!needThird) {
+                if (replaced) close(second.toString(), first) else close(first, null)
+            }
+        }
+        val secondMs = System.currentTimeMillis() - startedAt
+        // Без третьей ступени в ленте лежало бы: при повторе — вторая (с пометкой),
+        // при порче — первая. Это же остаётся, если и третья не найдёт годного.
+        val fallback = if (replaced) second.toString() to first else first to null
+        val third = if (needThird) {
+            thirdAttempt(cause, content, selfNote, dreamNote, recall, question, history, request, fallback, first, onThird, close)
+        } else {
+            null
         }
         return Intercept(
             cause = cause,
             secondAnswer = second.toString(),
             secondEnd = end,
-            secondMs = System.currentTimeMillis() - startedAt,
+            secondMs = secondMs,
             secondTokens = metrics?.tokensPredicted,
-            replaced = replaced,
+            replaced = replaced || third?.chosen != null,
             secondRepeats = repeats,
             secondDamage = damage,
+            third = third,
+        )
+    }
+
+    /**
+     * Третья ступень: модель даёт три коротких варианта ответа в одном ответе, с
+     * включённым штрафом DRY, а код берёт первый годный. Закрывает ход сам — при
+     * любом исходе, в том числе при отмене.
+     *
+     * ЗАПРОС — тот же, что у второй попытки (при повторе — без ходов-образцов, при
+     * порче — полный), плюс просьба системным сообщением в конце. Пересчитывается
+     * только просьба: всё до неё движок уже обсчитал для второй попытки.
+     *
+     * DRY ВИДИТ — при повторе ответы выкинутых ходов-образцов (источник копии),
+     * при порче — три последних ответа ленты. Без поданного текста он ленты не
+     * видит вообще (см. [LlmEngine.DRY_PARAMS_JSON]); сколько дошло — [Third.dryFed].
+     *
+     * ГОДНЫЙ ВАРИАНТ — не строка-вступление (кончается двоеточием: «Конечно, вот три
+     * варианта:»), не повтор себя той же мерой, что у перехвата, и без порчи слов.
+     * Разбор ответа на варианты — у ночного зеркала ([com.uroboros.memory.dream.Mirror.parse]);
+     * само ночное зеркало в ответ по-прежнему не пишет, здесь взят только разбор.
+     *
+     * В ЛЕНТУ — взятый вариант, а первый ответ хода — в поле «отброшенный».
+     * Годного нет (или выдача оборвана, сбилась) — то, что лежало бы без третьей
+     * ступени ([fallback]).
+     *
+     * ЧЕГО НЕ УМЕЕТ:
+     *  - непонимание вопроса («твои воспоминания» вместо «мои о тебе») не видит:
+     *    это не повтор и не порча;
+     *  - на ходе, где модели нечего сказать, годный вариант находится примерно в
+     *    половине случаев (стенды на модели 3B); остальное — [fallback];
+     *  - вторая попытка и отброшенные варианты в ленте не хранятся: в поле
+     *    «отброшенный» лежит только первый ответ хода; варианты видны лишь в
+     *    «Подробно» до пересоздания экрана.
+     */
+    private suspend fun thirdAttempt(
+        cause: Cause,
+        content: String,
+        selfNote: String?,
+        dreamNote: String?,
+        recall: String?,
+        question: String,
+        history: List<ConversationJournal.Turn>,
+        request: () -> Set<String>,
+        fallback: Pair<String, String?>,
+        first: String,
+        onThird: () -> Unit,
+        close: (String, String?) -> Unit,
+    ): Third {
+        val without = (cause as? Cause.Repeat)?.without ?: emptySet()
+        val sources = if (without.isNotEmpty()) {
+            without.sorted().map { history[it].agentContent }
+        } else {
+            history.takeLast(EchoCheck.EARLIER_ANSWERS).map { it.agentContent }
+        }
+        val startedAt = System.currentTimeMillis()
+        val text = StringBuilder()
+        var metrics: DecodingMetrics? = null
+        var failed = false
+        var end = GenerationEnd.UNEXPLAINED
+        val variants = mutableListOf<Pair<String, String?>>()
+        var chosen: String? = null
+        var dryFed = 0
+        try {
+            onThird()
+            val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without) +
+                (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
+            engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = sources.joinToString("\n")).collect { event ->
+                when (event) {
+                    is GenerationEvent.Token -> text.append(event.text)
+                    is GenerationEvent.Metrics -> metrics = event.metrics
+                    else -> Unit
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            failed = true
+            Log.w(TAG, "третья попытка сорвалась", e)
+        } finally {
+            end = engine.lastGenerationEnd
+            dryFed = engine.lastDryFed
+            if (!failed && end == GenerationEnd.COMPLETED) {
+                for (raw in com.uroboros.memory.dream.Mirror.parse(text.toString())) {
+                    val v = raw.replaceFirst(AGENT_PREFIX, "").trim()
+                    if (v.isEmpty()) continue
+                    val why = when {
+                        v.endsWith(":") -> "вступление"
+                        EchoIntercept.decide(v, question, history) != null -> "повтор"
+                        else -> WordDamageHolder.damage?.check(v, request())?.takeIf { it.isNotEmpty() }
+                            ?.let { "порча «${it.joinToString(", ")}»" }
+                    }
+                    variants += v to why
+                    if (why == null && chosen == null) chosen = v
+                }
+            }
+            val pick = chosen
+            if (pick != null) close(pick, first) else close(fallback.first, fallback.second)
+        }
+        return Third(
+            variants = variants,
+            chosen = chosen,
+            end = end,
+            ms = System.currentTimeMillis() - startedAt,
+            tokens = metrics?.tokensPredicted,
+            dryFed = dryFed,
         )
     }
 
     companion object {
         private const val TAG = "ConversationTurns"
+
+        /**
+         * Просьба третьей ступени — системным сообщением в конце запроса. Слова те,
+         * что мерили стенды; меняя их, меняешь то, что мерили.
+         */
+        const val THREE_VARIANTS_ASK =
+            "Дай три разных коротких варианта ответа на последнюю реплику собеседника, " +
+                "каждый с новой строки, без нумерации и пояснений."
+
+        /** Подпись «Агент:», которой модель иногда начинает вариант. */
+        private val AGENT_PREFIX = Regex("^\\s*Агент\\s*:\\s*")
 
         /**
          * Потолок длины ответа для хода разговора.
