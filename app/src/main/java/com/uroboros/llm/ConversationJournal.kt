@@ -96,6 +96,15 @@ class ConversationJournal {
      * `dreamNote` — описание последней ночи, ушедшее модели на этом ходе
      * системным сообщением перед репликой; null — не уходило. Те же правила
      * места, что у `selfNote` (см. [messagesFor]).
+     *
+     * `rejected` — первый ответ этого хода, пойманный перехватом повтора
+     * ([EchoIntercept]) и заменённый второй попыткой; null — перехвата не
+     * было. Человек его видел, поэтому он хранится, а не выбрасывается. Но в
+     * запрос модели он не идёт никогда: это копия прошлого ответа, и
+     * поданная модели она стала бы новым образцом для копирования — ровно
+     * тем, от чего перехват. Поэтому отдельным полем, а не внутри
+     * `agentContent`: `agentContent` читают [messagesFor] и поиск своей речи
+     * агента, `rejected` — только экран и прибор эха.
      */
     data class Turn(
         val userContent: String,
@@ -106,6 +115,7 @@ class ConversationJournal {
         val at: Long? = null,
         val dreamNote: String? = null,
         val recall: String? = null,
+        val rejected: String? = null,
     )
 
     /**
@@ -482,6 +492,7 @@ class ConversationJournal {
         dreamNote: String? = null,
         marks: Map<String, String> = emptyMap(),
         recall: String? = null,
+        rejected: String? = null,
     ) {
         val index = turns.size
         // Строка о себе на первом ходе модели не уходила (см. [messagesFor]) —
@@ -494,7 +505,10 @@ class ConversationJournal {
         // отсутствие ключа и означает «новая».
         val uses = records.map { RecordUse(it, placedRecords[it] ?: index, marks[it]) }
         val dream = dreamNote?.takeIf { index > 0 && it.isNotBlank() }
-        turns += Turn(userContent, agentContent, question, uses, note, at, dream, recall?.takeIf { it.isNotBlank() })
+        turns += Turn(
+            userContent, agentContent, question, uses, note, at, dream,
+            recall?.takeIf { it.isNotBlank() }, rejected?.takeIf { it.isNotBlank() },
+        )
         // putIfAbsent по смыслу: первый ход, на котором запись легла, не
         // должен переписываться позднейшими попаданиями той же строки.
         for (record in records) placedRecords.getOrPut(record) { index }
