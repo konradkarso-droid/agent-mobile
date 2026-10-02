@@ -76,6 +76,7 @@ import com.uroboros.memory.dream.AgentRecall
 import com.uroboros.memory.dream.AgentRecaller
 import com.uroboros.memory.dream.DreamDoor
 import com.uroboros.memory.dream.CuriosityAsk
+import com.uroboros.memory.dream.Gaps
 import com.uroboros.memory.dream.CuriosityAskMarker
 import com.uroboros.memory.dream.CuriosityGauge
 import com.uroboros.memory.dream.CuriosityPressure
@@ -306,6 +307,12 @@ class MainActivity : AppCompatActivity() {
      * заново.
      */
     private var driftLine: String? = null
+
+    /**
+     * Пробелы в знании агента к последнему ходу (см. Gaps.meterLine). null —
+     * хода не было или экран создан заново.
+     */
+    private var gapsLine: String? = null
 
     /**
      * Ассоциация к последнему ответу: сколько снов подходило, сколько записей
@@ -2989,6 +2996,7 @@ class MainActivity : AppCompatActivity() {
             dreamsLine, recallLine, mirror, conclusions, curiosityLine(), curiosityAskMeter(),
             deskLine ?: "Доска: ещё не прочитано",
             AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
+            gapsLine ?: "Пробелы: чисел хода на экране нет",
             dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
         group(
@@ -3288,6 +3296,7 @@ class MainActivity : AppCompatActivity() {
         circleLine = null
         mirrorSelectionLine = null
         driftLine = null
+        gapsLine = null
         cloudLine = null
         portraitLine = null
         portraitShown = null
@@ -4427,6 +4436,18 @@ class MainActivity : AppCompatActivity() {
                 // Архив ленты — для своей речи агента и счёта рассказанных снов.
                 // null — не читается: оба молчат с этой причиной, ход идёт.
                 val archive = journalStore.readArchive()
+                // Пробелы — только прибор, модели не идёт (Gaps). Собираются
+                // по архиву и открытой ленте заново на каждом ходе; ход идёт,
+                // что бы с ними ни случилось.
+                gapsLine = if (archive == null) "Пробелы: архив ленты не прочитался" else runCatching {
+                    Gaps.meterLine(
+                        Gaps.of(
+                            archive.map { Gaps.Turn(it.question, it.agentContent, it.archiveIndex) } +
+                                journal.history().map { Gaps.Turn(it.question, it.agentContent, -1) }
+                        ),
+                        userText,
+                    )
+                }.getOrElse { "Пробелы: не собрались (${it.javaClass.simpleName})" }
                 // Адрес вопроса — о ком он (Coordinates.addressInRibbon). На
                 // адрес «агент» зеркало снимает записи с чужим «я»
                 // (MirrorFilter) — в отборе до раздачи мест и ниже, на стыке
