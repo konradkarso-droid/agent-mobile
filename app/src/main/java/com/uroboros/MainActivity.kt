@@ -250,6 +250,14 @@ class MainActivity : AppCompatActivity() {
     private var interceptLine: String? = null
 
     /**
+     * Глянул ли агент на приборы сам в последнем ходе (llm.Glance) — отдельно
+     * от поправки навигации (строка «Дрейф:»): по двум строкам видно, растёт ли
+     * привычка смотреть самому или ответ держится на поправке. null — хода на
+     * этом экране не было.
+     */
+    private var glanceLine: String? = null
+
+    /**
      * Сколько записей отбор дал к последнему ответу и сколько из них — одни
      * вопросы. Прибор без механизма: по нему решается, что делать с записями-
      * вопросами при выдаче, и пока решение не принято, он ничего не меняет.
@@ -2983,7 +2991,11 @@ class MainActivity : AppCompatActivity() {
             AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
             dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
-        group("Ход", lastMetricsLine, echoLine, interceptMeter(), WordDamageHolder.meterLine(), disputeNoticeLine, composedLine)
+        group(
+            "Ход", lastMetricsLine, echoLine, interceptMeter(),
+            glanceLine ?: "Взгляд: чисел хода на экране нет",
+            WordDamageHolder.meterLine(), disputeNoticeLine, composedLine,
+        )
         val composed = lastComposedContent
         if (composed != null) {
             val start = metrics.length - composedLine.length
@@ -3270,6 +3282,7 @@ class MainActivity : AppCompatActivity() {
         disputeNoticeLine = null
         // Строка перехвата — по той же причине, что и строка сверки.
         interceptLine = null
+        glanceLine = null
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
         circleLine = null
@@ -5069,6 +5082,11 @@ class MainActivity : AppCompatActivity() {
                     interceptLineOf(ran.intercept, null, journal.hidden().lastOrNull())
                 } else {
                     interceptLineOf(ran.intercept, journal.history().lastOrNull()?.rejected)
+                }
+                glanceLine = when {
+                    ran.intercept?.secondGlanced == true -> "Взгляд: вторая попытка глянула на приборы"
+                    ran.glanced -> "Взгляд: глянул на приборы сам"
+                    else -> "Взгляд: не глядел"
                 }
 
                 // Хвост 19 (27.08.2026): движок отдаёт ноль токенов при
