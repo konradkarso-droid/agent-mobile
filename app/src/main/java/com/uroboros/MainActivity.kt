@@ -2826,7 +2826,6 @@ class MainActivity : AppCompatActivity() {
                 failure = bodyFailure,
             )
         binding.textHardware.text = hardware
-        val desk = mutableListOf(hardware)
 
         // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
         // больше не входит: она обязана быть видна независимо от того,
@@ -2855,7 +2854,6 @@ class MainActivity : AppCompatActivity() {
         fun group(title: String, vararg lines: String?) {
             val present = lines.filterNotNull()
             if (present.isEmpty()) return
-            if (title !in DESK_HIDDEN_GROUPS) desk += title + "\n" + present.joinToString("\n")
             if (metrics.isNotEmpty()) {
                 // Пустой абзац между группами: на нём и лежит черта, по его
                 // центру. Это и есть воздух — вплотную к строкам черта
@@ -3006,17 +3004,37 @@ class MainActivity : AppCompatActivity() {
             )
         }
         binding.textMetrics.text = metrics
-        deskText = desk.joinToString("\n\n")
     }
 
     /**
-     * Доска для агента (llm.Glance) — шторка, какой её видит владелец, без групп
-     * [DESK_HIDDEN_GROUPS]. Собирается той же отрисовкой, что и шторка, из тех же
-     * строк: источник один, и сверка ответа агента со шторкой сверяет одно и то
-     * же. Свежесть — последней отрисовки; перед показом агенту шторка
-     * перерисовывается (см. вызов хода).
+     * Доска для агента (llm.Glance): выжимка шторки, по строке на то, о чём
+     * спрашивают чаще всего. Числа берутся из тех же мест, что и шторка, —
+     * сверка ответа агента со шторкой сверяет одни и те же величины; строки
+     * короче шторочных намеренно, почему — у llm.Glance.
+     *
+     * Строка ленты — та же, что в шторке ([journalLine]): она и так коротка.
+     * Скорость — прошлого хода, другой нет. Записи памяти считаются в базе
+     * при каждом взгляде; не прочитались — строки нет.
      */
-    private var deskText: String = ""
+    private suspend fun deskSummary(): String {
+        val power = watchdog.power.value
+        val charge = if (power.percentKnown) "${power.percent}%" else "?"
+        val plug = if (power.charging) " (заряжается)" else ""
+        val temp = if (power.temperatureKnown) "${fmt1(power.temperatureCelsius)}°C" else "?"
+        val records = runCatching {
+            withContext(Dispatchers.IO) { MemoryDatabase.getInstance(applicationContext).stickerDao().count() }
+        }.getOrNull()
+        return listOfNotNull(
+            "Тело: заряд $charge$plug, $temp, зона ${zoneLabel(watchdog.zone.value)}",
+            journalLine(),
+            "Модель: ${processObjects.loadedModelName ?: "?"}, контекст $CONTEXT_SIZE",
+            records?.let { "Память: записей $it" },
+            lastSpeed?.let { "Последний ход: выдача $it ток/с" },
+        ).joinToString("\n")
+    }
+
+    /** Скорость выдачи прошлого хода для доски агента ([deskSummary]); null — не было. */
+    private var lastSpeed: String? = null
 
     /**
      * Подпись к ссылке на собранную реплику — или объяснение, почему её нет.
@@ -4974,9 +4992,8 @@ class MainActivity : AppCompatActivity() {
                         )
                         autoScrollIfAtBottom()
                     },
-                    // Доска — шторка, перерисованная прямо сейчас: показания
-                    // железа и время — на момент взгляда.
-                    desk = { withContext(Dispatchers.Main) { renderMetricsPanel(); deskText } },
+                    // Доска — выжимка на момент взгляда.
+                    desk = { deskSummary() },
                     onGlance = {
                         // Агент позвал приборы: вызов на экран не выводился, но
                         // текст до вызова мог успеть. Ответ допишется вторым
@@ -5231,6 +5248,7 @@ class MainActivity : AppCompatActivity() {
                 // Если она осталась пустой — кэш не пишется, и это надо
                 // видеть сразу, а не через сутки по неизменившемуся времени.
                 promptCacheLine = llmEngine.getPromptCacheReport()
+                lastSpeed = engineMetrics?.let { fmt1(it.tokensPerSecond.toDouble()) }
                 lastMetricsLine = metricsReport(
                     metrics = engineMetrics,
                     breakdown = breakdown,
@@ -5398,12 +5416,6 @@ class MainActivity : AppCompatActivity() {
         /** Подписи двух частей в «Показать реплику целиком», когда записи были. */
         private const val COMPOSED_RECALL_HEAD = "[Агент вспоминает — отдельным сообщением]"
         private const val COMPOSED_USER_HEAD = "[Реплика пользователя]"
-
-        /**
-         * Группы шторки, которых нет на доске агента: о снах владелец спросит
-         * сам, а портрет — о собеседнике, не об агенте.
-         */
-        private val DESK_HIDDEN_GROUPS = setOf("Сны, любопытство, зеркало", "Портрет собеседника")
 
         /** Слово-ссылка в строке «О себе от сборки», см. showBuildSelfDialog. */
         private const val BUILD_SELF_LINK_WORD = "показать"
