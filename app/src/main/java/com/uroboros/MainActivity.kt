@@ -3089,7 +3089,9 @@ class MainActivity : AppCompatActivity() {
             is ConversationTurns.Cause.Damage ->
                 "порча слов «${c.words.joinToString(", ")}» → повторная выборка"
         }
-        val head = "Перехват: $cause · ${"%.1f".format(intercept.secondMs / 1000.0)} с, $tokens"
+        // Что тогда значат время и токены — у ConversationTurns.Intercept.secondGlanced.
+        val look = if (intercept.secondGlanced) " · вторая глянула на приборы" else ""
+        val head = "Перехват: $cause$look · ${"%.1f".format(intercept.secondMs / 1000.0)} с, $tokens"
         val secondFaults = buildList {
             if (intercept.secondRepeats) add("тоже повтор")
             if (intercept.secondDamage.isNotEmpty()) add("порча «${intercept.secondDamage.joinToString(", ")}»")
