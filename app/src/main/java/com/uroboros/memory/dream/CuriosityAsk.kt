@@ -1,5 +1,7 @@
 package com.uroboros.memory.dream
 
+import com.uroboros.memory.nav.StatusClaim
+
 /**
  * Первый выход пружины любопытства: спросить владельца о связи записей сна,
  * который сжал её сильнее всех. Решение чистое: ни базы, ни Android — затем и вынесено, чтобы
@@ -85,6 +87,11 @@ object CuriosityAsk {
         if (leader.contribution < MIN_CONTRIBUTION) {
             return Decision.Refuse("вклад лидера ${leader.contribution} из $MIN_CONTRIBUTION")
         }
+        // Слова о статусе модели не подаются (StatusClaim); сон, от записей
+        // которого после этого ничего не осталось, спрашивать не о чем.
+        if (leader.records.all { StatusClaim.strip(it.content) == null }) {
+            return Decision.Refuse("записи лидера только о статусе")
+        }
         return Decision.Ask(leader)
     }
 
@@ -111,12 +118,15 @@ object CuriosityAsk {
         "${about(leader)} Спроси пользователя об этом, одним вопросом."
 
     /**
-     * Общая часть обеих строк: записи лидера целиком, в порядке его цепочки.
+     * Общая часть обеих строк: записи лидера в порядке его цепочки, без
+     * предложений о статусе (см. StatusClaim) — запись, от которой ничего не
+     * осталось, не называется.
      * Без ссылок на записи ответа: строка стоит выше записей, и ссылаться ей
      * не на что.
      */
     private fun about(leader: CuriosityPressure.Leader): String =
-        "Меня занимает, как связано: ${leader.records.joinToString(", ") { "«${it.content}»" }}."
+        "Меня занимает, как связано: " +
+            leader.records.mapNotNull { StatusClaim.strip(it.content) }.joinToString(", ") { "«$it»" } + "."
 
     /** Строка прибора. Печатается всегда: молчащий выход неотличим от сломанного. */
     fun meter(decision: Decision): String = when (decision) {
