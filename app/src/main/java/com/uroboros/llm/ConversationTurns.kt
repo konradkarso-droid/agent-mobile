@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -240,6 +241,8 @@ class ConversationTurns(
              * говорил.
              */
             val kept: String? = null,
+            /** Агент глянул на приборы ([Glance]): ответ хода — второй проход. */
+            val glanced: Boolean = false,
         ) : Outcome()
     }
 
@@ -366,10 +369,12 @@ class ConversationTurns(
         afterSend: suspend () -> Unit = {},
         onRetry: (Cause) -> Unit = {},
         onThird: () -> Unit = {},
+        desk: (suspend () -> String)? = null,
+        onGlance: () -> Unit = {},
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry, onThird) { closedIndex = it }
+            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry, onThird, desk, onGlance) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -393,6 +398,8 @@ class ConversationTurns(
         afterSend: suspend () -> Unit,
         onRetry: (Cause) -> Unit,
         onThird: () -> Unit,
+        desk: (suspend () -> String)?,
+        onGlance: () -> Unit,
         onClosed: (Int) -> Unit,
     ): Outcome {
         gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall)?.let { return it }
@@ -440,7 +447,13 @@ class ConversationTurns(
         // Слова запроса для детектора порчи: всё, что модель видела, вместе со
         // стеной. Слово ответа, стоящее там в той же форме (имя, термин из
         // записи), порчей не считается. Собирается, только если понадобится.
-        val request by lazy { WordDamage.requestWords(messages.joinToString("\n") { it.second } + "\n" + (engine.wallText ?: "")) }
+        // Доска взгляда — тоже запрос: слова с неё («Q4_K_M», названия зон)
+        // порчей не считаются. Читается после первого прохода, когда хвост уже
+        // известен.
+        var glanceTail: List<Pair<String, String>> = emptyList()
+        val request by lazy {
+            WordDamage.requestWords((messages + glanceTail).joinToString("\n") { it.second } + "\n" + (engine.wallText ?: ""))
+        }
 
         // Закрыть ход в ленте. Одно место для обеих попыток: правило
         // дословности ([answer] выше) одно и то же.
@@ -470,8 +483,20 @@ class ConversationTurns(
             hidden = true
         }
 
-        try {
-            engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
+        // Один проход модели. Вызов приборов ([Glance]) обрывает выдачу на своём
+        // начале: дальше модель писала бы только хвост вызова. Пока выданное
+        // может оказаться началом вызова, экрану ничего не отдаётся — иначе на
+        // экране мелькнуло бы «<tool_call>». Возвращает текст до вызова; null —
+        // вызова не было.
+        suspend fun pass(msgs: List<Pair<String, String>>): String? {
+            val held = mutableListOf<GenerationEvent>()
+            var holding = true
+            // Знак отдаётся сборщику ниже до проверки: тот, что открыл вызов,
+            // уже лежит в [answer], и выдача обрывается на нём же.
+            engine.generateConversationFlow(msgs, ANSWER_TOKEN_LIMIT).transformWhile { event ->
+                emit(event)
+                answer.indexOf(Glance.CALL_OPEN) < 0
+            }.collect { event ->
                 when (event) {
                     is GenerationEvent.Token -> {
                         if (firstTokenAtMs == null) firstTokenAtMs = System.currentTimeMillis() - startMs
@@ -484,7 +509,55 @@ class ConversationTurns(
                     // выхода из collect.
                     else -> Unit
                 }
-                onEvent(event)
+                // Держатся только знаки: ход обсчёта, метрики, ошибки экрану
+                // нужны сразу, а вызова в них нет.
+                if (holding && event is GenerationEvent.Token) {
+                    held += event
+                    val start = answer.trimStart().toString()
+                    if (start.isEmpty() || Glance.CALL_OPEN.startsWith(start) || start.contains(Glance.CALL_OPEN)) return@collect
+                    holding = false
+                    held.forEach(onEvent)
+                    held.clear()
+                } else {
+                    onEvent(event)
+                }
+            }
+            val cut = answer.indexOf(Glance.CALL_OPEN)
+            if (cut < 0) {
+                // Выдача кончилась, пока держали (ответ — пробелы или обрывок
+                // «<tool»): отдать удержанное, чтобы экран не потерял знаков.
+                held.forEach(onEvent)
+                return null
+            }
+            return answer.substring(0, cut)
+        }
+
+        var glanced = false
+        try {
+            val before = pass(messages)
+            if (before != null) {
+                // Модель позвала приборы: показать доску и спросить снова. Ответ
+                // хода — второй проход; первый (вызов) в ленту не идёт, доска
+                // тоже. Счёт токенов и время первого токена — второго прохода:
+                // он и есть ответ.
+                glanced = true
+                onGlance()
+                glanceTail = listOf(
+                    ConversationJournal.ROLE_ASSISTANT to Glance.callMessage(before),
+                    ConversationJournal.ROLE_USER to Glance.response(desk?.invoke().orEmpty()),
+                )
+                answer.clear()
+                tokensSeen = 0
+                firstTokenAtMs = null
+                metrics = null
+                // Второй вызов подряд доску не покажет снова: ответ режется по
+                // нему, вызов в ленту не ложится.
+                val again = pass(messages + glanceTail)
+                if (again != null) {
+                    answer.setLength(0)
+                    answer.append(again.trimEnd())
+                    tokensSeen = if (answer.isEmpty()) 0 else tokensSeen
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -507,6 +580,10 @@ class ConversationTurns(
                 // ушло бы значение предыдущего хода, расхождение на один ход,
                 // которое ничем себя не выдаёт.
                 //
+                // Ход со взглядом на приборы считает запрос второго прохода, с
+                // доской, которой в ленте нет: завышение на доску до следующего
+                // хода — в безопасную сторону.
+                //
                 // Число — первой попытки и при перехвате: запрос второй короче
                 // на выкинутые ходы, а следующий ход пойдёт с полной лентой.
                 // Сторож места ([gate]) должен считать от полной.
@@ -526,7 +603,7 @@ class ConversationTurns(
 
         // Сюда ход доходит, только если первую попытку не отменили (отмена
         // брошена выше, и ход уже закрыт первым ответом).
-        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, onRetry, onThird, onEvent, ::close, ::hide) }
+        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, glanceTail, onRetry, onThird, onEvent, ::close, ::hide) }
         // Стена ставится в начале запроса разговора (LlmEngine.applyWall), то
         // есть уже случилась или не случилась к этому месту.
         val wallChange = engine.takeAppliedWallChange()
@@ -547,6 +624,7 @@ class ConversationTurns(
             intercept = intercept,
             hidden = hidden,
             kept = kept,
+            glanced = glanced,
         )
     }
 
@@ -600,6 +678,7 @@ class ConversationTurns(
         question: String,
         first: String,
         request: () -> Set<String>,
+        glanceTail: List<Pair<String, String>>,
         onRetry: (Cause) -> Unit,
         onThird: () -> Unit,
         onEvent: (GenerationEvent) -> Unit,
@@ -610,7 +689,9 @@ class ConversationTurns(
         // же трёх прошлых ответов, что и у первого.
         val history = journal.history()
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
-        val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without)
+        // Доска взгляда — и сюда: повторная попытка отвечает на тот же вопрос
+        // о приборах и без доски назвала бы числа из головы.
+        val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without) + glanceTail
         onRetry(cause)
         val startedAt = System.currentTimeMillis()
         val second = StringBuilder()
@@ -663,7 +744,7 @@ class ConversationTurns(
         // при порче — первая. Это же остаётся, если третья оборвётся или собьётся.
         val fallback = if (replaced) second.toString() to first else first to null
         val third = if (needThird) {
-            thirdAttempt(cause, content, selfNote, dreamNote, recall, question, history, request, fallback, first, second.toString(), onThird, close, hide)
+            thirdAttempt(cause, content, selfNote, dreamNote, recall, question, history, request, glanceTail, fallback, first, second.toString(), onThird, close, hide)
         } else {
             null
         }
@@ -727,6 +808,7 @@ class ConversationTurns(
         question: String,
         history: List<ConversationJournal.Turn>,
         request: () -> Set<String>,
+        glanceTail: List<Pair<String, String>>,
         fallback: Pair<String, String?>,
         first: String,
         second: String,
@@ -752,7 +834,7 @@ class ConversationTurns(
         try {
             onThird()
             val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without) +
-                (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
+                glanceTail + (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
             engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = sources.joinToString("\n")).collect { event ->
                 when (event) {
                     is GenerationEvent.Token -> text.append(event.text)
