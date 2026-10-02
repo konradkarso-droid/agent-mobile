@@ -96,6 +96,27 @@ class WordDamageTest {
         assertTrue(damaged("Красный — Red").contains("Red"))
 
     @Test
+    fun `латинское слово из запроса молчит — агент переписал доску`() =
+        assertTrue(
+            damaged(
+                "Модель: qwen2.5-3b-instruct-q4_k_m.gguf",
+                WordDamage.requestWords("Модель: qwen2.5-3b-instruct-q4_k_m.gguf, контекст 4096"),
+            ).isEmpty()
+        )
+
+    @Test
+    fun `латинское слово из запроса сверяется без учёта заглавных`() =
+        assertTrue(damaged("Instruct", WordDamage.requestWords("qwen2.5-3b-instruct")).isEmpty())
+
+    @Test
+    fun `латинское слово не из запроса ловится и рядом с запрошенным`() =
+        assertEquals(listOf("myself"), damaged("instruct myself", WordDamage.requestWords("qwen2.5-3b-instruct")))
+
+    @Test
+    fun `кусок служебной разметки из запроса латиницу не разрешает`() =
+        assertTrue(damaged("Я позову tool", WordDamage.requestWords("<tool_call>\n</tool_call>")).contains("tool"))
+
+    @Test
     fun `ошибка формы из настоящих слов молчит`() =
         assertTrue(damaged("управление людям").isEmpty())
 
