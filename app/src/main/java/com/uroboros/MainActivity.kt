@@ -2816,7 +2816,7 @@ class MainActivity : AppCompatActivity() {
         // там, где смотрят на перегрев. Что именно молчит, разбирается по
         // строке наблюдения за зоной внутри шторки.
         val temp = if (power.temperatureKnown) "${fmt1(power.temperatureCelsius)}°C" else "?"
-        binding.textHardware.text = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · $temp\n" +
+        val hardware = "Зона: ${zoneLabel(zone)} · батарея $charge$plug · $temp\n" +
             // Жизнь агента — под строкой железа и всегда на виду, по той же
             // причине: кома, увиденная только в раскрытой шторке, не увидена.
             AgentLife.line(
@@ -2825,6 +2825,8 @@ class MainActivity : AppCompatActivity() {
                 batteryOptimized = AgentLife.batteryOptimized(applicationContext),
                 failure = bodyFailure,
             )
+        binding.textHardware.text = hardware
+        val desk = mutableListOf(hardware)
 
         // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
         // больше не входит: она обязана быть видна независимо от того,
@@ -2853,6 +2855,7 @@ class MainActivity : AppCompatActivity() {
         fun group(title: String, vararg lines: String?) {
             val present = lines.filterNotNull()
             if (present.isEmpty()) return
+            if (title !in DESK_HIDDEN_GROUPS) desk += title + "\n" + present.joinToString("\n")
             if (metrics.isNotEmpty()) {
                 // Пустой абзац между группами: на нём и лежит черта, по его
                 // центру. Это и есть воздух — вплотную к строкам черта
@@ -3003,7 +3006,17 @@ class MainActivity : AppCompatActivity() {
             )
         }
         binding.textMetrics.text = metrics
+        deskText = desk.joinToString("\n\n")
     }
+
+    /**
+     * Доска для агента (llm.Glance) — шторка, какой её видит владелец, без групп
+     * [DESK_HIDDEN_GROUPS]. Собирается той же отрисовкой, что и шторка, из тех же
+     * строк: источник один, и сверка ответа агента со шторкой сверяет одно и то
+     * же. Свежесть — последней отрисовки; перед показом агенту шторка
+     * перерисовывается (см. вызов хода).
+     */
+    private var deskText: String = ""
 
     /**
      * Подпись к ссылке на собранную реплику — или объяснение, почему её нет.
@@ -4961,6 +4974,18 @@ class MainActivity : AppCompatActivity() {
                         )
                         autoScrollIfAtBottom()
                     },
+                    // Доска — шторка, перерисованная прямо сейчас: показания
+                    // железа и время — на момент взгляда.
+                    desk = { withContext(Dispatchers.Main) { renderMetricsPanel(); deskText } },
+                    onGlance = {
+                        // Агент позвал приборы: вызов на экран не выводился, но
+                        // текст до вызова мог успеть. Ответ допишется вторым
+                        // проходом. Служебного в ленте нет — только строка хода.
+                        binding.textResults.text = renderJournal(pendingQuestion = userText)
+                        firstTokenShown = false
+                        showProgress("Смотрю на приборы")
+                        autoScrollIfAtBottom()
+                    },
                     onThird = {
                         // Вторая попытка тоже не годна: её текст убирается, а три
                         // варианта на экран не идут — ход покажется закрытым,
@@ -5373,6 +5398,12 @@ class MainActivity : AppCompatActivity() {
         /** Подписи двух частей в «Показать реплику целиком», когда записи были. */
         private const val COMPOSED_RECALL_HEAD = "[Агент вспоминает — отдельным сообщением]"
         private const val COMPOSED_USER_HEAD = "[Реплика пользователя]"
+
+        /**
+         * Группы шторки, которых нет на доске агента: о снах владелец спросит
+         * сам, а портрет — о собеседнике, не об агенте.
+         */
+        private val DESK_HIDDEN_GROUPS = setOf("Сны, любопытство, зеркало", "Портрет собеседника")
 
         /** Слово-ссылка в строке «О себе от сборки», см. showBuildSelfDialog. */
         private const val BUILD_SELF_LINK_WORD = "показать"
