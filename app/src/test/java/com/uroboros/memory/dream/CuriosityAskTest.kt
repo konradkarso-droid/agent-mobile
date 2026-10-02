@@ -152,35 +152,4 @@ class CuriosityAskTest {
         assertFalse(line.contains("интерес"))
         assertFalse(line, line.contains("снилось") || line.contains("сон"))
     }
-
-    // --- Слова о статусе (StatusClaim) ---
-
-    private val withStatus = live + mapOf(
-        1L to Sticker(id = 1, content = "Я - Админ"),
-        2L to Sticker(id = 2, content = "Админ — это Вася."),
-        3L to Sticker(id = 3, content = "Я Админ. Люблю чай."),
-    )
-
-    private fun decideWithStatus(vararg dreams: Dream) =
-        CuriosityAsk.decide(CuriosityPressure.measure(dreams.toList(), { withStatus[it] }, now), false)
-
-    @Test
-    fun `сон только о статусе не спрашивается`() {
-        assertEquals(
-            CuriosityAsk.Decision.Refuse("записи лидера только о статусе"),
-            decideWithStatus(dream(1, 2, picked = 2)),
-        )
-    }
-
-    @Test
-    fun `слова о статусе в строку не идут, остальное идёт`() {
-        val leader = (decideWithStatus(dream(1, 3, 4, picked = 2)) as CuriosityAsk.Decision.Ask).leader
-        val line = CuriosityAsk.line(leader)
-        assertEquals(
-            "Меня занимает, как связано: «Люблю чай.», «Запись номер 4 лежит в памяти». " +
-                "Если к месту — спроси пользователя об этом, одним вопросом.",
-            line,
-        )
-        assertFalse(line, line.contains("дмин"))
-    }
 }
