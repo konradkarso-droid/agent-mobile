@@ -133,15 +133,23 @@ object BuildSelfDescription {
      *
      * @param learned нажитое о себе — строки, принятые человеком; пусто,
      *        пока таких нет.
+     * @param tools описание инструментов (см. [Glance.WALL_BLOCK]) — последним,
+     *        как его ставит шаблон модели: после всего системного текста. Это
+     *        не строка о себе, и в счёт строк сборки не входит. Внутри него
+     *        есть пустые строки — так он записан в шаблоне, и правило «пустых
+     *        частей не бывает» его не касается.
      */
     fun compose(
         humanWall: String,
         buildLines: List<String>,
         learned: List<String> = emptyList(),
-    ): String =
-        (listOf(humanWall) + buildLines + learned)
+        tools: String = "",
+    ): String {
+        val wall = (listOf(humanWall) + buildLines + learned)
             .filter { it.isNotBlank() }
             .joinToString("\n")
+        return if (tools.isBlank()) wall else "$wall\n\n$tools"
+    }
 
     /**
      * Какую стену ждать после просьбы поставить [requested], если сейчас
