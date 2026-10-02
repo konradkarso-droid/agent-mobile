@@ -91,6 +91,7 @@ import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
 import com.uroboros.memory.nav.Clouds
 import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.Drift
 import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnSpeech
@@ -290,6 +291,13 @@ class MainActivity : AppCompatActivity() {
      * чужим «я» снято (см. MirrorFilter). null — отбора на этом ходе не было.
      */
     private var mirrorSelectionLine: String? = null
+
+    /**
+     * Поправка на дрейф показаний в своей речи к последнему ответу (см.
+     * Drift.meterLine). null — отбора на этом ходе не было или экран создан
+     * заново.
+     */
+    private var driftLine: String? = null
 
     /**
      * Ассоциация к последнему ответу: сколько снов подходило, сколько записей
@@ -2951,11 +2959,12 @@ class MainActivity : AppCompatActivity() {
         } ?: "в ленте нет хода с вопросом владельца"
         val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: $lostNote"
         val cloud = cloudLine ?: "Облако адреса: $lostNote"
+        val drift = driftLine ?: "Дрейф: чисел хода на экране нет"
         val portraitMeter = portraitLine ?: "О собеседнике: $lostNote"
         // Строка таблицы разворота — только когда таблица загружена; пока нет,
         // причину печатает строка зеркала в отборе.
         group(
-            "Память", recordsQuestionsLine, circleLine, mirrorSelection, portraitMeter, RetellHolder.meterLine(), cloud,
+            "Память", recordsQuestionsLine, circleLine, mirrorSelection, drift, portraitMeter, RetellHolder.meterLine(), cloud,
             touchesLine, selfLeader,
         )
         // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
@@ -3265,6 +3274,7 @@ class MainActivity : AppCompatActivity() {
         recordsQuestionsLine = null
         circleLine = null
         mirrorSelectionLine = null
+        driftLine = null
         cloudLine = null
         portraitLine = null
         portraitShown = null
@@ -4505,7 +4515,24 @@ class MainActivity : AppCompatActivity() {
                 // Своя речь — после записей и принесённого ассоциацией: индексы
                 // принесённого ниже считаются от начала списка.
                 val ownSeated = ownSaid.take(contextResult.ownSpeechSeated)
-                val ownLines = ownSeated.map { ProvenanceLabels.ownSpeechForModel(it.sentence, it.at, recordsAt) }
+                // Поправка на дрейф показаний своей речи (Drift): точка
+                // отправления — этот ход, показания — те же, что у шторки.
+                val power = watchdog.power.value
+                val origin = Drift.Origin(
+                    at = recordsAt,
+                    chargePercent = power.percent.takeIf { power.percentKnown },
+                    charging = power.charging,
+                    temperatureC = power.temperatureCelsius.takeIf { power.temperatureKnown },
+                    clock = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(recordsAt)),
+                )
+                val drifts = ownSeated.map { Drift.of(it.sentence, it.at, origin) }
+                driftLine = Drift.meterLine(
+                    ownSeated.size,
+                    ownSeated.zip(drifts).mapNotNull { (said, c) -> c?.let { said.sentence to it } },
+                )
+                val ownLines = ownSeated.mapIndexed { i, said ->
+                    ProvenanceLabels.ownSpeechForModel(said.sentence, said.at, recordsAt, drift = drifts[i]?.forModel.orEmpty())
+                }
                 // Эпизод записи — по часам эпизодов из времён ходов ленты и
                 // архива и закрытий лент (Episodes.Clock): запись из прошлого
                 // разговора подписывается «в прошлом разговоре».
