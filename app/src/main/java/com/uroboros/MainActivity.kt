@@ -99,7 +99,6 @@ import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.Retelling
 import com.uroboros.memory.nav.RetellHolder
-import com.uroboros.memory.nav.StatusClaim
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -307,13 +306,6 @@ class MainActivity : AppCompatActivity() {
      * заново.
      */
     private var driftLine: String? = null
-
-    /**
-     * Граница о статусе к последнему ответу: сколько предложений о статусе
-     * снято по путям к модели (см. StatusClaim.meterLine). null — отбора на
-     * этом ходе не было или экран создан заново.
-     */
-    private var statusLine: String? = null
 
     /**
      * Ассоциация к последнему ответу: сколько снов подходило, сколько записей
@@ -2976,12 +2968,11 @@ class MainActivity : AppCompatActivity() {
         val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: $lostNote"
         val cloud = cloudLine ?: "Облако адреса: $lostNote"
         val drift = driftLine ?: "Дрейф: чисел хода на экране нет"
-        val status = statusLine ?: "Права: чисел хода на экране нет"
         val portraitMeter = portraitLine ?: "О собеседнике: $lostNote"
         // Строка таблицы разворота — только когда таблица загружена; пока нет,
         // причину печатает строка зеркала в отборе.
         group(
-            "Память", recordsQuestionsLine, circleLine, mirrorSelection, status, drift, portraitMeter, RetellHolder.meterLine(), cloud,
+            "Память", recordsQuestionsLine, circleLine, mirrorSelection, drift, portraitMeter, RetellHolder.meterLine(), cloud,
             touchesLine, selfLeader,
         )
         // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
@@ -3297,7 +3288,6 @@ class MainActivity : AppCompatActivity() {
         circleLine = null
         mirrorSelectionLine = null
         driftLine = null
-        statusLine = null
         cloudLine = null
         portraitLine = null
         portraitShown = null
@@ -4510,11 +4500,7 @@ class MainActivity : AppCompatActivity() {
                 val retell = RetellHolder.table
                 val (doorRecords, doorMirrored) =
                     MirrorFilter.apply(DreamDoor.pick(behindDoor, contextResult.stickers, userText), address, retell)
-                // Слова о статусе до модели не доходят ни на каком пути
-                // (StatusClaim): записи ответа и двери, ассоциации, своя речь,
-                // портрет, строка любопытства. Счёт — по путям, для «Права:».
-                val answerRaw = (contextResult.stickers + doorRecords).filterNot { it.id in portraitIds }
-                val answerStickers = answerRaw.mapNotNull { StatusClaim.cleaned(it) }
+                val answerStickers = (contextResult.stickers + doorRecords).filterNot { it.id in portraitIds }
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
                 // хвост генерации). Причина — сказанным считается то, что
@@ -4534,16 +4520,14 @@ class MainActivity : AppCompatActivity() {
                 val answerIds = answerStickers.map { it.id }.toSet()
                 val dreamOffer = dreamRecall.offer(answerIds)
                 val (associated, associatedMirrored) = MirrorFilter.apply(dreamOffer.brought, address, retell)
-                val associatedRaw = associated.filterNot { it.id in portraitIds }
-                val associatedShown = associatedRaw.mapNotNull { StatusClaim.cleaned(it) }
+                val associatedShown = associated.filterNot { it.id in portraitIds }
                 val stickers = answerStickers + associatedShown
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
                 val recordsAt = System.currentTimeMillis()
                 // Своя речь — после записей и принесённого ассоциацией: индексы
                 // принесённого ниже считаются от начала списка.
-                val ownTaken = ownSaid.take(contextResult.ownSpeechSeated)
-                val ownSeated = ownTaken.filterNot { StatusClaim.has(it.sentence) }
+                val ownSeated = ownSaid.take(contextResult.ownSpeechSeated)
                 // Поправка на дрейф показаний своей речи (Drift): точка
                 // отправления — этот ход, показания — те же, что у шторки.
                 val power = watchdog.power.value
@@ -4607,7 +4591,6 @@ class MainActivity : AppCompatActivity() {
                 val portraitLines = if (portrait == null || portraitTable == null) emptyList() else {
                     val byId = portraitFound!!.getOrNull()!!.second
                     portrait.chosen.mapNotNull { line ->
-                        if (StatusClaim.has(line.sentence)) return@mapNotNull null
                         val sticker = byId[line.recordId] ?: return@mapNotNull null
                         val retold = Retelling.retell(line.sentence, portraitTable).text ?: return@mapNotNull null
                         ProvenanceLabels.retoldForModel(
@@ -4634,16 +4617,6 @@ class MainActivity : AppCompatActivity() {
                             (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
                     }
                 }
-                // Портрет считается, только когда он подан модели (есть таблица
-                // разворота); иначе его строки не уходят и снимать нечего.
-                var statusTally = StatusClaim.Tally(
-                    memory = (answerRaw + associatedRaw).sumOf { StatusClaim.sentencesIn(it.content) },
-                    own = ownTaken.sumOf { StatusClaim.sentencesIn(it.sentence) },
-                    portrait = if (portrait == null || portraitTable == null) 0
-                    else portrait.chosen.sumOf { StatusClaim.sentencesIn(it.sentence) },
-                    live = StatusClaim.sentencesIn(userText),
-                )
-                statusLine = StatusClaim.meterLine(statusTally)
                 mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
                     address, contextResult.mirrorRemoved + doorMirrored + associatedMirrored,
                     retoldCount, RetellHolder.state,
@@ -4779,12 +4752,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 curiosityAskLine = CuriosityAsk.meter(askDecision)
                 val askedLeader = (askDecision as? CuriosityAsk.Decision.Ask)?.leader
-                if (askedLeader != null) {
-                    statusTally = statusTally.copy(
-                        curiosity = askedLeader.records.sumOf { StatusClaim.sentencesIn(it.content) },
-                    )
-                    statusLine = StatusClaim.meterLine(statusTally)
-                }
                 // Строки о себе здесь нет: она уходит отдельным сообщением
                 // (selfNote в turns.run ниже).
                 val userContent = journal.composeUserContent(
