@@ -767,6 +767,7 @@ class LlmEngine(
         humanWall = BibleSoftWall.TEXT,
         buildLines = buildSelfLines,
         learned = learnedLines,
+        tools = Glance.WALL_BLOCK,
     )
 
     /**
