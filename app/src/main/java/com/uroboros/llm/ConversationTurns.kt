@@ -241,7 +241,11 @@ class ConversationTurns(
              * говорил.
              */
             val kept: String? = null,
-            /** Агент глянул на приборы ([Glance]): ответ хода — второй проход. */
+            /**
+             * Агент глянул на приборы ([Glance]) — первым проходом или во второй
+             * попытке перехвата ([Intercept.secondGlanced]); ответ хода дан после
+             * доски.
+             */
             val glanced: Boolean = false,
         ) : Outcome()
     }
@@ -285,6 +289,9 @@ class ConversationTurns(
      *   работает).
      * @property third третья ступень — три варианта; null — не понадобилась
      *   (вторая чиста) или вторая не состоялась.
+     * @property secondGlanced вторая попытка позвала приборы, хотя первый проход
+     *   на них не глядел: ей показана доска, и [secondAnswer], [secondMs],
+     *   [secondTokens] — уже прохода после доски (время — обоих).
      */
     data class Intercept(
         val cause: Cause,
@@ -296,6 +303,7 @@ class ConversationTurns(
         val secondRepeats: Boolean,
         val secondDamage: List<String>,
         val third: Third? = null,
+        val secondGlanced: Boolean = false,
     )
 
     /**
@@ -458,7 +466,13 @@ class ConversationTurns(
         // Закрыть ход в ленте. Одно место для обеих попыток: правило
         // дословности ([answer] выше) одно и то же.
         var kept: String? = null
-        fun close(agentContent: String, rejected: String?) {
+        fun close(answerText: String, rejected: String?) {
+            // Вызов приборов в ленту не ложится никогда: каждый проход режет
+            // его сам, а здесь страховка на путь, которого не предусмотрели.
+            // Лёг бы — модель видела бы в ленте свой неразобранный вызов как
+            // ответ и училась бы так отвечать. Если до вызова ничего не было,
+            // ход ложится пустым ответом: это видно в ленте, а не прячется.
+            val agentContent = answerText.substringBefore(Glance.CALL_OPEN).trimEnd()
             journal.appendTurn(
                 userContent = content,
                 agentContent = agentContent,
@@ -483,54 +497,12 @@ class ConversationTurns(
             hidden = true
         }
 
-        // Один проход модели. Вызов приборов ([Glance]) обрывает выдачу на своём
-        // начале: дальше модель писала бы только хвост вызова. Пока выданное
-        // может оказаться началом вызова, экрану ничего не отдаётся — иначе на
-        // экране мелькнуло бы «<tool_call>». Возвращает текст до вызова; null —
-        // вызова не было.
-        suspend fun pass(msgs: List<Pair<String, String>>): String? {
-            val held = mutableListOf<GenerationEvent>()
-            var holding = true
-            // Знак отдаётся сборщику ниже до проверки: тот, что открыл вызов,
-            // уже лежит в [answer], и выдача обрывается на нём же.
-            engine.generateConversationFlow(msgs, ANSWER_TOKEN_LIMIT).transformWhile { event ->
-                emit(event)
-                answer.indexOf(Glance.CALL_OPEN) < 0
-            }.collect { event ->
-                when (event) {
-                    is GenerationEvent.Token -> {
-                        if (firstTokenAtMs == null) firstTokenAtMs = System.currentTimeMillis() - startMs
-                        tokensSeen++
-                        answer.append(event.text)
-                    }
-                    is GenerationEvent.Metrics -> metrics = event.metrics
-                    // Done намеренно НЕ разбирается: библиотека не обещает, что
-                    // метрики придут до него, поэтому итог собирается после
-                    // выхода из collect.
-                    else -> Unit
-                }
-                // Держатся только знаки: ход обсчёта, метрики, ошибки экрану
-                // нужны сразу, а вызова в них нет.
-                if (holding && event is GenerationEvent.Token) {
-                    held += event
-                    val start = answer.trimStart().toString()
-                    if (start.isEmpty() || Glance.CALL_OPEN.startsWith(start) || start.contains(Glance.CALL_OPEN)) return@collect
-                    holding = false
-                    held.forEach(onEvent)
-                    held.clear()
-                } else {
-                    onEvent(event)
-                }
-            }
-            val cut = answer.indexOf(Glance.CALL_OPEN)
-            if (cut < 0) {
-                // Выдача кончилась, пока держали (ответ — пробелы или обрывок
-                // «<tool»): отдать удержанное, чтобы экран не потерял знаков.
-                held.forEach(onEvent)
-                return null
-            }
-            return answer.substring(0, cut)
-        }
+        // Один проход модели с ловлей вызова приборов (см. [passCatchingCall]).
+        suspend fun pass(msgs: List<Pair<String, String>>): String? =
+            passCatchingCall(msgs, answer, onEvent, onPiece = {
+                if (firstTokenAtMs == null) firstTokenAtMs = System.currentTimeMillis() - startMs
+                tokensSeen++
+            }) { metrics = it }
 
         var glanced = false
         try {
@@ -603,7 +575,7 @@ class ConversationTurns(
 
         // Сюда ход доходит, только если первую попытку не отменили (отмена
         // брошена выше, и ход уже закрыт первым ответом).
-        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, glanceTail, onRetry, onThird, onEvent, ::close, ::hide) }
+        val intercept = cause?.let { c -> secondAttempt(c, content, selfNote, dreamNote, recall, question, answer.toString(), { request }, glanceTail, desk, onGlance, onRetry, onThird, onEvent, ::close, ::hide) }
         // Стена ставится в начале запроса разговора (LlmEngine.applyWall), то
         // есть уже случилась или не случилась к этому месту.
         val wallChange = engine.takeAppliedWallChange()
@@ -624,7 +596,7 @@ class ConversationTurns(
             intercept = intercept,
             hidden = hidden,
             kept = kept,
-            glanced = glanced,
+            glanced = glanced || intercept?.secondGlanced == true,
         )
     }
 
@@ -646,6 +618,80 @@ class ConversationTurns(
     }
 
     /**
+     * Один проход модели с ловлей вызова приборов ([Glance]). Им идут первый
+     * проход хода и вторая попытка перехвата; третья ступень вызов не ловит, а
+     * бракует вариант с ним (см. [thirdAttempt]).
+     *
+     * Вызов обрывает выдачу на своём начале: дальше модель писала бы только
+     * хвост вызова. Пока выданное может оказаться началом вызова, экрану
+     * ([onEvent]) ничего не отдаётся — иначе на экране мелькнуло бы
+     * «<tool_call>». Знаки дописываются в [text]; [onPiece] зовётся на каждый
+     * знак до дописывания (счёт, время первого знака), [onMetrics] — на отчёт
+     * движка.
+     *
+     * Возвращает текст до вызова; null — вызова не было. [text] при вызове
+     * содержит и сам его начальный знак — обрезать его дело вызывающего.
+     */
+    private suspend fun passCatchingCall(
+        messages: List<Pair<String, String>>,
+        text: StringBuilder,
+        onEvent: (GenerationEvent) -> Unit,
+        onPiece: () -> Unit,
+        onMetrics: (DecodingMetrics) -> Unit,
+    ): String? {
+        val held = mutableListOf<GenerationEvent>()
+        var holding = true
+        // Знак отдаётся сборщику ниже до проверки: тот, что открыл вызов,
+        // уже лежит в [text], и выдача обрывается на нём же.
+        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).transformWhile { event ->
+            emit(event)
+            text.indexOf(Glance.CALL_OPEN) < 0
+        }.collect { event ->
+            when (event) {
+                is GenerationEvent.Token -> {
+                    onPiece()
+                    text.append(event.text)
+                }
+                is GenerationEvent.Metrics -> onMetrics(event.metrics)
+                // Done намеренно НЕ разбирается: библиотека не обещает, что
+                // метрики придут до него, поэтому итог собирается после
+                // выхода из collect.
+                else -> Unit
+            }
+            // Держатся только знаки: ход обсчёта, метрики, ошибки экрану
+            // нужны сразу, а вызова в них нет.
+            if (holding && event is GenerationEvent.Token) {
+                held += event
+                val start = text.trimStart().toString()
+                if (start.isEmpty() || Glance.CALL_OPEN.startsWith(start) || start.contains(Glance.CALL_OPEN)) return@collect
+                holding = false
+                held.forEach(onEvent)
+                held.clear()
+            } else {
+                onEvent(event)
+            }
+        }
+        val cut = text.indexOf(Glance.CALL_OPEN)
+        if (cut < 0) {
+            // Выдача кончилась, пока держали (ответ — пробелы или обрывок
+            // «<tool»): отдать удержанное, чтобы экран не потерял знаков.
+            held.forEach(onEvent)
+            return null
+        }
+        return text.substring(0, cut)
+    }
+
+    /**
+     * Оставить в [text] только сказанное до вызова ([before]). true — не
+     * осталось ничего: проход был одним вызовом, ответа в нём нет.
+     */
+    private fun cutAtCall(text: StringBuilder, before: String): Boolean {
+        text.setLength(0)
+        text.append(before.trimEnd())
+        return text.isEmpty()
+    }
+
+    /**
      * Вторая попытка после перехвата. При повторе — запрос без ходов-образцов
      * ([ConversationJournal.messagesFor], `without`); при порче — тот же запрос,
      * то есть повторная выборка. Закрывает ход сам — при любом исходе, в том
@@ -663,6 +709,13 @@ class ConversationTurns(
      * третья ступень ([thirdAttempt]). Пересчёта ленты она не добавляет: её запрос
      * — запрос второй попытки плюс одна просьба в конце.
      *
+     * ВЗГЛЯД НА ПРИБОРЫ. Вторая попытка ловит вызов приборов так же, как
+     * первый проход ([passCatchingCall]): повтор числа из прошлого ответа —
+     * ровно тот случай, когда модель во второй раз решает посмотреть. Первый
+     * проход не глядел — доска показывается, и ответ второй попытки — проход
+     * после доски; глядел — второй вызов подряд режется, как в первом проходе.
+     * Неразобранный вызов в ленту не ложится ни при каком исходе.
+     *
      * ЧЕГО НЕ ДЕЛАЕТ:
      *  - сбой второй попытки наружу не бросается: ход состоялся первым ответом,
      *    сбой назван в [Intercept.secondEnd]. Оборванная или сбившаяся вторая
@@ -679,6 +732,8 @@ class ConversationTurns(
         first: String,
         request: () -> Set<String>,
         glanceTail: List<Pair<String, String>>,
+        desk: (suspend () -> String)?,
+        onGlance: () -> Unit,
         onRetry: (Cause) -> Unit,
         onThird: () -> Unit,
         onEvent: (GenerationEvent) -> Unit,
@@ -691,7 +746,11 @@ class ConversationTurns(
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
         // Доска взгляда — и сюда: повторная попытка отвечает на тот же вопрос
         // о приборах и без доски назвала бы числа из головы.
-        val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without) + glanceTail
+        val base = journal.messagesFor(content, selfNote, dreamNote, recall, without = without)
+        // Хвост взгляда этой попытки: доска первого прохода или своя, если
+        // вторая попытка позвала приборы сама. Его видит и третья ступень.
+        var tail = glanceTail
+        var glancedHere = false
         onRetry(cause)
         val startedAt = System.currentTimeMillis()
         val second = StringBuilder()
@@ -705,17 +764,36 @@ class ConversationTurns(
         var repeats = false
         var damage = emptyList<String>()
         var needThird = false
+        // Слова доски — тоже запрос (см. request в runLocked): своя доска
+        // попытки дописывается к ним, иначе её числа и названия сошли бы за порчу.
+        var requestHere = request
+        // Проход оборван на вызове кодом, а не движком: модель договорила то,
+        // что хотела сказать до вызова. Движок при таком обрыве называет конец
+        // отменой — для хода это законченная выдача.
+        var cutByCall = false
         try {
-            engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).collect { event ->
-                when (event) {
-                    is GenerationEvent.Token -> {
-                        pieces++
-                        second.append(event.text)
-                    }
-                    is GenerationEvent.Metrics -> metrics = event.metrics
-                    else -> Unit
+            val before = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }) { metrics = it }
+            if (before != null && tail.isEmpty()) {
+                glancedHere = true
+                onGlance()
+                tail = listOf(
+                    ConversationJournal.ROLE_ASSISTANT to Glance.callMessage(before),
+                    ConversationJournal.ROLE_USER to Glance.response(desk?.invoke().orEmpty()),
+                )
+                val deskWords = WordDamage.requestWords(tail.joinToString("\n") { it.second })
+                requestHere = { request() + deskWords }
+                second.clear()
+                pieces = 0
+                metrics = null
+                val again = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }) { metrics = it }
+                if (again != null) {
+                    cutByCall = true
+                    if (cutAtCall(second, again)) pieces = 0
                 }
-                onEvent(event)
+            } else if (before != null) {
+                // Доску этот ход уже видел: второй вызов подряд режется.
+                cutByCall = true
+                if (cutAtCall(second, before)) pieces = 0
             }
         } catch (e: CancellationException) {
             throw e
@@ -723,11 +801,11 @@ class ConversationTurns(
             failed = true
             Log.w(TAG, "вторая попытка сорвалась", e)
         } finally {
-            end = engine.lastGenerationEnd
+            end = if (cutByCall && !failed) GenerationEnd.COMPLETED else engine.lastGenerationEnd
             val done = pieces > 0 && !failed && end == GenerationEnd.COMPLETED
             if (done) {
                 repeats = EchoIntercept.decide(second.toString(), question, history) != null
-                damage = WordDamageHolder.damage?.check(second.toString(), request()).orEmpty()
+                damage = WordDamageHolder.damage?.check(second.toString(), requestHere()).orEmpty()
             }
             needThird = done && (repeats || damage.isNotEmpty())
             replaced = when (cause) {
@@ -744,7 +822,7 @@ class ConversationTurns(
         // при порче — первая. Это же остаётся, если третья оборвётся или собьётся.
         val fallback = if (replaced) second.toString() to first else first to null
         val third = if (needThird) {
-            thirdAttempt(cause, content, selfNote, dreamNote, recall, question, history, request, glanceTail, fallback, first, second.toString(), onThird, close, hide)
+            thirdAttempt(cause, content, selfNote, dreamNote, recall, question, history, requestHere, tail, fallback, first, second.toString(), onThird, close, hide)
         } else {
             null
         }
@@ -759,6 +837,7 @@ class ConversationTurns(
             secondRepeats = repeats,
             secondDamage = damage,
             third = third,
+            secondGlanced = glancedHere,
         )
     }
 
@@ -775,7 +854,7 @@ class ConversationTurns(
      * при порче — три последних ответа ленты. Без поданного текста он ленты не
      * видит вообще (см. [LlmEngine.DRY_PARAMS_JSON]); сколько дошло — [Third.dryFed].
      *
-     * ГОДНЫЙ ВАРИАНТ — не строка-вступление (кончается двоеточием: «Конечно, вот три
+     * ГОДНЫЙ ВАРИАНТ — не вызов приборов, не строка-вступление (кончается двоеточием: «Конечно, вот три
      * варианта:»), не повтор себя той же мерой, что у перехвата, и без порчи слов.
      * Разбор ответа на варианты — у ночного зеркала ([com.uroboros.memory.dream.Mirror.parse]);
      * само ночное зеркало в ответ по-прежнему не пишет, здесь взят только разбор.
@@ -852,10 +931,19 @@ class ConversationTurns(
             dryFed = engine.lastDryFed
             val completed = !failed && end == GenerationEnd.COMPLETED
             if (completed) {
-                for (raw in com.uroboros.memory.dream.Mirror.parse(text.toString())) {
+                // Вызов сжимается в одну строку до разбора: разбор делит ответ
+                // по строкам, и трёхстрочный вызов занял бы места настоящих
+                // вариантов. Сказанное перед вызовом на той же строке («Гляну
+                // на приборы.») остаётся с ним и бракуется вместе: обещание
+                // глянуть, которое не исполнится, — не ответ.
+                val spoken = CALL_BLOCK.replace(text.toString(), "${Glance.CALL_OPEN}\n")
+                for (raw in com.uroboros.memory.dream.Mirror.parse(spoken)) {
                     val v = raw.replaceFirst(AGENT_PREFIX, "").trim()
                     if (v.isEmpty()) continue
                     val why = when {
+                        // Доску третьей ступени не показывают: вызов здесь —
+                        // не ответ, а просьба, которую уже не исполнить.
+                        v.contains("tool_call") || v.contains(Glance.TOOL_NAME) -> "вызов приборов"
                         v.endsWith(":") -> "вступление"
                         EchoIntercept.decide(v, question, history) != null -> "повтор"
                         else -> WordDamageHolder.damage?.check(v, request())?.takeIf { it.isNotEmpty() }
@@ -924,6 +1012,12 @@ class ConversationTurns(
         const val THREE_VARIANTS_ASK =
             "Дай три разных коротких варианта ответа на последнюю реплику собеседника, " +
                 "каждый с новой строки, без нумерации и пояснений."
+
+        /**
+         * Вызов приборов в ответе третьей ступени — от начала до закрытия или,
+         * если не закрыт, до конца ответа.
+         */
+        private val CALL_BLOCK = Regex("<tool_call>.*?(</tool_call>|$)", RegexOption.DOT_MATCHES_ALL)
 
         /** Подпись «Агент:», которой модель иногда начинает вариант. */
         private val AGENT_PREFIX = Regex("^\\s*Агент\\s*:\\s*")
