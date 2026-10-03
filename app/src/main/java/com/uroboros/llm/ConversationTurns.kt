@@ -252,6 +252,14 @@ class ConversationTurns(
              * [runLocked], ветка взгляда). Числа хода — повтора.
              */
             val glanceRetried: Boolean = false,
+            /**
+             * Ход скрыт как петля до потолка (см. [loopAtCeiling]): первое
+             * повторившееся предложение и его номер в ответе с единицы; null —
+             * не было. [hidden] тогда true, [intercept] — null: второй попытки
+             * нет.
+             */
+            val loopSentence: String? = null,
+            val loopAt: Int? = null,
         ) : Outcome()
     }
 
@@ -457,6 +465,7 @@ class ConversationTurns(
         var appended = false
         var generationEnd: GenerationEnd? = null
         var cause: Cause? = null
+        var loop: EchoCheck.Result? = null
         // Слова запроса для детектора порчи: всё, что модель видела, вместе со
         // стеной. Слово ответа, стоящее там в той же форме (имя, термин из
         // записи), порчей не считается. Собирается, только если понадобится.
@@ -605,12 +614,27 @@ class ConversationTurns(
                 // (сторож, отмена, сбой) показывает не то, что модель хотела
                 // сказать, и второй прогон после обрыва сторожем — тот самый
                 // нагрев, от которого обрывали.
-                cause = if (failure == null && generationEnd == GenerationEnd.COMPLETED) {
+                val finished = failure == null && generationEnd == GenerationEnd.COMPLETED
+                // Петля до потолка проверяется раньше перехвата: такой ответ
+                // скрывается, а не переспрашивается (см. [loopAtCeiling]).
+                loop = if (finished) {
+                    loopAtCeiling(answer.toString(), metrics?.tokensPredicted ?: tokensSeen)
+                } else {
+                    null
+                }
+                cause = if (finished && loop == null) {
                     causeOf(answer.toString(), question, journal.history()) { request }
                 } else {
                     null
                 }
-                if (cause == null) close(answer.toString(), null)
+                val looped = loop
+                when {
+                    looped != null -> hide(
+                        "петля «${looped.loop}» до потолка $ANSWER_TOKEN_LIMIT токенов",
+                        listOf(ConversationJournal.Rejected("первый", answer.toString())),
+                    )
+                    cause == null -> close(answer.toString(), null)
+                }
             }
         }
 
@@ -639,6 +663,8 @@ class ConversationTurns(
             kept = kept,
             glanced = glanced || intercept?.secondGlanced == true,
             glanceRetried = glanceRetried,
+            loopSentence = loop?.loop,
+            loopAt = loop?.loopAt,
         )
     }
 
@@ -1089,6 +1115,52 @@ class ConversationTurns(
          * после замера возвращают, потому что бюджет ленты считается отсюда же.
          */
         const val ANSWER_TOKEN_LIMIT = 512
+
+        /**
+         * Петля до потолка: ответ дошёл до [ANSWER_TOKEN_LIMIT] токенов, и
+         * внутри него предложение повторяет более раннее (часть «петля в ответе»
+         * прибора эха, [EchoCheck.LOOP_SHARE]). Итог проверки с петлёй или null
+         * — ход ложится как обычно.
+         *
+         * ЗАЧЕМ. Такой ответ не кончился сам — его оборвал наш предел посреди
+         * круга, то есть он не дошёл целиком. Положенный в ленту, он стал бы
+         * образцом для следующих ходов (малая модель копирует свои прошлые
+         * ответы), а из архива ленты вернулся бы модели своей речью агента
+         * (nav.OwnSpeech) — ошибка закрепилась бы в памяти. Поэтому ход
+         * скрывается (ConversationJournal.Hidden): на экране вопрос и
+         * заглушка, модели не подаётся ничего, записи не помечаются
+         * уложенными.
+         *
+         * ПОЧЕМУ НЕ ВТОРАЯ ПОПЫТКА, как у повтора прошлого ответа. Она шла бы
+         * тем же путём до того же потолка: ещё полторы-две минуты работы
+         * процессора и нагрев за ответ, который скорее всего тоже уйдёт в
+         * круг.
+         *
+         * ПОЧЕМУ ДВА УСЛОВИЯ, А НЕ ОДНО. Петля без потолка бывает законной —
+         * цитата, названная в ответе дважды, — и такой ответ кончился сам.
+         * Потолок без петли — просто длинный ответ, оборванный на полуслове:
+         * на экране об этом говорит строка «ВНИМАНИЕ: ответ ОБРЕЗАН», а убрать
+         * его человек может сам кнопкой «Убрать ход».
+         *
+         * ЧЕГО НЕ УМЕЕТ: петлю другими словами не видит (мера — основы слов,
+         * см. [EchoCheck]); ответ второй попытки перехвата не проверяет —
+         * только первый проход хода.
+         *
+         * @param predicted сколько токенов выдано: по отчёту движка, а без
+         * него — по своему счёту.
+         */
+        fun loopAtCeiling(answer: String, predicted: Int): EchoCheck.Result? {
+            if (predicted < ANSWER_TOKEN_LIMIT) return null
+            val result = EchoCheck.check(answer.substringBefore(Glance.CALL_OPEN), "", emptyList())
+            return if (result.loop == null) null else result
+        }
+
+        /** Строка «Перехват:» хода, скрытого как петля до потолка (см. [loopAtCeiling]). */
+        fun loopCutLine(at: Int, sentence: String): String =
+            "Перехват: ответ ушёл в петлю — с предложения $at «$sentence» — и упёрся в потолок " +
+                "$ANSWER_TOKEN_LIMIT токенов · ход скрыт от агента, на экране заглушка · второй " +
+                "попытки нет: она шла бы до того же потолка · в ленту не записан, записи не " +
+                "помечены уложенными"
 
         /**
          * Проверка края ДО отправки. Движок при переполнении молча выбрасывает
