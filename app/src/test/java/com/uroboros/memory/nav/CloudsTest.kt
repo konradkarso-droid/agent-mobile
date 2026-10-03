@@ -2,11 +2,16 @@ package com.uroboros.memory.nav
 
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.nav.Coordinates.Address
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CloudsTest {
+
+    /** Таблица глаголов — как на телефоне (см. TestVerbs). */
+    @Before
+    fun verbs() = TestVerbs.install()
 
     private val now = 100 * Clouds.HALF_LIFE_MS
     private val owner = SourceKind.USER_STATED.name
