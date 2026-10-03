@@ -5102,6 +5102,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 glanceLine = when {
                     ran.intercept?.secondGlanced == true -> "Взгляд: вторая попытка глянула на приборы"
+                    ran.glanceRetried -> "Взгляд: глянул на приборы сам; после доски ответа не было — проход повторён"
                     ran.glanced -> "Взгляд: глянул на приборы сам"
                     else -> "Взгляд: не глядел"
                 }
@@ -5158,7 +5159,18 @@ class MainActivity : AppCompatActivity() {
                     // перебивает обе догадки, и неназванная тоже: сказать
                     // "не знаю, чем кончилось" честнее, чем уверенно
                     // указать не на то.
-                    val explanation = if (generationEnd != GenerationEnd.COMPLETED) {
+                    val explanation = if (ran.glanced &&
+                        (generationEnd == GenerationEnd.COMPLETED || generationEnd == GenerationEnd.CANCELLED)
+                    ) {
+                        // Взгляд на приборы: ответа не было ни после доски, ни
+                        // при повторе (ConversationTurns, ветка взгляда). Обе
+                        // догадки ниже — про запрос, а он здесь ни при чём.
+                        // Отмена тут — наш обрез на повторном вызове приборов:
+                        // остановка человеком до этого места не доходит.
+                        "Агент глянул на приборы, но после доски не ответил и со " +
+                            "второго раза" +
+                            (if (generationEnd == GenerationEnd.CANCELLED) " — снова позвал приборы." else " — выдача пустая.")
+                    } else if (generationEnd != GenerationEnd.COMPLETED) {
                         llmEngine.getGenerationEndReport() + "\n\n" +
                             "Ход прервался, не начавшись, поэтому о самом запросе " +
                             "по этому нулю судить нельзя — ни о повторе, ни о " +
@@ -5191,18 +5203,9 @@ class MainActivity : AppCompatActivity() {
                     // модели не подаётся и записи не помечает уложенными —
                     // ровно то, что нужно ходу с нулём; убирается он кнопкой
                     // «Убрать ход».
-                    //
-                    // Остановленный человеком прогон не скрывается: заглушка
-                    // «спроси по-другому» на нажатый «Стоп» отвечала бы не на
-                    // то, что случилось. Вопрос тогда просто не встаёт в ленту.
-                    val stoppedByHuman = generationEnd == GenerationEnd.CANCELLED ||
-                        generationEnd == GenerationEnd.STOPPED_BY_CALLER
-                    if (!stoppedByHuman) {
-                        journal.hideTurn(userText, "модель не выдала ни одного знака", emptyList())
-                    }
-                    interceptLine = "Перехват: модель не выдала ни одного знака" +
-                        (if (stoppedByHuman) " — прогон остановлен" else " — ход скрыт от агента, на экране заглушка") +
-                        " · " + explanation.replace("\n\n", " ") +
+                    journal.hideTurn(userText, "модель не выдала ни одного знака", emptyList())
+                    interceptLine = "Перехват: модель не выдала ни одного знака — ход скрыт от " +
+                        "агента, на экране заглушка · " + explanation.replace("\n\n", " ") +
                         " · В ленту не записан, записи не помечены уложенными."
                     binding.textResults.text = renderJournal()
                 } else if (ran.hidden) {
