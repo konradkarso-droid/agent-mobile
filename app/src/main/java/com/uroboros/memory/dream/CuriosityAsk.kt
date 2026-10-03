@@ -1,5 +1,8 @@
 package com.uroboros.memory.dream
 
+import com.uroboros.memory.SentenceKind
+import com.uroboros.memory.Sentences
+
 /**
  * Первый выход пружины любопытства: спросить владельца о связи записей сна,
  * который сжал её сильнее всех. Решение чистое: ни базы, ни Android — затем и вынесено, чтобы
@@ -34,10 +37,32 @@ package com.uroboros.memory.dream
  *
  * Порог, веса и числа агент не меняет: их здесь нечем менять из ответа модели.
  *
+ * ВТОРОЙ ИСТОЧНИК — ПРОБЕЛ ([decideGap]). Агент когда-то признал, что не знает
+ * ([Gaps]), и владелец сейчас рассказывает о том же — значит, есть кого
+ * спросить, и вопрос по теме разговора. Давление пробела со сном не
+ * складывается: это разные источники одного выхода, и вопрос на ответ один.
+ * Когда годны оба, берётся пробел: он касается реплики по построению, сон —
+ * нет. Запись, найденная к реплике, приходит в том же ходе обычной записью и
+ * служит зацепкой для вопроса — отдельной строки у неё нет.
+ *
+ * Спрашивается только при ясном: реплика владельца — утверждение во всех
+ * предложениях (SentenceKind; сомнительный вид — не утверждение: вопрос или
+ * просьба владельца оставляют ход ему), прошлый ответ агента без вопроса
+ * (иначе реплика — ответ на него, и новый вопрос сразу за ним — допрос), вопрос
+ * о сне ответа не ждёт. Пробел годен, если он открыт, касается реплики и
+ * признан на рассказе владельца, а не на его вопросе: на вопрос владельца
+ * («Кто Админ?», «Из какого дерева колодка?») переспрашивать его самого нечем —
+ * он спрашивал, потому что ответа ждал от агента.
+ *
  * ЧЕГО НЕ УМЕЕТ:
- *  - «спрошен» значит «предложение спросить ушло в модель», а не «модель
+ *  - «спрошен» у сна значит «предложение спросить ушло в модель», а не «модель
  *    спросила»: отличить второе надёжно нечем. Сон, о котором модель
- *    промолчала, всё равно разряжен;
+ *    промолчала, всё равно разряжен. У пробела иначе: спрошен он, только если
+ *    агент задал вопрос о предмете ([Gaps]), — промолчал, и пробел предложат
+ *    снова на следующем рассказе по теме;
+ *  - пробел годен по основам слов, а не по смыслу (там же, в [Gaps]); признан ли
+ *    он на рассказе — по виду предложений ([SentenceKind]), со всеми их
+ *    промахами;
  *  - ответ ловится только следующей репликой, и только если ход с вопросом
  *    лёг в ленту: на нуле токенов сон отмечен спрошенным, а проверять ответ
  *    нечем (см. [DreamPickup]);
@@ -117,6 +142,62 @@ object CuriosityAsk {
      */
     private fun about(leader: CuriosityPressure.Leader): String =
         "Меня занимает, как связано: ${leader.records.joinToString(", ") { "«${it.content}»" }}."
+
+    /** Решение о вопросе по пробелу. */
+    sealed class GapDecision {
+        /** Спросить о пробеле [gap]. */
+        data class Ask(val gap: Gaps.Gap) : GapDecision()
+
+        /** Не спрашивать; [reason] — почему, словами для прибора. */
+        data class Refuse(val reason: String) : GapDecision()
+    }
+
+    /**
+     * Вопрос по пробелу к реплике [reply]. Условия — в KDoc объекта («ВТОРОЙ
+     * ИСТОЧНИК»); первое невыполненное и называется. Из нескольких годных
+     * берётся признанный последним.
+     *
+     * @param previousAnswer прошлый ответ агента в ленте; null — ответа нет.
+     * @param awaitingDream вопрос о сне ждёт ответа ([awaiting]).
+     */
+    fun decideGap(gaps: List<Gaps.Gap>, reply: String, previousAnswer: String?, awaitingDream: Boolean): GapDecision {
+        val readings = Sentences.split(reply).map { SentenceKind.of(it) }
+        readings.firstOrNull { it.kind != SentenceKind.Kind.STATEMENT }?.let {
+            val what = if (it.kind == SentenceKind.Kind.QUESTION) "вопрос" else "просьба"
+            return GapDecision.Refuse("реплика — $what, ход у владельца")
+        }
+        if (previousAnswer != null && Sentences.split(previousAnswer).any { it.trimEnd().endsWith('?') }) {
+            return GapDecision.Refuse("реплика — после вопроса агента")
+        }
+        if (awaitingDream) return GapDecision.Refuse("вопрос о сне без ответа")
+        val touching = gaps.filter { it.state == Gaps.State.OPEN && Gaps.touches(it, reply) }
+        if (touching.isEmpty()) return GapDecision.Refuse("открытого пробела по теме нет")
+        val told = touching.filter { gap ->
+            Sentences.split(gap.question).any {
+                SentenceKind.of(it).kind == SentenceKind.Kind.STATEMENT && Gaps.touches(gap, it)
+            }
+        }
+        val gap = told.lastOrNull()
+            ?: return GapDecision.Refuse("пробел по теме признан на вопросе владельца — переспрашивать нечем")
+        return GapDecision.Ask(gap)
+    }
+
+    /**
+     * Строка для модели о пробеле: своя фраза признания — как своя речь в
+     * записях (ProvenanceLabels), — и та же просьба, что в [line].
+     */
+    fun gapLine(gap: Gaps.Gap): String =
+        "Меня занимает то, чего я не знал, когда говорил: «${gap.admission.trim()}». " +
+            "Если к месту — спроси пользователя об этом, одним вопросом."
+
+    /**
+     * Строка прибора обоих источников. Пробел, если спрошен, перебивает сон
+     * (см. KDoc объекта); иначе — решение о сне и почему не о пробеле.
+     */
+    fun meter(gap: GapDecision, dream: Decision): String = when (gap) {
+        is GapDecision.Ask -> "Спросить: в этой реплике предложено спросить о пробеле «${gap.gap.admission.trim()}»"
+        is GapDecision.Refuse -> meter(dream) + " · о пробеле не спрашиваю — ${gap.reason}"
+    }
 
     /** Строка прибора. Печатается всегда: молчащий выход неотличим от сломанного. */
     fun meter(decision: Decision): String = when (decision) {
