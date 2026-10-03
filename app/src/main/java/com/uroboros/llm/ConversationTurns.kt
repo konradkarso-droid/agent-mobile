@@ -247,6 +247,11 @@ class ConversationTurns(
              * доски.
              */
             val glanced: Boolean = false,
+            /**
+             * После доски ответа не было, и проход со взглядом повторён (см.
+             * [runLocked], ветка взгляда). Числа хода — повтора.
+             */
+            val glanceRetried: Boolean = false,
         ) : Outcome()
     }
 
@@ -505,6 +510,7 @@ class ConversationTurns(
             }) { metrics = it }
 
         var glanced = false
+        var glanceRetried = false
         try {
             val before = pass(messages)
             if (before != null) {
@@ -524,11 +530,46 @@ class ConversationTurns(
                 metrics = null
                 // Второй вызов подряд доску не покажет снова: ответ режется по
                 // нему, вызов в ленту не ложится.
-                val again = pass(messages + glanceTail)
+                var again = pass(messages + glanceTail)
                 if (again != null) {
                     answer.setLength(0)
                     answer.append(again.trimEnd())
                     tokensSeen = if (answer.isEmpty()) 0 else tokensSeen
+                }
+                // Ответа после доски нет: проход кончился, не выдав ни знака,
+                // или снова был одним вызовом приборов. Тогда тот же проход
+                // повторяется ОДИН раз. Без повтора ход терял ответ целиком:
+                // текст до вызова уже убран с экрана, а запасного ответа, как у
+                // второй попытки перехвата, здесь нет — человек получал пустое
+                // место на вопрос, на который модель как раз собиралась
+                // ответить.
+                //
+                // Почему повтор, а не что-то умнее. Какая из двух причин
+                // срабатывает на телефоне, не установлено: на стенде модель
+                // после доски отвечает. Обе лечатся одним и тем же — новой
+                // выборкой: зерно меняется на каждый запрос (LlmEngine
+                // .guardedFlow). Повторяется только проход, кончившийся сам
+                // ([GenerationEnd.COMPLETED]) или обрезанный нами на вызове;
+                // оборванный сторожем или сбоем не повторяется — это нагрев
+                // или поломка, от которых и обрывали. Остановка человеком
+                // сюда не доходит: отмена брошена выше.
+                //
+                // ЧЕГО ПОВТОР НЕ УМЕЕТ: если и он пуст, ответа нет — ход уходит
+                // с нулём токенов, как раньше (экран показывает заглушку, см.
+                // MainActivity). Третьего прохода нет намеренно: каждый проход
+                // — полный обсчёт хвоста запроса и нагрев.
+                if (answer.isBlank() && (again != null || engine.lastGenerationEnd == GenerationEnd.COMPLETED)) {
+                    glanceRetried = true
+                    answer.clear()
+                    tokensSeen = 0
+                    firstTokenAtMs = null
+                    metrics = null
+                    again = pass(messages + glanceTail)
+                    if (again != null) {
+                        answer.setLength(0)
+                        answer.append(again.trimEnd())
+                        tokensSeen = if (answer.isEmpty()) 0 else tokensSeen
+                    }
                 }
             }
         } catch (e: CancellationException) {
@@ -597,6 +638,7 @@ class ConversationTurns(
             hidden = hidden,
             kept = kept,
             glanced = glanced || intercept?.secondGlanced == true,
+            glanceRetried = glanceRetried,
         )
     }
 
