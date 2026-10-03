@@ -1,6 +1,7 @@
 package com.uroboros.memory
 
 import kotlinx.coroutines.runBlocking
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -15,6 +16,10 @@ import org.junit.Test
  * круг с тем, что база отдала, а не что база найдёт на устройстве.
  */
 class CircleSelectionTest {
+
+    /** Таблица глаголов — как на телефоне (см. TestVerbs). */
+    @Before
+    fun verbs() = com.uroboros.memory.nav.TestVerbs.install()
 
     private fun sticker(id: Long, content: String, layer: Layer) = Sticker(
         id = id,
