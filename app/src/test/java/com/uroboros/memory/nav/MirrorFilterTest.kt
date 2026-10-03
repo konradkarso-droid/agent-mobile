@@ -3,6 +3,7 @@ package com.uroboros.memory.nav
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.nav.Coordinates.Address
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,6 +11,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MirrorFilterTest {
+
+    /** Таблица глаголов — как на телефоне (см. TestVerbs). */
+    @Before
+    fun verbs() = TestVerbs.install()
 
     private fun record(id: Long, text: String, source: SourceKind = SourceKind.USER_STATED) =
         Sticker(id = id, content = text, source = source.name)
