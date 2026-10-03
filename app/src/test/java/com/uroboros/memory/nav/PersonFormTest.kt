@@ -1,6 +1,7 @@
 package com.uroboros.memory.nav
 
 import com.uroboros.memory.nav.PersonForm.Person
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,6 +9,10 @@ import org.junit.Test
 
 /** Фразы придуманные, не из памяти владельца. */
 class PersonFormTest {
+
+    /** Таблица глаголов — как на телефоне (см. TestVerbs). */
+    @Before
+    fun verbs() = TestVerbs.install()
 
     private fun persons(sentence: String) = PersonForm.ofSentence(sentence)
 
@@ -122,9 +127,10 @@ class PersonFormTest {
 
     // --- Чего не умеет (закреплено, чтобы не забылось) ---
 
+    /** Было ложным «я» через существительное на -у; по таблице «колодку» не глагол, остаётся прошедшее без лица. */
     @Test
-    fun `купил колодку — ложное первое лицо через существительное на у`() {
-        assertTrue(Person.FIRST in persons("Купил колодку"))
+    fun `купил колодку — не я, а не ясно`() {
+        assertEquals(setOf(Person.UNCLEAR), persons("Купил колодку"))
     }
 
     @Test
@@ -188,5 +194,71 @@ class PersonFormTest {
         assertEquals(emptySet<PersonForm.Person>(), PersonForm.topicPersons("Расскажи о себе"))
         assertEquals(emptySet<PersonForm.Person>(), PersonForm.topicPersons("Что знаешь о радуге?"))
         assertEquals(emptySet<PersonForm.Person>(), PersonForm.topicPersons("Мне бы про чай"))
+    }
+
+    // --- Глагол на -у/-ю — по таблице ---
+
+    /**
+     * Живые вопросы к агенту, получавшие адрес «владелец»: существительное на
+     * -у/-ю читалось глаголом первого лица. По таблице — не глагол.
+     */
+    @Test
+    fun `существительное на -у не даёт я — вопрос к агенту остаётся к агенту`() {
+        assertFalse(Person.FIRST in PersonForm.ofSentence("Назови модель и температуру"))
+        assertEquals(Coordinates.Address.AGENT, Coordinates.questionAddress("Привет, назови температуру и уровень заряда"))
+        assertEquals(Coordinates.Address.AGENT, Coordinates.questionAddress("Ты имел ввиду - Африканский рог?"))
+        // Просьба без лица — «не определён», а не «владелец», как было.
+        assertEquals(Coordinates.Address.UNDEFINED, Coordinates.questionAddress("Посмотри свою модель LLM, пожалуйста."))
+        assertEquals(Coordinates.Address.UNDEFINED, Coordinates.questionAddress("Процитируй поэму с начала."))
+    }
+
+    /** Молчание: глагол первого лица без местоимения — по-прежнему «я». */
+    @Test
+    fun `глагол из таблицы без местоимения — я`() {
+        assertEquals(Coordinates.Address.OWNER, Coordinates.questionAddress("Да, скоро ложусь"))
+        assertTrue(Person.FIRST in PersonForm.ofSentence("Пока да, отдыхаю - выходной."))
+        assertEquals(Coordinates.Address.BOTH, Coordinates.questionAddress("Вообще, тобой) Твой код пишу."))
+    }
+
+    /**
+     * Исключением, от известного: незнакомое слово на -у/-ю (сленг, опечатка)
+     * — «не ясно», а не «не глагол»; знакомый не-глагол лица не даёт.
+     */
+    @Test
+    fun `незнакомое слово на -у — не ясно, знакомое не-глагол — ничего`() {
+        assertEquals(setOf(Person.UNCLEAR), PersonForm.ofSentence("Гуглю это"))
+        assertEquals(setOf(Person.UNCLEAR), PersonForm.ofSentence("Обсужляю это"))
+        assertEquals(setOf(Person.NONE), PersonForm.ofSentence("Какая температуру"))
+        // Другое лицо в предложении есть — сомнение его не перебивает.
+        assertEquals(setOf(Person.SECOND), PersonForm.ofSentence("Ты юзаю это?"))
+    }
+
+    /** Без трафарета незнакомое от знакомого не отличить: «нет в таблице» — не глагол. */
+    @Test
+    fun `без трафарета нет в таблице — не глагол`() {
+        PersonForm.words = null
+        try {
+            assertEquals(setOf(Person.NONE), PersonForm.ofSentence("Гуглю это"))
+            assertTrue(Person.FIRST in PersonForm.ofSentence("Да, скоро ложусь"))
+        } finally {
+            TestVerbs.install()
+        }
+    }
+
+    /**
+     * Без таблицы слово на -у/-ю сомнительно: «не ясно», а не «я» — и вопрос
+     * не получает адрес «владелец» по догадке. Местоимение решает и без неё.
+     */
+    @Test
+    fun `без таблицы слово на -у — не ясно, местоимение — я`() {
+        PersonForm.verbs = null
+        try {
+            assertEquals(setOf(Person.UNCLEAR), PersonForm.ofSentence("Да, скоро ложусь"))
+            assertEquals(Coordinates.Address.UNDEFINED, Coordinates.questionAddress("Да, скоро ложусь"))
+            assertEquals(setOf(Person.SECOND), PersonForm.ofSentence("Ты имел ввиду рог?"))
+            assertTrue(Person.FIRST in PersonForm.ofSentence("Я скоро ложусь"))
+        } finally {
+            TestVerbs.install()
+        }
     }
 }
