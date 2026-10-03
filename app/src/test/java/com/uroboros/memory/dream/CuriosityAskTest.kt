@@ -152,4 +152,95 @@ class CuriosityAskTest {
         assertFalse(line.contains("интерес"))
         assertFalse(line, line.contains("снилось") || line.contains("сон"))
     }
+
+    // ── Второй источник: пробел ──────────────────────────────────────────
+
+    /** Рассказ владельца, на который агент признал незнание. */
+    private val told = Gaps.Turn(
+        "Я строгаю колодку рубанком из груши.",
+        "Не знаю, чем груша хороша для колодки рубанка.",
+        0,
+    )
+
+    /** Вопрос владельца, на который агент признал незнание. */
+    private val asked = Gaps.Turn(
+        "Из какого дерева колодка рубанка?",
+        "Не знаю, из какого дерева колодка рубанка.",
+        0,
+    )
+
+    private fun gap(reply: String, vararg turns: Gaps.Turn, previous: String? = null, awaiting: Boolean = false) =
+        CuriosityAsk.decideGap(Gaps.of(turns.toList()), reply, previous, awaiting)
+
+    @Test
+    fun `рассказ владельца о том, чего агент не знал, — спросить о пробеле`() {
+        val d = gap("Сегодня опять доводил колодку рубанка из груши.", told)
+        assertTrue(d.toString(), d is CuriosityAsk.GapDecision.Ask)
+        val line = CuriosityAsk.gapLine((d as CuriosityAsk.GapDecision.Ask).gap)
+        assertEquals(
+            "Меня занимает то, чего я не знал, когда говорил: " +
+                "«Не знаю, чем груша хороша для колодки рубанка.». " +
+                "Если к месту — спроси пользователя об этом, одним вопросом.",
+            line,
+        )
+        assertFalse(line.contains("интерес"))
+    }
+
+    @Test
+    fun `молчит — реплика — вопрос или просьба владельца`() {
+        assertRefused(gap("А колодка рубанка из груши хороша?", told), "вопрос")
+        assertRefused(gap("Расскажи про колодку рубанка из груши.", told), "просьба")
+        // Сомнительный вид — не утверждение: ход у владельца.
+        assertRefused(gap("Как колодка рубанка из груши", told), "вопрос")
+    }
+
+    @Test
+    fun `молчит — прошлый ответ агента кончался вопросом`() {
+        assertRefused(
+            gap("Колодка рубанка из груши.", told, previous = "Понял. А что ты строгаешь?"),
+            "после вопроса агента",
+        )
+    }
+
+    @Test
+    fun `молчит — вопрос о сне ждёт ответа`() {
+        assertRefused(gap("Колодка рубанка из груши.", told, awaiting = true), "о сне")
+    }
+
+    @Test
+    fun `молчит — реплика не по теме пробела`() {
+        assertRefused(gap("Завтра обещают дождь и ветер.", told), "по теме нет")
+    }
+
+    @Test
+    fun `молчит — пробел признан на вопросе владельца — переспрашивать нечем`() {
+        assertRefused(gap("Колодка рубанка бывает из разного дерева.", asked), "переспрашивать нечем")
+    }
+
+    @Test
+    fun `молчит — пробел закрыт — владелец уже сказал`() {
+        val closed = Gaps.Turn("Груша для колодки рубанка хороша плотностью.", "Понял.", 0)
+        assertRefused(gap("Колодка рубанка из груши служит долго.", told, closed), "по теме нет")
+    }
+
+    @Test
+    fun `молчит — агент о пробеле уже спросил`() {
+        val askedBack = Gaps.Turn("Ага.", "А чем груша хороша для колодки рубанка?", 0)
+        assertRefused(gap("Колодка рубанка из груши служит долго.", told, askedBack), "по теме нет")
+    }
+
+    @Test
+    fun `прибор — пробел перебивает сон, иначе обе причины`() {
+        val ask = gap("Сегодня опять доводил колодку рубанка из груши.", told)
+        val dreamAsk = decide(dream(1, 2, picked = 2))
+        assertTrue(CuriosityAsk.meter(ask, dreamAsk).startsWith("Спросить: в этой реплике предложено спросить о пробеле"))
+        val refuse = gap("Завтра обещают дождь.", told)
+        val m = CuriosityAsk.meter(refuse, dreamAsk)
+        assertTrue(m, m.startsWith("Спросить: в этой реплике предложено спросить о сне"))
+        assertTrue(m, m.endsWith("о пробеле не спрашиваю — открытого пробела по теме нет"))
+    }
+
+    private fun assertRefused(d: CuriosityAsk.GapDecision, reasonPart: String) {
+        assertTrue(d.toString(), d is CuriosityAsk.GapDecision.Refuse && reasonPart in d.reason)
+    }
 }
