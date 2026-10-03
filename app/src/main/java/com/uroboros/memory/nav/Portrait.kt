@@ -136,15 +136,15 @@ object Portrait {
 
     /**
      * Сообщение с записями хода (голосом агента): портрет под [HEADER], пустая
-     * строка, остальные записи. [newLines] — строки, которых в ленте ещё нет
-     * (ConversationJournal.unseenRecords), в порядке подачи; из них портретные
-     * — те, что есть в [portraitLines]. Подпись ставится, только если новые
-     * строки портрета есть: ушедшие в ленту раньше лежат выше вместе со своей
-     * подписью. [nothing] — портрет искался и пуст: вместо него [NOTHING].
+     * строка, остальные записи. [lines] — все записи хода в порядке подачи
+     * (записи прошлых ходов модели не подаются, см.
+     * ConversationJournal.messagesFor); из них портретные — те, что есть в
+     * [portraitLines]. Подпись ставится, только если строки портрета есть.
+     * [nothing] — портрет искался и пуст: вместо него [NOTHING].
      * null — сообщения не будет.
      */
-    fun recall(newLines: List<String>, portraitLines: Set<String>, nothing: Boolean): String? {
-        val (portrait, rest) = newLines.partition { it in portraitLines }
+    fun recall(lines: List<String>, portraitLines: Set<String>, nothing: Boolean): String? {
+        val (portrait, rest) = lines.partition { it in portraitLines }
         val parts = ArrayList<String>()
         when {
             portrait.isNotEmpty() -> parts += (listOf(HEADER) + portrait).joinToString("\n")
