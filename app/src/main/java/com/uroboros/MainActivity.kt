@@ -620,6 +620,12 @@ class MainActivity : AppCompatActivity() {
     private var portraitLine: String? = null
     private var portraitShown: List<String>? = null
 
+    /**
+     * Строка хода «Записи хода:» — из каких источников сложились записи хода
+     * (DolmenCircle.sourcesLine). null — хода в этом запуске не было.
+     */
+    private var recordsSourcesLine: String? = null
+
     /** Раздел «Выводы» в «Показать» и строка «Выводы:». Только чтение, см. ConclusionView. */
     private val conclusionView by lazy { ConclusionView(applicationContext) }
 
@@ -2974,10 +2980,12 @@ class MainActivity : AppCompatActivity() {
         val cloud = cloudLine ?: "Облако адреса: $lostNote"
         val drift = driftLine ?: "Дрейф: чисел хода на экране нет"
         val portraitMeter = portraitLine ?: "О собеседнике: $lostNote"
+        val recordsSources = recordsSourcesLine ?: DolmenCircle.SOURCES_LOST
         // Строка таблицы разворота — только когда таблица загружена; пока нет,
         // причину печатает строка зеркала в отборе.
         group(
-            "Память", recordsQuestionsLine, circleLine, mirrorSelection, drift, portraitMeter, RetellHolder.meterLine(), cloud,
+            "Память", recordsQuestionsLine, circleLine, recordsSources, mirrorSelection, drift, portraitMeter,
+            RetellHolder.meterLine(), cloud,
             touchesLine, selfLeader,
         )
         // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
@@ -3297,6 +3305,7 @@ class MainActivity : AppCompatActivity() {
         cloudLine = null
         portraitLine = null
         portraitShown = null
+        recordsSourcesLine = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
         recallLine = null
@@ -4625,6 +4634,17 @@ class MainActivity : AppCompatActivity() {
                 // Портрет первым: так его строки и собираются в сообщение
                 // (Portrait.recall).
                 val allRecords = portraitLines + stickerLines + ownLines
+                // Из чего сложилась сумма (DolmenCircle.sourcesLine). Части
+                // считаются по тем же спискам, из которых собран allRecords,
+                // а дверь сна записей круга не берёт (DreamDoor.pick), так что
+                // сумма в строке равна числу записей хода.
+                recordsSourcesLine = DolmenCircle.sourcesLine(
+                    portrait = portraitLines.size,
+                    circle = contextResult.stickers.count { it.id !in portraitIds } + ownLines.size,
+                    ownSpeech = ownLines.size,
+                    door = doorRecords.count { it.id !in portraitIds },
+                    association = associatedShown.size,
+                )
                 if (portraitFound == null) {
                     portraitLine = "О собеседнике: " + Portrait.meterLine(address, null, fed = false)
                     portraitShown = null
