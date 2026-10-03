@@ -204,6 +204,20 @@ class DolmenCircleTest {
         assertEquals("холод: использовано 1 из 1 · согрето 1", DolmenCircle.coldUse(1, 1, 1))
     }
 
+    /** Живые числа с телефона: портрет 6 и круг 4 — всего 10, своя речь внутри круга. */
+    @Test
+    fun `строка записей хода складывает источники, своя речь не считается дважды`() {
+        assertEquals(
+            "Записи хода: портрет 6 · круг 4 (из них своя речь 0) · дверь сна 0 · ассоциация 0 — всего 10." +
+                " Общего потолка нет: у круга свой, остальные идут сверху",
+            DolmenCircle.sourcesLine(portrait = 6, circle = 4, ownSpeech = 0, door = 0, association = 0),
+        )
+        assertTrue(
+            DolmenCircle.sourcesLine(portrait = 0, circle = 3, ownSpeech = 1, door = 2, association = 1)
+                .contains("— всего 6."),
+        )
+    }
+
     /** Числа мест: сумма гарантированных — ровно пять мест ответа. */
     @Test
     fun `гарантированные места складываются в пять`() {
