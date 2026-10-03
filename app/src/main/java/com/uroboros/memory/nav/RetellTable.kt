@@ -31,6 +31,16 @@ class RetellTable private constructor(
 
     fun isAmbiguous(word: String): Boolean = TextFold.fold(word) in ambiguous
 
+    /**
+     * Слово — форма глагола из таблицы (1-го или 2-го лица), в любом регистре и
+     * с любой «ё»; неоднозначная форма тоже глагол. Для определителя лица
+     * (PersonForm.verbs): отличить «пишу» от «температуру».
+     */
+    fun knowsVerb(word: String): Boolean {
+        val key = TextFold.fold(word)
+        return key in pairs || key in ambiguous
+    }
+
     val ambiguousCount: Int get() = ambiguous.size
 
     companion object {
@@ -75,6 +85,8 @@ class RetellTable private constructor(
  *
  * [ENABLED] — грузить ли таблицу вообще. Пока false, таблица не читается,
  * прибор пишет «разворот: выключен», и оба потребителя обходятся без неё.
+ * Выключенная таблица выключает и определителю лица (PersonForm.verbs) «я»
+ * глаголом без местоимения: такие слова остаются «не ясно».
  *
  * [MIXED] — отдавать ли таблицу развороту СМЕШАННЫХ записей в отборе
  * ([table]: зеркало в отборе, дверь сна, ассоциация — MirrorFilter.retold).
@@ -117,10 +129,17 @@ object RetellHolder {
     /** Загруженная таблица, мимо [MIXED], — для портрета собеседника; не загружена — null. */
     val loaded: RetellTable? get() = (state as? State.Ready)?.table
 
-    /** Строка «Подробно» о загруженной таблице; не загружена — null (причину печатает строка зеркала). */
-    fun meterLine(): String? = (state as? State.Ready)?.let {
-        "Таблица разворота: пар ${it.table.pairCount}, неоднозначных ${it.table.ambiguousCount}, " +
-            "загружена за ${it.millis} мс"
+    /**
+     * Строка «Подробно» о таблице. Печатается всегда: таблицей пользуется и
+     * определитель лица (PersonForm.verbs), и без неё «я» глаголом на -у/-ю
+     * читается как «не ясно» — это должно быть видно.
+     */
+    fun meterLine(): String = when (val s = state) {
+        is State.Ready -> "Таблица глаголов: пар ${s.table.pairCount}, неоднозначных ${s.table.ambiguousCount}, " +
+            "загружена за ${s.millis} мс · по ней разворот и лицо глаголов на -у/-ю"
+        State.Loading -> "Таблица глаголов: загружается — «я» глаголом без местоимения пока «не ясно»"
+        State.Off -> "Таблица глаголов: выключена — «я» глаголом без местоимения всегда «не ясно»"
+        is State.Failed -> "Таблица глаголов: не загрузилась (${s.reason}) — «я» глаголом без местоимения «не ясно»"
     }
 
     /**
@@ -140,6 +159,8 @@ object RetellHolder {
         val t0 = System.nanoTime()
         state = try {
             val table = open().bufferedReader(Charsets.UTF_8).useLines { RetellTable.parse(it) }
+            // Та же таблица — определителю лица (PersonForm.verbs).
+            PersonForm.verbs = table
             State.Ready(table, (System.nanoTime() - t0) / 1_000_000)
         } catch (e: Throwable) {
             State.Failed(e.javaClass.simpleName)
