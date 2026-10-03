@@ -4,12 +4,17 @@ import com.uroboros.memory.Layer
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.nav.Coordinates.Address
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PortraitTest {
+
+    /** Таблица глаголов — как на телефоне (см. TestVerbs). */
+    @Before
+    fun verbs() = TestVerbs.install()
 
     private fun record(
         id: Long,
