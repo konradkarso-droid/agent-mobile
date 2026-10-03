@@ -3,6 +3,7 @@ package com.uroboros.memory.nav
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.nav.Coordinates.Address
 import com.uroboros.memory.nav.Coordinates.TimeSource
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,6 +11,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CoordinatesTest {
+
+    /** Таблица глаголов — как на телефоне (см. TestVerbs). */
+    @Before
+    fun verbs() = TestVerbs.install()
 
     private val owner = SourceKind.USER_STATED.name
     private val agent = SourceKind.AGENT_INFERRED.name
@@ -204,6 +209,10 @@ class CoordinatesTest {
 }
 
 class AddressInRibbonTest {
+
+    /** Таблица глаголов — как на телефоне (см. TestVerbs). */
+    @Before
+    fun verbs() = TestVerbs.install()
 
     private val hour = Episodes.EPISODE_SILENCE_MS
 
