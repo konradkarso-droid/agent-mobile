@@ -4433,18 +4433,23 @@ class MainActivity : AppCompatActivity() {
                 // Архив ленты — для своей речи агента и счёта рассказанных снов.
                 // null — не читается: оба молчат с этой причиной, ход идёт.
                 val archive = journalStore.readArchive()
-                // Пробелы — только прибор, модели не идёт (Gaps). Собираются
-                // по архиву и открытой ленте заново на каждом ходе; ход идёт,
-                // что бы с ними ни случилось.
-                gapsLine = if (archive == null) "Пробелы: архив ленты не прочитался" else runCatching {
-                    Gaps.meterLine(
+                // Пробелы (Gaps) — прибор и второй источник выхода «спросить»
+                // (CuriosityAsk.decideGap ниже). Собираются по архиву и открытой
+                // ленте заново на каждом ходе; ход идёт, что бы с ними ни
+                // случилось. Не собрались — null: о пробеле не спрашивается.
+                val gapsFound: Result<List<Gaps.Gap>>? = archive?.let {
+                    runCatching {
                         Gaps.of(
-                            archive.map { Gaps.Turn(it.question, it.agentContent, it.archiveIndex) } +
-                                journal.history().map { Gaps.Turn(it.question, it.agentContent, -1) }
-                        ),
-                        userText,
-                    )
-                }.getOrElse { "Пробелы: не собрались (${it.javaClass.simpleName})" }
+                            it.map { a -> Gaps.Turn(a.question, a.agentContent, a.archiveIndex) } +
+                                journal.history().map { t -> Gaps.Turn(t.question, t.agentContent, -1) }
+                        )
+                    }
+                }
+                gapsLine = when {
+                    gapsFound == null -> "Пробелы: архив ленты не прочитался"
+                    gapsFound.isFailure -> "Пробелы: не собрались (${gapsFound.exceptionOrNull()?.javaClass?.simpleName})"
+                    else -> Gaps.meterLine(gapsFound.getOrThrow(), userText)
+                }
                 // Адрес вопроса — о ком он (Coordinates.addressInRibbon). На
                 // адрес «агент» зеркало снимает записи с чужим «я»
                 // (MirrorFilter) — в отборе до раздачи мест и ниже, на стыке
@@ -4768,13 +4773,33 @@ class MainActivity : AppCompatActivity() {
                             )
                         }
                 }
-                curiosityAskLine = CuriosityAsk.meter(askDecision)
-                val askedLeader = (askDecision as? CuriosityAsk.Decision.Ask)?.leader
+                // Второй источник — пробел, коснувшийся реплики; спрошенный, он
+                // перебивает сон (почему — у CuriosityAsk). Ожидание ответа о
+                // сне не прочиталось — о пробеле тоже не спрашивается.
+                val gapDecision = when {
+                    gapsFound == null -> CuriosityAsk.GapDecision.Refuse("архив ленты не прочитался")
+                    gapsFound.isFailure -> CuriosityAsk.GapDecision.Refuse("пробелы не собрались")
+                    else -> runCatching {
+                        CuriosityAsk.decideGap(
+                            gapsFound.getOrThrow(), userText,
+                            journal.history().lastOrNull()?.agentContent,
+                            curiosityAskMarker.awaiting(),
+                        )
+                    }.getOrElse {
+                        CuriosityAsk.GapDecision.Refuse(
+                            "не прочиталось, ждёт ли прошлый вопрос ответа (${it.javaClass.simpleName})"
+                        )
+                    }
+                }
+                val askedGap = (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
+                curiosityAskLine = CuriosityAsk.meter(gapDecision, askDecision)
+                val askedLeader = if (askedGap != null) null else (askDecision as? CuriosityAsk.Decision.Ask)?.leader
                 // Строки о себе здесь нет: она уходит отдельным сообщением
                 // (selfNote в turns.run ниже).
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
-                    curiosityAsk = askedLeader?.let { CuriosityAsk.line(it) },
+                    curiosityAsk = askedGap?.let { CuriosityAsk.gapLine(it) }
+                        ?: askedLeader?.let { CuriosityAsk.line(it) },
                 )
                 // Записи — не в реплике, а сообщением агента перед ней (см.
                 // ConversationJournal.recallOf).
