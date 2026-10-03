@@ -5,8 +5,9 @@ import com.uroboros.memory.Sentences
 import com.uroboros.util.TextFold
 
 /**
- * Пробелы в знании агента — материал любопытства (пока только для прибора;
- * модели ничего не идёт). Чистая логика: ходы на входе, пробелы на выходе.
+ * Пробелы в знании агента — материал любопытства: прибор «Пробелы:» и второй
+ * источник выхода «спросить» (CuriosityAsk.decideGap). Чистая логика: ходы на
+ * входе, пробелы на выходе.
  *
  * ЧТО ТАКОЕ ПРОБЕЛ. Агент сам признал, что не знает («не знаю», «нет
  * информации», [IGNORANCE]), — в ответ на реплику владельца. Любопытство
@@ -100,6 +101,7 @@ object Gaps {
      * @property subject основы предмета; пусто у пробела о собеседнике.
      * @property aboutOwner предмет — сам собеседник.
      * @property question реплика владельца при первом признании.
+     * @property admission фраза агента, которой он тогда признал незнание.
      * @property conversations разговоры, где признан.
      * @property closedBy утверждение владельца, закрывшее пробел; null — не закрыт.
      * @property missed признания уже ПОСЛЕ закрытия — реплики владельца, на
@@ -109,6 +111,7 @@ object Gaps {
         val subject: Set<String>,
         val aboutOwner: Boolean,
         val question: String,
+        val admission: String,
         val conversations: Set<Int>,
         val state: State,
         val closedBy: String?,
@@ -149,7 +152,7 @@ object Gaps {
         Sentences.split(answer).any { it.trimEnd().endsWith('?') && covers(it, subject) }
 
     private class Building(
-        val subject: Set<String>, val aboutOwner: Boolean, val question: String,
+        val subject: Set<String>, val aboutOwner: Boolean, val question: String, val admission: String,
         val conversations: MutableSet<Int>, var asked: Boolean = false,
         var closedBy: String? = null, val missed: MutableList<String> = mutableListOf(),
     )
@@ -174,7 +177,7 @@ object Gaps {
             if (same == null) {
                 // Спросить можно и в том же ответе: «Не знаю. А кто это?».
                 gaps += Building(
-                    subject, aboutOwner, turn.question, mutableSetOf(turn.conversation),
+                    subject, aboutOwner, turn.question, said, mutableSetOf(turn.conversation),
                     asked = askedIn(turn.answer, subject),
                 )
             } else {
@@ -185,7 +188,7 @@ object Gaps {
         return gaps.map {
             Gap(
                 subject = it.subject, aboutOwner = it.aboutOwner, question = it.question,
-                conversations = it.conversations, missed = it.missed, closedBy = it.closedBy,
+                admission = it.admission, conversations = it.conversations, missed = it.missed, closedBy = it.closedBy,
                 state = when {
                     it.closedBy != null -> State.CLOSED
                     it.asked -> State.ASKED
