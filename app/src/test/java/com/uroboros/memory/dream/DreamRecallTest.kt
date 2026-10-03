@@ -160,10 +160,10 @@ class DreamRecallTest {
     }
 
     @Test
-    fun `прибор отделяет принесённое от лежащего в ленте`() {
+    fun `прибор отделяет принесённое впервые от подававшегося раньше`() {
         val offer = pick(listOf(dream(8, 9), dream(8, 10)), live, setOf(8))
         val text = DreamRecall.meter(offer, alreadyInRibbon = 1)
-        assertTrue(text, text.contains("снов подходило 2 · записей принесено 1 · уже в ленте 1"))
+        assertTrue(text, text.contains("снов подходило 2 · записей принесено 1 · подавались раньше 1"))
     }
 
     // --- Прибор: одна запись во многих снах ---
