@@ -48,6 +48,11 @@ import java.io.InputStream
  *
  * Трафарет — `app/src/main/assets/word_stencil6.bin`, формат и источник —
  * рядом, в `word_stencil6_SOURCE.md`. В памяти — массив чисел, около 7 МБ.
+ *
+ * ВТОРОЙ ПОТРЕБИТЕЛЬ — определитель лица (memory.nav.PersonForm.words) через
+ * [looksLikeWord]: отличить незнакомое слово от знакомого. Чего трафарет при
+ * этом не умеет — то же, что выше: слово из настоящих кусочков он считает
+ * настоящим, новое слово — незнакомым.
  */
 class WordDamage private constructor(private val codes: LongArray) {
 
@@ -72,6 +77,17 @@ class WordDamage private constructor(private val codes: LongArray) {
             .firstOrNull { it.value.lowercase() !in request }
             ?.let { found += it.value }
         return found
+    }
+
+    /**
+     * Похоже ли слово на настоящую русскую словоформу: все его сочетания есть в
+     * трафарете. Любой регистр и «ё»; слово не из одних русских букв — не
+     * похоже. Слова короче 4 букв трафарет не различает (см. шапку) — для них
+     * ответ «похоже» ничего не значит.
+     */
+    fun looksLikeWord(word: String): Boolean {
+        val w = TextFold.fold(word)
+        return w.matches(WORD) && fits(w)
     }
 
     /** Все ли сочетания слова есть в трафарете. Слово — только буквы а–я. */
@@ -204,7 +220,8 @@ object WordDamageHolder {
     fun meterLine(): String = when (val s = state) {
         State.Loading -> "Детектор порчи: загружается"
         is State.Failed -> "Детектор порчи НЕ РАБОТАЕТ: ${s.reason} — испорченные слова в ленту пропускаются"
-        is State.Ready -> "Детектор порчи: сочетаний ${s.damage.size}, загружен за ${s.millis} мс"
+        is State.Ready -> "Детектор порчи: сочетаний ${s.damage.size}, загружен за ${s.millis} мс" +
+            " · по тому же трафарету незнакомое слово на -у/-ю в определителе лица — «не ясно»"
     }
 
     /**
@@ -220,8 +237,13 @@ object WordDamageHolder {
         val t0 = System.nanoTime()
         state = try {
             val d = open().use { WordDamage.read(it) }
-            if (d.selfCheck()) State.Ready(d, (System.nanoTime() - t0) / 1_000_000)
-            else State.Failed("самопроверка не прошла — файл трафарета не тот")
+            if (d.selfCheck()) {
+                // Тот же трафарет — определителю лица (memory.nav.PersonForm.words).
+                com.uroboros.memory.nav.PersonForm.words = d
+                State.Ready(d, (System.nanoTime() - t0) / 1_000_000)
+            } else {
+                State.Failed("самопроверка не прошла — файл трафарета не тот")
+            }
         } catch (e: Throwable) {
             State.Failed(e.message ?: e.javaClass.simpleName)
         }
