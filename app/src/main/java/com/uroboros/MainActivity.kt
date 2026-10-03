@@ -5140,7 +5140,13 @@ class MainActivity : AppCompatActivity() {
                 // Ответ, легший в ленту (при перехвате — не первая попытка, см.
                 // Outcome.Ran.kept). Ход в ленту не лёг — ниже ответ не читается.
                 val answerText = ran.kept ?: ran.answer
-                interceptLine = if (ran.hidden) {
+                val loopAt = ran.loopAt
+                val loopSentence = ran.loopSentence
+                interceptLine = if (loopAt != null && loopSentence != null) {
+                    // Петля до потолка — ход скрыт без второй попытки
+                    // (ConversationTurns.loopAtCeiling).
+                    ConversationTurns.loopCutLine(loopAt, loopSentence)
+                } else if (ran.hidden) {
                     interceptLineOf(ran.intercept, null, journal.hidden().lastOrNull())
                 } else {
                     interceptLineOf(ran.intercept, journal.history().lastOrNull()?.rejected)
