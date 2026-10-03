@@ -21,15 +21,15 @@ import org.junit.Test
  * выглядел бы правильным.
  *
  * Условие пометки — ПУСТОЙ список записей прошлого хода, а не отсутствие
- * новых: запись, легшая на первом ходе, на шестом не подставляется
- * повторно, но модели всё это время видна и опорой быть не перестаёт.
+ * новых: запись, засчитанная на первом ходе, на шестом подана снова и
+ * опорой быть не перестаёт.
  *
  * ОТРЕЗАНИЕ. Убирает последний ход и снимает отметки записей, легших на
  * нём впервые. Главная проверка здесь —
  * [отметка записи с прошлых ходов после отрезания остаётся]: механизм,
  * снимающий отметки со всех записей подряд, во всех остальных проверках
- * выглядел бы правильным, а стоил бы повторной укладки старых записей в
- * ленту на каждом ходе.
+ * выглядел бы правильным, а стоил бы повторного засчитывания старых
+ * записей — подогрева и приборов — на каждом ходе.
  */
 class ConversationJournalTest {
 
@@ -392,10 +392,11 @@ class ConversationJournalDreamNoteTest {
 
 class ConversationJournalRecallTest {
 
-    // ЗАПИСИ ГОЛОСОМ АГЕНТА — сообщением агента перед репликой своего хода
-    // (см. ConversationJournal.recallOf). Главная проверка —
-    // [старый ход без вспоминания уходит как был]: лента только дописывается,
-    // и лишнее сообщение у старого хода сдвинуло бы всё обсчитанное начало.
+    // ЗАПИСИ ГОЛОСОМ АГЕНТА — сообщением агента перед репликой, только своего
+    // хода (см. ConversationJournal.messagesFor). Главная проверка —
+    // [записи прошлого хода модели не подаются]: подача, оставшаяся в ленте,
+    // застывает со старым провенансом и становится образцом речи агента, а
+    // во всех остальных проверках механизм выглядел бы правильным.
 
     private val rec1 = "Твои слова вчера: «Правило есть.»."
     private val rec2 = "Я говорил на днях: «Мне снилось море.»."
@@ -440,23 +441,39 @@ class ConversationJournalRecallTest {
         )
     }
 
+    /** Проверка на молчание: вспоминание хранится в ходе, но модели на следующих ходах не уходит — и после подъёма тоже. */
     @Test
-    fun `вспоминание ложится в ход и уходит на своём месте после подъёма`() {
+    fun `записи прошлого хода модели не подаются`() {
         val journal = ConversationJournal()
         journal.appendTurn("Какое правило?", "Такое.", "Какое правило?", listOf(rec1), recall = rec1)
 
         assertEquals(rec1, journal.history().single().recall)
+        val expected = listOf(
+            ConversationJournal.ROLE_USER to "Какое правило?",
+            ConversationJournal.ROLE_ASSISTANT to "Такое.",
+            ConversationJournal.ROLE_USER to "дальше",
+        )
+        assertEquals(expected, journal.messagesFor("дальше"))
         val raised = ConversationJournal()
         assertTrue(raised.restore(journal.history()))
+        assertEquals(expected, raised.messagesFor("дальше"))
+    }
+
+    /** Запись, нужная снова, подаётся снова, а засчитывается один раз за разговор. */
+    @Test
+    fun `поданная раньше запись подаётся снова, но засчитана один раз`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("Какое правило?", "Такое.", "Какое правило?", listOf(rec1), recall = rec1)
+
+        assertEquals(emptyList<String>(), journal.unseenRecords(listOf(rec1)))
+        val sent = journal.messagesFor("А ещё раз?", currentRecall = journal.recallOf(listOf(rec1)))
         assertEquals(
-            listOf(
-                ConversationJournal.ROLE_ASSISTANT to rec1,
-                ConversationJournal.ROLE_USER to "Какое правило?",
-                ConversationJournal.ROLE_ASSISTANT to "Такое.",
-                ConversationJournal.ROLE_USER to "дальше",
-            ),
-            raised.messagesFor("дальше"),
+            listOf(ConversationJournal.ROLE_ASSISTANT to rec1, ConversationJournal.ROLE_USER to "А ещё раз?"),
+            sent.takeLast(2),
         )
+        assertEquals(1, sent.count { it.second == rec1 })
+        journal.appendTurn("А ещё раз?", "Такое же.", "А ещё раз?", listOf(rec1), recall = rec1)
+        assertEquals(0, journal.history()[1].records.single().firstSeenTurn)
     }
 
     /** Проверка на молчание: старый ход с записями внутри реплики лишнего сообщения не получает. */
