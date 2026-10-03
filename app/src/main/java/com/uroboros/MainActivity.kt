@@ -271,9 +271,8 @@ class MainActivity : AppCompatActivity() {
      * они занимают места в выдаче, не неся сведений. Это правдоподобно, но не
      * наблюдалось; строка нужна, чтобы увидеть, так ли это.
      *
-     * Считается весь отбор, а не только записи, впервые ушедшие в ленту: места
-     * в отборе ограничены, а занимают их и те, что лежат в ленте с прошлых
-     * ходов.
+     * Считается весь отбор: он весь и уходит модели (см.
+     * ConversationJournal.messagesFor), а места в нём ограничены.
      *
      * Просьбы (RiskTrigger.isOnlyRequests) отсеиваются там же и считаются
      * отдельно от вопросов.
@@ -809,13 +808,12 @@ class MainActivity : AppCompatActivity() {
             )
             if (!expanded) return
             for (use in turn.records) {
-                // "с хода N" важнее, чем кажется: из-за отсева повторов
-                // запись, легшая на первом ходе, на шестом не подставляется
-                // заново — но модели она всё это время видна. Без пометки
-                // верный ответ выглядел бы выдумкой.
+                // "снова, с хода N": запись подана и на этом ходе, но
+                // засчитана на том, где подана впервые (см.
+                // ConversationJournal.RecordUse.firstSeenTurn).
                 val origin =
                     if (use.firstSeenTurn == index) "новая"
-                    else "с хода ${use.firstSeenTurn + 1}"
+                    else "снова, с хода ${use.firstSeenTurn + 1}"
                 out.append("\n")
                 val lineStart = out.length
                 out.append("• ").append(origin).append(": ").append(use.text)
@@ -4656,10 +4654,10 @@ class MainActivity : AppCompatActivity() {
                 // выше: строка несёт провенанс и кавычки, которых правило не
                 // видело и видеть не должно.
                 //
-                // Сверяются ВСЕ найденные отбором, а не только новые. Запись,
-                // которую отсев повторов не стал класть второй раз, модель всё
-                // равно видит — она лежит выше в ленте, — и промолчать о её
-                // расхождении значило бы соврать умолчанием.
+                // Сверяются ВСЕ найденные отбором: все они уходят модели в
+                // этом ходе (см. ConversationJournal.messagesFor), и промолчать
+                // о расхождении записи, поданной не впервые, значило бы
+                // соврать умолчанием.
                 //
                 // База здесь не трогается: disputesOf берёт одну запись и весь
                 // горячий пул по тегу, а нужна попарная сверка тех пяти, что
@@ -4696,16 +4694,16 @@ class MainActivity : AppCompatActivity() {
                 renderMetricsPanel()
                 val disputeText = (notice as? DisputeNotice.Result.Found)?.text
 
-                // Записи, уже лежащие в ленте, второй раз не кладём: отбор
-                // тянет до пяти штук на КАЖДЫЙ вопрос, а лента только растёт.
-                // Считано 28.08: без этого ход дорожает со 125 токенов до 325
-                // и лента кончается к двадцатому ходу вместо шестидесятого,
-                // причём почти всё добавленное — повторы одного и того же.
+                // Модели уходят ВСЕ найденные записи (записи прошлых ходов
+                // ей не подаются, см. ConversationJournal.messagesFor). Новые —
+                // ещё не подававшиеся в этом разговоре — нужны только для
+                // счёта: подача засчитывается один раз за разговор (см.
+                // ConversationJournal.unseenRecords).
                 val newRecords = journal.unseenRecords(allRecords)
-                // Принесённое ассоциацией, что уйдёт в движок в этом ходе:
-                // запись, уже лежащая в ленте, второй раз не кладётся — тем
-                // же отсевом. Строки принесённого стоят в allRecords за
-                // записями ответа, в том же порядке.
+                // Принесённое ассоциацией, засчитываемое в этом ходе: запись,
+                // подававшаяся раньше, засчитана тогда — тем же отсевом.
+                // Строки принесённого стоят в allRecords за записями ответа,
+                // в том же порядке.
                 val newLines = newRecords.toHashSet()
                 val broughtNow = stickers.drop(answerStickers.size).filterIndexed { i, _ ->
                     stickerLines[answerStickers.size + i] in newLines
@@ -4783,8 +4781,8 @@ class MainActivity : AppCompatActivity() {
                 // ConversationJournal.recallOf).
                 // На вопрос о собеседнике — портрет под своей подписью, затем
                 // остальные записи (Portrait.recall); иначе как прежде.
-                val recall = if (portrait == null) journal.recallOf(newRecords) else Portrait.recall(
-                    newRecords, portraitLines.toSet(),
+                val recall = if (portrait == null) journal.recallOf(allRecords) else Portrait.recall(
+                    allRecords, portraitLines.toSet(),
                     nothing = portrait.chosen.isEmpty() && portraitNotFed == null,
                 )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
@@ -4839,7 +4837,7 @@ class MainActivity : AppCompatActivity() {
                 // между блоками. То есть завышал ровно на тех ходах, где
                 // сверка сработала, а смотрят на эту строку именно там.
                 val recordsChars =
-                    if (newRecords.isEmpty()) 0 else newRecords.joinToString("\n").length
+                    if (allRecords.isEmpty()) 0 else allRecords.joinToString("\n").length
                 // Всё остальное в реплике, что не вопрос: пометка, блок
                 // сверки, разделители между блоками. ОДНИМ числом намеренно —
                 // разложить его по слагаемым значило бы завести на панели три
@@ -4850,14 +4848,13 @@ class MainActivity : AppCompatActivity() {
                 // стать не может: вопрос входит в реплику целиком.
                 val otherChars = userContent.length - userText.length
                 val otherPart = if (otherChars > 0) " · прочее $otherChars зн." else ""
-                val promptShape = if (newRecords.isEmpty()) {
-                    val skipped = allRecords.size
-                    val tail = if (skipped > 0) " ($skipped уже в ленте)" else ""
-                    "Запрос: новых записей нет$tail$otherPart · " +
+                val promptShape = if (allRecords.isEmpty()) {
+                    "Запрос: записей нет$otherPart · " +
                         "вопрос ${userText.length} зн.$noteTail"
                 } else {
-                    "Запрос: новых записей ${newRecords.size} из ${allRecords.size} на " +
-                        "$recordsChars зн.$otherPart · " +
+                    val before = allRecords.size - newRecords.size
+                    val tail = if (before > 0) " (подавались раньше в этом разговоре: $before)" else ""
+                    "Запрос: записей ${allRecords.size} на $recordsChars зн.$tail$otherPart · " +
                         "вопрос ${userText.length} зн.$noteTail"
                 }
 
@@ -4977,13 +4974,13 @@ class MainActivity : AppCompatActivity() {
                 val outcome = turns.run(
                     content = userContent,
                     question = userText,
-                    // ВСЕ найденные отбором, а не только новые. Новизну журнал
+                    // ВСЕ найденные отбором — те же, что ушли модели. Новизну журнал
                     // считает сам по своему отображению: если считать её в двух
-                    // местах, экран однажды разойдётся с тем, что ушло в модель.
-                    // Уже лежавшие записи от этого не задваиваются — их номер хода
-                    // в журнале остаётся прежним.
+                    // местах, экран однажды разойдётся с засчитанным.
+                    // Подававшиеся раньше записи от этого не задваиваются — их номер
+                    // хода в журнале остаётся прежним.
                     // Принесённое ассоциацией лежит здесь же: по этому
-                    // списку лента отсеивает повторы.
+                    // списку лента засчитывает подачу.
                     records = allRecords,
                     selfNote = selfLine,
                     recordMarks = recordMarks,
