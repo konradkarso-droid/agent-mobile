@@ -236,8 +236,9 @@ class DreamRecall(
          * Строка прибора. Печатается при любом исходе: прибор, который
          * появляется только при удаче, неотличим от сломанного.
          *
-         * [alreadyInRibbon] — сколько из принесённых записей уже лежит в ленте
-         * с прошлых ходов и второй раз в реплику не кладётся.
+         * [alreadyInRibbon] — сколько из принесённых записей уже подавалось
+         * модели раньше в этом разговоре: подаются они и сейчас, но засчитаны
+         * тогда (см. ConversationJournal.unseenRecords).
          */
         fun meter(offer: Offer, alreadyInRibbon: Int): String = buildString {
             append("Ассоциации: ")
@@ -251,7 +252,7 @@ class DreamRecall(
                 null -> {
                     append("снов подходило ").append(offer.fitting)
                     append(" · записей принесено ").append(offer.brought.size - alreadyInRibbon)
-                    if (alreadyInRibbon > 0) append(" · уже в ленте ").append(alreadyInRibbon)
+                    if (alreadyInRibbon > 0) append(" · подавались раньше ").append(alreadyInRibbon)
                 }
             }
             if (offer.silenced > 0) {
