@@ -52,6 +52,23 @@ class InitiativeHolderTest {
         assertEquals(Holder.OWNER to "просьба", holder(null, "расскажи про рубанок"))
     }
 
+    /**
+     * Проверка на молчание: просьба после запятой и вопрос без знака во втором
+     * предложении утверждением не проходят (вид — memory.SentenceKind).
+     */
+    @Test
+    fun `сомнительная просьба и вопрос не в начале — у владельца`() {
+        assertEquals(
+            Holder.OWNER to "просьба, сомнительно: «посмотри»",
+            holder(null, "Неправильно, посмотри на доску."),
+        )
+        assertEquals(
+            Holder.OWNER to "просьба, сомнительно: «волнуйся»",
+            holder("Как спалось?", "Спал нормально, не волнуйся."),
+        )
+        assertEquals(Holder.OWNER to "вопрос без «?»", holder(null, "Это ясно. Что дальше."))
+    }
+
     @Test
     fun `поддакивание — у агента`() {
         assertEquals(Holder.AGENT to "поддакивание", holder(null, "ага"))
