@@ -2,6 +2,7 @@ package com.uroboros.initiative
 
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.memory.RiskTrigger
+import com.uroboros.memory.SentenceKind
 import com.uroboros.memory.Sentences
 import com.uroboros.util.TextFold
 
@@ -22,8 +23,9 @@ import com.uroboros.util.TextFold
  * проверки ([classify]):
  *  - ход начат агентом (пустой `question`) — у агента;
  *  - в реплике «?» — у владельца (вопрос);
- *  - первое слово вопросительное или есть частица «ли» — у владельца;
- *  - первое слово — просьба («расскажи», «объясни»…) — у владельца;
+ *  - хоть одно предложение — вопрос или просьба по memory.SentenceKind,
+ *    точно или сомнительно, — у владельца: сомнение здесь решается в сторону
+ *    владельца (см. ниже), и сомнительная просьба подписана так в приборе;
  *  - вся реплика из поддакиваний, не длиннее [PROMPT_MAX_WORDS] слов — у агента;
  *  - прошлый ответ агента кончался вопросом и реплика делит с этим вопросом
  *    значимое слово — ответ, ход у агента; не делит — владелец заговорил о
@@ -44,15 +46,13 @@ import com.uroboros.util.TextFold
  *
  * ЧЕГО НЕ УМЕЕТ:
  *  - определяет форму, а не смысл: «ну да, конечно» с насмешкой — поддакивание;
- *  - вопрос без «?», без вопросительного слова в начале и без «ли» читается
- *    как утверждение;
+ *  - вид предложения — по SentenceKind, со всеми его промахами (там же);
  *  - ответ на вопрос агента, не повторивший ни одного его значимого слова
  *    («Как день?» — «Устал»), читается как своё — ход у владельца;
  *  - общее слово ищется по началу основы (см. [SHARED_PREFIX_MIN]), и
  *    совпадение бывает случайным: «стол» узнаётся в «столица». Тогда ход
  *    отходит агенту по ложному признаку — это обратная сторона того, что
  *    «спал» узнаётся в «спалось»;
- *  - «что-то устал» начинается с вопросительного слова и читается как вопрос;
  *  - реплика из одних знаков (смайлик) — утверждение;
  *  - списки слов ниже — объявленные, не подобранные; перепроверять по строке
  *    «Инициатива:» на живых репликах.
@@ -93,20 +93,6 @@ object InitiativeHolder {
         "точно", "так", "ну", "спасибо", "пожалуй", "согласен", "согласна",
     )
 
-    /** Вопросительные слова — в начале реплики. */
-    val QUESTION_WORDS = setOf(
-        "что", "как", "почему", "зачем", "когда", "где", "куда", "откуда",
-        "кто", "чей", "чья", "чье", "сколько", "какой", "какая", "какое",
-        "какие", "каким", "разве", "неужели",
-    )
-
-    /** Просьбы — в начале реплики. */
-    val REQUEST_WORDS = setOf(
-        "расскажи", "скажи", "объясни", "покажи", "напомни", "давай",
-        "сделай", "помоги", "найди", "подскажи", "посмотри", "проверь",
-        "напиши", "придумай",
-    )
-
     /**
      * У кого ход после последнего хода ленты.
      *
@@ -141,10 +127,12 @@ object InitiativeHolder {
     fun classify(previousAgent: String?, question: String): Pair<Holder, String> {
         if (question.isBlank()) return Holder.AGENT to "агент заговорил первым"
         if ('?' in question) return Holder.OWNER to "вопрос"
+        val readings = Sentences.split(question).map { SentenceKind.of(it) }
+        if (readings.any { it.kind == SentenceKind.Kind.QUESTION }) return Holder.OWNER to "вопрос без «?»"
+        readings.firstOrNull { it.kind == SentenceKind.Kind.REQUEST }?.let {
+            return Holder.OWNER to if (it.isSureRequest) "просьба" else "просьба, сомнительно: ${it.why}"
+        }
         val words = words(question)
-        val first = words.firstOrNull()
-        if (first in QUESTION_WORDS || "ли" in words) return Holder.OWNER to "вопрос без «?»"
-        if (first in REQUEST_WORDS) return Holder.OWNER to "просьба"
         if (words.isNotEmpty() && words.size <= PROMPT_MAX_WORDS && words.all { it in PROMPT_WORDS }) {
             return Holder.AGENT to "поддакивание"
         }
