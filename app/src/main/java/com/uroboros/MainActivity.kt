@@ -2981,8 +2981,8 @@ class MainActivity : AppCompatActivity() {
         val drift = driftLine ?: "Дрейф: чисел хода на экране нет"
         val portraitMeter = portraitLine ?: "О собеседнике: $lostNote"
         val recordsSources = recordsSourcesLine ?: DolmenCircle.SOURCES_LOST
-        // Строка таблицы разворота — только когда таблица загружена; пока нет,
-        // причину печатает строка зеркала в отборе.
+        // Строка таблицы глаголов печатается всегда: по ней и разворот, и лицо
+        // глаголов на -у/-ю в адресе (nav.RetellHolder.meterLine).
         group(
             "Память", recordsQuestionsLine, circleLine, recordsSources, mirrorSelection, drift, portraitMeter,
             RetellHolder.meterLine(), cloud,
