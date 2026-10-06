@@ -311,9 +311,10 @@ class TrustedMediator(context: Context) {
         previousAnswer: String? = null,
         address: Coordinates.Address = Coordinates.Address.UNDEFINED,
         ownSpeechFound: Int? = null,
+        seats: Int = limit,
     ): ContextResult {
         val result = hourglass.getContextWithSummary(
-            purpose, query, limit, recentQuestions, excludedTexts, previousAnswer, address, ownSpeechFound
+            purpose, query, limit, recentQuestions, excludedTexts, previousAnswer, address, ownSpeechFound, seats
         )
         // Строку касаний ставит только ответ: просмотр памяти касаний не
         // засчитывает, и затирать им показание хода было бы враньём. Сбой
