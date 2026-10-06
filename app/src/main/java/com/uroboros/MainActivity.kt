@@ -4482,6 +4482,34 @@ class MainActivity : AppCompatActivity() {
                         }),
                         userText,
                     )
+                // Портрет собеседника — его слова о себе по провенансу, на
+                // вопрос о нём (Portrait). Только чтение базы: записи не
+                // греются. Сбой поиска — словами в строке прибора, ход идёт
+                // без портрета.
+                val portraitFound: Result<Pair<Portrait.Result, Map<Long, Sticker>>>? =
+                    if (!Portrait.searched(address)) null else runCatching {
+                        val all = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
+                        Portrait.of(all) to all.associateBy { it.id }
+                    }
+                val portrait = portraitFound?.getOrNull()?.first
+                // Запись из портрета общим отбором этого хода не подаётся
+                // (см. Portrait, «КАК ИДЁТ МОДЕЛИ»).
+                val portraitIds = portrait?.chosen?.mapTo(HashSet()) { it.recordId }.orEmpty()
+                // Строки портрета — пересказом, по таблице разворота мимо
+                // выключателя смешанных (RetellHolder.loaded). Нет таблицы —
+                // портрет модели не подаётся, прибор говорит почему.
+                // Пересказ считается здесь, до круга: сколько строк портрета
+                // уйдёт модели, столько мест общего потолка он и занимает
+                // (DolmenCircle.circleSeats — почему круг садится после).
+                val portraitTable = RetellHolder.loaded
+                val portraitRetold: List<Pair<Sticker, String>> =
+                    if (portrait == null || portraitTable == null) emptyList() else {
+                        val byId = portraitFound!!.getOrNull()!!.second
+                        portrait.chosen.mapNotNull { line ->
+                            val sticker = byId[line.recordId] ?: return@mapNotNull null
+                            Retelling.retell(line.sentence, portraitTable).text?.let { sticker to it }
+                        }.take(DolmenCircle.RECORDS_CEILING)
+                    }
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
@@ -4491,6 +4519,7 @@ class MainActivity : AppCompatActivity() {
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
                     address = address,
                     ownSpeechFound = if (address == Coordinates.Address.AGENT) ownSaid.size else null,
+                    seats = DolmenCircle.circleSeats(portraitRetold.size),
                 )
                 // Облако адреса — прибор хода; в отбор и в модель не идёт (Clouds).
                 cloudLine = if (address == Coordinates.Address.UNDEFINED) {
@@ -4506,19 +4535,6 @@ class MainActivity : AppCompatActivity() {
                         )
                     }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
                 }
-                // Портрет собеседника — его слова о себе по провенансу, на
-                // вопрос о нём (Portrait). Только чтение базы: записи не
-                // греются. Сбой поиска — словами в строке прибора, ход идёт
-                // без портрета.
-                val portraitFound: Result<Pair<Portrait.Result, Map<Long, Sticker>>>? =
-                    if (!Portrait.searched(address)) null else runCatching {
-                        val all = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
-                        Portrait.of(all) to all.associateBy { it.id }
-                    }
-                val portrait = portraitFound?.getOrNull()?.first
-                // Запись из портрета общим отбором этого хода не подаётся
-                // (см. Portrait, «КАК ИДЁТ МОДЕЛИ»).
-                val portraitIds = portrait?.chosen?.mapTo(HashSet()) { it.recordId }.orEmpty()
                 circleLine = contextResult.circle
                 // Дверь сна: записи, принесённые снами последних ходов, видны
                 // отбору и из холодных слоёв, если вопрос их задевает (см.
@@ -4530,8 +4546,13 @@ class MainActivity : AppCompatActivity() {
                 // Разворот смешанных записей владельца (nav.Retelling): таблица
                 // берётся один раз на ход — для зеркала и для строк модели.
                 val retell = RetellHolder.table
-                val (doorRecords, doorMirrored) =
+                val (doorPassed, doorMirrored) =
                     MirrorFilter.apply(DreamDoor.pick(behindDoor, contextResult.stickers, userText), address, retell)
+                // Дверь и ассоциация берут остаток общего потолка после
+                // портрета и круга (DolmenCircle.circleSeats — порядок и почему).
+                val doorFit = doorPassed.filterNot { it.id in portraitIds }
+                val circleFed = contextResult.stickers.count { it.id !in portraitIds } + contextResult.ownSpeechSeated
+                val doorRecords = doorFit.take(DolmenCircle.left(portraitRetold.size + circleFed))
                 val answerStickers = (contextResult.stickers + doorRecords).filterNot { it.id in portraitIds }
                 // Автозаписи здесь БОЛЬШЕ НЕТ, и место это важнее самого
                 // вызова: она переехала вниз, за отправку в движок (см.
@@ -4552,7 +4573,10 @@ class MainActivity : AppCompatActivity() {
                 val answerIds = answerStickers.map { it.id }.toSet()
                 val dreamOffer = dreamRecall.offer(answerIds)
                 val (associated, associatedMirrored) = MirrorFilter.apply(dreamOffer.brought, address, retell)
-                val associatedShown = associated.filterNot { it.id in portraitIds }
+                val associatedFit = associated.filterNot { it.id in portraitIds }
+                val associatedShown =
+                    associatedFit.take(DolmenCircle.left(portraitRetold.size + circleFed + doorRecords.size))
+                val notFitted = (doorFit.size - doorRecords.size) + (associatedFit.size - associatedShown.size)
                 val stickers = answerStickers + associatedShown
                 // Строка записи — кто, когда и что; одно место на все подписи
                 // для модели, там же и чего подпись времени не умеет.
@@ -4611,25 +4635,16 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                 }
-                // Строки портрета — пересказом, по таблице разворота мимо
-                // выключателя смешанных (RetellHolder.loaded). Нет таблицы —
-                // портрет модели не подаётся, прибор говорит почему.
-                val portraitTable = RetellHolder.loaded
                 val portraitNotFed: String? = when {
                     portrait == null -> null
                     portraitTable == null -> "таблица разворота не готова"
                     else -> null
                 }
-                val portraitLines = if (portrait == null || portraitTable == null) emptyList() else {
-                    val byId = portraitFound!!.getOrNull()!!.second
-                    portrait.chosen.mapNotNull { line ->
-                        val sticker = byId[line.recordId] ?: return@mapNotNull null
-                        val retold = Retelling.retell(line.sentence, portraitTable).text ?: return@mapNotNull null
-                        ProvenanceLabels.retoldForModel(
-                            sticker, retold, recordsAt,
-                            recordEpisode = episodeClock.episodeAt(sticker.createdAt), currentEpisode = currentEpisode,
-                        )
-                    }
+                val portraitLines = portraitRetold.map { (sticker, retold) ->
+                    ProvenanceLabels.retoldForModel(
+                        sticker, retold, recordsAt,
+                        recordEpisode = episodeClock.episodeAt(sticker.createdAt), currentEpisode = currentEpisode,
+                    )
                 }
                 // Портрет первым: так его строки и собираются в сообщение
                 // (Portrait.recall).
@@ -4642,8 +4657,9 @@ class MainActivity : AppCompatActivity() {
                     portrait = portraitLines.size,
                     circle = contextResult.stickers.count { it.id !in portraitIds } + ownLines.size,
                     ownSpeech = ownLines.size,
-                    door = doorRecords.count { it.id !in portraitIds },
+                    door = doorRecords.size,
                     association = associatedShown.size,
+                    notFitted = notFitted,
                 )
                 if (portraitFound == null) {
                     portraitLine = "О собеседнике: " + Portrait.meterLine(address, null, fed = false)
@@ -4708,8 +4724,8 @@ class MainActivity : AppCompatActivity() {
                 val questionsFiltered = contextResult.questionsFiltered
                 val requestsFiltered = contextResult.requestsFiltered
                 recordsQuestionsLine = "Записей к ответу: ${stickers.size}" +
-                    (if (associated.isNotEmpty() || doorRecords.isNotEmpty()) {
-                        " (по ассоциации: ${associated.size}, через дверь: ${doorRecords.size})"
+                    (if (associatedShown.isNotEmpty() || doorRecords.isNotEmpty()) {
+                        " (по ассоциации: ${associatedShown.size}, через дверь: ${doorRecords.size})"
                     } else "") +
                     (if (ownLines.isNotEmpty()) " · своей речи: ${ownLines.size}" else "") +
                     (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
