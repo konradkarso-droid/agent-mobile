@@ -165,7 +165,7 @@ class MirrorFilterTest {
     fun `строка прибора на каждый адрес при загруженной таблице`() {
         assertEquals("адрес — агент · снято записей с чужим «я»: 2", MirrorFilter.meterLine(Address.AGENT, 2, 0, ready))
         assertEquals(
-            "адрес — владелец · снято границей (обращения к агенту): 0",
+            "адрес — владелец · снято границей (обращения к агенту) и записей агента о себе: 0",
             MirrorFilter.meterLine(Address.OWNER, 0, 0, ready),
         )
         assertEquals(
@@ -198,5 +198,24 @@ class MirrorFilterTest {
             "адрес не определён · снято смешанных: 3 · разворот: выключен",
             MirrorFilter.meterLine(Address.UNDEFINED, 3, 0, RetellHolder.State.Off),
         )
+    }
+
+    /** Правило 3: на вопрос о владельце запись агента о себе не приходит. */
+    @Test
+    fun `на адрес владелец снимает запись агента о себе`() {
+        assertNull(MirrorFilter.shown(agentOwn, Address.OWNER))
+        assertNull(MirrorFilter.shown(record(20, "Я подумал о снах", SourceKind.AGENT_INFERRED), Address.OWNER))
+    }
+
+    /** Правило 3 не трогает: агента о владельце, о мире, адрес «оба» и записи владельца. */
+    @Test
+    fun `правило о себе не снимает агента о владельце, мир, адрес оба и записи владельца`() {
+        val agentAboutOwner = record(21, "Ты любишь фехтование", SourceKind.AGENT_INFERRED)
+        val agentWorld = record(22, "Вода кипит при ста градусах", SourceKind.AGENT_INFERRED)
+        assertTrue(MirrorFilter.keeps(agentAboutOwner, Address.OWNER))
+        assertTrue(MirrorFilter.keeps(agentWorld, Address.OWNER))
+        assertTrue(MirrorFilter.keeps(agentOwn, Address.BOTH))
+        assertTrue(MirrorFilter.keeps(agentOwn, Address.UNDEFINED))
+        assertTrue(MirrorFilter.keeps(aboutOwner, Address.OWNER))
     }
 }
