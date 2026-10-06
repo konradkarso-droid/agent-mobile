@@ -95,6 +95,7 @@ import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.Drift
 import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.MirrorFilter
+import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
@@ -619,6 +620,12 @@ class MainActivity : AppCompatActivity() {
      */
     private var portraitLine: String? = null
     private var portraitShown: List<String>? = null
+
+    /**
+     * Строка хода «Имя собеседника:» (NameClaim.meterLine) — ищется вместе с
+     * портретом, на тех же записях. null — хода в этом запуске не было.
+     */
+    private var nameLine: String? = null
 
     /**
      * Строка хода «Записи хода:» — из каких источников сложились записи хода
@@ -2980,12 +2987,13 @@ class MainActivity : AppCompatActivity() {
         val cloud = cloudLine ?: "Облако адреса: $lostNote"
         val drift = driftLine ?: "Дрейф: чисел хода на экране нет"
         val portraitMeter = portraitLine ?: "О собеседнике: $lostNote"
+        val nameMeter = nameLine ?: "Имя собеседника: чисел хода на экране нет"
         val recordsSources = recordsSourcesLine ?: DolmenCircle.SOURCES_LOST
         // Строка таблицы глаголов печатается всегда: по ней и разворот, и лицо
         // глаголов на -у/-ю в адресе (nav.RetellHolder.meterLine).
         group(
             "Память", recordsQuestionsLine, circleLine, recordsSources, mirrorSelection, drift, portraitMeter,
-            RetellHolder.meterLine(), cloud,
+            nameMeter, RetellHolder.meterLine(), cloud,
             touchesLine, selfLeader,
         )
         // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
@@ -3305,6 +3313,7 @@ class MainActivity : AppCompatActivity() {
         cloudLine = null
         portraitLine = null
         portraitShown = null
+        nameLine = null
         recordsSourcesLine = null
         // Строка снов — по той же причине, что и строка отбора.
         dreamsLine = null
@@ -4486,12 +4495,14 @@ class MainActivity : AppCompatActivity() {
                 // вопрос о нём (Portrait). Только чтение базы: записи не
                 // греются. Сбой поиска — словами в строке прибора, ход идёт
                 // без портрета.
-                val portraitFound: Result<Pair<Portrait.Result, Map<Long, Sticker>>>? =
+                // Имя собеседника (NameClaim) — тем же чтением, по тем же записям.
+                val portraitFound: Result<Triple<Portrait.Result, Map<Long, Sticker>, NameClaim.Result>>? =
                     if (!Portrait.searched(address)) null else runCatching {
                         val all = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
-                        Portrait.of(all) to all.associateBy { it.id }
+                        Triple(Portrait.of(all), all.associateBy { it.id }, NameClaim.of(all))
                     }
                 val portrait = portraitFound?.getOrNull()?.first
+                val ownName = portraitFound?.getOrNull()?.third
                 // Запись из портрета общим отбором этого хода не подаётся
                 // (см. Portrait, «КАК ИДЁТ МОДЕЛИ»).
                 val portraitIds = portrait?.chosen?.mapTo(HashSet()) { it.recordId }.orEmpty()
@@ -4660,6 +4671,11 @@ class MainActivity : AppCompatActivity() {
                     door = doorRecords.size,
                     association = associatedShown.size,
                     notFitted = notFitted,
+                )
+                nameLine = NameClaim.meterLine(
+                    ownName, age = { ProvenanceLabels.ageForModel(it, recordsAt) },
+                    fed = portraitLines.isNotEmpty(),
+                    failure = portraitFound?.exceptionOrNull()?.javaClass?.simpleName,
                 )
                 if (portraitFound == null) {
                     portraitLine = "О собеседнике: " + Portrait.meterLine(address, null, fed = false)
@@ -4844,6 +4860,7 @@ class MainActivity : AppCompatActivity() {
                 val recall = if (portrait == null) journal.recallOf(allRecords) else Portrait.recall(
                     allRecords, portraitLines.toSet(),
                     nothing = portrait.chosen.isEmpty() && portraitNotFed == null,
+                    name = ownName?.found?.name,
                 )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них
