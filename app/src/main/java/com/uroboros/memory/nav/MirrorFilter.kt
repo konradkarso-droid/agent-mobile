@@ -5,7 +5,7 @@ import com.uroboros.memory.Sticker
 import com.uroboros.memory.nav.Coordinates.Address
 
 /**
- * Зеркало в отборе. Три правила; граница идёт первой.
+ * Зеркало в отборе. Четыре правила; граница идёт первой.
  *
  * 0. ГРАНИЦА НА ВОПРОС О СОБЕСЕДНИКЕ (адрес «владелец» или «владелец и
  *    агент»). Из записи владельца не берутся предложения, где он обращается к
@@ -49,6 +49,14 @@ import com.uroboros.memory.nav.Coordinates.Address
  *    такая запись на вопрос об агенте не пришла. На вопрос о владельце запись
  *    с одним его «я» приходит: там модель её не путает.
  *
+ * 3. НА ВОПРОС С АДРЕСОМ «ВЛАДЕЛЕЦ» не приходит запись агента о самом агенте —
+ *    его «я» без «ты» владельцу («Я подумал, что…», строки о себе). Отбор
+ *    находит её по общим словам, а на вопрос «что знаешь обо мне?» модель
+ *    подаёт её фактом о собеседнике или заполняет ею ответ вместо него. Запись
+ *    агента о владельце («ты») и о мире приходит. Адрес «владелец и агент»
+ *    правило не трогает: там агент — половина вопроса. Записи владельца это
+ *    правило не касается: его обращения к агенту снимает граница (правило 0).
+ *
  * Что приходит, как прежде:
  *  - запись владельца о собеседнике без его «я» («Будет тебе новый опыт») —
  *    агент принимает её своей новостью;
@@ -79,14 +87,16 @@ object MirrorFilter {
     /**
      * Как запись идёт модели на вопрос с адресом [address]; null — снята.
      * Одно место решения для отбора (снять или нет) и для экрана (что подать):
-     * граница (правило 0), затем смешанная (правило 1), затем чужое «я» на
-     * вопрос к агенту (правило 2).
+     * граница (правило 0), затем агент о себе на вопрос о владельце (правило
+     * 3), затем смешанная (правило 1), затем чужое «я» на вопрос к агенту
+     * (правило 2).
      */
     fun shown(record: Sticker, address: Address, retell: RetellTable? = null): Shown? {
         val speaker = Coordinates.speakerOf(record.source) ?: return Shown(record.content, retold = false)
         if (speaker == PersonKey.OWNER && (address == Address.OWNER || address == Address.BOTH)) {
             return bounded(record.content)?.let { Shown(it, retold = false) }
         }
+        if (speaker == PersonKey.AGENT && address == Address.OWNER && aboutAgentOnly(record.content)) return null
         if (isMixed(record.content)) return retold(record, address, retell)?.let { Shown(it, retold = true) }
         if (address != Address.AGENT || speaker == PersonKey.AGENT) return Shown(record.content, retold = false)
         val about = Coordinates.aboutOf(record.content, speaker)
@@ -128,6 +138,12 @@ object MirrorFilter {
         return Retelling.retell(record.content, retell).text
     }
 
+    /** Запись агента только о нём самом — правило 3 в описании объекта. */
+    fun aboutAgentOnly(text: String): Boolean {
+        val about = Coordinates.aboutOf(text, PersonKey.AGENT)
+        return PersonKey.AGENT in about.persons && PersonKey.OWNER !in about.persons
+    }
+
     /** Есть ли в тексте и первое, и второе лицо — правило 1 в описании объекта. */
     fun isMixed(text: String): Boolean {
         val form = PersonForm.of(text)
@@ -159,7 +175,7 @@ object MirrorFilter {
         return when (address) {
             Address.AGENT -> "адрес — агент · снято записей с чужим «я»: $removed"
             // На этих адресах снимает граница (правило 0), смешанных после неё нет.
-            Address.OWNER -> "адрес — владелец · снято границей (обращения к агенту): $removed"
+            Address.OWNER -> "адрес — владелец · снято границей (обращения к агенту) и записей агента о себе: $removed"
             Address.BOTH -> "адрес — владелец и агент · снято границей (обращения к агенту): $removed"
             Address.UNDEFINED -> "адрес не определён · снято смешанных: $removed$retellPart"
         }
