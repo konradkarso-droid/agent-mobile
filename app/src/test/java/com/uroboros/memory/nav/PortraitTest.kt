@@ -141,6 +141,22 @@ class PortraitTest {
     }
 
     @Test
+    fun `имя задано - подпись с именем вместо общей`() {
+        val p1 = "С твоих слов: ты работаешь по субботам."
+        assertEquals(
+            "Ты — Кэп, мой создатель. О тебе я знаю только это:\n$p1",
+            Portrait.recall(listOf(p1), setOf(p1), nothing = false, name = "Кэп"),
+        )
+    }
+
+    @Test
+    fun `имя задано, а строк портрета нет - имя не подаётся`() {
+        val g1 = "Твои слова: «Всегда носи с собой полотенце.»."
+        assertEquals(g1, Portrait.recall(listOf(g1), emptySet(), nothing = false, name = "Кэп"))
+        assertEquals(Portrait.NOTHING, Portrait.recall(emptyList(), emptySet(), nothing = true, name = "Кэп"))
+    }
+
+    @Test
     fun `сообщение без новых строк портрета - без подписи`() {
         val g1 = "Твои слова: «Всегда носи с собой полотенце.»."
         assertEquals(g1, Portrait.recall(listOf(g1), setOf("уже в ленте"), nothing = false))
