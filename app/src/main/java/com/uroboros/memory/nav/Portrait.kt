@@ -16,6 +16,12 @@ import com.uroboros.util.TextFold
  * КОГДА ИЩЕТСЯ: только на адрес вопроса «владелец» или «владелец и агент»
  * (Coordinates.questionAddress). На «агент» и «не определён» не ищется.
  *
+ * КАКАЯ ЗАПИСЬ НЕ СМОТРИТСЯ ВОВСЕ. Запись в [COLUMN_LINES] и больше непустых
+ * строк — текст столбиком: стихи, песня, вставленный чужой текст. «Я» в нём —
+ * лицо текста, а не собеседника («Молча сижу под окошком темницы»), и пересказ
+ * подал бы его модели как сказанное собеседником о себе. Сняты все её
+ * предложения; прибор считает их отдельно («столбиком»).
+ *
  * КАКОЕ ПРЕДЛОЖЕНИЕ БЕРЁТСЯ. Запись режется на предложения (Sentences.split,
  * через PersonForm.of), и каждое проходит три проверки по порядку; первая
  * не пройденная — причина, по которой оно снято (её и считает прибор):
@@ -64,6 +70,12 @@ import com.uroboros.util.TextFold
  *    неясным «мы»;
  *  - время — когда сказано, а не когда это было правдой;
  *  - собеседник о себе в третьем лице («Админ работает…») не узнаётся;
+ *  - цитата, стих или песня одной-тремя строками или прозой не узнаются —
+ *    признак только форма столбика, не смысл; и наоборот, рассказ о себе,
+ *    набранный столбиком в [COLUMN_LINES] строк и больше, снимается целиком;
+ *  - замечание о самом разговоре («Я спросил кто я, а не что я говорил»)
+ *    проходит как слово о себе. Узнавать такое — дело разбора предложения по
+ *    сумме признаков (о ком и о чём оно), а не списка слов здесь;
  *  - касания считают и подсказанное: собеседник повторил тему, которую
  *    только что назвал агент, — касание засчитано. Чистый счёт
  *    (userMatchUnpromptedCount) на молодой памяти почти весь нулевой, опереться
@@ -79,7 +91,7 @@ import com.uroboros.util.TextFold
  * Запись, попавшая в портрет, из общего отбора того же хода не подаётся:
  * одна запись дважды — цитатой и пересказом — только путает.
  *
- * ЧИСЛА [LIMIT], [PER_RECORD] и [FRESH] объявлены, не измерены. Проверены на ходах
+ * ЧИСЛА [LIMIT], [PER_RECORD], [FRESH] и [COLUMN_LINES] объявлены, не измерены. Проверены на ходах
  * одного владельца с памятью меньше месяца; перепроверять по прибору
  * «О собеседнике:».
  *
@@ -97,6 +109,12 @@ object Portrait {
     const val FRESH = 3
 
     /**
+     * С какого числа непустых строк запись считается текстом столбиком и в
+     * портрет не смотрится. Короткий ответ в две-три строки так не снимается.
+     */
+    const val COLUMN_LINES = 4
+
+    /**
      * Предложение портрета. [fromArchive] — запись лежит в фиолетовом слое;
      * [touches] — касания записи (Sticker.userMatchCount).
      */
@@ -110,7 +128,8 @@ object Portrait {
 
     /**
      * Итог поиска: сколько записей собеседника и предложений в них
-     * просмотрено, сколько снято каждой проверкой, что прошло (все, свежие
+     * просмотрено, сколько снято каждой проверкой ([inColumn] — предложения
+     * записей столбиком, [COLUMN_LINES]), что прошло (все, свежие
      * первыми) и что из прошедшего идёт модели ([chosen], порядок — в
      * описании объекта, в пределах [LIMIT] и [PER_RECORD]).
      */
@@ -122,6 +141,7 @@ object Portrait {
         val noFirstPronoun: Int,
         val passed: List<Line>,
         val chosen: List<Line>,
+        val inColumn: Int = 0,
     )
 
     /** Подпись над строками портрета в записях хода, когда имя не задано. */
@@ -194,12 +214,15 @@ object Portrait {
         var toAgent = 0
         var notStatement = 0
         var noFirst = 0
+        var inColumn = 0
         val passed = ArrayList<Line>()
         for (record in own) {
+            val column = inColumn(record.content)
             for (s in PersonForm.of(record.content).sentences) {
                 sentences++
                 val p = s.persons
                 when {
+                    column -> inColumn++
                     MirrorFilter.addressesAgent(s) || PersonForm.Person.WE_WITH_YOU in p -> toAgent++
                     s.sentence.trimEnd().endsWith('?') ||
                         PersonForm.Person.IMPERATIVE in p ||
@@ -213,8 +236,11 @@ object Portrait {
                 }
             }
         }
-        return Result(own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed))
+        return Result(own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed), inColumn)
     }
+
+    /** Запись — текст столбиком (описание объекта, [COLUMN_LINES]). */
+    fun inColumn(text: String): Boolean = text.lines().count { it.isNotBlank() } >= COLUMN_LINES
 
     /**
      * [FRESH] свежих записей по предложению, затем остальное по касаниям;
@@ -262,7 +288,7 @@ object Portrait {
         if (result == null) return "$head · не посчитался"
         val archive = result.chosen.count { it.fromArchive }
         return "$head · его записей ${result.records}, предложений ${result.sentences}" +
-            " · снято: обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
+            " · снято: столбиком ${result.inColumn}, обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
             " без «я/мой» ${result.noFirstPronoun}" +
             " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" +
             (if (fed) " · подано модели" else " · модели не подано" + (whyNotFed?.let { " — $it" } ?: "")) +
