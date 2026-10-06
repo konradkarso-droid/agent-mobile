@@ -307,6 +307,37 @@ class CircleSelectionTest {
         assertEquals(setOf(mine.id, world.id), result.stickers.map { it.id }.toSet())
         assertEquals(0, result.mirrorRemoved)
     }
+    /**
+     * Мест меньше, чем ширина поиска (часть общего потолка занял портрет):
+     * усажено и засчитано только усаженное — срезанного после касания нет.
+     */
+    @Test
+    fun `урезанные места круга — касания только усаженным`() = runBlocking {
+        val a = sticker(1, "рубанок из дуба", Layer.GREEN)
+        val b = sticker(2, "рубанок из бука", Layer.GREEN)
+        val c = sticker(3, "рубанок из ясеня", Layer.GREEN)
+        val dao = dao(a, b, c)
+        val result = HourglassMemory(dao).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5, seats = 1,
+        )
+        assertEquals(1, result.stickers.size)
+        assertEquals(result.stickers.map { it.id }, dao.touchedUserMatch)
+        assertEquals(result.stickers.map { it.id }, dao.touchedAccess)
+        assertTrue(result.circle, result.circle.contains("нашёл 3, мест 1"))
+    }
+
+    /** Мест ноль (портрет занял весь потолок) — ничего не усажено и не тронуто. */
+    @Test
+    fun `ноль мест у круга — ничего не тронуто`() = runBlocking {
+        val dao = dao(sticker(1, "рубанок из дуба", Layer.GREEN))
+        val result = HourglassMemory(dao).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "рубанок", 5, seats = 0,
+        )
+        assertTrue(result.stickers.isEmpty())
+        assertTrue(dao.touchedUserMatch.isEmpty())
+        assertTrue(dao.touchedAccess.isEmpty())
+    }
+
 }
 
 class OwnSpeechWindowSilenceTest {
@@ -325,4 +356,5 @@ class OwnSpeechWindowSilenceTest {
         assertTrue(result.circle.contains(DolmenCircle.OWN_SPEECH_NOT_ASKED))
         assertEquals(0, result.ownSpeechSeated)
     }
+
 }
