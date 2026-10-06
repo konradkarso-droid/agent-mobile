@@ -204,18 +204,47 @@ class DolmenCircleTest {
         assertEquals("холод: использовано 1 из 1 · согрето 1", DolmenCircle.coldUse(1, 1, 1))
     }
 
-    /** Живые числа с телефона: портрет 6 и круг 4 — всего 10, своя речь внутри круга. */
+    /** Сумма источников, своя речь внутри круга не считается дважды; «не влезло» — отдельно. */
     @Test
     fun `строка записей хода складывает источники, своя речь не считается дважды`() {
         assertEquals(
-            "Записи хода: портрет 6 · круг 4 (из них своя речь 0) · дверь сна 0 · ассоциация 0 — всего 10." +
-                " Общего потолка нет: у круга свой, остальные идут сверху",
-            DolmenCircle.sourcesLine(portrait = 6, circle = 4, ownSpeech = 0, door = 0, association = 0),
+            "Записи хода: портрет 6 · круг 0 (из них своя речь 0) · дверь сна 0 · ассоциация 0 — всего 6 из 6" +
+                " · не влезло 2",
+            DolmenCircle.sourcesLine(portrait = 6, circle = 0, ownSpeech = 0, door = 0, association = 0, notFitted = 2),
         )
         assertTrue(
-            DolmenCircle.sourcesLine(portrait = 0, circle = 3, ownSpeech = 1, door = 2, association = 1)
-                .contains("— всего 6."),
+            DolmenCircle.sourcesLine(portrait = 0, circle = 3, ownSpeech = 1, door = 2, association = 1, notFitted = 0)
+                .contains("— всего 6 из 6"),
         )
+    }
+
+    /**
+     * Ход «Кто я?» с телефона: портрет 6, круг 1, ассоциация 2 — было 9.
+     * Теперь портрет занимает весь потолок, кругу мест не остаётся.
+     */
+    @Test
+    fun `портрет занимает места общего потолка раньше круга`() {
+        assertEquals(0, DolmenCircle.circleSeats(portrait = 6))
+        assertEquals(0, DolmenCircle.left(6 + 0))
+        assertEquals(DolmenCircle.CIRCLE_SEATS, DolmenCircle.circleSeats(portrait = 0))
+        assertEquals(2, DolmenCircle.circleSeats(portrait = 4))
+        // Ход «Назови температуру и заряд»: круг 3 — дверь и ассоциация делят 3.
+        assertEquals(3, DolmenCircle.left(0 + 3))
+        // Лишнее не уходит в минус.
+        assertEquals(0, DolmenCircle.left(9))
+    }
+
+    /** При урезанных местах первым остаётся без места холод, потом тема. */
+    @Test
+    fun `урезанный круг теряет сначала холод, потом тему`() {
+        val q = (1L..5L).map(::s)
+        val t = listOf(s(10))
+        val c = listOf(s(20))
+        val four = DolmenCircle.seat(4, q, t, c)
+        assertEquals(1, four.theme.size); assertTrue(four.cold.isEmpty())
+        val three = DolmenCircle.seat(3, q, t, c)
+        assertEquals(3, three.question.size); assertTrue(three.theme.isEmpty())
+        assertTrue(DolmenCircle.seat(0, q, t, c).let { it.question.isEmpty() && it.theme.isEmpty() && it.cold.isEmpty() })
     }
 
     /** Числа мест: сумма гарантированных — ровно пять мест ответа. */
