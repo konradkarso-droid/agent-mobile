@@ -119,9 +119,11 @@ class PortraitTest {
                 record(2, "Что я говорил?"),
                 record(3, "Скоро ложусь."),
                 record(4, "Я работаю по субботам."),
+                record(5, "Я сижу.\nМне видно.\nЯ молчу.\nМне стыдно."),
             ),
         )
         val line = Portrait.meterLine(Address.OWNER, result, fed = false, whyNotFed = "таблица разворота не готова")
+        assertTrue(line, line.contains("столбиком 4"))
         assertTrue(line, line.contains("обращение к агенту 1"))
         assertTrue(line, line.contains("вопрос/просьба/«мы» 1"))
         assertTrue(line, line.contains("без «я/мой» 1"))
@@ -166,6 +168,23 @@ class PortraitTest {
     @Test
     fun `пустой портрет - строка ничего не знаю`() {
         assertEquals(Portrait.NOTHING, Portrait.recall(emptyList(), emptySet(), nothing = true))
+    }
+
+    @Test
+    fun `запись столбиком в четыре строки и больше не берётся - стих`() {
+        val verse = "Молча сижу под окошком темницы;\nСинее небо отсюда мне видно:\n" +
+            "В небе играют всё вольные птицы;\nГлядя на них, мне и больно и стыдно."
+        assertTrue(passed(verse).isEmpty())
+        assertTrue(passed("Я дыханье ветров на лугу,\n\nЯ алмазный покров на снегу,\nЯ на солнце созревшая рожь,\nЯ осенний тихий дождь.").isEmpty())
+    }
+
+    // Проверка на молчание обратная: короткий ответ в несколько строк остаётся.
+    @Test
+    fun `запись в три строки и пустые строки между ними - берётся`() {
+        assertEquals(
+            listOf("Я работаю по субботам.", "Мой клуб — фехтование."),
+            passed("Я работаю по субботам.\n\nМой клуб — фехтование.\n\nВот так."),
+        )
     }
 
     @Test
