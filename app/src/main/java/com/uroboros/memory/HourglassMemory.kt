@@ -865,6 +865,15 @@ class HourglassMemory(
          * агенту); раздача мест тогда прежняя.
          */
         ownSpeechFound: Int? = null,
+        /**
+         * Сколько мест круг раздаёт (DolmenCircle.seat). По умолчанию [limit].
+         * Меньше — когда часть общего потолка записей хода уже занята
+         * (DolmenCircle.circleSeats). Отдельно от [limit] потому, что [limit]
+         * — ещё и ширина поиска каждого окна: урезать её значило бы искать
+         * хуже, а не сажать меньше. Касания и прогрев получают только
+         * усаженные — срезанного после раздачи у круга не бывает.
+         */
+        seats: Int = limit,
     ): ContextResult {
         migrateExpired()
 
@@ -946,7 +955,7 @@ class HourglassMemory(
                 .mapTo(HashSet()) { it.id }.size
 
         val seating = DolmenCircle.seat(
-            limit,
+            seats,
             questionKept,
             themeKept,
             coldKept,
