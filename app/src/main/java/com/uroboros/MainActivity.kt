@@ -34,6 +34,7 @@ import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
+import com.uroboros.llm.ModelFolder
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.initiative.InitiativeHolder
 import com.uroboros.llm.EchoCheck
@@ -182,6 +183,8 @@ class MainActivity : AppCompatActivity() {
     // Что код дописал к стене в «О себе». Меняется только с загрузкой модели,
     // как и строка параметров, поэтому читается там же.
     private var buildSelfLine: String? = null
+    // Накладка (LoRA) при этой загрузке — меняется только с загрузкой модели.
+    private var adapterLine: String? = null
 
     /**
      * Что стало с сохранённым на диске разговором — строка для человека.
@@ -2921,7 +2924,7 @@ class MainActivity : AppCompatActivity() {
             val tail = it.substringAfter('\n', missingDelimiterValue = "")
             head + BUILD_SELF_LINK + (if (tail.isEmpty()) "" else "\n$tail")
         }
-        group("Движок и стена", engineParamsLine, promptCacheLine, buildSelf, turns.wallChangeLine)
+        group("Движок и стена", engineParamsLine, adapterLine, promptCacheLine, buildSelf, turns.wallChangeLine)
         if (buildSelf != null && buildSelfLinked) {
             val end = metrics.lastIndexOf(BUILD_SELF_LINK) + BUILD_SELF_LINK.length
             val start = end - BUILD_SELF_LINK_WORD.length
@@ -3581,11 +3584,9 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun scanModelFolder(folderUri: Uri): List<DocumentFile> {
-        val tree = DocumentFile.fromTreeUri(this, folderUri)
-            ?: throw IllegalStateException("папка недоступна")
-        return tree.listFiles().filter { it.isFile && it.name?.endsWith(".gguf", ignoreCase = true) == true }
-    }
+    /** Модели папки на выбор; файлы накладок в список не идут (см. ModelFolder). */
+    private fun scanModelFolder(folderUri: Uri): List<DocumentFile> =
+        ModelFolder.models(ModelFolder.scan(this, folderUri))
 
     private fun loadModelAndUpdateUi(uri: Uri, displayName: String) {
         binding.textModelStatus.text = "Загрузка модели \"$displayName\"..."
@@ -3628,6 +3629,7 @@ class MainActivity : AppCompatActivity() {
         promptCacheLine = llmEngine.getPromptCacheReport()
         buildSelfLine = llmEngine.getBuildSelfReport() +
             (llmEngine.learnedFailure?.let { "\n$it" } ?: "")
+        adapterLine = llmEngine.getAdapterReport()
         // Тот же момент и по той же причине: путь к точке считается от
         // отпечатка загрузки, до неё его просто нет. Заодно это первое,
         // что человек увидит после перезапуска, — успела ли вчерашняя
@@ -5582,7 +5584,7 @@ class MainActivity : AppCompatActivity() {
         private const val BUILD_SELF_LINK_WORD = "показать"
         private const val BUILD_SELF_LINK = " — $BUILD_SELF_LINK_WORD"
 
-        private const val KEY_MODEL_FOLDER_URI = "model_folder_uri"
+        private const val KEY_MODEL_FOLDER_URI = ModelFolder.KEY_MODEL_FOLDER_URI
         private const val KEY_LAST_MODEL_URI = ModelPrefs.KEY_LAST_MODEL_URI
 
         // Семь часов: столько человек отдаёт судье за ночь. Это его число, а не
