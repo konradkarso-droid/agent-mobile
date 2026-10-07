@@ -156,6 +156,40 @@ class GGMLEngine {
     }
 
     /**
+     * Заказать накладку (LoRA) к БЛИЖАЙШЕЙ загрузке модели; [uri] = null —
+     * снять заказ. Почему именно заказ, а не подключение к загруженной модели,
+     * и чего подключение не проверяет — у `nativeSetAdapterFd` в gguf_lib.cpp.
+     *
+     * Звать прямо перед [load]: заказ разовый, загрузка забирает его, и
+     * следующая загрузка без нового заказа идёт голой. Чем кончилось
+     * подключение, говорит [adapterState] после загрузки.
+     *
+     * @return false — файл не открылся; заказ при этом снят, и загрузка пойдёт
+     *         голой.
+     */
+    suspend fun orderAdapter(context: Context, uri: Uri?): Boolean = withContext(Dispatchers.IO) {
+        if (uri == null) {
+            GGUFNativeLib.nativeSetAdapterFd(-1)
+            return@withContext true
+        }
+        val pfd = runCatching { context.contentResolver.openFileDescriptor(uri, "r") }.getOrNull()
+        if (pfd == null) {
+            GGUFNativeLib.nativeSetAdapterFd(-1)
+            return@withContext false
+        }
+        // Нативная сторона делает себе dup — свой дескриптор закрываем сразу.
+        try {
+            GGUFNativeLib.nativeSetAdapterFd(pfd.fd)
+        } finally {
+            pfd.close()
+        }
+        true
+    }
+
+    /** Итог подключения накладки при последней загрузке: [ADAPTER_NONE], [ADAPTER_ON], [ADAPTER_LOAD_FAILED]. */
+    val adapterState: Int get() = GGUFNativeLib.nativeGetAdapterState()
+
+    /**
      * Switch the thread profile at runtime. Cheap; safe to call between turns.
      *
      * @param mode 0 = power saving, 1 = balanced, 2 = performance.
@@ -868,6 +902,11 @@ class GGMLEngine {
     }
 
     companion object {
+        /** Итоги [adapterState]; значения — те же, что ADAPTER_* в gguf_lib.cpp. */
+        const val ADAPTER_NONE = 0          // не заказывали, или модели нет
+        const val ADAPTER_ON = 1            // подключена
+        const val ADAPTER_LOAD_FAILED = 2   // llama.cpp файл не принял; модель работает голой
+
         /** Categorize the host device by total RAM. */
         fun detectDeviceTier(context: Context): DeviceTier {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
