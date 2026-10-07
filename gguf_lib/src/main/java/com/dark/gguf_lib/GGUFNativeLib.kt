@@ -72,6 +72,10 @@ internal object GGUFNativeLib {
 
     external fun nativeStopGeneration()
 
+    /** Накладка (LoRA) — заказ к ближайшей загрузке и её итог. См. [GGMLEngine.orderAdapter]. */
+    external fun nativeSetAdapterFd(fd: Int)
+    external fun nativeGetAdapterState(): Int
+
     external fun nativeGetStateSize(): Long
     external fun nativeGetContextUsage(): Float
     external fun nativeGetMemoryStatsJson(): String?
