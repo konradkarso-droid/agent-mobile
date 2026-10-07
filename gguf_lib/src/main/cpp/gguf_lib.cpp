@@ -358,6 +358,11 @@ static struct {
     std::string system_prompt;
     std::string chat_template_override;
 
+    // Накладка (LoRA) к модели — см. nativeSetAdapterFd.
+    int                  adapter_fd    = -1;       // наш dup, ждёт ближайшей загрузки; -1 — не просили
+    llama_adapter_lora * adapter       = nullptr;  // освобождается вместе с моделью
+    int                  adapter_state = 0;        // ADAPTER_* последней загрузки
+
     // 0 = power_saving, 1 = balanced, 2 = performance — drives thread-engine
     int thread_mode = 1;
 
@@ -1037,6 +1042,11 @@ static constexpr int SCRIPT_BAN_NOTHING_TO_BAN  = 2;  // в словаре та�
 static constexpr int SCRIPT_BAN_SELFCHECK_FAILED = 3;
 static constexpr int SCRIPT_BAN_DISABLED        = 4;  // выключен переключателем kScriptBanEnabled
 
+// Итог подключения накладки при последней загрузке модели (nativeGetAdapterState).
+static constexpr int ADAPTER_NONE        = 0;  // не просили, или модели нет
+static constexpr int ADAPTER_ON          = 1;  // подключена к контексту
+static constexpr int ADAPTER_LOAD_FAILED = 2;  // llama.cpp файл не принял: не накладка, другая база, битый
+
 static bool script_ban_bytes(const std::string & piece) {
     const size_t n = piece.size();
     for (size_t k = 0; k < n; ++k) {
@@ -1452,6 +1462,15 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
     if (g_state.threadpool)       { ggml_threadpool_free(g_state.threadpool);       g_state.threadpool = nullptr; }
     if (g_state.threadpool_batch) { ggml_threadpool_free(g_state.threadpool_batch); g_state.threadpool_batch = nullptr; }
     if (g_state.model)   { llama_model_free(g_state.model); g_state.model = nullptr; }
+    // Прежняя накладка ушла вместе с моделью. Заказ на новую разовый: забираем
+    // его здесь и закрываем при любом выходе, удачном или нет.
+    g_state.adapter = nullptr;
+    g_state.adapter_state = ADAPTER_NONE;
+    struct owned_fd_t {
+        int fd;
+        ~owned_fd_t() { if (fd >= 0) close(fd); }
+    } adapter_fd{g_state.adapter_fd};
+    g_state.adapter_fd = -1;
     g_state.chat_templates.reset();
     g_chat_templates_tried = false;
     g_state.n_past = 0;
@@ -1494,6 +1513,19 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         tn_error_set_last(TN_ERR_MODEL_LOAD, "ModelLoad",
             "llama_model_load_from_file returned null. Likely causes: corrupt or non-GGUF file, unsupported architecture, or out of memory.");
         return JNI_FALSE;
+    }
+
+    // Накладку llama.cpp принимает только ДО создания контекста. Отказ не
+    // роняет загрузку: модель работает голой, а отказ виден вызывающему через
+    // nativeGetAdapterState — иначе кривой файл накладки оставлял бы агента
+    // совсем без модели.
+    if (adapter_fd.fd >= 0) {
+        char apath[64];
+        snprintf(apath, sizeof(apath), "/proc/self/fd/%d", adapter_fd.fd);
+        g_state.adapter = llama_adapter_lora_init(g_state.model, apath);
+        g_state.adapter_state = g_state.adapter ? ADAPTER_ON : ADAPTER_LOAD_FAILED;
+        if (g_state.adapter) LOGI("LoRA adapter loaded");
+        else LOGE("LoRA adapter rejected by llama.cpp — model runs without it");
     }
 
     auto cparams = llama_context_default_params();
@@ -1557,7 +1589,14 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         tn_error_set_last(TN_ERR_OOM, "ContextAlloc", msg);
         llama_model_free(g_state.model);
         g_state.model = nullptr;
+        g_state.adapter = nullptr;
+        g_state.adapter_state = ADAPTER_NONE;
         return JNI_FALSE;
+    }
+
+    if (g_state.adapter) {
+        float scale = 1.0f;
+        llama_set_adapters_lora(g_state.ctx, &g_state.adapter, 1, &scale);
     }
 
     // Each of these can throw — and uncaught C++ exceptions in this .so
@@ -2418,6 +2457,39 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     return JNI_TRUE;
 }
 
+// Заказать накладку (LoRA) к БЛИЖАЙШЕЙ загрузке модели; fd < 0 — снять заказ.
+//
+// Почему заказ, а не отдельная загрузка: llama.cpp подключает накладку только
+// между загрузкой весов и созданием контекста, то есть внутри nativeLoadModel.
+// Накладка к уже загруженной модели не подключается — модель надо загрузить
+// заново. Заказ разовый: загрузка его забирает, удачно или нет, и следующая
+// загрузка без нового заказа идёт голой.
+//
+// fd дублируется здесь же: Kotlin вправе закрыть свой сразу после вызова.
+// Файл читается целиком при загрузке и дальше не нужен.
+//
+// Чего не умеет: проверять, под ту ли модель учена накладка, сверх того, что
+// проверяет сам llama.cpp (архитектура и размеры). Накладка от той же базы, но
+// под другую стену или другие правила, подключится молча — это на вызывающем.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetAdapterFd(JNIEnv *, jobject, jint fd) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    if (g_state.adapter_fd >= 0) { close(g_state.adapter_fd); g_state.adapter_fd = -1; }
+    if (fd < 0) return;
+    int owned = dup(fd);
+    if (owned < 0) {
+        LOGE("nativeSetAdapterFd: dup(%d) failed: %s", (int)fd, strerror(errno));
+        return;
+    }
+    g_state.adapter_fd = owned;
+}
+
+// Итог подключения накладки при последней загрузке: ADAPTER_*.
+extern "C" JNIEXPORT jint JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetAdapterState(JNIEnv *, jobject) {
+    return (jint)g_state.adapter_state;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeStopGeneration(JNIEnv *, jobject) {
     g_state.cancel_flag = true;
@@ -2452,6 +2524,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeRelease(JNIEnv *, jobject) {
         llama_model_free(g_state.model);
         g_state.model = nullptr;
     }
+    g_state.adapter = nullptr;
+    g_state.adapter_state = ADAPTER_NONE;
     clear_script_ban();
     g_state.gloss_grammar_ok = false;
     g_state.chat_templates.reset();
