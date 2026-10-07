@@ -641,9 +641,71 @@ class LlmEngine(
     @Volatile
     private var loadedSource: String? = null
 
+    /**
+     * Накладка (LoRA) при нынешней загрузке — что нашлось и что сказал движок.
+     * Как она ищется и чего не проверяет — у [AdapterFile] и [ModelFolder].
+     */
+    @Volatile
+    private var adapterOutcome: AdapterFile.Outcome = AdapterFile.Outcome.NoFolder
+
+    /** Строка для экрана о накладке; каждое «нет» с причиной. */
+    fun getAdapterReport(): String =
+        if (!engine.isLoaded) "Накладка: модель не загружена" else AdapterFile.line(adapterOutcome)
+
+    /**
+     * Найти накладку в папке моделей и заказать её движку к ближайшей загрузке.
+     *
+     * Вызывается перед КАЖДОЙ загрузкой: заказ у движка разовый, и загрузка
+     * без нового заказа пошла бы голой. Возвращает выбор, имя и размер
+     * выбранного файла и удалось ли его открыть — для [AdapterFile.outcome].
+     */
+    private suspend fun orderAdapterFromFolder(): AdapterOrder {
+        val folder = ModelFolder.folderUri(context)
+            ?: return AdapterOrder(null, null, 0, false).also { engine.orderAdapter(context, null) }
+        val entries = withContext(Dispatchers.IO) {
+            runCatching { ModelFolder.scan(context, folder) }.getOrDefault(emptyList())
+        }
+        val pick = AdapterFile.pick(entries.map { it.kind })
+        if (pick !is AdapterFile.Pick.One) {
+            engine.orderAdapter(context, null)
+            return AdapterOrder(pick, null, 0, false)
+        }
+        val file = entries[pick.index].file
+        val opened = engine.orderAdapter(context, file.uri)
+        return AdapterOrder(pick, file.name, file.length(), opened)
+    }
+
+    /** Итог поиска накладки перед загрузкой; pick = null — папки моделей нет. */
+    private class AdapterOrder(
+        val pick: AdapterFile.Pick?,
+        val name: String?,
+        val size: Long,
+        val opened: Boolean,
+    ) {
+        /** Что стало с накладкой, по ответу движка после загрузки. */
+        fun outcome(engineState: Int): AdapterFile.Outcome =
+            pick?.let { AdapterFile.outcome(it, name, size, opened, engineState) }
+                ?: AdapterFile.Outcome.NoFolder
+
+        /** Чем этот поиск отличается от другого — для решения, грузить ли заново. */
+        val key: String = when (pick) {
+            null -> "папки нет"
+            is AdapterFile.Pick.None -> "накладки нет"
+            is AdapterFile.Pick.Several -> "накладок ${pick.count}"
+            is AdapterFile.Pick.One -> "$name:$size:$opened"
+        }
+    }
+
+    /** [AdapterOrder.key] нынешней загрузки; null — модель не загружена. */
+    @Volatile
+    private var loadedAdapterKey: String? = null
+
     suspend fun loadModel(modelPath: String): Boolean = loadLock.withLock {
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
+        // Модель по пути к файлу — не из папки моделей: накладку не ищем, и
+        // заказ, если остался, снимаем.
+        engine.orderAdapter(context, null)
         val ok = engine.load(
             path = modelPath,
             contextSize = CONTEXT_SIZE,
@@ -658,6 +720,8 @@ class LlmEngine(
         if (ok) {
             val file = File(modelPath)
             loadedSource = modelPath
+            adapterOutcome = AdapterFile.Outcome.NoFolder
+            loadedAdapterKey = null
             loadLearned()
             configureAfterLoad(
                 sourceIdentity = file.name + ":" + file.length(),
@@ -676,10 +740,17 @@ class LlmEngine(
 
     /**
      * Та же модель, уже загруженная, второй раз не грузится: второй зовущий,
-     * дождавшись замка, получает готовую. См. [loadLock].
+     * дождавшись замка, получает готовую. См. [loadLock]. «Та же» — и с той же
+     * накладкой: положил или убрал файл накладки — выбор модели грузит заново.
      */
     suspend fun loadModelFromUri(uri: Uri): Boolean = loadLock.withLock {
-        if (engine.isLoaded && loadedSource == uri.toString()) return@withLock true
+        val adapter = orderAdapterFromFolder()
+        if (engine.isLoaded && loadedSource == uri.toString() && loadedAdapterKey == adapter.key) {
+            // Заказ не пригодился: грузить нечего, а оставленный заказ ушёл бы
+            // к чужой загрузке.
+            engine.orderAdapter(context, null)
+            return@withLock true
+        }
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
         val ok = engine.load(
@@ -696,9 +767,13 @@ class LlmEngine(
         )
         if (ok) {
             loadedSource = uri.toString()
+            adapterOutcome = adapter.outcome(engine.adapterState)
+            loadedAdapterKey = adapter.key
             loadLearned()
             configureAfterLoad(
-                sourceIdentity = uri.toString(),
+                // Подключённая накладка меняет модель: обсчитанное без неё
+                // состояние ей чужое (см. AdapterFile.printPart).
+                sourceIdentity = uri.toString() + AdapterFile.printPart(adapterOutcome),
                 loadIdentity = loadIdentity(
                     contextSize = CONTEXT_SIZE,
                     flashAttn = FLASH_ATTENTION,
