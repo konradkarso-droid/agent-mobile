@@ -20,6 +20,15 @@ import com.uroboros.memory.RiskTrigger
  * не сжимает пружину любопытства (см. [CuriosityPressure], «РАЗРЯДКА»).
  * Отброшенный вывод сон не разряжает.
  *
+ * ВТОРОЙ ШАНС У ОТБРОШЕННОГО — ДВА, И ОБА БЕЗ ПРОБЫ ВСЛЕПУЮ. Ответ модели на
+ * тот же вопрос о тех же записях при той же загрузке повторяется дословно
+ * (см. [ConclusionStep], «ВЫДАЧА ПОВТОРЯЕМАЯ»), а тексты записей не
+ * переписываются. Поэтому повтор «через столько-то ночей» дал бы тот же ответ
+ * и тот же отказ. Меняется ответ только с загрузкой или вопросом — тогда сон
+ * пробуется снова ([askPrint], [pick]). Меняется приговор только с правилом
+ * проверки — и для этого модель не нужна: прежний ответ лежит в таблице и
+ * перепроверяется кодом ([recheck]).
+ *
  * ЧЕГО НЕ УМЕЕТ:
  *  - проверка сравнивает слова, а не смысл: «X противоположно Y» пройдёт так
  *    же, как «X похоже на Y»;
@@ -27,7 +36,11 @@ import com.uroboros.memory.RiskTrigger
  *    записях;
  *  - фраза, оборванная потолком токенов ([ANSWER_TOKENS]), не отличается от
  *    законченной — это видно только на экране;
- *  - вывод из слов одной записи пройдёт, хотя ничего не связывает.
+ *  - вывод из слов одной записи пройдёт, хотя ничего не связывает;
+ *  - отпечаток вопроса ([QUESTION_PRINT]) — только текст [SYSTEM] и потолок
+ *    выдачи. Правка обвязки вопроса в другом месте (как записи собираются в
+ *    запрос, как его оформляет движок) ответ изменит, а отпечаток — нет, и
+ *    отброшенные сны снова не попробуются, пока не сменится загрузка.
  */
 object Conclusion {
 
@@ -42,6 +55,20 @@ object Conclusion {
 
     /** Сколько снов пробуется за ночь. Объявленное число, не подобранное. */
     const val MAX_PER_NIGHT = 3
+
+    /**
+     * Отпечаток вопроса к модели: всё, что задаёт ответ на те же записи, кроме
+     * самой модели. Часть [askPrint]. Чего не охватывает — в KDoc объекта.
+     */
+    val QUESTION_PRINT: String = Integer.toHexString((SYSTEM + "|" + ANSWER_TOKENS).hashCode())
+
+    /**
+     * Отпечаток ответа: загрузка модели ([com.uroboros.llm.LlmEngine.loadFingerprint]
+     * — модель, её файл, параметры, накладка) и вопрос ([QUESTION_PRINT]).
+     * null — отпечатка загрузки нет; тогда сравнивать не с чем, и сны,
+     * пробовавшиеся хоть раз, не пробуются (см. [pick]).
+     */
+    fun askPrint(loadFingerprint: String?): String? = loadFingerprint?.let { "$it|q=$QUESTION_PRINT" }
 
     /** Самый длинный вывод в словах. Объявленное число, не подобранное. */
     const val MAX_WORDS = 20
@@ -80,7 +107,8 @@ object Conclusion {
     /**
      * Сны на эту ночь: из ряда снов, дающих давление ([CuriosityPressure.Result.ranked],
      * лидер первым), пропустить пробовавшиеся ([tried]: есть строка вывода,
-     * принятая или отброшенная) и взять первые [MAX_PER_NIGHT].
+     * принятая или отброшенная, с нынешним отпечатком — или любая, когда
+     * отпечатка нет, см. [askPrint]) и взять первые [MAX_PER_NIGHT].
      *
      * [pressure] — давление целиком ([CuriosityPressure.Result.pressure]); нужно
      * только затем, чтобы честно назвать причину пустого ряда. Ряд пуст и при
@@ -100,6 +128,52 @@ object Conclusion {
         val fresh = ranked.filter { it.dream.recordIds !in triedRecords }
         if (fresh.isEmpty()) return Pick.Silent("все сны, дающие давление, уже пробовались")
         return Pick.Dreams(fresh.take(MAX_PER_NIGHT))
+    }
+
+    // ---- Перепроверка без модели ----
+
+    /**
+     * @property checked сколько прежних ответов прошло через проверку заново;
+     * @property passed новые строки для прошедших — по одной на набор записей.
+     */
+    data class Recheck(val checked: Int, val passed: List<ConclusionRow>)
+
+    /**
+     * Прежние отброшенные ответы ([rejected], от старых к новым) — ещё раз
+     * через [parse] и [check] нынешними правилами, без модели. Зачем — в KDoc
+     * объекта, «ВТОРОЙ ШАНС». Прошедший ответ даёт новую строку ночи [nightAt]
+     * с пометкой [ConclusionRow.rechecked]; строка отказа остаётся как была.
+     *
+     * Пропускаются: наборы записей, где принятый вывод уже есть
+     * ([acceptedRecords], и те, что прошли здесь же, — один вывод на набор);
+     * повторы того же ответа о том же наборе; ответы, чьих записей нет в
+     * [recordsOf] — звено молчит ([Dream.silences]), и вывод выдал бы слова
+     * скрытой записи. Записи берутся нынешние, по номерам сна.
+     *
+     * @param recordsOf набор записей ([ConclusionRow.dreamRecordIds]) → живые
+     *        тексты в порядке цепочки.
+     */
+    fun recheck(
+        rejected: List<ConclusionRow>,
+        acceptedRecords: Set<String>,
+        recordsOf: Map<String, List<String>>,
+        nightAt: Long,
+    ): Recheck {
+        var checked = 0
+        val passed = mutableListOf<ConclusionRow>()
+        val done = HashSet(acceptedRecords)
+        val seen = HashSet<Pair<String, String>>()
+        for (row in rejected) {
+            if (row.dreamRecordIds in done) continue
+            if (!seen.add(row.dreamRecordIds to row.text)) continue
+            val records = recordsOf[row.dreamRecordIds] ?: continue
+            checked++
+            val text = (parse(row.text) as? Parsed.Text)?.text ?: continue
+            if (check(text, records) != null) continue
+            passed += row.copy(id = 0, nightAt = nightAt, text = text, accepted = true, reason = null, rechecked = true)
+            done += row.dreamRecordIds
+        }
+        return Recheck(checked, passed)
     }
 
     // ---- Сборка запроса ----
@@ -175,12 +249,25 @@ object Conclusion {
     /**
      * Шаг звал модель. [dropped] — причины отброшенных выводов по порядку;
      * [stoppedBy] — почему шаг кончился раньше, чем прошёл все сны; null — прошёл.
+     * [retried] — сколько из ответивших снов пробовалось прежде с другим
+     * отпечатком (см. [askPrint]).
      */
-    fun doneOutcome(made: Int, dropped: List<String>, stoppedBy: String? = null): String = buildString {
+    fun doneOutcome(made: Int, dropped: List<String>, stoppedBy: String? = null, retried: Int = 0): String = buildString {
         append(OUTCOME_HEAD).append("сделано ").append(made).append(", отброшено ").append(dropped.size)
+        if (retried > 0) append(" (повторных проб ").append(retried).append(")")
         val tail = dropped + listOfNotNull(stoppedBy?.let { "дальше не делаю: $it" })
         if (tail.isNotEmpty()) append(" — ").append(cut(tail.joinToString("; "), OUTCOME_CHARS))
     }
+
+    /**
+     * Итог шага с перепроверкой впереди: сколько прежних ответов прошло через
+     * проверку заново и сколько из них прошло. Без перепроверенных — итог как
+     * есть. Печатается и при нуле прошедших: иначе «перепроверять было нечего»
+     * не отличить от «перепроверено, не прошло ни одного».
+     */
+    fun withRecheck(outcome: String, checked: Int, passed: Int): String =
+        if (checked == 0) outcome
+        else OUTCOME_HEAD + "перепроверено без модели $checked, прошло $passed; " + outcome.removePrefix(OUTCOME_HEAD)
 
     /** Вывод для владельца. Единственное место текста подписи. */
     fun shown(text: String): String = "Я подумал, что $text."

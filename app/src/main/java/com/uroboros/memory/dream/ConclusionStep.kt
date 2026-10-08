@@ -24,9 +24,17 @@ import kotlinx.coroutines.ensureActive
  *
  * ВЫДАЧА ПОВТОРЯЕМАЯ ([LlmEngine.withDeterministicSampling]), как у строки о
  * себе. Поэтому сон, по которому строка уже есть — принятая или отброшенная,
- * — не пробуется снова: запрос тот же, ответ был бы тем же, а это ~30 с модели
+ * — с тем же отпечатком ([Conclusion.askPrint]: загрузка модели и вопрос) не
+ * пробуется снова: запрос тот же, ответ был бы тем же, а это ~30 с модели
  * впустую каждую ночь. То же — сон другой ночи с тем же набором записей (см.
- * [ConclusionKey]).
+ * [ConclusionKey]). Сменилась модель, накладка или вопрос — ответ может стать
+ * другим, и сон пробуется снова. Без отпечатка загрузки сравнивать не с чем:
+ * тогда не пробуется ни один сон, по которому строка уже есть.
+ *
+ * ПЕРЕПРОВЕРКА — ПЕРВОЙ, БЕЗ МОДЕЛИ. Прежние отброшенные ответы проходят
+ * нынешнюю проверку заново ([Conclusion.recheck]) до того, как читается
+ * давление: прошедший сон разряжается и не займёт у модели место этой ночью.
+ * Условий модели перепроверка не ждёт — модели в ней нет.
  *
  * СБОЙ — НЕ ПРОБА. Если модель не ответила или ответ оборвал сторож, строка
  * в таблицу НЕ пишется, и шаг на этом кончается: довод «повтор даст то же»
@@ -37,7 +45,9 @@ import kotlinx.coroutines.ensureActive
  * стоит делать без человека. Причина сбоя идёт в итог ночи.
  *
  * ЧЕГО НЕ УМЕЕТ:
- *  - сон, чей вывод отброшен, вывода не получит никогда;
+ *  - сон, чей вывод отброшен, нового ответа не получит, пока не сменится
+ *    отпечаток; новый приговор прежнему ответу — только если сменилось
+ *    правило проверки;
  *  - записи сна читаются в момент шага; если позже звено скроют, вывод
  *    останется в таблице, но на экране замолчит (см. [ConclusionView]).
  *
@@ -72,16 +82,24 @@ object ConclusionStep {
         whyNot: () -> String?,
     ): String {
         val conclusions = db.conclusionDao()
+        val recheck = recheckRejected(db, nightAt)
+        fun outcome(text: String) = Conclusion.withRecheck(text, recheck.checked, recheck.passed.size)
+
         // Давление читается тем же путём, что прибор: сны с принятым выводом
         // в ряд уже не попадают, записи — по номеру и без отметки обращения.
         val pressure = CuriosityGauge(db).read()
-        val tried = conclusions.triedKeys().toHashSet()
+        val print = Conclusion.askPrint(engine.loadFingerprint)
+        val triedAny = conclusions.triedKeys()
+        val tried = if (print == null) triedAny.toHashSet() else conclusions.triedKeysUnder(print).toHashSet()
+        // Пробовавшиеся с другим отпечатком — только для счёта повторных проб.
+        val triedBefore = ConclusionKey.sameRecords(triedAny)
         val candidates = when (val picked = Conclusion.pick(pressure.ranked, tried, pressure.pressure)) {
-            is Conclusion.Pick.Silent -> return Conclusion.silentOutcome(picked.reason)
+            is Conclusion.Pick.Silent -> return outcome(Conclusion.silentOutcome(picked.reason))
             is Conclusion.Pick.Dreams -> picked.dreams
         }
 
         var made = 0
+        var retried = 0
         // Сколько раз модель ответила: без ответов итог — «не делаю» с причиной.
         var answered = 0
         val dropped = mutableListOf<String>()
@@ -102,6 +120,7 @@ object ConclusionStep {
                 is Attempt.Answered -> result.text to result.reason
             }
             answered++
+            if (candidate.dream.recordIds in triedBefore) retried++
 
             // Отмена, пришедшая за время ответа, не должна успеть оставить строку.
             currentCoroutineContext().ensureActive()
@@ -113,12 +132,42 @@ object ConclusionStep {
                     text = text,
                     accepted = reason == null,
                     reason = reason,
+                    askPrint = print,
                 )
             )
             if (reason == null) made++ else dropped += reason
         }
-        if (answered == 0 && stoppedBy != null) return Conclusion.silentOutcome(stoppedBy)
-        return Conclusion.doneOutcome(made, dropped, stoppedBy)
+        if (answered == 0 && stoppedBy != null) return outcome(Conclusion.silentOutcome(stoppedBy))
+        return outcome(Conclusion.doneOutcome(made, dropped, stoppedBy, retried))
+    }
+
+    /**
+     * Перепроверить прежние отброшенные ответы и записать прошедшие (см.
+     * «ПЕРЕПРОВЕРКА — ПЕРВОЙ»). Записи читаются по номеру и без отметки
+     * обращения, как у показа выводов; сон с молчащим звеном не
+     * перепроверяется (см. [Conclusion.recheck]).
+     */
+    private suspend fun recheckRejected(db: MemoryDatabase, nightAt: Long): Conclusion.Recheck {
+        val conclusions = db.conclusionDao()
+        val rejected = conclusions.rejected()
+        if (rejected.isEmpty()) return Conclusion.Recheck(0, emptyList())
+        val accepted = ConclusionKey.sameRecords(conclusions.acceptedKeys())
+        val stickers = db.stickerDao()
+        val recordsOf = HashMap<String, List<String>>()
+        for (row in rejected.distinctBy { it.dreamRecordIds }) {
+            if (row.dreamRecordIds in accepted) continue
+            // Тот же разбор номеров, что у сна.
+            val ids = Dream(row.dreamNightAt, row.dreamRecordIds, kind = "").ids()
+            val records = ids.map { stickers.getById(it) }
+            if (records.isEmpty() || records.any { Dream.silences(it) }) continue
+            recordsOf[row.dreamRecordIds] = records.map { it!!.content }
+        }
+        val result = Conclusion.recheck(rejected, accepted, recordsOf, nightAt)
+        for (row in result.passed) {
+            currentCoroutineContext().ensureActive()
+            conclusions.insert(row)
+        }
+        return result
     }
 
     /** Чем кончилась попытка по одному сну. */
