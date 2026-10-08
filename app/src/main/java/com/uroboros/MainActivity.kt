@@ -4792,10 +4792,16 @@ class MainActivity : AppCompatActivity() {
                 // агенту (см. DreamTopic): код собирает фразу из тем, принятых
                 // ночью, и подаёт её системным сообщением за строкой о себе. Не
                 // на пустой ленте и не второй раз в той же ленте.
-                val lastNightTopics = runCatching {
-                    MemoryDatabase.getInstance(applicationContext).dreamDao().lastNight()?.dreamTopics
+                val lastNight = runCatching { MemoryDatabase.getInstance(applicationContext).dreamDao().lastNight() }
+                val lastNightTopics = lastNight.map { it?.dreamTopics }
+                // Вывод этой ночи идёт за темами с подписью сна (см. DreamTopic.line).
+                // Не прочитался — описание без него: вывод тут дополнение, не повод молчать.
+                val lastNightThought = lastNight.getOrNull()?.let { night ->
+                    runCatching {
+                        MemoryDatabase.getInstance(applicationContext).conclusionDao().lastAcceptedText(night.nightAt)
+                    }.getOrNull()
                 }
-                val dreamCandidate = DreamTopic.line(DreamTopic.load(lastNightTopics.getOrNull()))
+                val dreamCandidate = DreamTopic.line(DreamTopic.load(lastNightTopics.getOrNull()), lastNightThought)
                 val dreamRefusal =
                     if (lastNightTopics.isFailure) "последняя ночь не прочиталась"
                     else DreamTopic.refusal(
@@ -4845,14 +4851,34 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                 }
+                // Третий источник — рассказ вывода сна; порядок: пробел,
+                // рассказ, вопрос (почему — у CuriosityAsk, «ТРЕТИЙ ИСТОЧНИК»).
+                val tellDecision = if (pressure == null) {
+                    CuriosityAsk.TellDecision.Refuse("давление не прочиталось")
+                } else {
+                    runCatching { CuriosityAsk.decideTell(pressure, curiosityAskMarker.awaiting()) }
+                        .getOrElse {
+                            CuriosityAsk.TellDecision.Refuse(
+                                "не прочиталось, ждёт ли прошлый вопрос ответа (${it.javaClass.simpleName})"
+                            )
+                        }
+                }
                 val askedGap = (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
-                curiosityAskLine = CuriosityAsk.meter(gapDecision, askDecision)
-                val askedLeader = if (askedGap != null) null else (askDecision as? CuriosityAsk.Decision.Ask)?.leader
+                curiosityAskLine = CuriosityAsk.meter(gapDecision, tellDecision, askDecision)
+                val toldTeller = if (askedGap != null) null else (tellDecision as? CuriosityAsk.TellDecision.Tell)?.teller
+                // Рассказанный сон отмечается так же, как спрошенный, и ждёт
+                // ответа тем же путём: дальше по ходу это просто «сон выхода».
+                val askedLeader = when {
+                    askedGap != null -> null
+                    toldTeller != null -> toldTeller.leader
+                    else -> (askDecision as? CuriosityAsk.Decision.Ask)?.leader
+                }
                 // Строки о себе здесь нет: она уходит отдельным сообщением
                 // (selfNote в turns.run ниже).
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
                     curiosityAsk = askedGap?.let { CuriosityAsk.gapLine(it) }
+                        ?: toldTeller?.let { CuriosityAsk.tellLine(it) }
                         ?: askedLeader?.let { CuriosityAsk.line(it) },
                 )
                 // Записи — не в реплике, а сообщением агента перед ней (см.

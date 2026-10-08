@@ -80,7 +80,7 @@ class DreamTopicTest {
     @Test
     fun `без тем молчит с причиной`() {
         assertEquals("шага тем у последней ночи не было", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = null))
-        assertEquals("ночью ни одна тема не принята", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = ""))
+        assertEquals("ночью ни одна тема и ни один вывод не приняты", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = ""))
     }
 
     @Test
@@ -113,5 +113,15 @@ class DreamTopicTest {
         val dreams = listOf("10,11", "100,101", "100,102", "104,187", "5,187")
         val ordered = DreamTopic.newestFirst(dreams, { it.split(",").map(String::toLong) }, { it })
         assertEquals(listOf("104,187", "5,187", "100,102", "100,101", "10,11"), ordered)
+    }
+
+    @Test
+    fun `вывод ночи идёт за темами с подписью сна, а один — без тем`() {
+        assertEquals(
+            "Этой ночью мне снилось: радуга. Во сне я подумал, что всё связано с цветом.",
+            DreamTopic.line(listOf("радуга"), "всё связано с цветом"),
+        )
+        assertEquals("Во сне я подумал, что всё связано с цветом.", DreamTopic.line(emptyList(), "всё связано с цветом"))
+        assertNull(DreamTopic.line(emptyList(), null))
     }
 }

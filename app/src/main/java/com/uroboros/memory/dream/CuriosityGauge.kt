@@ -23,8 +23,12 @@ class CuriosityGauge(
         // по номеру и без отметки обращения.
         val rows = dreams.stirredSince(now - CuriosityPressure.WINDOW_MS)
         val byId = rows.flatMap { it.ids() }.distinct().associateWith { stickers.getById(it) }
-        // Сны с принятым выводом разряжены (см. CuriosityPressure, «РАЗРЯДКА»).
-        val concluded = conclusions.acceptedKeys().toHashSet()
-        return CuriosityPressure.measure(rows, { byId[it] }, now, concluded)
+        // Сны с принятым выводом разряжены (см. CuriosityPressure, «РАЗРЯДКА»),
+        // а до рассказа ждут его со своим выводом («НО ДО РАССКАЗА»). На набор
+        // записей — последний принятый вывод.
+        val accepted = conclusions.accepted().sortedBy { it.id }
+        val concluded = accepted.mapTo(HashSet()) { ConclusionKey(it.dreamNightAt, it.dreamRecordIds) }
+        val texts = accepted.associate { it.dreamRecordIds to it.text }
+        return CuriosityPressure.measure(rows, { byId[it] }, now, concluded, texts)
     }
 }

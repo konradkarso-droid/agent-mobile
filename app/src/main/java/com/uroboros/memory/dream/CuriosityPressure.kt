@@ -28,10 +28,17 @@ import com.uroboros.memory.Sticker
  *
  * Сон с принятым выводом ([Conclusion], ключи — [ConclusionKey]) разряжен так
  * же: своих счетов давлению не даёт, лидером и в ряду не бывает, считается в
- * [Result.concluded]. Вывод закрывает связь — тянуть её дальше нечего; и сон
- * другой ночи с теми же записями тоже разряжен (см. [ConclusionKey]).
- * Отброшенный вывод сон не разряжает. Спрошенный сон с выводом считается как
- * спрошенный, один раз.
+ * [Result.concluded]. Вывод закрывает связь — спрашивать о ней и пробовать её
+ * снова нечего; и сон другой ночи с теми же записями тоже разряжен (см.
+ * [ConclusionKey]). Отброшенный вывод сон не разряжает. Спрошенный сон с
+ * выводом считается как спрошенный, один раз.
+ *
+ * НО ДО РАССКАЗА ВЫВОД ЗАРЯЖЕН. Пока о выводе не рассказано, сон стоит в
+ * [Result.toTell] со своим вкладом — для выхода «рассказать»
+ * ([CuriosityAsk.decideTell]). Давлению и ряду он по-прежнему ничего не
+ * даёт: рассказ — другой выход, а не повод спрашивать. Рассказан — значит
+ * помечен так же, как спрошенный ([Dream.askedAt]), и метка у любого сна с
+ * теми же записями закрывает рассказ для всех: вывод один на набор записей.
  *
  * ОКНО — [WINDOW_NIGHTS] ночи по часам: сон считается, если его ночь началась
  * не раньше чем [WINDOW_MS] назад. Ночи здесь — сутки, а не проходы сна:
@@ -47,7 +54,10 @@ import com.uroboros.memory.Sticker
  *    сколько вчерашний, и выпадает из счёта целиком на границе окна;
  *  - разрядка только у спрошенного сна и сна с принятым выводом: сон,
  *    который выход не выбрал и вывод не закрыл, копит дальше, пока не
- *    выпадет из окна.
+ *    выпадет из окна;
+ *  - набор записей, о котором уже спрашивали до вывода, рассказа не получит:
+ *    метка «спрошен» и метка «рассказан» — одна и та же;
+ *  - вывод, чей сон выпал из окна, не рассказывается никогда.
  */
 object CuriosityPressure {
 
@@ -79,6 +89,9 @@ object CuriosityPressure {
         val records: List<Sticker>,
     )
 
+    /** Сон с принятым, ещё не рассказанным выводом [text] — см. «НО ДО РАССКАЗА». */
+    data class Teller(val leader: Leader, val text: String)
+
     /**
      * Итог: три слагаемых порознь (счета, не умноженные на вес) и лидер —
      * null, когда давление ноль.
@@ -86,6 +99,8 @@ object CuriosityPressure {
      * @property ranked все сны с вкладом больше нуля, в порядке вклада; лидер
      *   — первый в ряду. Ряд читают выводы ([ConclusionStep]).
      * @property concluded сколько снов окна разряжено принятым выводом.
+     * @property toTell сны с нерассказанным выводом и вкладом больше нуля, тем
+     *   же порядком, что [ranked].
      */
     data class Result(
         val pickedUp: Int,
@@ -94,6 +109,7 @@ object CuriosityPressure {
         val leader: Leader?,
         val ranked: List<Leader> = emptyList(),
         val concluded: Int = 0,
+        val toTell: List<Teller> = emptyList(),
     ) {
         val pressure: Int
             get() = PICKED_UP_WEIGHT * pickedUp + RECALLED_WEIGHT * recalled + OWN_WEIGHT * own
@@ -104,6 +120,8 @@ object CuriosityPressure {
      *
      * @param byId запись по номеру; null — записи нет, сон молчит.
      * @param concludedKeys ключи снов с принятым выводом (см. «РАЗРЯДКА»).
+     * @param concludedTexts текст принятого вывода по набору записей
+     *   ([ConclusionKey.dreamRecordIds]); без текста рассказывать нечего.
      *
      * Лидер при равном вкладе — сон более поздней ночи, затем по строке
      * номеров: выбор детерминирован, «лучшего» из равных здесь нет. Тем же
@@ -114,6 +132,7 @@ object CuriosityPressure {
         byId: (Long) -> Sticker?,
         now: Long,
         concludedKeys: Set<ConclusionKey> = emptySet(),
+        concludedTexts: Map<String, String> = emptyMap(),
     ): Result {
         var pickedUp = 0
         var recalled = 0
@@ -123,6 +142,9 @@ object CuriosityPressure {
         var leader: Pair<Dream, List<Sticker>>? = null
         var leaderContribution = 0
         val stirred = mutableListOf<Leader>()
+        val tellers = mutableListOf<Teller>()
+        // Рассказан или спрошен — по набору записей, у любой ночи (см. «НО ДО РАССКАЗА»).
+        val askedRecords = dreams.filter { it.askedAt != null }.mapTo(HashSet()) { it.recordIds }
         for (dream in dreams.distinctBy { it.nightAt to it.recordIds }) {
             if (dream.nightAt < now - WINDOW_MS) continue
             val records = dream.ids().map(byId)
@@ -134,11 +156,16 @@ object CuriosityPressure {
             }
             if (dream.recordIds in concludedRecords) {
                 concluded++
+                val text = concludedTexts[dream.recordIds]
+                val worth = weightOf(dream)
+                if (text != null && worth > 0 && dream.recordIds !in askedRecords) {
+                    tellers += Teller(Leader(Brief(dream.kind, records.map { it!!.content }), worth, dream, records.map { it!! }), text)
+                }
                 continue
             }
             pickedUp += dream.pickedUpCount
             recalled += dream.recalledCount
-            val contribution = PICKED_UP_WEIGHT * dream.pickedUpCount + RECALLED_WEIGHT * dream.recalledCount
+            val contribution = weightOf(dream)
             if (contribution <= 0) continue
             stirred += Leader(Brief(dream.kind, records.map { it!!.content }), contribution, dream, records.map { it!! })
             val current = leader?.first
@@ -164,8 +191,17 @@ object CuriosityPressure {
                     .thenBy { it.dream.recordIds }
             ),
             concluded = concluded,
+            toTell = tellers.sortedWith(
+                compareByDescending<Teller> { it.leader.contribution }
+                    .thenByDescending { it.leader.dream.nightAt }
+                    .thenBy { it.leader.dream.recordIds }
+            ),
         )
     }
+
+    /** Вклад сна: его подхваты и вспоминания с весами. Ответы о спрошенном сне сюда не входят (см. «РАЗРЯДКА»). */
+    private fun weightOf(dream: Dream): Int =
+        PICKED_UP_WEIGHT * dream.pickedUpCount + RECALLED_WEIGHT * dream.recalledCount
 
     /**
      * Строки прибора. Первая печатается всегда, и при нуле: пружина, которая

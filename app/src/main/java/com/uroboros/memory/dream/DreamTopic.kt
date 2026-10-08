@@ -108,12 +108,19 @@ object DreamTopic {
 
     // ---- Фраза для модели ----
 
-    /** «Этой ночью мне снилось: A, B и C.» Тем нет — null. */
-    fun line(topics: List<String>): String? {
-        if (topics.isEmpty()) return null
-        val joined = if (topics.size == 1) topics[0]
-        else topics.dropLast(1).joinToString(", ") + " и " + topics.last()
-        return "Этой ночью мне снилось: $joined."
+    /**
+     * «Этой ночью мне снилось: A, B и C.» и, если ночь дала принятый вывод
+     * [thought], — «Во сне я подумал, что …» ([Conclusion.dreamt]). Нет ни
+     * тем, ни вывода — null. Вывод — один, последний принятый этой ночи: на
+     * вопрос о снах отвечает описание, а не перечень мыслей.
+     */
+    fun line(topics: List<String>, thought: String? = null): String? {
+        val night = if (topics.isEmpty()) null else {
+            val joined = if (topics.size == 1) topics[0]
+            else topics.dropLast(1).joinToString(", ") + " и " + topics.last()
+            "Этой ночью мне снилось: $joined."
+        }
+        return listOfNotNull(night, thought?.let { Conclusion.dreamt(it) }).joinToString(" ").ifEmpty { null }
     }
 
     /**
@@ -137,7 +144,7 @@ object DreamTopic {
     ): String? = when {
         !toAgent -> "вопрос не к агенту"
         line == null && stored == null -> "шага тем у последней ночи не было"
-        line == null -> "ночью ни одна тема не принята"
+        line == null -> "ночью ни одна тема и ни один вывод не приняты"
         ribbonEmpty -> "лента пуста — первым системное не ставится"
         alreadyInRibbon -> "уже рассказан в этой ленте"
         else -> null

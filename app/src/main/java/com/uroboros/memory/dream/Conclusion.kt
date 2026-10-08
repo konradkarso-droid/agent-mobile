@@ -307,6 +307,15 @@ object Conclusion {
     /** Вывод для владельца. Единственное место текста подписи. */
     fun shown(text: String): String = "Я подумал, что $text."
 
+    /**
+     * Вывод для агента — с подписью сна. Единственное место этой подписи:
+     * вывод — мысль, пришедшая во сне, а не факт и не слова собеседника, и
+     * подпись говорит это модели прямо. Без неё малая модель пересказала бы
+     * мысль как случившееся. Где подаётся — [CuriosityAsk.tellLine] и
+     * [DreamTopic.line].
+     */
+    fun dreamt(text: String): String = "Во сне я подумал, что $text."
+
     internal fun cut(text: String, chars: Int): String {
         val flat = text.replace("\n", " ")
         return if (flat.length > chars) flat.take(chars) + "…" else flat

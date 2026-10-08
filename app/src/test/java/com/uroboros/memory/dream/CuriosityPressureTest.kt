@@ -282,4 +282,46 @@ class CuriosityPressureTest {
         val hidden = live + (2L to record(2, hidden = true))
         assertEquals(0, measure(listOf(done), hidden, setOf(ConclusionKey.of(done))).concluded)
     }
+
+    // ---- Выводы к рассказу ----
+
+    private fun told(dreams: List<Dream>, texts: Map<String, String>) = CuriosityPressure.measure(
+        dreams, { live[it] }, now,
+        texts.keys.mapTo(HashSet()) { ConclusionKey(now - day, it) }, texts,
+    )
+
+    @Test
+    fun `сон с выводом до рассказа стоит в списке к рассказу, но давления не даёт`() {
+        val got = told(listOf(dream(1, 2, picked = 1), dream(3, 4, recalled = 1)), mapOf("1,2" to "мысль"))
+        assertEquals(listOf("1,2"), got.toTell.map { it.leader.dream.recordIds })
+        assertEquals("мысль", got.toTell.single().text)
+        assertEquals(3, got.toTell.single().leader.contribution)
+        assertEquals("давлению — только сон без вывода", 2, got.pressure)
+        assertEquals(listOf("3,4"), got.ranked.map { it.dream.recordIds })
+    }
+
+    @Test
+    fun `рассказанный вывод в другую ночь к рассказу не возвращается`() {
+        val toldBefore = dream(1, 2, nightAt = now - 2 * day, recalled = 1, askedAt = now - day)
+        val got = told(listOf(toldBefore, dream(1, 2, picked = 1)), mapOf("1,2" to "мысль"))
+        assertTrue(got.toTell.isEmpty())
+    }
+
+    @Test
+    fun `без текста вывода и без вклада рассказывать нечего`() {
+        val noText = CuriosityPressure.measure(
+            listOf(dream(1, 2, picked = 1)), { live[it] }, now, setOf(ConclusionKey(now - day, "1,2")),
+        )
+        assertTrue(noText.toTell.isEmpty())
+        assertTrue(told(listOf(dream(1, 2, served = 3)), mapOf("1,2" to "мысль")).toTell.isEmpty())
+    }
+
+    @Test
+    fun `к рассказу — по вкладу, первым больший`() {
+        val got = told(
+            listOf(dream(1, 2, recalled = 1), dream(3, 4, picked = 1, recalled = 1)),
+            mapOf("1,2" to "первая", "3,4" to "вторая"),
+        )
+        assertEquals(listOf("вторая", "первая"), got.toTell.map { it.text })
+    }
 }
