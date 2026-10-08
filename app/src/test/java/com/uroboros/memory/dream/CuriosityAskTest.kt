@@ -278,7 +278,7 @@ class CuriosityAskTest {
     fun `строка рассказа — с подписью сна, не как факт`() {
         val teller = (CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 1)), false) as CuriosityAsk.TellDecision.Tell).teller
         val line = CuriosityAsk.tellLine(teller)
-        assertTrue(line, line.startsWith("Во сне мне подумалось, что мысль о 1,2. "))
+        assertTrue(line, line.startsWith("Во сне я подумал, что мысль о 1,2. "))
         assertTrue(line, line.contains("скажи, что это пришло во сне"))
     }
 
