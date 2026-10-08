@@ -246,7 +246,7 @@ class ConclusionTest {
 
     @Test
     fun `подпись показа`() {
-        assertEquals("Я подумал, что кот спит.", Conclusion.shown("кот спит"))
+        assertEquals("Мне подумалось, что кот спит.", Conclusion.shown("кот спит"))
     }
 
     // ---- Раздел на экране ----
@@ -277,7 +277,7 @@ class ConclusionTest {
         assertEquals("ВЫВОДЫ", lines[0])
         assertEquals("Последняя ночь: сделано 1, отброшено 1 — в выводе нет слов записей", lines[1])
         assertEquals("Мысли агента о связи записей сна. Пока никуда не подаются — только здесь.", lines[2])
-        assertTrue(shown, shown.contains("Я подумал, что кот спит весь день.\n    по времени: $cat → $rain"))
+        assertTrue(shown, shown.contains("Мне подумалось, что кот спит весь день.\n    по времени: $cat → $rain"))
         assertTrue(shown, shown.contains("отброшено: «записи связаны» — в выводе нет слов записей\n    по времени:"))
     }
 
@@ -394,7 +394,7 @@ class ConclusionTest {
     fun `перепроверенный вывод помечен на экране`() {
         val again = row(true, "кошка спит весь день").copy(rechecked = true)
         val shown = ConclusionView.render(null, listOf(ConclusionView.Item(again, dream, live)))
-        assertTrue(shown, shown.contains("Я подумал, что кошка спит весь день. — ${ConclusionView.RECHECKED}"))
+        assertTrue(shown, shown.contains("Мне подумалось, что кошка спит весь день. — ${ConclusionView.RECHECKED}"))
         val fresh = ConclusionView.render(null, listOf(ConclusionView.Item(row(true, "кошка спит весь день"), dream, live)))
         assertFalse(fresh, fresh.contains(ConclusionView.RECHECKED))
     }
