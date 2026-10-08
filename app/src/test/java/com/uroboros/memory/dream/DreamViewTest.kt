@@ -120,6 +120,18 @@ class DreamViewTest {
     }
 
     @Test
+    fun `при потолке сказано, сколько повторов прошлых ночей`() {
+        val text = DreamView.render(night(dreams = 60, dreamers = 12, ceilingHit = true), emptyList(), 0, 12, repeats = 54)
+        assertTrue(text, text.contains("Повторов прошлых ${DreamWeaver.FRESH_NIGHTS} ночей: 54 из 60."))
+    }
+
+    @Test
+    fun `без потолка строки повторов нет`() {
+        val text = DreamView.render(night(dreams = 6, dreamers = 4), emptyList(), 0, 4, repeats = 6)
+        assertFalse(text, text.contains("Повторов"))
+    }
+
+    @Test
     fun `виды снов названы по-русски`() {
         val text = DreamView.render(
             night(dreams = 3, dreamers = 6),
@@ -169,6 +181,8 @@ class DreamViewTest {
         override suspend fun insertNight(night: DreamNight) = error("показ не пишет")
         override suspend fun lastNight(): DreamNight? = night
         override suspend fun ofNight(nightAt: Long): List<Dream> = rows
+        // Прошлых ночей в этих тестах нет: показ и давление считают их пустыми.
+        override suspend fun ofRecentNights(count: Int, skip: Int): List<Dream> = emptyList()
         override suspend fun stirredSince(since: Long): List<Dream> = error("показ не читает пружину")
         override suspend fun lastAskedAt(): Long? = error("показ не читает выход любопытства")
         override suspend fun lastUnpromptedLeaders(limit: Int): List<Long?> = error("показ не читает ряд лидеров")

@@ -76,6 +76,18 @@ class DreamRunnerTest {
     }
 
     @Test
+    fun `при потолке отчёт говорит, сколько повторов`() {
+        val text = DreamRunner.describe(row(dreams = 60, dreamers = 12, ceilingHit = true), repeats = 54)
+        assertTrue(text, text.contains("Повторов прошлых ${DreamWeaver.FRESH_NIGHTS} ночей: 54 из 60."))
+    }
+
+    @Test
+    fun `без потолка строки повторов нет`() {
+        val text = DreamRunner.describe(row(dreams = 6, dreamers = 4), repeats = 6)
+        assertFalse(text, text.contains("Повторов"))
+    }
+
+    @Test
     fun `срыв сна называет ошибку и говорит, что ночь пропущена`() {
         val text = DreamRunner.describeFailure(IllegalStateException("база закрыта"))
         assertTrue(text, text.contains("IllegalStateException"))

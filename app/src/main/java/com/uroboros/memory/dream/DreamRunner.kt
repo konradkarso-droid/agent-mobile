@@ -50,7 +50,10 @@ object DreamRunner {
             val stickers = db.stickerDao()
             HourglassMemory(stickers).migrateExpired()
             val records = stickers.getAll()
-            val night = DreamWeaver.weave(records)
+            // Недавние — ночи перед этой; сама она ещё не записана, пропускать
+            // нечего. Давление сна берёт ночи на одну дальше, см. SleepPressure.measure.
+            val recent = DreamWeaver.chainsOf(db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 0))
+            val night = DreamWeaver.weave(records, recent)
             // Притоки реки — вспомненные сны прошлой ночи (см. DreamRiver).
             val previous = db.dreamDao().lastNight()
             val tributaries = previous?.let { db.dreamDao().ofNight(it.nightAt) }
@@ -88,7 +91,7 @@ object DreamRunner {
                 db.dreamDao().insertNight(row)
                 db.dreamDao().insertAll(rows)
             }
-            describe(row) + (leaderFailure?.let { "\n$it" } ?: "")
+            describe(row, night.repeats) + (leaderFailure?.let { "\n$it" } ?: "")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
@@ -99,8 +102,11 @@ object DreamRunner {
     /**
      * Итог ночи словами. Строки с нулями не печатаются: постоянный нуль
      * перестают замечать, а эти числа нужны именно тогда, когда они не нули.
+     *
+     * [repeats] — [DreamWeaver.Night.repeats]; в строке ночи не хранится,
+     * экран снов пересчитывает его из базы. null — не известно, строки нет.
      */
-    fun describe(row: DreamNight): String = buildString {
+    fun describe(row: DreamNight, repeats: Int? = null): String = buildString {
         append(if (row.dreams == 0) "Сон: ничего не приснилось." else "Сон: снов ${row.dreams}.")
         append("\n")
         // «Участвовало», а не «снилось»: прошли отбор сна, но связаться могли не
@@ -124,6 +130,7 @@ object DreamRunner {
         }
         if (row.ceilingHit) {
             append("Потолок снов сработал — до длинных сюжетов дело не дошло.\n")
+            if (repeats != null) append(DreamWeaver.repeatsLine(row.dreams, repeats)).append("\n")
         }
         val tributaries = row.riverTributaries ?: 0
         if (tributaries > 0) {

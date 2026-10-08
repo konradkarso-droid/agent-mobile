@@ -64,11 +64,16 @@ import com.uroboros.util.TextFold
  *  - варианты одного сна не схлопываются: «закат — Меркурий на восходе» и
  *    «закат — Меркурий у полудня» — два сна, хотя по смыслу один;
  *  - потолок [MAX_DREAMS_PER_NIGHT]: когда простых снов больше него, до
- *    сюжетов дело не доходит вовсе, а места делятся между записями поровну
- *    (см. [fairShare]). Что потолок сработал, сказано в [Night.ceilingHit];
+ *    сюжетов дело не доходит вовсе, а места делятся так: сначала сны, которых
+ *    не было последние [FRESH_NIGHTS] ночей, затем повторы, внутри каждой
+ *    очереди — между записями поровну (см. [fairShare]). Что потолок
+ *    сработал, сказано в [Night.ceilingHit], сколько вошло повторов — в
+ *    [Night.repeats];
  *  - сюжеты места поровну не делят: они строятся, только пока мест хватает,
  *    от старых записей к новым, и останавливаются на потолке. Когда сюжетов
- *    больше свободных мест, новые записи до своих сюжетов не доходят;
+ *    больше свободных мест, новые записи до своих сюжетов не доходят. Свежесть
+ *    их тоже не касается: перебор сюжетов, упёршийся в потолок, каждую ночь
+ *    строит одни и те же;
  *  - мосты ищутся перебором пар с пересечением соседей: при тысячах записей это
  *    уже заметная работа, при сотнях — нет.
  */
@@ -106,9 +111,21 @@ object DreamWeaver {
         val archiveDreams: Int,
         /** Потолок снов за ночь сработал — часть сюжетов не построена. */
         val ceilingHit: Boolean,
+        /**
+         * Сколько вошедших в ночь снов уже снилось в ночи, переданные в
+         * [weave] как недавние. При сработавшем потолке это повторы, которым
+         * не хватило свежих снов на все места.
+         */
+        val repeats: Int = 0,
     )
 
-    fun weave(records: List<Sticker>): Night {
+    /**
+     * @param recent цепочки снов последних [FRESH_NIGHTS] ночей перед этой
+     *        (см. [chainsOf]); пустое — ночей не было, и все сны свежие. Влияет
+     *        только на то, какие сны займут места под потолком, — какие сны
+     *        вообще сплетутся, решают записи.
+     */
+    fun weave(records: List<Sticker>, recent: Set<List<Long>> = emptySet()): Night {
         var hidden = 0
         var questions = 0
         var requests = 0
@@ -173,7 +190,7 @@ object DreamWeaver {
         if (!ceilingHit) {
             ceilingHit = !weavePlots(ids, links, dreams)
         }
-        val kept = fairShare(dreams, MAX_DREAMS_PER_NIGHT)
+        val kept = fairShare(dreams, MAX_DREAMS_PER_NIGHT, recent)
         fun layerOf(id: Long) = byId.getValue(id).layer
         val archiveDreams = kept.count { d -> d.recordIds.any { layerOf(it) == Layer.PURPLE.name } }
         val coldDreams = kept.count { d ->
@@ -192,8 +209,33 @@ object DreamWeaver {
             coldDreams = coldDreams,
             archiveDreams = archiveDreams,
             ceilingHit = ceilingHit,
+            repeats = kept.count { it.recordIds in recent },
         )
     }
+
+    /**
+     * Цепочки снов, которые сплела сама ночь, из строк базы. Сны реки сюда не
+     * входят: их плетёт не ночь, а вспомненные сны прошлой (см. [DreamRiver]),
+     * и ни сравнивать с плетением, ни считать его повторами их нельзя.
+     *
+     * Сны сравниваются цепочками номеров, а не строкой из базы: так формат
+     * хранения ([Dream.recordIds]) может меняться, не ломая сравнение. Одна
+     * цепочка — один сон, как и в ключе таблицы снов.
+     */
+    fun chainsOf(rows: List<Dream>): Set<List<Long>> =
+        rows.filter { it.kind != DreamRiver.KIND }.map { it.ids() }.toSet()
+
+    /**
+     * Строка о повторах для итога ночи и экрана снов: сколько снов ночи
+     * снилось и в [FRESH_NIGHTS] ночи до неё. Нужна при сработавшем потолке —
+     * тогда видно, хватило ли свежих снов на все места или ночь добрала
+     * повторами. Без потолка вошли все сны, и строка ничего не говорит о
+     * выборе. Ночь, сплетённая раньше, чем появилась очередь свежих, тоже
+     * получает честное число: оно о том, что снилось, а не о том, как
+     * выбиралось.
+     */
+    fun repeatsLine(dreams: Int, repeats: Int): String =
+        "Повторов прошлых $FRESH_NIGHTS ночей: $repeats из $dreams."
 
     /**
      * Какие [limit] снов из [dreams] оставить, когда все не помещаются.
@@ -212,6 +254,16 @@ object DreamWeaver {
      * порядок, то есть «проще — раньше», и одна и та же память даёт одну и ту
      * же ночь. Взятые сны возвращаются в прежнем порядке.
      *
+     * СВЕЖИЕ — РАНЬШЕ. Сон из [recent] (снился в последние [FRESH_NIGHTS]
+     * ночей) берётся только тогда, когда свежих не осталось: правило «поровну»
+     * действует внутри каждой из двух очередей, и счёт снов каждой записи у
+     * них общий. Без этого одна и та же память давала одну и ту же ночь, и
+     * потолок из ночи в ночь уходил на одни и те же наборы, а остальные связи
+     * не снились никогда. Повторы не выкидываются, а встают в остаток: по снам
+     * последней ночи работает ассоциация в разговоре ([DreamRecall],
+     * [DreamDoor]), и ночь из одних новых снов отняла бы у неё то, что
+     * владелец вчера подхватил.
+     *
      * ЧЕГО НЕ УМЕЕТ:
      *  - считает все звенья цепочки одинаково, мост тоже. Короткая запись,
      *    которая одна сводит многие пары, остаётся мостом во многих снах, если
@@ -219,14 +271,22 @@ object DreamWeaver {
      *    очередь, а выбор моста, и решается он не здесь;
      *  - делит места только между уже сплетёнными снами. Какие записи вообще
      *    связаны, решают признаки выше; запись без единой связи не приснится
-     *    и здесь.
+     *    и здесь;
+     *  - свежесть — по цепочке целиком: сон «A — B», приснившийся через другой
+     *    мост, для очереди уже другой сон, хотя края у него те же.
      */
-    internal fun fairShare(dreams: List<Woven>, limit: Int): List<Woven> {
+    internal fun fairShare(
+        dreams: List<Woven>,
+        limit: Int,
+        recent: Set<List<Long>> = emptySet(),
+    ): List<Woven> {
         if (dreams.size <= limit) return dreams
         val uses = HashMap<Long, Int>()
         val taken = BooleanArray(dreams.size)
+        val stale = BooleanArray(dreams.size) { dreams[it].recordIds in recent }
         repeat(limit) {
             var best = -1
+            var bestStale = true
             var bestLeast = Int.MAX_VALUE
             var bestMost = Int.MAX_VALUE
             for (i in dreams.indices) {
@@ -234,8 +294,15 @@ object DreamWeaver {
                 val counts = dreams[i].recordIds.map { uses[it] ?: 0 }
                 val least = counts.min()
                 val most = counts.max()
-                if (least < bestLeast || (least == bestLeast && most < bestMost)) {
+                val better = when {
+                    best == -1 -> true
+                    stale[i] != bestStale -> !stale[i]
+                    least != bestLeast -> least < bestLeast
+                    else -> most < bestMost
+                }
+                if (better) {
                     best = i
+                    bestStale = stale[i]
                     bestLeast = least
                     bestMost = most
                 }
@@ -346,4 +413,15 @@ object DreamWeaver {
      * пора пересмотреть. Как делятся места, когда снов больше, — [fairShare].
      */
     const val MAX_DREAMS_PER_NIGHT = 60
+
+    /**
+     * Сколько прошлых ночей сон считается недавним и уступает место под
+     * потолком свежим (см. [fairShare]). Объявленное число, не подобранное.
+     * Короче — ночи чередовали бы два-три одних и тех же набора; длиннее —
+     * сон, подхваченный владельцем, надолго уходил бы из ночей. Перепроверяется
+     * строкой повторов ([repeatsLine]): если при потолке повторов почти нет,
+     * свежих хватает с запасом, если мест почти целиком — повторы, число
+     * стоит не там или связей просто мало.
+     */
+    const val FRESH_NIGHTS = 3
 }

@@ -228,6 +228,7 @@ class DreamRecallTest {
         override suspend fun insertNight(night: DreamNight) = error("отбор не пишет")
         override suspend fun lastNight(): DreamNight? = night
         override suspend fun ofNight(nightAt: Long): List<Dream> = rows
+        override suspend fun ofRecentNights(count: Int, skip: Int): List<Dream> = error("отбор не читает прошлые ночи")
         override suspend fun stirredSince(since: Long): List<Dream> = error("отбор не читает пружину")
         override suspend fun lastAskedAt(): Long? = error("отбор не читает выход любопытства")
         override suspend fun lastUnpromptedLeaders(limit: Int): List<Long?> = error("отбор не читает ряд лидеров")
