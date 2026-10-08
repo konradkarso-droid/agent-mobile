@@ -243,4 +243,52 @@ class CuriosityAskTest {
     private fun assertRefused(d: CuriosityAsk.GapDecision, reasonPart: String) {
         assertTrue(d.toString(), d is CuriosityAsk.GapDecision.Refuse && reasonPart in d.reason)
     }
+
+    // ---- Рассказ вывода сна ----
+
+    private fun withThought(vararg dreams: Dream) = CuriosityPressure.measure(
+        dreams.toList(), { live[it] }, now,
+        dreams.mapTo(HashSet()) { ConclusionKey.of(it) },
+        dreams.associate { it.recordIds to "мысль о ${it.recordIds}" },
+    )
+
+    @Test
+    fun `вывод с вкладом 3 — рассказать, с вкладом 2 — нет`() {
+        val tell = CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 1)), awaitingAnswer = false)
+        assertTrue(tell.toString(), tell is CuriosityAsk.TellDecision.Tell)
+        assertEquals(
+            CuriosityAsk.TellDecision.Refuse("вклад сна с выводом 2 из ${CuriosityAsk.TELL_MIN}"),
+            CuriosityAsk.decideTell(withThought(dream(1, 2, recalled = 1)), awaitingAnswer = false),
+        )
+    }
+
+    @Test
+    fun `рассказа нет без выводов и пока прошлый вопрос без ответа`() {
+        assertEquals(
+            CuriosityAsk.TellDecision.Refuse("выводов к рассказу нет"),
+            CuriosityAsk.decideTell(pressure(dream(1, 2, picked = 2)), awaitingAnswer = false),
+        )
+        assertEquals(
+            CuriosityAsk.TellDecision.Refuse("прошлый вопрос без ответа"),
+            CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 2)), awaitingAnswer = true),
+        )
+    }
+
+    @Test
+    fun `строка рассказа — с подписью сна, не как факт`() {
+        val teller = (CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 1)), false) as CuriosityAsk.TellDecision.Tell).teller
+        val line = CuriosityAsk.tellLine(teller)
+        assertTrue(line, line.startsWith("Во сне я подумал, что мысль о 1,2. "))
+        assertTrue(line, line.contains("скажи, что это пришло во сне"))
+    }
+
+    @Test
+    fun `прибор — рассказ назван, а при молчании сказано почему`() {
+        val noGap = CuriosityAsk.GapDecision.Refuse("открытого пробела по теме нет")
+        val teller = (CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 1)), false) as CuriosityAsk.TellDecision.Tell)
+        val told = CuriosityAsk.meter(noGap, teller, CuriosityAsk.Decision.Refuse("лидера нет"))
+        assertTrue(told, told.startsWith("Спросить: в этой реплике предложено рассказать вывод сна «мысль о 1,2»"))
+        val silent = CuriosityAsk.meter(noGap, CuriosityAsk.TellDecision.Refuse("выводов к рассказу нет"), CuriosityAsk.Decision.Refuse("лидера нет"))
+        assertTrue(silent, silent.endsWith(" · рассказать: выводов к рассказу нет"))
+    }
 }

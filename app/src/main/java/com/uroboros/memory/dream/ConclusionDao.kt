@@ -50,6 +50,13 @@ interface ConclusionDao {
     @Query("SELECT COUNT(*) FROM conclusions WHERE accepted = 1")
     suspend fun countAccepted(): Int
 
+    /**
+     * Последний принятый вывод ночи [nightAt] — для описания ночи на вопрос о
+     * снах (см. [DreamTopic.line]); null — принятых в ту ночь нет.
+     */
+    @Query("SELECT text FROM conclusions WHERE accepted = 1 AND nightAt = :nightAt ORDER BY id DESC LIMIT 1")
+    suspend fun lastAcceptedText(nightAt: Long): String?
+
     /** Принятые выводы — для облака агента (memory.nav.Clouds). */
     @Query("SELECT * FROM conclusions WHERE accepted = 1")
     suspend fun accepted(): List<ConclusionRow>

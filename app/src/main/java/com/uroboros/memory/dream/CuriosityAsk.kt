@@ -45,6 +45,17 @@ import com.uroboros.memory.Sentences
  * нет. Запись, найденная к реплике, приходит в том же ходе обычной записью и
  * служит зацепкой для вопроса — отдельной строки у неё нет.
  *
+ * ТРЕТИЙ ИСТОЧНИК — РАССКАЗ ([decideTell]). У сна есть принятый вывод
+ * ([Conclusion]), и о нём ещё не рассказано: агент не спрашивает о связи, а
+ * сам говорит, что подумал во сне, — с подписью сна ([Conclusion.dreamt]),
+ * никогда как факт и никогда как слова собеседника. Порядок источников:
+ * пробел, затем рассказ, затем вопрос. Пробел касается реплики по
+ * построению; рассказ — готовая мысль; вопрос — сырая связь. Порог у
+ * рассказа свой и ниже ([TELL_MIN]): вывод уже отобран проверкой, и ждать,
+ * пока сон наберёт вклад вопроса, значило бы почти никогда не рассказать.
+ * Рассказ ставит ту же метку, что вопрос ([Dream.askedAt]), поэтому «не
+ * больше одного без ответа» у них общее.
+ *
  * Спрашивается только при ясном: реплика владельца — утверждение во всех
  * предложениях (SentenceKind; сомнительный вид — не утверждение: вопрос или
  * просьба владельца оставляют ход ему), прошлый ответ агента без вопроса
@@ -78,6 +89,15 @@ object CuriosityAsk {
      * прибору (строка «Спросить: … вклад лидера N из 6»).
      */
     const val MIN_CONTRIBUTION = 6
+
+    /**
+     * Порог вклада для рассказа вывода. Объявленное число, не подобранное:
+     * владелец хоть раз подхватил сон (вес 3) или агент дважды его вспомнил.
+     * Одного вспоминания агентом (вклад 2) мало — тогда рассказывался бы
+     * любой вывод: выводы пробуются только по снам с вкладом. Почему ниже
+     * [MIN_CONTRIBUTION] — в KDoc объекта, «ТРЕТИЙ ИСТОЧНИК».
+     */
+    const val TELL_MIN = 3
 
     sealed class Decision {
         /** Спросить о сне [leader]. */
@@ -143,6 +163,38 @@ object CuriosityAsk {
     private fun about(leader: CuriosityPressure.Leader): String =
         "Меня занимает, как связано: ${leader.records.joinToString(", ") { "«${it.content}»" }}."
 
+    /** Решение о рассказе вывода сна. */
+    sealed class TellDecision {
+        /** Рассказать вывод [teller]. */
+        data class Tell(val teller: CuriosityPressure.Teller) : TellDecision()
+
+        /** Не рассказывать; [reason] — почему, словами для прибора. */
+        data class Refuse(val reason: String) : TellDecision()
+    }
+
+    /**
+     * Рассказать ли вывод сна. Условия реплики владельца — те же, что у
+     * вопроса о сне ([decide]): ожидание ответа общее. Берётся первый в
+     * [CuriosityPressure.Result.toTell] — с наибольшим вкладом.
+     */
+    fun decideTell(pressure: CuriosityPressure.Result, awaitingAnswer: Boolean): TellDecision {
+        if (awaitingAnswer) return TellDecision.Refuse("прошлый вопрос без ответа")
+        val first = pressure.toTell.firstOrNull() ?: return TellDecision.Refuse("выводов к рассказу нет")
+        if (first.leader.contribution < TELL_MIN) {
+            return TellDecision.Refuse("вклад сна с выводом ${first.leader.contribution} из $TELL_MIN")
+        }
+        return TellDecision.Tell(first)
+    }
+
+    /**
+     * Строка для модели о выводе: мысль с подписью сна и просьба рассказать,
+     * сказав, откуда она. Записи сна не перечисляются: вывод сложен из их
+     * слов, а сами записи, если нужны, приходят в ходе обычным путём.
+     */
+    fun tellLine(teller: CuriosityPressure.Teller): String =
+        "${Conclusion.dreamt(teller.text)} Если к месту — расскажи пользователю об этом одной фразой " +
+            "и скажи, что это пришло во сне."
+
     /** Решение о вопросе по пробелу. */
     sealed class GapDecision {
         /** Спросить о пробеле [gap]. */
@@ -197,6 +249,17 @@ object CuriosityAsk {
     fun meter(gap: GapDecision, dream: Decision): String = when (gap) {
         is GapDecision.Ask -> "Спросить: в этой реплике предложено спросить о пробеле «${gap.gap.admission.trim()}»"
         is GapDecision.Refuse -> meter(dream) + " · о пробеле не спрашиваю — ${gap.reason}"
+    }
+
+    /**
+     * Строка прибора всех трёх источников в их порядке (см. «ТРЕТИЙ
+     * ИСТОЧНИК»): что предложено и почему молчат те, что выше.
+     */
+    fun meter(gap: GapDecision, tell: TellDecision, dream: Decision): String = when {
+        gap is GapDecision.Ask -> meter(gap, dream)
+        tell is TellDecision.Tell -> "Спросить: в этой реплике предложено рассказать вывод сна " +
+            "«${tell.teller.text}» · о пробеле не спрашиваю — ${(gap as GapDecision.Refuse).reason}"
+        else -> meter(gap, dream) + " · рассказать: ${(tell as TellDecision.Refuse).reason}"
     }
 
     /** Строка прибора. Печатается всегда: молчащий выход неотличим от сломанного. */
