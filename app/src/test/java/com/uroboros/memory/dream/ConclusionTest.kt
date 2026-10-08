@@ -82,13 +82,42 @@ class ConclusionTest {
     }
 
     @Test
-    fun `лишние основы названы`() {
-        val reason = Conclusion.check("кошка боится грозы", listOf(cat, rain))!!
-        assertTrue(reason, reason.endsWith("нет в записях сна"))
-        for (stem in RiskTrigger.significantStems("боится грозы")) {
-            assertTrue(reason, reason.contains("«$stem»"))
-        }
+    fun `свои слова в меру проходят — сон и связывает записи без общих слов`() {
+        assertNull(Conclusion.check("кошка мокнет под дождём", listOf(cat, rain)))
+    }
+
+    @Test
+    fun `слова одной записи — отказ, вывод ничего не связывает`() {
+        assertEquals(
+            "вывод держится за слова одной записи сна",
+            Conclusion.check("кошка спит на диване", listOf(cat, rain)),
+        )
+        assertEquals(
+            "своих слов мало, но опора одна — всё равно отказ",
+            "вывод держится за слова одной записи сна",
+            Conclusion.check("кошка боится грозы", listOf(cat, rain)),
+        )
+    }
+
+    @Test
+    fun `своих основ больше объявленного — отказ, лишние названы`() {
+        val own = "боится грозы, грома, молнии"
+        val stems = RiskTrigger.significantStems(own)
+        assertTrue("заготовка теста: своих основ больше границы — $stems", stems.size > Conclusion.MAX_OWN_STEMS)
+        val reason = Conclusion.check("кошка под дождём $own", listOf(cat, rain))!!
+        assertTrue(reason, reason.startsWith("своих основ ${stems.size} — больше ${Conclusion.MAX_OWN_STEMS}: "))
+        for (stem in stems) assertTrue(reason, reason.contains("«$stem»"))
         assertFalse(reason, reason.contains("«${RiskTrigger.significantStems("кошка").single()}»"))
+    }
+
+    @Test
+    fun `прежний отказ по старому правилу проходит перепроверку новым`() {
+        // Ответ со словом, которого нет в записях, старая проверка («все слова
+        // из записей») отбрасывала. Новая пропускает — и перепроверка без
+        // модели это находит.
+        val old = row(false, "кошка мокнет под дождём", "основ «мокн» нет в записях сна")
+        val r = Conclusion.recheck(listOf(old), emptySet(), mapOf(dream.recordIds to listOf(cat, rain)), 99L)
+        assertEquals(listOf("кошка мокнет под дождём"), r.passed.map { it.text })
     }
 
     @Test
@@ -100,7 +129,7 @@ class ConclusionTest {
     @Test
     fun `слово подсказки «фразы» не считается лишним`() {
         assertNull(Conclusion.check("обе фразы про кошку и дождь", listOf(cat, rain)))
-        assertNull(Conclusion.check("эти фразы связаны: кошка спит", listOf(cat, rain)))
+        assertNull(Conclusion.check("эти фразы связаны: кошка спит, дождь идёт", listOf(cat, rain)))
     }
 
     @Test
