@@ -278,4 +278,95 @@ class ConclusionTest {
             ConclusionView.meter("Выводы: не делаю — давление любопытства ноль — связывать нечего", 3),
         )
     }
+
+    // ---- Отпечаток и перепроверка без модели ----
+
+    @Test
+    fun `без отпечатка загрузки отпечатка ответа нет`() {
+        assertNull(Conclusion.askPrint(null))
+    }
+
+    @Test
+    fun `отпечаток ответа — загрузка и вопрос`() {
+        val print = Conclusion.askPrint("модель-и-накладка")!!
+        assertTrue(print, print.startsWith("модель-и-накладка|"))
+        assertTrue(print, print.endsWith(Conclusion.QUESTION_PRINT))
+        assertFalse("другая загрузка — другой отпечаток", print == Conclusion.askPrint("другая"))
+    }
+
+    private val both = mapOf(dream.recordIds to listOf(cat, rain))
+
+    @Test
+    fun `прежний ответ, прошедший нынешнюю проверку, даёт новую строку с пометкой`() {
+        val old = row(false, "кошка спит весь день", "старое правило").copy(id = 7, askPrint = "п1")
+        val r = Conclusion.recheck(listOf(old), emptySet(), both, nightAt = 99L)
+        assertEquals(1, r.checked)
+        val passed = r.passed.single()
+        assertTrue(passed.accepted)
+        assertTrue(passed.rechecked)
+        assertNull(passed.reason)
+        assertEquals(0L, passed.id)
+        assertEquals(99L, passed.nightAt)
+        assertEquals(old.dreamNightAt, passed.dreamNightAt)
+        assertEquals("отпечаток — того, кто ответил", "п1", passed.askPrint)
+    }
+
+    @Test
+    fun `не прошедший перепроверку новой строки не даёт, но сосчитан`() {
+        val old = row(false, "кошка боится грозы", "основ нет в записях сна")
+        val r = Conclusion.recheck(listOf(old), emptySet(), both, nightAt = 99L)
+        assertEquals(1, r.checked)
+        assertTrue(r.passed.isEmpty())
+    }
+
+    @Test
+    fun `пустой ответ модели перепроверку не проходит`() {
+        val r = Conclusion.recheck(listOf(row(false, "", "модель не дала вывода")), emptySet(), both, 99L)
+        assertEquals(1, r.checked)
+        assertTrue(r.passed.isEmpty())
+    }
+
+    @Test
+    fun `набор с принятым выводом и набор с молчащим звеном не перепроверяются`() {
+        val old = row(false, "кошка спит весь день", "старое правило")
+        val accepted = Conclusion.recheck(listOf(old), setOf(dream.recordIds), both, 99L)
+        assertEquals(0, accepted.checked)
+        val silent = Conclusion.recheck(listOf(old), emptySet(), emptyMap(), 99L)
+        assertEquals(0, silent.checked)
+        assertTrue(silent.passed.isEmpty())
+    }
+
+    @Test
+    fun `на набор записей — один вывод, повтор того же ответа считается один раз`() {
+        val a = row(false, "кошка спит весь день", "старое правило")
+        val b = row(false, "дождь идёт весь день", "старое правило")
+        val r = Conclusion.recheck(listOf(a, a.copy(id = 2), b), emptySet(), both, 99L)
+        assertEquals(listOf("кошка спит весь день"), r.passed.map { it.text })
+        assertEquals("второй ответ того же набора уже не нужен", 1, r.checked)
+    }
+
+    @Test
+    fun `итог с перепроверкой — впереди, и при нуле прошедших тоже`() {
+        assertEquals(
+            "Выводы: перепроверено без модели 15, прошло 0; не делаю — связывать нечего",
+            Conclusion.withRecheck(Conclusion.silentOutcome("связывать нечего"), 15, 0),
+        )
+        val plain = Conclusion.doneOutcome(1, emptyList())
+        assertEquals("перепроверять было нечего — итог как есть", plain, Conclusion.withRecheck(plain, 0, 0))
+    }
+
+    @Test
+    fun `повторные пробы видны в итоге, без них молчат`() {
+        assertEquals("Выводы: сделано 1, отброшено 0 (повторных проб 2)", Conclusion.doneOutcome(1, emptyList(), retried = 2))
+        assertFalse(Conclusion.doneOutcome(1, emptyList()).contains("повторных"))
+    }
+
+    @Test
+    fun `перепроверенный вывод помечен на экране`() {
+        val again = row(true, "кошка спит весь день").copy(rechecked = true)
+        val shown = ConclusionView.render(null, listOf(ConclusionView.Item(again, dream, live)))
+        assertTrue(shown, shown.contains("Я подумал, что кошка спит весь день. — ${ConclusionView.RECHECKED}"))
+        val fresh = ConclusionView.render(null, listOf(ConclusionView.Item(row(true, "кошка спит весь день"), dream, live)))
+        assertFalse(fresh, fresh.contains(ConclusionView.RECHECKED))
+    }
 }

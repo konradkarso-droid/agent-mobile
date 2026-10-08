@@ -32,6 +32,17 @@ interface ConclusionDao {
     @Query("SELECT DISTINCT dreamNightAt, dreamRecordIds FROM conclusions")
     suspend fun triedKeys(): List<ConclusionKey>
 
+    /**
+     * Ключи снов, пробовавшихся с отпечатком [askPrint] ([ConclusionRow.askPrint]),
+     * — их ответ при нынешней загрузке и нынешнем вопросе уже известен.
+     */
+    @Query("SELECT DISTINCT dreamNightAt, dreamRecordIds FROM conclusions WHERE askPrint = :askPrint")
+    suspend fun triedKeysUnder(askPrint: String): List<ConclusionKey>
+
+    /** Отброшенные строки — для перепроверки кодом ([Conclusion.recheck]). */
+    @Query("SELECT * FROM conclusions WHERE accepted = 0 ORDER BY id")
+    suspend fun rejected(): List<ConclusionRow>
+
     /** Ключи снов с принятым выводом — они разряжены (см. [CuriosityPressure]). */
     @Query("SELECT DISTINCT dreamNightAt, dreamRecordIds FROM conclusions WHERE accepted = 1")
     suspend fun acceptedKeys(): List<ConclusionKey>

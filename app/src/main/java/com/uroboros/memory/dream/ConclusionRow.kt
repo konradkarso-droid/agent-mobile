@@ -1,5 +1,6 @@
 package com.uroboros.memory.dream
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -42,6 +43,24 @@ data class ConclusionRow(
 
     /** Причина отказа; null у прошедшего. */
     val reason: String?,
+
+    /**
+     * При какой загрузке модели и каком вопросе к ней получен ответ
+     * ([Conclusion.askPrint]). Сон с таким же отпечатком снова не пробуется:
+     * ответ был бы тем же (см. [ConclusionStep], «ВЫДАЧА ПОВТОРЯЕМАЯ»). null —
+     * не известно: строка записана раньше, чем отпечаток стали хранить, или
+     * отпечатка в ту ночь не было.
+     */
+    val askPrint: String? = null,
+
+    /**
+     * Строка не от модели: прежний отброшенный ответ, который прошёл
+     * проверку при перепроверке кодом ([Conclusion.recheck]). Текст — тот же
+     * ответ, [askPrint] — его отпечаток, [nightAt] — ночь перепроверки.
+     * Строка с отказом остаётся рядом как была: это история, а не ошибка.
+     */
+    @ColumnInfo(defaultValue = "0")
+    val rechecked: Boolean = false,
 )
 
 /**

@@ -75,6 +75,9 @@ class ConclusionView(
 
         const val SILENT = "вывод по сну молчит — звено на проверке или удалено"
 
+        /** Пометка вывода, прошедшего перепроверку без модели ([ConclusionRow.rechecked]). */
+        const val RECHECKED = "прежний ответ, прошёл перепроверку без модели"
+
         /**
          * Строка прибора. Итог последней ночи печатается всегда — в том числе
          * причина молчания, иначе «связывать нечего» не отличить от «сломано».
@@ -104,6 +107,8 @@ class ConclusionView(
                 }
                 if (row.accepted) {
                     append(Conclusion.shown(row.text))
+                    // Без пометки прежний ответ выглядел бы новой мыслью этой ночи.
+                    if (row.rechecked) append(" — ").append(RECHECKED)
                 } else {
                     append("отброшено: «").append(row.text).append("» — ").append(row.reason.orEmpty())
                 }
