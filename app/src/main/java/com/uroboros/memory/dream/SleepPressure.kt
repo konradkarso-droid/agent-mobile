@@ -26,6 +26,17 @@ import com.uroboros.memory.Sticker
  * берутся из снов последней ночи — подача снов берёт только её, а значит, и
  * вспомнить можно только её сны.
  *
+ * ПРОБА ПЛЕТЁТСЯ С ПАМЯТЬЮ ПРОШЛОЙ НОЧИ. При сработавшем потолке плетение
+ * отдаёт места сперва снам, которых не было последние ночи (см.
+ * [DreamWeaver.fairShare]), — то есть нарочно плетёт каждую ночь иначе. Проба
+ * с той же памятью о недавнем, что у следующей ночи, поэтому отличалась бы от
+ * прошлой всегда, без единой новой записи, и агент засыпал бы при каждой
+ * тишине. Перебор снов по кругу — не перемена материала. Поэтому проба
+ * плетётся так, как плелась сама прошлая ночь: с ночами ДО неё. При тех же
+ * записях она повторяет прошлую ночь точно, и давление — ноль; новая запись
+ * даёт давление, а уже настоящая ночь выведет вперёд свежие сны. Перебор по
+ * кругу идёт только в ночи, которые случились бы и так.
+ *
  * ЗДЕСЬ ТОЛЬКО МЕРА. Порога нет: решать, ложиться ли, — дело того, кто
  * запускает ночь. Функция ничего не пишет и никого не греет.
  *
@@ -67,13 +78,22 @@ object SleepPressure {
     /**
      * @param lastDreams сны именно [lastNight] — сравнивать с чужой ночью
      *        значит получить давление, которого нет.
+     * @param earlierDreams сны [DreamWeaver.FRESH_NIGHTS] ночей ПЕРЕД
+     *        [lastNight], без неё самой (`ofRecentNights(FRESH_NIGHTS, 1)`):
+     *        ровно то, что помнила о недавнем сама прошлая ночь. Почему не
+     *        ночи вместе с ней — «ПРОБА ПЛЕТЁТСЯ С ПАМЯТЬЮ ПРОШЛОЙ НОЧИ» выше.
+     *        Значения по умолчанию нет намеренно: забытое — это давление
+     *        после каждой ночи с потолком.
      *
-     * Сны сравниваются цепочками номеров, а не строкой из базы: так формат
-     * хранения ([Dream.recordIds]) может меняться, не ломая сравнение. Одна
-     * цепочка — один сон, как и в ключе таблицы снов.
+     * Сны сравниваются цепочками ([DreamWeaver.chainsOf]).
      */
-    fun measure(records: List<Sticker>, lastNight: DreamNight?, lastDreams: List<Dream>): Reading {
-        val woven = DreamWeaver.weave(records)
+    fun measure(
+        records: List<Sticker>,
+        lastNight: DreamNight?,
+        lastDreams: List<Dream>,
+        earlierDreams: List<Dream>,
+    ): Reading {
+        val woven = DreamWeaver.weave(records, DreamWeaver.chainsOf(earlierDreams))
         val now = woven.dreams.map { it.recordIds }.toSet()
         if (lastNight == null) {
             return Reading(
@@ -81,7 +101,7 @@ object SleepPressure {
                 dreamersNow = woven.dreamers, dreamersThen = null,
             )
         }
-        val then = lastDreams.filter { it.kind != DreamRiver.KIND }.map { it.ids() }.toSet()
+        val then = DreamWeaver.chainsOf(lastDreams)
         return Reading(
             appeared = (now - then).size,
             gone = (then - now).size,

@@ -2,6 +2,7 @@ package com.uroboros
 
 import android.content.Context
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.dream.DreamWeaver
 import com.uroboros.memory.dream.SleepPressure
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -117,8 +118,10 @@ object SelfState {
         val db = MemoryDatabase.getInstance(context)
         val night = db.dreamDao().lastNight()
         val rows = night?.let { db.dreamDao().ofNight(it.nightAt) }.orEmpty()
+        // Ночи перед последней — см. SleepPressure.measure.
+        val earlier = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) }.orEmpty()
         val records = db.stickerDao().getAll()
-        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows) }
+        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier) }
         return Snapshot(
             starts = life.starts,
             aliveSince = life.lastStartAt,

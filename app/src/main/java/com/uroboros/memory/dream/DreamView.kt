@@ -45,7 +45,8 @@ import java.util.Locale
  *
  * Последней строкой раздела стоит давление сна — чем следующая ночь отличалась
  * бы от показанной (см. [SleepPressure]). Оно считается из того же чтения базы,
- * что и показ, лишних обращений не добавляет.
+ * что и показ, и одного чтения снов прошлых ночей — того же, из которого
+ * считается строка повторов.
  */
 class DreamView(
     private val dreams: DreamDao,
@@ -70,7 +71,10 @@ class DreamView(
         val all = stickers.getAll()
         val night = dreams.lastNight()
         val rows = night?.let { dreams.ofNight(it.nightAt) } ?: emptyList()
-        val pressure = SleepPressure.line(SleepPressure.measure(all, night, rows))
+        // Ночи перед показанной: из них и давление (см. SleepPressure.measure),
+        // и строка повторов (см. DreamWeaver.repeatsLine).
+        val earlier = night?.let { dreams.ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) } ?: emptyList()
+        val pressure = SleepPressure.line(SleepPressure.measure(all, night, rows, earlier))
         if (night == null) return NO_NIGHT + "\n\n" + pressure
         val byId = all.associateBy { it.id }
 
@@ -87,7 +91,9 @@ class DreamView(
             }
             visible += row.kind to records.map { it!! }
         }
-        return render(night, collapse(visible), silent, dreamt.size) + "\n\n" + pressure
+        val before = DreamWeaver.chainsOf(earlier)
+        val repeats = DreamWeaver.chainsOf(rows).count { it in before }
+        return render(night, collapse(visible), silent, dreamt.size, repeats) + "\n\n" + pressure
     }
 
     /**
@@ -164,12 +170,16 @@ class DreamView(
         /**
          * Слова раздела. Отдельно от чтения базы, чтобы проверяться без Android:
          * ошибка здесь — это молчание или враньё на экране, а не сбой.
+         *
+         * [repeats] — сколько снов ночи снилось и в ночи до неё (см.
+         * [DreamWeaver.repeatsLine]); null — не посчитано, строки нет.
          */
         fun render(
             night: DreamNight,
             shown: List<Shown>,
             silent: Int,
             dreamtRecords: Int,
+            repeats: Int? = null,
         ): String = buildString {
             append("СНЫ\n")
             append("Ночь: ").append(moment(night.nightAt))
@@ -224,6 +234,7 @@ class DreamView(
             }
             if (night.ceilingHit) {
                 append("Потолок снов сработал — до длинных сюжетов дело не дошло.\n")
+                if (repeats != null) append(DreamWeaver.repeatsLine(night.dreams, repeats)).append("\n")
             }
             if (silent > 0) {
                 append("Не показано снов: ").append(silent)

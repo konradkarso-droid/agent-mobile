@@ -33,6 +33,19 @@ interface DreamDao {
     suspend fun ofNight(nightAt: Long): List<Dream>
 
     /**
+     * Сны [count] ночей подряд, от новых к старым, пропустив [skip] последних.
+     * Ночи берутся по итогам, а не по снам: ночь без снов тоже ночь и тоже
+     * занимает место в счёте (см. [DreamNight]). Кому какой [skip] — у
+     * вызывающих: проходу нужны ночи перед новой ([DreamRunner.run]),
+     * давлению — ночи перед последней ([SleepPressure.measure]).
+     */
+    @Query(
+        "SELECT * FROM dreams WHERE nightAt IN " +
+            "(SELECT nightAt FROM nights ORDER BY nightAt DESC LIMIT :count OFFSET :skip)"
+    )
+    suspend fun ofRecentNights(count: Int, skip: Int): List<Dream>
+
+    /**
      * Сны не старше [since], которые хоть раз подхвачены, вспомнены или
      * получили ответ, — только они и могут сжать пружину любопытства (см.
      * [CuriosityPressure]). Остальные дали бы ноль, и читать их незачем.

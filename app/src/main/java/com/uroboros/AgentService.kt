@@ -28,6 +28,7 @@ import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.dream.Conclusion
 import com.uroboros.memory.dream.ConclusionStep
 import com.uroboros.memory.dream.DreamTopicStep
+import com.uroboros.memory.dream.DreamWeaver
 import com.uroboros.memory.dream.Mirror
 import com.uroboros.memory.dream.MirrorStep
 import com.uroboros.memory.dream.NightStart
@@ -764,9 +765,11 @@ class AgentService : Service() {
         val records = db.stickerDao().getAll()
         val night = db.dreamDao().lastNight()
         val rows = night?.let { db.dreamDao().ofNight(it.nightAt) } ?: emptyList()
+        // Ночи перед последней — см. SleepPressure.measure.
+        val earlier = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) } ?: emptyList()
         // Пробное плетение — вне главного потока: при большой памяти это
         // заметный счёт, а на главном он подвешивал бы экран.
-        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows) }
+        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier) }
         SleepDecision.decide(pressure.changed)?.let {
             showSleepLine(it)
             return

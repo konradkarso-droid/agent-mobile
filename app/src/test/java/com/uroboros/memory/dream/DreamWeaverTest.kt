@@ -228,6 +228,66 @@ class DreamWeaverTest {
         )
     }
 
+    // --- Очередь свежих снов ---
+
+    private val crowdedWords = listOf(
+        "бетон", "ветер", "горох", "дождь", "ежевика", "жираф",
+        "замок", "искра", "капля", "лимон", "магнит", "облако",
+    )
+
+    @Test
+    fun `при потолке свежие сны идут первыми, повторы — в остаток`() {
+        // Сказаны в одну минуту: 66 снов по времени на 60 мест, вчерашние
+        // 60 — повторы, 6 — свежие.
+        val records = crowdedWords.mapIndexed { i, w -> rec(i + 1L, w, at = 0) }
+        val first = DreamWeaver.weave(records)
+        val recent = first.dreams.map { it.recordIds }.toSet()
+        val second = DreamWeaver.weave(records, recent)
+        val fresh = second.dreams.filter { it.recordIds !in recent }
+        assertEquals("все свежие вошли", 66 - 60, fresh.size)
+        assertEquals("остаток добран повторами, а не пуст", DreamWeaver.MAX_DREAMS_PER_NIGHT, second.dreams.size)
+        assertEquals(54, second.repeats)
+        assertEquals(0, first.repeats)
+    }
+
+    @Test
+    fun `без потолка недавние сны ничего не меняют`() {
+        val records = listOf(
+            rec(1, "Алеет солнце на закате", at = 0),
+            rec(2, "Бетономешалка мешает бетон", at = minute),
+            rec(3, "Чёрный чай заваривают кипятком", at = 2 * minute),
+        )
+        val first = DreamWeaver.weave(records)
+        val again = DreamWeaver.weave(records, first.dreams.map { it.recordIds }.toSet())
+        assertEquals(first.dreams, again.dreams)
+        assertEquals("повторы сосчитаны честно", first.dreams.size, again.repeats)
+    }
+
+    @Test
+    fun `свежесть сильнее дележа поровну`() {
+        val dreams = listOf(
+            DreamWeaver.Woven(listOf(1L, 2L), Kind.TIME),
+            DreamWeaver.Woven(listOf(1L, 3L), Kind.TIME),
+            DreamWeaver.Woven(listOf(4L, 5L), Kind.TIME),
+        )
+        // Без очереди взялись бы первый и третий (см. «делёж возвращает сны в
+        // прежнем порядке»); третий снился недавно и уступает.
+        assertEquals(
+            listOf(dreams[0], dreams[1]),
+            DreamWeaver.fairShare(dreams, 2, setOf(listOf(4L, 5L))),
+        )
+    }
+
+    @Test
+    fun `сны реки не считаются плетением ночи`() {
+        val rows = listOf(
+            Dream(1L, "1,2", Kind.TIME.name),
+            Dream(1L, "1, 3", Kind.TIME.name),
+            Dream(1L, "1,2,3", DreamRiver.KIND),
+        )
+        assertEquals(setOf(listOf(1L, 2L), listOf(1L, 3L)), DreamWeaver.chainsOf(rows))
+    }
+
     @Test
     fun `под потолком — потолок не сработал`() {
         val night = DreamWeaver.weave(
