@@ -304,8 +304,12 @@ object Conclusion {
         if (checked == 0) outcome
         else OUTCOME_HEAD + "перепроверено без модели $checked, прошло $passed; " + outcome.removePrefix(OUTCOME_HEAD)
 
-    /** Вывод для владельца. Единственное место текста подписи. */
-    fun shown(text: String): String = "Я подумал, что $text."
+    /**
+     * Вывод для владельца. Единственное место текста подписи. Подписи без
+     * грамматического рода («мне подумалось», а не «я подумал»): рода агенту
+     * не задано, и строка, которую ставит код, не должна задавать его за него.
+     */
+    fun shown(text: String): String = "Мне подумалось, что $text."
 
     /**
      * Вывод для агента — с подписью сна. Единственное место этой подписи:
@@ -314,7 +318,7 @@ object Conclusion {
      * мысль как случившееся. Где подаётся — [CuriosityAsk.tellLine] и
      * [DreamTopic.line].
      */
-    fun dreamt(text: String): String = "Во сне я подумал, что $text."
+    fun dreamt(text: String): String = "Во сне мне подумалось, что $text."
 
     internal fun cut(text: String, chars: Int): String {
         val flat = text.replace("\n", " ")
