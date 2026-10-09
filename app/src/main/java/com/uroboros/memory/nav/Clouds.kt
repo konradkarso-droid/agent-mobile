@@ -18,11 +18,11 @@ import kotlin.math.roundToInt
  * чужого «я» в нём нет по построению. «Мы» — пересечение облаков владельца и
  * агента.
  *
- * ВЕС — НЕ УТВЕРЖДЕНИЕ. В модель облако этой постройкой не идёт вовсе: это
- * прибор и основа следующих шагов. Если когда-нибудь пойдёт — только темой в
- * рамке, которую ставит код («мы с собеседником часто говорили о …»), никогда
- * фразой «кто что сделал». Записи от облака не меняются, в оценку кандидатов
- * отбора оно не подмешивается.
+ * ВЕС — НЕ УТВЕРЖДЕНИЕ. В модель облако идёт только темой в рамке, которую
+ * ставит код, и никогда фразой «кто что сделал». Сейчас такое место одно:
+ * строка выбора имени (dream.SelfGap.line) — «обо мне чаще всего говорят
+ * слова: …», формами слов ([Element.form]), не основами. Записи от облака не
+ * меняются, в оценку кандидатов отбора оно не подмешивается.
  *
  * ЧЕГО НЕ УМЕЕТ: облако из слов, а не из смысла — «код» и «программа» разные
  * элементы. Места («личка», «группа») облако пока не различает: до телеграма
@@ -40,8 +40,17 @@ object Clouds {
     /** Один источник слов: кто сказал, о ком и когда. */
     data class Source(val text: String, val speaker: PersonKey?, val about: Set<PersonKey>, val at: Long)
 
-    /** Элемент облака: основа, вес и чьими словами он набран. */
-    data class Element(val stem: String, val weight: Double, val bySpeaker: Map<PersonKey?, Double>)
+    /**
+     * Элемент облака: основа, вес и чьими словами он набран. [form] — самая
+     * частая написанная форма основы (при равенстве — первая по алфавиту):
+     * основу показывать модели нельзя, «радуг» она возьмёт словом.
+     */
+    data class Element(
+        val stem: String,
+        val weight: Double,
+        val bySpeaker: Map<PersonKey?, Double>,
+        val form: String = stem,
+    )
 
     /** Облако персоны; элементы — по весу, тяжёлые первыми. */
     data class Cloud(val elements: List<Element>) {
@@ -55,19 +64,27 @@ object Clouds {
     fun of(person: PersonKey, sources: List<Source>, now: Long): Cloud {
         val weights = HashMap<String, Double>()
         val by = HashMap<String, HashMap<PersonKey?, Double>>()
+        val forms = HashMap<String, HashMap<String, Int>>()
         for (s in sources) {
             if (person !in s.about) continue
             val w = decay(now - s.at)
-            for (stem in RiskTrigger.significantStems(s.text)) {
+            for ((stem, written) in RiskTrigger.significantWords(s.text)) {
                 weights[stem] = (weights[stem] ?: 0.0) + w
                 val m = by.getOrPut(stem) { HashMap() }
                 m[s.speaker] = (m[s.speaker] ?: 0.0) + w
+                val f = forms.getOrPut(stem) { HashMap() }
+                for (word in written) f[word] = (f[word] ?: 0) + 1
             }
         }
         return Cloud(
             weights.entries
                 .sortedWith(compareByDescending<Map.Entry<String, Double>> { it.value }.thenBy { it.key })
-                .map { Element(it.key, it.value, by[it.key].orEmpty()) }
+                .map { e ->
+                    val form = forms[e.key].orEmpty().entries
+                        .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+                        .firstOrNull()?.key ?: e.key
+                    Element(e.key, e.value, by[e.key].orEmpty(), form)
+                }
         )
     }
 
@@ -79,9 +96,19 @@ object Clouds {
                 val other = a[o.stem] ?: return@mapNotNull null
                 val by = HashMap<PersonKey?, Double>(o.bySpeaker)
                 for ((k, v) in other.bySpeaker) by[k] = (by[k] ?: 0.0) + v
-                Element(o.stem, minOf(o.weight, other.weight), by)
+                Element(o.stem, minOf(o.weight, other.weight), by, o.form)
             }.sortedWith(compareByDescending<Element> { it.weight }.thenBy { it.stem })
         )
+    }
+
+    /**
+     * Слова облака агента для строки выбора имени (dream.SelfGap.line): формы
+     * [count] самых тяжёлых элементов, без [skipStemOf] — слова, которое строка
+     * называет сама.
+     */
+    fun words(cloud: Cloud, count: Int, skipStemOf: String): List<String> {
+        val skip = RiskTrigger.significantStems(skipStemOf)
+        return cloud.elements.filter { it.stem !in skip }.take(count).map { it.form }
     }
 
     /** Источник из записи памяти: кто сказал — по `source`, о ком — по форме. */

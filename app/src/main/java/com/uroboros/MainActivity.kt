@@ -78,6 +78,8 @@ import com.uroboros.memory.dream.AgentRecaller
 import com.uroboros.memory.dream.DreamDoor
 import com.uroboros.memory.dream.CuriosityAsk
 import com.uroboros.memory.dream.Gaps
+import com.uroboros.memory.dream.SelfGap
+import com.uroboros.memory.dream.SelfGapReader
 import com.uroboros.memory.dream.CuriosityAskMarker
 import com.uroboros.memory.dream.CuriosityGauge
 import com.uroboros.memory.dream.CuriosityPressure
@@ -575,32 +577,12 @@ class MainActivity : AppCompatActivity() {
             (mirrorCheckFailure?.let { " · последняя реплика не сверена — $it" } ?: "")
     }
 
-    /**
-     * Источники облаков (Clouds): записи памяти, кроме скрытых и отвергнутых;
-     * принятые выводы, темы снов и своя речь из архива ленты — об агенте.
-     * Считается при каждом вызове, ничего не хранит.
-     */
-    private suspend fun cloudSources(archive: List<JournalArchiveTurn>?): List<Clouds.Source> {
-        val db = MemoryDatabase.getInstance(applicationContext)
-        val out = ArrayList<Clouds.Source>()
-        db.stickerDao().getAll()
-            .filter { !it.reviewPending && it.rejectedAt == null }
-            .mapTo(out) { Clouds.fromRecord(it.content, it.source, it.createdAt) }
-        db.conclusionDao().accepted().mapTo(out) { Clouds.ofAgent(it.text, it.nightAt) }
-        for (night in db.dreamDao().nightsWithTopics()) {
-            DreamTopic.load(night.dreamTopics).mapTo(out) { Clouds.ofAgent(it, night.nightAt) }
-        }
-        val own = OwnSpeech.said(archive.orEmpty().map { row ->
-            OwnSpeech.Turn(
-                answer = row.agentContent,
-                question = row.question,
-                records = journalStore.recordTexts(row),
-                at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
-            )
-        })
-        own.mapNotNullTo(out) { said -> said.at?.let { Clouds.ofAgent(said.sentence, it) } }
-        return out
-    }
+    /** Чтение пробела о себе и облака агента — общее с телом агента (SelfGapReader). */
+    private val selfGapReader by lazy { SelfGapReader(applicationContext, journalStore) }
+
+    /** Источники облаков — см. SelfGapReader.cloudSources. */
+    private suspend fun cloudSources(archive: List<JournalArchiveTurn>?): List<Clouds.Source> =
+        selfGapReader.cloudSources(archive)
 
     /** Раздел «ОБЛАКА» в «Показать»: считается при открытии. Сбой — словами. */
     private suspend fun cloudsSection(): String = runCatching {
@@ -4470,11 +4452,31 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                 }
+                // Пробел о себе (SelfGap) — имя: на вопрос владельца об имени
+                // агента, когда тот упирался в отсутствие имени не впервые,
+                // агенту предлагается выбрать имя самому. Строка выхода идёт
+                // первой из выходов любопытства (ниже). Не собрался — не
+                // предлагается, ход идёт.
+                val selfGapState: Result<SelfGap.State>? = archive?.let {
+                    runCatching { SelfGap.of(selfGapReader.turns(it, journal.history())) }
+                }
+                val selfGapDecision: SelfGap.Decision = when {
+                    selfGapState == null -> SelfGap.Decision.Refuse("архив ленты не прочитался")
+                    selfGapState.isFailure -> SelfGap.Decision.Refuse("не собрался")
+                    else -> SelfGap.decide(selfGapState.getOrThrow(), userText)
+                }
+                // Слова облака читаются, только когда строка пойдёт; не
+                // посчитались — строка без перечня (SelfGap.line).
+                val selfGapLine = if (selfGapDecision !is SelfGap.Decision.Offer) null else SelfGap.line(
+                    runCatching { selfGapReader.cloudWords(archive) }.getOrDefault(emptyList())
+                )
+                val selfGapPart = selfGapState?.getOrNull()?.let { SelfGap.meterPart(it, selfGapDecision) }
+                    ?: ("о себе: " + (selfGapDecision as SelfGap.Decision.Refuse).reason)
                 gapsLine = when {
                     gapsFound == null -> "Пробелы: архив ленты не прочитался"
                     gapsFound.isFailure -> "Пробелы: не собрались (${gapsFound.exceptionOrNull()?.javaClass?.simpleName})"
                     else -> Gaps.meterLine(gapsFound.getOrThrow(), userText)
-                }
+                } + " · " + selfGapPart
                 // Адрес вопроса — о ком он (Coordinates.addressInRibbon). На
                 // адрес «агент» зеркало снимает записи с чужим «я»
                 // (MirrorFilter) — в отборе до раздачи мест и ниже, на стыке
@@ -4868,12 +4870,18 @@ class MainActivity : AppCompatActivity() {
                             )
                         }
                 }
-                val askedGap = (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
-                curiosityAskLine = CuriosityAsk.meter(gapDecision, tellDecision, askDecision)
-                val toldTeller = if (askedGap != null) null else (tellDecision as? CuriosityAsk.TellDecision.Tell)?.teller
+                // Выбор имени (SelfGap) — первым из выходов: вопрос владельца об
+                // имени и есть повод. Предложен — остальные молчат в этом ходе,
+                // и сон не отмечается спрошенным.
+                val askedGap = if (selfGapLine != null) null else (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
+                curiosityAskLine = if (selfGapLine != null) "Спросить: в этой реплике предложено выбрать себе имя"
+                else CuriosityAsk.meter(gapDecision, tellDecision, askDecision)
+                val toldTeller = if (askedGap != null || selfGapLine != null) null
+                else (tellDecision as? CuriosityAsk.TellDecision.Tell)?.teller
                 // Рассказанный сон отмечается так же, как спрошенный, и ждёт
                 // ответа тем же путём: дальше по ходу это просто «сон выхода».
                 val askedLeader = when {
+                    selfGapLine != null -> null
                     askedGap != null -> null
                     toldTeller != null -> toldTeller.leader
                     else -> (askDecision as? CuriosityAsk.Decision.Ask)?.leader
@@ -4882,7 +4890,8 @@ class MainActivity : AppCompatActivity() {
                 // (selfNote в turns.run ниже).
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
-                    curiosityAsk = askedGap?.let { CuriosityAsk.gapLine(it) }
+                    curiosityAsk = selfGapLine
+                        ?: askedGap?.let { CuriosityAsk.gapLine(it) }
                         ?: toldTeller?.let { CuriosityAsk.tellLine(it) }
                         ?: askedLeader?.let { CuriosityAsk.line(it) },
                 )

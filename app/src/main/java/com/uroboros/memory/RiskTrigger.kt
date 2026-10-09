@@ -489,6 +489,12 @@ object RiskTrigger {
     fun significantStems(text: String): Set<String> = significantByStem(text).keys
 
     /**
+     * Те же значимые слова, что у [significantStems], но с написанными формами
+     * (см. [significantByStem]) — для показа слова, а не основы (nav.Clouds).
+     */
+    fun significantWords(text: String): Map<String, Set<String>> = significantByStem(text)
+
+    /**
      * Основы слов текста для детекторов эха (llm.EchoCheck): то же разбиение и
      * та же основа, что у [significantStems], отсев коротких слов тот же, но
      * БЕЗ отсева по STOP_WORDS (зачем тот список — его KDoc в HourglassMemory).
