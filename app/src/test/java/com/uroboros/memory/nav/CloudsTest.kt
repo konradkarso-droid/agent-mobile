@@ -94,4 +94,18 @@ class CloudsTest {
         assertTrue(text.startsWith("ОБЛАКА"))
         assertTrue(text.contains("владелец"))
     }
+
+    @Test
+    fun `слова для строки имени — написанные формы, без слова «агент»`() {
+        val sources = listOf(
+            Clouds.ofAgent("Цвета радуги красивые", now),
+            Clouds.ofAgent("Радуги бывают двойные", now),
+            Clouds.ofAgent("Радуга над рекой", now),
+            Clouds.ofAgent("Я агент, агент на телефоне", now),
+        )
+        val words = Clouds.words(Clouds.of(PersonKey.AGENT, sources, now), 5, "агент")
+        assertTrue(words.toString(), "радуги" in words)
+        assertTrue(words.toString(), words.none { it.startsWith("агент") })
+        assertTrue(words.toString(), words.none { it == "радуг" })
+    }
 }

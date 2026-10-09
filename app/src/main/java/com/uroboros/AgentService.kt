@@ -12,6 +12,8 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.documentfile.provider.DocumentFile
 import com.uroboros.initiative.CuriositySource
+import com.uroboros.initiative.FirstOfSources
+import com.uroboros.initiative.SelfGapSource
 import com.uroboros.initiative.InitiativeDecision
 import com.uroboros.initiative.InitiativeSource
 import com.uroboros.llm.AdapterFile
@@ -36,6 +38,7 @@ import com.uroboros.memory.dream.NightStart
 import com.uroboros.memory.dream.NightSteps
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.memory.dream.SelfLineStep
+import com.uroboros.memory.dream.SelfGapReader
 import com.uroboros.memory.dream.SleepDecision
 import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
@@ -221,7 +224,19 @@ class AgentService : Service() {
     private var stopNote: String? = null
 
     /** Повод заговорить первым. Источник пока один — см. [InitiativeSource]. */
-    private val initiativeSource: InitiativeSource by lazy { CuriositySource(applicationContext) }
+    /**
+     * Поводы заговорить первым, по порядку: выбрать себе имя (пробел о себе —
+     * не чаще раза за разговор), затем любопытство о сне.
+     */
+    private val initiativeSource: InitiativeSource by lazy {
+        val turns = ProcessObjects.get(applicationContext).turns
+        FirstOfSources(
+            listOf(
+                SelfGapSource(turns, SelfGapReader(applicationContext, turns.store)),
+                CuriositySource(applicationContext),
+            )
+        )
+    }
 
     private val conversationTimes by lazy { ConversationTimes(applicationContext) }
 
