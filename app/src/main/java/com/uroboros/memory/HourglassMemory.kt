@@ -4,6 +4,7 @@ import android.util.Log
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.MirrorFilter
+import com.uroboros.memory.nav.OwnCorrection
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.util.TextFold
 
@@ -1492,8 +1493,11 @@ class HourglassMemory(
      * значащим).
      */
     sealed class SaveOutcome {
-        /** Запись вставлена, похожих рядом не нашлось. */
-        data class Saved(val id: Long) : SaveOutcome()
+        /**
+         * Запись вставлена, похожих рядом не нашлось. [corrected] — записи,
+         * которые она сняла поправкой о себе (nav.OwnCorrection).
+         */
+        data class Saved(val id: Long, val corrected: List<Long> = emptyList()) : SaveOutcome()
 
         /**
          * Запись вставлена, но в горячей памяти под тем же тегом уже лежит
@@ -1504,7 +1508,9 @@ class HourglassMemory(
         data class SavedNearDuplicate(
             val id: Long,
             val similarToId: Long,
-            val similarToCreatedAt: Long
+            val similarToCreatedAt: Long,
+            /** Записи, снятые поправкой о себе, как у [Saved]. */
+            val corrected: List<Long> = emptyList(),
         ) : SaveOutcome()
 
         /**
@@ -1606,6 +1612,8 @@ class HourglassMemory(
      * человека остаётся возможным, но перестаёт быть обязательным, и очередь
      * из русла всякого спора превращается в путь для двух случаев, которые
      * подачей не лечатся: одна сторона просто ложна, и сбой проверки.
+     * Исключение — спор собеседника с самим собой о себе: там поздняя фраза
+     * снимает раннюю сразу, после вставки ([correctOwn]).
      *
      * ПАДЕНИЕ СРАВНЕНИЯ ПОДНИМАЕТ БИТ, и это единственный путь в очередь
      * отсюда. Подстановка в благополучную сторону здесь недопустима: второй
@@ -1727,9 +1735,32 @@ class HourglassMemory(
         // Приведённый вид — для поиска (см. Sticker.contentFolded); content не меняется.
         val id = dao.insert(sticker.copy(contentFolded = TextFold.fold(sticker.content)))
 
-        return if (nearTwin == null) SaveOutcome.Saved(id)
-        else SaveOutcome.SavedNearDuplicate(id, nearTwin.id, nearTwin.createdAt)
+        val corrected = correctOwn(sticker.copy(id = id))
+
+        return if (nearTwin == null) SaveOutcome.Saved(id, corrected)
+        else SaveOutcome.SavedNearDuplicate(id, nearTwin.id, nearTwin.createdAt, corrected)
     }
+
+    /**
+     * Поправка о себе (nav.OwnCorrection): новая запись [saved] снимает прежние
+     * записи того же собеседника о себе, с которыми спорит. Смотрятся все его
+     * записи, а не горячий пул: факт о себе мог остыть, а в портрет он идёт из
+     * любого слоя.
+     *
+     * Идёт ПОСЛЕ вставки и отдельно от неё: новая запись уже лежит при любом
+     * исходе. Сбой поиска или снятия — ничего не снято, обе записи живы, как
+     * было без поправки; промах в восстановимую сторону.
+     *
+     * @return номера снятых записей.
+     */
+    private suspend fun correctOwn(saved: Sticker): List<Long> =
+        try {
+            OwnCorrection.superseded(saved, dao.getAll())
+                .filter { reject(it.id, RejectPath.CORRECTED) == RejectOutcome.DONE }
+                .map { it.id }
+        } catch (e: Exception) {
+            emptyList()
+        }
 
     /**
      * Чем кончилась перепроверка записи, лежащей в очереди.
@@ -1859,7 +1890,9 @@ class HourglassMemory(
      *
      * РЕШАЕТ ЧЕЛОВЕК, как и у [hideForReview], и по той же причине: правило
      * противоречия и судья отвечают «спорят или нет», а не «какая верна».
-     * Агенту пути сюда нет.
+     * Агенту пути сюда нет. Единственный путь без нажатия —
+     * [RejectPath.CORRECTED]: человек решил словами, сказав о себе иначе, а код
+     * лишь узнал это (nav.OwnCorrection, [correctOwn]).
      *
      * НЕОБРАТИМО С ЭКРАНА. Запись цела — текст, слой, авторство на месте,
      * выгрузка базы её несёт, — но вернуть её в ответы нажатием нельзя: ни

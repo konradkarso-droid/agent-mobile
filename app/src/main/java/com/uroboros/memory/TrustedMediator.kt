@@ -47,8 +47,11 @@ sealed class AcceptCheck {
  */
 sealed class SaveResult {
 
-    /** Запись сохранена, похожих рядом не нашлось. */
-    data class Saved(val id: Long) : SaveResult()
+    /**
+     * Запись сохранена, похожих рядом не нашлось. [corrected] — тексты записей,
+     * которые она сняла поправкой о себе (nav.OwnCorrection).
+     */
+    data class Saved(val id: Long, val corrected: List<String> = emptyList()) : SaveResult()
 
     /**
      * Запись сохранена, но рядом уже лежит почти такая же: тексты сходятся
@@ -58,7 +61,9 @@ sealed class SaveResult {
     data class SavedNearDuplicate(
         val id: Long,
         val similarToContent: String,
-        val similarToCreatedAt: Long
+        val similarToCreatedAt: Long,
+        /** Тексты записей, снятых поправкой о себе, как у [Saved]. */
+        val corrected: List<String> = emptyList(),
     ) : SaveResult()
 
     /**
@@ -251,15 +256,19 @@ class TrustedMediator(context: Context) {
      * показать нечем. Человек увидит это прямо, а не пустую строку. Та же
      * форма, что у [describe] для противника.
      */
+    private suspend fun texts(ids: List<Long>): List<String> =
+        ids.map { dao.getById(it)?.content ?: "запись №$it не найдена" }
+
     private suspend fun describeSave(outcome: HourglassMemory.SaveOutcome): SaveResult =
         when (outcome) {
-            is HourglassMemory.SaveOutcome.Saved -> SaveResult.Saved(outcome.id)
+            is HourglassMemory.SaveOutcome.Saved -> SaveResult.Saved(outcome.id, texts(outcome.corrected))
 
             is HourglassMemory.SaveOutcome.SavedNearDuplicate -> SaveResult.SavedNearDuplicate(
                 id = outcome.id,
                 similarToContent = dao.getById(outcome.similarToId)?.content
                     ?: "запись не найдена",
-                similarToCreatedAt = outcome.similarToCreatedAt
+                similarToCreatedAt = outcome.similarToCreatedAt,
+                corrected = texts(outcome.corrected),
             )
 
             is HourglassMemory.SaveOutcome.Duplicate -> SaveResult.Duplicate(
