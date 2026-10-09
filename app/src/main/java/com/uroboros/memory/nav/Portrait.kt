@@ -23,7 +23,7 @@ import com.uroboros.util.TextFold
  * предложения; прибор считает их отдельно («столбиком»).
  *
  * КАКОЕ ПРЕДЛОЖЕНИЕ БЕРЁТСЯ. Запись режется на предложения (Sentences.split,
- * через PersonForm.of), и каждое проходит три проверки по порядку; первая
+ * через PersonForm.of), и каждое проходит четыре проверки по порядку; первая
  * не пройденная — причина, по которой оно снято (её и считает прибор):
  *  1. ГРАНИЦА — нет обращения к агенту (MirrorFilter.addressesAgent — тот
  *     же признак, что у общего отбора) и нет «мы с тобой»: портрет — о нём
@@ -39,6 +39,9 @@ import com.uroboros.util.TextFold
  *     с существительными («смыслу», «деятельностью»). Местоимение отсекает
  *     заодно реплики момента, в живой речи его обычно опускают («Да, скоро
  *     ложусь», «Надеюсь, всё получится», «Хочу обсуждать погоду»).
+ *  4. НЕ ЗАМЕЧАНИЕ О РАЗГОВОРЕ — «Я спросил кто я, а не что я говорил» не
+ *     о собеседнике, а о ходе разговора (TalkRemark: признаки, порог и чего
+ *     он не умеет — там).
  *
  * ПОРЯДОК — два рода мест, и разведены они намеренно:
  *  - первые [FRESH] мест — самые свежие записи, по одному предложению с
@@ -73,9 +76,8 @@ import com.uroboros.util.TextFold
  *  - цитата, стих или песня одной-тремя строками или прозой не узнаются —
  *    признак только форма столбика, не смысл; и наоборот, рассказ о себе,
  *    набранный столбиком в [COLUMN_LINES] строк и больше, снимается целиком;
- *  - замечание о самом разговоре («Я спросил кто я, а не что я говорил»)
- *    проходит как слово о себе. Узнавать такое — дело разбора предложения по
- *    сумме признаков (о ком и о чём оно), а не списка слов здесь;
+ *  - замечание о самом разговоре узнаётся с промахами TalkRemark (там же
+ *    перечислены);
  *  - касания считают и подсказанное: собеседник повторил тему, которую
  *    только что назвал агент, — касание засчитано. Чистый счёт
  *    (userMatchUnpromptedCount) на молодой памяти почти весь нулевой, опереться
@@ -142,6 +144,8 @@ object Portrait {
         val passed: List<Line>,
         val chosen: List<Line>,
         val inColumn: Int = 0,
+        /** Снято проверкой 4 — замечание о разговоре ([TalkRemark]). */
+        val aboutTalk: Int = 0,
     )
 
     /** Подпись над строками портрета в записях хода, когда имя не задано. */
@@ -215,6 +219,7 @@ object Portrait {
         var notStatement = 0
         var noFirst = 0
         var inColumn = 0
+        var aboutTalk = 0
         val passed = ArrayList<Line>()
         for (record in own) {
             val column = inColumn(record.content)
@@ -228,6 +233,7 @@ object Portrait {
                         PersonForm.Person.IMPERATIVE in p ||
                         PersonForm.Person.UNCLEAR in p -> notStatement++
                     !hasFirstPronoun(s.sentence) -> noFirst++
+                    TalkRemark.isRemark(s.sentence) -> aboutTalk++
                     else -> passed += Line(
                         record.id, s.sentence, record.createdAt,
                         fromArchive = record.layer == Layer.PURPLE.name,
@@ -236,7 +242,7 @@ object Portrait {
                 }
             }
         }
-        return Result(own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed), inColumn)
+        return Result(own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed), inColumn, aboutTalk)
     }
 
     /** Запись — текст столбиком (описание объекта, [COLUMN_LINES]). */
@@ -289,7 +295,7 @@ object Portrait {
         val archive = result.chosen.count { it.fromArchive }
         return "$head · его записей ${result.records}, предложений ${result.sentences}" +
             " · снято: столбиком ${result.inColumn}, обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
-            " без «я/мой» ${result.noFirstPronoun}" +
+            " без «я/мой» ${result.noFirstPronoun}, о разговоре ${result.aboutTalk}" +
             " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" +
             (if (fed) " · подано модели" else " · модели не подано" + (whyNotFed?.let { " — $it" } ?: "")) +
             " · не грелось"
