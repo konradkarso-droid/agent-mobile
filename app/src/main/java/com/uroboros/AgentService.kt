@@ -13,6 +13,7 @@ import android.os.PowerManager
 import androidx.documentfile.provider.DocumentFile
 import com.uroboros.initiative.CuriositySource
 import com.uroboros.initiative.FirstOfSources
+import com.uroboros.initiative.GapSource
 import com.uroboros.initiative.SelfGapSource
 import com.uroboros.initiative.InitiativeDecision
 import com.uroboros.initiative.InitiativeSource
@@ -226,7 +227,8 @@ class AgentService : Service() {
     /** Повод заговорить первым. Источник пока один — см. [InitiativeSource]. */
     /**
      * Поводы заговорить первым, по порядку: выбрать себе имя (пробел о себе —
-     * не чаще раза за разговор), затем любопытство о сне.
+     * не чаще раза за разговор), затем любопытство о сне, затем разрыв — «что
+     * нового с прошлого раза» (сон конкретнее, поэтому раньше).
      */
     private val initiativeSource: InitiativeSource by lazy {
         val turns = ProcessObjects.get(applicationContext).turns
@@ -234,6 +236,7 @@ class AgentService : Service() {
             listOf(
                 SelfGapSource(turns, SelfGapReader(applicationContext, turns.store)),
                 CuriositySource(applicationContext),
+                GapSource(turns, conversationTimes),
             )
         )
     }
