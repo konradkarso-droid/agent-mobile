@@ -2924,7 +2924,12 @@ class MainActivity : AppCompatActivity() {
             val tail = it.substringAfter('\n', missingDelimiterValue = "")
             head + BUILD_SELF_LINK + (if (tail.isEmpty()) "" else "\n$tail")
         }
-        group("Движок и стена", engineParamsLine, adapterLine, promptCacheLine, buildSelf, turns.wallChangeLine)
+        // Накладка читается у движка при каждом показе, а не берётся из
+        // запомненной при загрузке экраном: модель перезагружает и тело агента
+        // (ночная накладка, AgentService.loadForNight), и запомненная строка
+        // показывала бы прошлую загрузку. До первой загрузки экраном — пусто.
+        val adapterNow = adapterLine?.let { llmEngine.getAdapterReport() }
+        group("Движок и стена", engineParamsLine, adapterNow, promptCacheLine, buildSelf, turns.wallChangeLine)
         if (buildSelf != null && buildSelfLinked) {
             val end = metrics.lastIndexOf(BUILD_SELF_LINK) + BUILD_SELF_LINK.length
             val start = end - BUILD_SELF_LINK_WORD.length
