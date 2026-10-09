@@ -173,4 +173,29 @@ class InitiativeDecisionTest {
             InitiativeDecision.meter("владелец молчит 1 мин из 60", 10, "сон «мост»", 11, clock = clock),
         )
     }
+
+    @Test
+    fun `отказ называет своё условие видом, слова те же`() {
+        val cases = listOf(
+            ready.copy(running = true) to InitiativeDecision.Kind.RUNNING,
+            ready.copy(emergencyStop = true) to InitiativeDecision.Kind.EMERGENCY_STOP,
+            ready.copy(powerKnown = false) to InitiativeDecision.Kind.POWER_UNKNOWN,
+            ready.copy(zoneNormal = false) to InitiativeDecision.Kind.ZONE,
+            ready.copy(watchdogRefusal = "заряд 20%") to InitiativeDecision.Kind.WATCHDOG,
+            ready.copy(engineBusy = true) to InitiativeDecision.Kind.ENGINE_BUSY,
+            ready.copy(timesUnreadable = "сбой") to InitiativeDecision.Kind.TIMES_UNREADABLE,
+            ready.copy(ownerReplyAt = null) to InitiativeDecision.Kind.OWNER_NEVER,
+            ready.copy(ownerReplyAt = now - minute) to InitiativeDecision.Kind.SILENCE_SHORT,
+            ready.copy(lastInitiativeAt = now - minute) to InitiativeDecision.Kind.AWAITING,
+            ready.copy(sourceRefusal = "лидера нет") to InitiativeDecision.Kind.NOTHING_TO_SAY,
+            ready.copy(modelChosen = false) to InitiativeDecision.Kind.NO_MODEL,
+        )
+        assertEquals("каждое условие проверено", InitiativeDecision.Kind.values().toSet(), cases.map { it.second }.toSet())
+        cases.forEach { (inputs, kind) ->
+            val r = InitiativeDecision.check(inputs)!!
+            assertEquals(kind, r.kind)
+            assertEquals(refusal(inputs), r.words)
+        }
+        assertNull(InitiativeDecision.check(ready))
+    }
 }
