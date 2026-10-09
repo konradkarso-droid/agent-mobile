@@ -37,6 +37,7 @@ import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ModelFolder
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.initiative.InitiativeHolder
+import com.uroboros.memory.nav.OwnCorrection
 import com.uroboros.llm.EchoCheck
 import com.uroboros.llm.EngineLines
 import com.uroboros.llm.ConversationTurns
@@ -420,6 +421,13 @@ class MainActivity : AppCompatActivity() {
      */
     private var autoSavedCount = 0
     private var autoSavedRepeats = 0
+
+    /**
+     * Последняя поправка о себе (nav.OwnCorrection): что сняла последняя
+     * автозапись, которая хоть что-то сняла. null — в этом разговоре не было.
+     * Живёт как счёт автозаписи — разговор.
+     */
+    private var correctionLine: String? = null
 
     /**
      * Две строки о контрольной точке, намеренно НЕ слитые в одну.
@@ -1763,6 +1771,7 @@ class MainActivity : AppCompatActivity() {
         RejectPath.QUEUE.name -> "из очереди"
         RejectPath.DISPUTE.name -> "из спора"
         RejectPath.MISTAKE.name -> "как ошибочная"
+        RejectPath.CORRECTED.name -> "поправлена в разговоре"
         else -> "путь «$via»"
     }
 
@@ -2638,6 +2647,7 @@ class MainActivity : AppCompatActivity() {
         // вместе с ним. Записи из памяти при этом никуда не деваются —
         // обнуляется показание, а не память.
         autoSavedCount = 0
+        correctionLine = null
         autoSavedRepeats = 0
         binding.textResults.text = ""
         renderMetricsPanel()
@@ -2820,7 +2830,8 @@ class MainActivity : AppCompatActivity() {
      * фразу, и это само по себе показание.
      */
     private fun autoSaveLine(): String =
-        "В память само: записей $autoSavedCount · повторов $autoSavedRepeats"
+        "В память само: записей $autoSavedCount · повторов $autoSavedRepeats" +
+            "\n" + (correctionLine ?: "Поправка: в этом разговоре ничего не снято")
 
     private fun renderMetricsPanel() {
         val zone = watchdog.zone.value
@@ -5031,6 +5042,12 @@ class MainActivity : AppCompatActivity() {
                         confidence = ConfidenceLevel.OBSERVED
                     )
                     if (autoSaved.stored) autoSavedCount++ else autoSavedRepeats++
+                    val corrected = when (autoSaved) {
+                        is SaveResult.Saved -> autoSaved.corrected
+                        is SaveResult.SavedNearDuplicate -> autoSaved.corrected
+                        is SaveResult.Duplicate -> emptyList()
+                    }
+                    if (corrected.isNotEmpty()) correctionLine = OwnCorrection.meter(userText, corrected)
 
                     // Отметка «подан» — там же и по той же мерке, что автозапись:
                     // сон подан, когда реплика с принесённым им ушла в движок.
