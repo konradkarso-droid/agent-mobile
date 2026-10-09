@@ -137,6 +137,62 @@ object AdapterFile {
     fun printPart(outcome: Outcome): String =
         if (outcome is Outcome.On) "|lora=${outcome.name}:${outcome.size}" else ""
 
+    /**
+     * Для какой работы грузится модель: разговор ([DAY]) или ночные шаги с
+     * моделью — суд, строка о себе, зеркало, выводы и темы снов ([NIGHT]).
+     *
+     * ЗАЧЕМ ДВЕ. Учёба накладки под разговор может тихо испортить ночную
+     * работу: накладка, лучшая в разговоре, судит хуже и пропускает споры. Это
+     * не видно ни в разговоре, ни на экране суда — только на стенде. Поэтому
+     * ночь может идти на своей накладке, а день — на своей. Слитые в одну, они
+     * спрятали бы именно этот промах.
+     */
+    enum class Role { DAY, NIGHT }
+
+    /** Подпапка папки моделей, где лежит ночная накладка. */
+    const val NIGHT_FOLDER = "ночь"
+
+    /** Чем ночь будет работать: своей накладкой или дневной, и почему. */
+    sealed class NightPlan {
+        /** В подпапке [NIGHT_FOLDER] ровно одна накладка — [index] в её списке. */
+        data class Own(val index: Int) : NightPlan()
+
+        /** Своей нет — ночь идёт на том же, что и день; [why] — словами для экрана. */
+        data class Day(val why: String) : NightPlan()
+    }
+
+    /**
+     * Ночная накладка — по МЕСТУ, а не по имени: всё, что опознано накладкой в
+     * подпапке [NIGHT_FOLDER]. Правило выбора то же, что днём ([pick]): ровно
+     * одна — она, иначе никакая. [nightKinds] = null — подпапки нет.
+     *
+     * ЧЕГО НЕ УМЕЕТ. Не знает, под какую работу учена накладка: дневную,
+     * положенную в подпапку, примет ночной молча. Это на человеке; видно только
+     * строкой ночи ([nightLine]), где названо имя файла.
+     */
+    fun nightPlan(nightKinds: List<Kind>?): NightPlan {
+        if (nightKinds == null) return NightPlan.Day("подпапки «$NIGHT_FOLDER» нет")
+        return when (val p = pick(nightKinds)) {
+            is Pick.None -> NightPlan.Day("в подпапке «$NIGHT_FOLDER» накладки нет")
+            is Pick.Several -> NightPlan.Day("в подпапке «$NIGHT_FOLDER» их ${p.count}, какую брать, не выбираю")
+            is Pick.One -> NightPlan.Own(p.index)
+        }
+    }
+
+    /**
+     * Строка ночи: на чём шли ночные шаги. [outcome] — итог загрузки ночью.
+     * Своя накладка, которую движок не принял, — ночь на голой модели, и это
+     * говорится прямо: тихо подменить ночную голой — тот же промах, что и
+     * дневной.
+     */
+    fun nightLine(plan: NightPlan, outcome: Outcome): String = when (plan) {
+        is NightPlan.Own ->
+            if (outcome is Outcome.On) "Ночь: накладка ${outcome.name} (ночная)"
+            else "Ночь: ночная не подключилась — " + line(outcome).removePrefix("Накладка: ")
+        is NightPlan.Day ->
+            "Ночь: ночной накладки нет — ${plan.why}; ночь на дневной (" + line(outcome) + ")"
+    }
+
     private const val ENGINE_ON = 1
 
     // Типы значений GGUF.
