@@ -5,8 +5,9 @@ package com.uroboros.initiative
  * прибор — общие (см. [InitiativeDecision] и AgentService); источник решает
  * только, есть ли что сказать и что именно.
  *
- * Источников два — выбор имени ([SelfGapSource]) и любопытство
- * ([CuriositySource]); порядок задаёт [FirstOfSources]. Новый источник — ещё
+ * Источники — выбор имени ([SelfGapSource]), любопытство о сне
+ * ([CuriositySource]) и разрыв «что нового» ([GapSource]); порядок задаёт
+ * [FirstOfSources] (список — в AgentService). Новый источник — ещё
  * одна реализация; общие условия он ослабить не может: они проверяются до и
  * после него, а не им.
  */
