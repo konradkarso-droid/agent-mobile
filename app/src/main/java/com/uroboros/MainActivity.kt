@@ -2998,7 +2998,8 @@ class MainActivity : AppCompatActivity() {
             "Сны, любопытство, зеркало",
             dreamsLine, recallLine, mirror, conclusions, curiosityLine(), curiosityAskMeter(),
             deskLine ?: "Доска: ещё не прочитано",
-            AgentService.initiativeLine.value, initiativeHolderLine, selfStateLine,
+            AgentService.initiativeLine.value, *AgentService.initiativeTallyLines.value.toTypedArray(),
+            initiativeHolderLine, selfStateLine,
             gapsLine ?: "Пробелы: чисел хода на экране нет",
             dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
@@ -4120,6 +4121,10 @@ class MainActivity : AppCompatActivity() {
         // Строка «Первым:» приходит от тела агента (AgentService.initiativeLine).
         lifecycleScope.launch {
             AgentService.initiativeLine.collect { renderMetricsPanel() }
+        }
+        // Счёт «Первым» за сутки — оттуда же (AgentService.initiativeTallyLines).
+        lifecycleScope.launch {
+            AgentService.initiativeTallyLines.collect { renderMetricsPanel() }
         }
         lifecycleScope.launch {
             combine(watchdog.zone, watchdog.power) { _, _ -> Unit }

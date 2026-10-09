@@ -78,22 +78,39 @@ object InitiativeDecision {
         val modelChosen: Boolean,
     )
 
+    /**
+     * Какое общее условие не выполнено — для счёта за сутки ([InitiativeTally]).
+     * Порядок и слова — одни, в [check]; вид здесь только называет условие.
+     */
+    enum class Kind {
+        RUNNING, EMERGENCY_STOP, POWER_UNKNOWN, ZONE, WATCHDOG, ENGINE_BUSY,
+        TIMES_UNREADABLE, OWNER_NEVER, SILENCE_SHORT, AWAITING, NOTHING_TO_SAY, NO_MODEL,
+    }
+
+    /** Отказ: какое условие и словами для прибора. */
+    data class Refusal(val kind: Kind, val words: String)
+
     /** Почему агент сейчас не пишет первым, словами; null — условия выполнены. */
-    fun refusal(i: Inputs): String? {
+    fun refusal(i: Inputs): String? = check(i)?.words
+
+    /** То же, что [refusal], но с видом условия; null — условия выполнены. */
+    fun check(i: Inputs): Refusal? {
         val silentMs = i.ownerReplyAt?.let { i.now - it }
         return when {
-            i.running -> "идёт разбор памяти или сон"
-            i.emergencyStop -> "взведён аварийный стоп"
-            !i.powerKnown -> "сторож ещё не прислал показаний батареи"
-            !i.zoneNormal -> "зона не «норма»"
-            i.watchdogRefusal != null -> i.watchdogRefusal
-            i.engineBusy -> "модель занята"
-            i.timesUnreadable != null -> "не прочиталось, когда писал владелец — ${i.timesUnreadable}"
-            silentMs == null -> "владелец ещё не писал — молчание не с чего считать"
-            silentMs < SILENCE_MS -> "владелец молчит ${minutes(silentMs)} мин из ${minutes(SILENCE_MS)}"
-            awaiting(i.lastInitiativeAt, i.ownerReplyAt) -> "прошлое сообщение первым ещё без ответа"
-            i.sourceRefusal != null -> "нечего сказать: ${i.sourceRefusal}"
-            !i.modelChosen -> "модель ни разу не выбиралась — загружать нечего"
+            i.running -> Refusal(Kind.RUNNING, "идёт разбор памяти или сон")
+            i.emergencyStop -> Refusal(Kind.EMERGENCY_STOP, "взведён аварийный стоп")
+            !i.powerKnown -> Refusal(Kind.POWER_UNKNOWN, "сторож ещё не прислал показаний батареи")
+            !i.zoneNormal -> Refusal(Kind.ZONE, "зона не «норма»")
+            i.watchdogRefusal != null -> Refusal(Kind.WATCHDOG, i.watchdogRefusal)
+            i.engineBusy -> Refusal(Kind.ENGINE_BUSY, "модель занята")
+            i.timesUnreadable != null ->
+                Refusal(Kind.TIMES_UNREADABLE, "не прочиталось, когда писал владелец — ${i.timesUnreadable}")
+            silentMs == null -> Refusal(Kind.OWNER_NEVER, "владелец ещё не писал — молчание не с чего считать")
+            silentMs < SILENCE_MS ->
+                Refusal(Kind.SILENCE_SHORT, "владелец молчит ${minutes(silentMs)} мин из ${minutes(SILENCE_MS)}")
+            awaiting(i.lastInitiativeAt, i.ownerReplyAt) -> Refusal(Kind.AWAITING, "прошлое сообщение первым ещё без ответа")
+            i.sourceRefusal != null -> Refusal(Kind.NOTHING_TO_SAY, "нечего сказать: ${i.sourceRefusal}")
+            !i.modelChosen -> Refusal(Kind.NO_MODEL, "модель ни разу не выбиралась — загружать нечего")
             else -> null
         }
     }

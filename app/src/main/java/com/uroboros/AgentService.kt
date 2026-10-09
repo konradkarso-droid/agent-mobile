@@ -16,6 +16,8 @@ import com.uroboros.initiative.FirstOfSources
 import com.uroboros.initiative.SelfGapSource
 import com.uroboros.initiative.InitiativeDecision
 import com.uroboros.initiative.InitiativeSource
+import com.uroboros.initiative.InitiativeTally
+import com.uroboros.initiative.InitiativeTallyStore
 import com.uroboros.llm.AdapterFile
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.ConversationTurns
@@ -268,6 +270,11 @@ class AgentService : Service() {
         AgentLife.recordStart(applicationContext)
         bodyStartedAt = System.currentTimeMillis()
         _alive.value = true
+        // Счёт за сутки — с диска сразу: до первой проверки (через минуту)
+        // шторка показывает его, а не «не прочитан».
+        runCatching {
+            _initiativeTallyLines.value = InitiativeTally.meter(tallyStore.read(), System.currentTimeMillis())
+        }
         scope.launch { sleepLoop() }
     }
 
@@ -303,15 +310,44 @@ class AgentService : Service() {
             } catch (t: Throwable) {
                 showJudgeLine("Проверка суда сорвалась: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}.")
             }
-            try {
+            val checked = try {
                 checkInitiative()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
                 _initiativeLine.value = "Первым: не пишу — проверка сорвалась: " +
                     "${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}"
+                Checked(InitiativeTally.Outcome.CHECK_FAILED)
             }
+            tallyInitiative(checked)
         }
+    }
+
+    /**
+     * Итог одной проверки «пишу первым» для счёта за сутки ([InitiativeTally]).
+     * [why] — причина «нечего сказать» словами источника.
+     */
+    private class Checked(val outcome: InitiativeTally.Outcome, val why: String? = null)
+
+    private val tallyStore by lazy { InitiativeTallyStore(applicationContext) }
+
+    /**
+     * Добавить итог проверки в счёт за сутки. Сорвавшаяся запись счёта — не
+     * повод ронять цикл: строка счёта просто не обновится.
+     */
+    private fun tallyInitiative(checked: Checked) {
+        runCatching {
+            val now = System.currentTimeMillis()
+            val state = InitiativeTally.add(tallyStore.read(), now, checked.outcome, checked.why)
+            tallyStore.write(state)
+            _initiativeTallyLines.value = InitiativeTally.meter(state, now)
+        }
+    }
+
+    /** Отказ проверки как итог для счёта. */
+    private fun InitiativeCheck.checked(): Checked {
+        val r = refusal ?: return Checked(InitiativeTally.Outcome.NOTHING_TO_SAY)
+        return Checked(InitiativeTally.Outcome.of(r.kind), inputs.sourceRefusal)
     }
 
     /** Всё, из чего решается «написать первым»: входы, повод и прочитанные времена. */
@@ -320,7 +356,7 @@ class AgentService : Service() {
         val offer: InitiativeSource.Offer,
         val times: ConversationTimes.Snapshot?,
     ) {
-        val refusal: String? = InitiativeDecision.refusal(inputs)
+        val refusal: InitiativeDecision.Refusal? = InitiativeDecision.check(inputs)
     }
 
     private suspend fun initiativeCheck(): InitiativeCheck {
@@ -372,27 +408,27 @@ class AgentService : Service() {
      * подъём ленты, и после них условия спрашиваются заново: загрузка шла
      * десятки секунд, и за это время владелец мог заговорить.
      */
-    private suspend fun checkInitiative() {
+    private suspend fun checkInitiative(): Checked {
         val first = initiativeCheck()
         first.refusal?.let {
-            showInitiative(it, first.times)
-            return
+            showInitiative(it.words, first.times)
+            return first.checked()
         }
-        val modelUri = ModelPrefs.lastModelUri(applicationContext) ?: return
+        val modelUri = ModelPrefs.lastModelUri(applicationContext) ?: return Checked(InitiativeTally.Outcome.NO_MODEL)
         val objects = ProcessObjects.get(applicationContext)
         val engine = objects.llmEngine
 
         if (!engine.isLoaded) {
             if (modelUri == initiativeFailedUri) {
                 showInitiative("модель не загрузилась — снова попробую после выбора модели или комы", first.times)
-                return
+                return Checked(InitiativeTally.Outcome.LOAD_FAILED)
             }
             _initiativeLine.value = "Первым: загружаю модель, чтобы написать"
             val uri = Uri.parse(modelUri)
             if (!engine.loadModelFromUri(uri)) {
                 initiativeFailedUri = modelUri
                 showInitiative("модель не загрузилась", first.times)
-                return
+                return Checked(InitiativeTally.Outcome.LOAD_FAILED)
             }
             objects.loadedModelName = DocumentFile.fromSingleUri(applicationContext, uri)?.name
                 ?: uri.lastPathSegment
@@ -404,17 +440,17 @@ class AgentService : Service() {
             val resumed = objects.turns.resumeSaved()
             if (resumed is ConversationTurns.Resume.Refused) {
                 showInitiative("разговор с диска не поднят: ${resumed.reason}", first.times)
-                return
+                return Checked(InitiativeTally.Outcome.TURN_FAILED)
             }
         }
 
         val second = initiativeCheck()
         second.refusal?.let {
-            showInitiative(it, second.times)
-            return
+            showInitiative(it.words, second.times)
+            return second.checked()
         }
-        val say = second.offer as? InitiativeSource.Offer.Say ?: return
-        speak(say, objects)
+        val say = second.offer as? InitiativeSource.Offer.Say ?: return second.checked()
+        return Checked(if (speak(say, objects)) InitiativeTally.Outcome.WROTE else InitiativeTally.Outcome.TURN_FAILED)
     }
 
     /**
@@ -425,7 +461,7 @@ class AgentService : Service() {
      * отметка сняла бы ожидание ответа сразу после вопроса. Автозаписи в
      * память у служебной строки тоже нет: это не речь владельца.
      */
-    private suspend fun speak(say: InitiativeSource.Offer.Say, objects: ProcessObjects.Held) {
+    private suspend fun speak(say: InitiativeSource.Offer.Say, objects: ProcessObjects.Held): Boolean {
         _initiativeLine.value = "Первым: пишу — ${say.what}"
         var sentAt: Long? = null
         var sentFailure: String? = null
@@ -448,11 +484,11 @@ class AgentService : Service() {
         val ran = when (outcome) {
             ConversationTurns.Outcome.JournalFull -> {
                 showInitiative("лента заполнена — закрыть её может только владелец", null)
-                return
+                return false
             }
             is ConversationTurns.Outcome.TooLong -> {
                 showInitiative("строка не влезает в остаток ленты: ${outcome.contentChars} зн. из ${outcome.maxChars}", null)
-                return
+                return false
             }
             is ConversationTurns.Outcome.Ran -> outcome
         }
@@ -460,14 +496,14 @@ class AgentService : Service() {
         // уведомление не идёт ничего. Проверка раньше «ни знака»: токены были.
         if (ran.hidden) {
             showInitiative("не написал: годного ответа без повтора и порчи нет — ход скрыт", null)
-            return
+            return false
         }
         if (!ran.appended) {
             showInitiative(
                 "модель не выдала ни знака" + (ran.failure?.let { " (сбой: ${it.javaClass.simpleName})" } ?: ""),
                 null,
             )
-            return
+            return false
         }
 
         val at = sentAt ?: System.currentTimeMillis()
@@ -487,6 +523,7 @@ class AgentService : Service() {
             appendFailure?.let { "подхват ответа не настроен — $it" },
         ).takeIf { it.isNotEmpty() }?.let { at to it.joinToString(" · ") }
         showInitiative(null, runCatching { conversationTimes.read() }.getOrNull())
+        return true
     }
 
     /**
@@ -1249,6 +1286,15 @@ class AgentService : Service() {
          * внутри процесса: после комы — снова «первая проверка».
          */
         val initiativeLine: StateFlow<String> get() = _initiativeLine
+
+        private val _initiativeTallyLines = MutableStateFlow(listOf("Первым сегодня: счёт с диска ещё не прочитан"))
+
+        /**
+         * Строки счёта проверок «пишу первым» за сутки (см. initiative.InitiativeTally):
+         * сегодня и прошлые сутки. До первой проверки в процессе — с диска
+         * (читается при подъёме тела).
+         */
+        val initiativeTallyLines: StateFlow<List<String>> get() = _initiativeTallyLines
 
         /**
          * Почему СУДЬЯ сейчас не может начать, словами для экрана; null — может.
