@@ -14,6 +14,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.uroboros.initiative.CuriositySource
 import com.uroboros.initiative.InitiativeDecision
 import com.uroboros.initiative.InitiativeSource
+import com.uroboros.llm.AdapterFile
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.GenerationEnd
@@ -44,6 +45,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -595,7 +597,7 @@ class AgentService : Service() {
         if (!engine.isLoaded) {
             showJudgeLine("Загружаю модель, чтобы судить.")
             val uri = Uri.parse(modelUri)
-            if (!engine.loadModelFromUri(uri)) {
+            if (!engine.loadModelFromUri(uri, AdapterFile.Role.NIGHT)) {
                 restUntil = System.currentTimeMillis() + SelfJudgeDecision.REST_AFTER_RUN_MS
                 showJudgeLine("Не сужу: модель не загрузилась, следующая попытка через полчаса.")
                 return
@@ -656,7 +658,7 @@ class AgentService : Service() {
         if (!engine.isLoaded) {
             showStepsLine(NightSteps.HEAD + "загружаю модель, чтобы доделать ночь ${clock(night.nightAt)}.")
             val uri = Uri.parse(modelUri)
-            if (!engine.loadModelFromUri(uri)) {
+            if (!engine.loadModelFromUri(uri, AdapterFile.Role.NIGHT)) {
                 stepsRestUntil = System.currentTimeMillis() + NightSteps.REST_AFTER_FAILED_LOAD_MS
                 showStepsLine(NightSteps.HEAD + "модель не загрузилась, следующая попытка через полчаса.")
                 return
@@ -707,7 +709,7 @@ class AgentService : Service() {
             }
             acquireWakeLock(NightSteps.BUDGET_MS)
             val report = try {
-                val outcomes = ArrayList<String>(3)
+                val outcomes = arrayListOf(loadForNight())
                 if (missing.selfLine) {
                     outcomes += noteSelfLine(db, nightAt, SelfLineStep.run(db, objects.mediator, objects.llmEngine) { why() })
                 }
@@ -726,9 +728,12 @@ class AgentService : Service() {
                 }
                 stepsSummary = NightSteps.summary(outcomes)
                 outcomes.joinToString("\n\n")
+            } catch (failed: NightLoadFailed) {
+                NIGHT_LOAD_FAILED
             } catch (cancelled: CancellationException) {
                 STOPPED_REPORT
             } finally {
+                backToDay()
                 releaseWakeLock()
             }
             val after = objects.watchdog.power.value.let { if (it.percentKnown) it.percent else null }
@@ -916,6 +921,7 @@ class AgentService : Service() {
 
             acquireWakeLock(budgetMs)
             val report = try {
+                val nightLine = loadForNight()
                 val judged = JudgeLauncher(applicationContext, objects.llmEngine)
                     .runAndReport(modelIdentity, budgetMs) { done ->
                         val now = System.currentTimeMillis()
@@ -965,15 +971,55 @@ class AgentService : Service() {
                 } else {
                     null
                 }
-                listOfNotNull(judged, selfLine, mirror, conclusions, dreamTopics).joinToString("\n\n")
+                listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics).joinToString("\n\n")
+            } catch (failed: NightLoadFailed) {
+                NIGHT_LOAD_FAILED
             } catch (cancelled: CancellationException) {
                 STOPPED_REPORT
             } finally {
                 unplugWatch?.cancel()
+                backToDay()
                 releaseWakeLock()
             }
             end(listOfNotNull(dreamed, report).joinToString("\n\n"))
         }
+    }
+
+    /**
+     * Перезагрузить модель для ночных шагов — с ночной накладкой, если она
+     * есть (см. AdapterFile.Role). Возвращает строку ночи для отчёта; не
+     * загрузилась — [NightLoadFailed], и ночные шаги не идут.
+     *
+     * Ссылка на модель — та же, по которой судит тело (ModelPrefs): экран
+     * пишет её при каждой удачной загрузке. Без своей ночной накладки
+     * перезагрузки нет — ключ загрузки тот же, что днём.
+     */
+    private suspend fun loadForNight(): String {
+        val objects = ProcessObjects.get(applicationContext)
+        val uri = ModelPrefs.lastModelUri(applicationContext)?.let(Uri::parse) ?: throw NightLoadFailed()
+        currentText = "Загружаю модель для ночи"
+        updateNotificationText()
+        if (!objects.llmEngine.loadModelFromUri(uri, AdapterFile.Role.NIGHT)) throw NightLoadFailed()
+        return objects.llmEngine.getNightAdapterReport() ?: throw NightLoadFailed()
+    }
+
+    /** Ночная загрузка не удалась — см. [loadForNight]. */
+    private class NightLoadFailed : Exception()
+
+    /**
+     * Вернуть дневную загрузку после ночных шагов — при любом исходе: шаги
+     * кончились, оборвались, уступили разговору. Без этого разговор после ночи
+     * шёл бы на ночной накладке, и на экране это было бы видно только по
+     * строке «Накладка:». Идёт до конца прогона, поэтому ход, ждущий конца
+     * прогона, получает уже дневную модель. Не прерывается: оборванная на
+     * середине загрузка оставила бы агента без модели.
+     *
+     * ЧЕГО НЕ УМЕЕТ. Если процесс умер посреди ночи, вернуть некому; после
+     * комы модель не загружена вовсе, и первая же загрузка идёт дневной.
+     */
+    private suspend fun backToDay() = withContext(NonCancellable) {
+        val uri = ModelPrefs.lastModelUri(applicationContext)?.let(Uri::parse) ?: return@withContext
+        ProcessObjects.get(applicationContext).llmEngine.loadModelFromUri(uri, AdapterFile.Role.DAY)
     }
 
     /**
@@ -1150,6 +1196,9 @@ class AgentService : Service() {
 
         /** Между проверками сна — минута бодрствования, см. шапку класса. */
         private const val SLEEP_CHECK_MS = 60_000L
+        /** Ночная загрузка не удалась: шаги с моделью не шли, дневная вернётся сама (backToDay). */
+        private const val NIGHT_LOAD_FAILED =
+            "Ночь: модель не загрузилась — ночные шаги с моделью не шли."
         private const val STOPPED_REPORT =
             "Разбор остановлен до конца. Разобранное сохранено, остальное достанется следующему прогону."
 

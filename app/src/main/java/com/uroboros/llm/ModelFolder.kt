@@ -34,10 +34,27 @@ object ModelFolder {
     fun scan(context: Context, folderUri: Uri): List<Entry> {
         val tree = DocumentFile.fromTreeUri(context, folderUri)
             ?: throw IllegalStateException("папка недоступна")
-        return tree.listFiles()
+        return entriesOf(context, tree)
+    }
+
+    /**
+     * Файлы подпапки ночной накладки ([AdapterFile.NIGHT_FOLDER]); null —
+     * подпапки нет. В список моделей подпапка не попадает: [scan] берёт
+     * только файлы самой папки. Бросает, если папка моделей недоступна.
+     */
+    fun scanNight(context: Context, folderUri: Uri): List<Entry>? {
+        val tree = DocumentFile.fromTreeUri(context, folderUri)
+            ?: throw IllegalStateException("папка недоступна")
+        val night = tree.listFiles().firstOrNull {
+            it.isDirectory && it.name?.trim()?.equals(AdapterFile.NIGHT_FOLDER, ignoreCase = true) == true
+        } ?: return null
+        return entriesOf(context, night)
+    }
+
+    private fun entriesOf(context: Context, dir: DocumentFile): List<Entry> =
+        dir.listFiles()
             .filter { it.isFile && it.name?.endsWith(".gguf", ignoreCase = true) == true }
             .map { Entry(it, kindOf(context, it.uri)) }
-    }
 
     /** Модели на выбор: всё, что не опознано накладкой (см. [AdapterFile]). */
     fun models(entries: List<Entry>): List<DocumentFile> =

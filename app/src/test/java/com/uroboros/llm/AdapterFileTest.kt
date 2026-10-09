@@ -192,4 +192,57 @@ class AdapterFileTest {
         for (l in lines) assertTrue(l, l.startsWith("Накладка: нет — "))
         assertEquals(lines.size, lines.toSet().size)
     }
+
+    // ---- Ночная накладка: подпапка «ночь» ----
+
+    private val A = AdapterFile.Kind.ADAPTER
+    private val M = AdapterFile.Kind.MODEL
+
+    @Test
+    fun `подпапки нет — ночь на дневной`() {
+        val plan = AdapterFile.nightPlan(null)
+        assertTrue(plan is AdapterFile.NightPlan.Day)
+        assertTrue((plan as AdapterFile.NightPlan.Day).why.contains("подпапки"))
+    }
+
+    @Test
+    fun `в подпапке пусто или одни модели — ночь на дневной`() {
+        assertTrue(AdapterFile.nightPlan(emptyList()) is AdapterFile.NightPlan.Day)
+        assertTrue(AdapterFile.nightPlan(listOf(M, AdapterFile.Kind.UNKNOWN)) is AdapterFile.NightPlan.Day)
+    }
+
+    @Test
+    fun `две ночных — никакая, ночь на дневной`() {
+        val plan = AdapterFile.nightPlan(listOf(A, M, A))
+        assertTrue(plan is AdapterFile.NightPlan.Day)
+        assertTrue((plan as AdapterFile.NightPlan.Day).why.contains("2"))
+    }
+
+    @Test
+    fun `одна ночная — она, по месту среди файлов подпапки`() {
+        assertEquals(AdapterFile.NightPlan.Own(1), AdapterFile.nightPlan(listOf(M, A)))
+    }
+
+    @Test
+    fun `строка ночи называет ночную накладку`() {
+        assertEquals(
+            "Ночь: накладка n5.gguf (ночная)",
+            AdapterFile.nightLine(AdapterFile.NightPlan.Own(0), AdapterFile.Outcome.On("n5.gguf", 1)),
+        )
+    }
+
+    @Test
+    fun `ночная не подключилась — сказано прямо, а не выдано за ночную`() {
+        val l = AdapterFile.nightLine(AdapterFile.NightPlan.Own(0), AdapterFile.Outcome.Rejected("n5.gguf"))
+        assertTrue(l, l.startsWith("Ночь: ночная не подключилась — "))
+        assertTrue(l, !l.contains("(ночная)"))
+    }
+
+    @Test
+    fun `ночь на дневной — названы и причина, и дневная`() {
+        val l = AdapterFile.nightLine(AdapterFile.NightPlan.Day("подпапки «ночь» нет"), AdapterFile.Outcome.On("n7.gguf", 1))
+        assertTrue(l, l.startsWith("Ночь: ночной накладки нет — подпапки «ночь» нет"))
+        assertTrue(l, l.contains("Накладка: n7.gguf"))
+        assertTrue(l, !l.contains("(ночная)"))
+    }
 }

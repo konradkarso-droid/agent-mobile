@@ -648,9 +648,28 @@ class LlmEngine(
     @Volatile
     private var adapterOutcome: AdapterFile.Outcome = AdapterFile.Outcome.NoFolder
 
+    /**
+     * С какой ролью загружена нынешняя модель и, для ночи, какой план ночной
+     * накладки был при загрузке. null — модель не загружена из папки.
+     */
+    @Volatile
+    private var loadedNight: AdapterFile.NightPlan? = null
+
     /** Строка для экрана о накладке; каждое «нет» с причиной. */
-    fun getAdapterReport(): String =
-        if (!engine.isLoaded) "Накладка: модель не загружена" else AdapterFile.line(adapterOutcome)
+    fun getAdapterReport(): String = when {
+        !engine.isLoaded -> "Накладка: модель не загружена"
+        loadedNight is AdapterFile.NightPlan.Own && adapterOutcome is AdapterFile.Outcome.On ->
+            AdapterFile.line(adapterOutcome) + " (ночная)"
+        else -> AdapterFile.line(adapterOutcome)
+    }
+
+    /**
+     * Строка ночи — на чём идут ночные шаги; null — модель сейчас загружена не
+     * для ночи. Читается сразу после ночной загрузки ([loadModelFromUri] с
+     * [AdapterFile.Role.NIGHT]).
+     */
+    fun getNightAdapterReport(): String? =
+        loadedNight?.takeIf { engine.isLoaded }?.let { AdapterFile.nightLine(it, adapterOutcome) }
 
     /**
      * Найти накладку в папке моделей и заказать её движку к ближайшей загрузке.
@@ -658,37 +677,71 @@ class LlmEngine(
      * Вызывается перед КАЖДОЙ загрузкой: заказ у движка разовый, и загрузка
      * без нового заказа пошла бы голой. Возвращает выбор, имя и размер
      * выбранного файла и удалось ли его открыть — для [AdapterFile.outcome].
+     *
+     * Ночью ([AdapterFile.Role.NIGHT]) сперва смотрится подпапка ночной
+     * накладки; своей нет — ночь берёт то же, что и день, и план это помнит
+     * для строки ночи (см. [AdapterFile.nightPlan]).
      */
-    private suspend fun orderAdapterFromFolder(): AdapterOrder {
+    private suspend fun orderAdapterFromFolder(role: AdapterFile.Role): AdapterOrder {
         val folder = ModelFolder.folderUri(context)
-            ?: return AdapterOrder(null, null, 0, false).also { engine.orderAdapter(context, null) }
+            ?: return AdapterOrder(null, null, 0, false, nightPlan(role, null))
+                .also { engine.orderAdapter(context, null) }
+        if (role == AdapterFile.Role.NIGHT) {
+            val night = withContext(Dispatchers.IO) {
+                runCatching { ModelFolder.scanNight(context, folder) }.getOrNull()
+            }
+            val plan = AdapterFile.nightPlan(night?.map { it.kind })
+            if (plan is AdapterFile.NightPlan.Own && night != null) {
+                val file = night[plan.index].file
+                val opened = engine.orderAdapter(context, file.uri)
+                return AdapterOrder(AdapterFile.Pick.One(plan.index), file.name, file.length(), opened, plan)
+            }
+            return dayOrder(folder, plan)
+        }
+        return dayOrder(folder, null)
+    }
+
+    private fun nightPlan(role: AdapterFile.Role, why: String?): AdapterFile.NightPlan? =
+        if (role == AdapterFile.Role.NIGHT) AdapterFile.NightPlan.Day(why ?: "папки моделей нет") else null
+
+    /** Накладка самой папки моделей — дневная. [night] — план ночи, если грузим для ночи. */
+    private suspend fun dayOrder(folder: Uri, night: AdapterFile.NightPlan?): AdapterOrder {
         val entries = withContext(Dispatchers.IO) {
             runCatching { ModelFolder.scan(context, folder) }.getOrDefault(emptyList())
         }
         val pick = AdapterFile.pick(entries.map { it.kind })
         if (pick !is AdapterFile.Pick.One) {
             engine.orderAdapter(context, null)
-            return AdapterOrder(pick, null, 0, false)
+            return AdapterOrder(pick, null, 0, false, night)
         }
         val file = entries[pick.index].file
         val opened = engine.orderAdapter(context, file.uri)
-        return AdapterOrder(pick, file.name, file.length(), opened)
+        return AdapterOrder(pick, file.name, file.length(), opened, night)
     }
 
-    /** Итог поиска накладки перед загрузкой; pick = null — папки моделей нет. */
+    /**
+     * Итог поиска накладки перед загрузкой; pick = null — папки моделей нет.
+     * [night] — план ночи, если грузили для ночи; null — грузили для дня.
+     */
     private class AdapterOrder(
         val pick: AdapterFile.Pick?,
         val name: String?,
         val size: Long,
         val opened: Boolean,
+        val night: AdapterFile.NightPlan?,
     ) {
         /** Что стало с накладкой, по ответу движка после загрузки. */
         fun outcome(engineState: Int): AdapterFile.Outcome =
             pick?.let { AdapterFile.outcome(it, name, size, opened, engineState) }
                 ?: AdapterFile.Outcome.NoFolder
 
-        /** Чем этот поиск отличается от другого — для решения, грузить ли заново. */
-        val key: String = when (pick) {
+        /**
+         * Чем этот поиск отличается от другого — для решения, грузить ли заново.
+         * Своя ночная накладка помечена отдельно: файл с тем же именем и
+         * размером в подпапке ночи — другой файл. Ночь на дневной накладке
+         * даёт тот же ключ, что и день, и лишней перезагрузки не вызывает.
+         */
+        val key: String = (if (night is AdapterFile.NightPlan.Own) "ночь:" else "") + when (pick) {
             null -> "папки нет"
             is AdapterFile.Pick.None -> "накладки нет"
             is AdapterFile.Pick.Several -> "накладок ${pick.count}"
@@ -722,6 +775,7 @@ class LlmEngine(
             loadedSource = modelPath
             adapterOutcome = AdapterFile.Outcome.NoFolder
             loadedAdapterKey = null
+            loadedNight = null
             loadLearned()
             configureAfterLoad(
                 sourceIdentity = file.name + ":" + file.length(),
@@ -742,13 +796,18 @@ class LlmEngine(
      * Та же модель, уже загруженная, второй раз не грузится: второй зовущий,
      * дождавшись замка, получает готовую. См. [loadLock]. «Та же» — и с той же
      * накладкой: положил или убрал файл накладки — выбор модели грузит заново.
+     *
+     * [role] — для какой работы (см. [AdapterFile.Role]). Смена роли грузит
+     * модель заново, только если у ночи своя накладка: подключить другую к уже
+     * загруженной модели движок не умеет (см. nativeSetAdapterFd).
      */
-    suspend fun loadModelFromUri(uri: Uri): Boolean = loadLock.withLock {
-        val adapter = orderAdapterFromFolder()
+    suspend fun loadModelFromUri(uri: Uri, role: AdapterFile.Role = AdapterFile.Role.DAY): Boolean = loadLock.withLock {
+        val adapter = orderAdapterFromFolder(role)
         if (engine.isLoaded && loadedSource == uri.toString() && loadedAdapterKey == adapter.key) {
             // Заказ не пригодился: грузить нечего, а оставленный заказ ушёл бы
             // к чужой загрузке.
             engine.orderAdapter(context, null)
+            loadedNight = adapter.night
             return@withLock true
         }
         val params = GGMLEngine.getRecommendedParams(context)
@@ -769,6 +828,7 @@ class LlmEngine(
             loadedSource = uri.toString()
             adapterOutcome = adapter.outcome(engine.adapterState)
             loadedAdapterKey = adapter.key
+            loadedNight = adapter.night
             loadLearned()
             configureAfterLoad(
                 // Подключённая накладка меняет модель: обсчитанное без неё
