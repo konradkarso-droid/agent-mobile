@@ -2,6 +2,7 @@ package com.uroboros.llm
 
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.Sentences
+import com.uroboros.memory.nav.PersonForm
 
 /**
  * Эхо в ответе агента: предложение, повторяющее уже сказанное, вместо ответа.
@@ -13,8 +14,12 @@ import com.uroboros.memory.Sentences
  *  - петля в ответе — предложение ответа повторяет более раннее предложение
  *    ЭТОГО ЖЕ ответа (см. [LOOP_SHARE]). Повтор себя её не видит: он сверяет
  *    только с прошлыми ответами, а петля рождается внутри одного;
- *  - зеркало — предложение ответа собрано из слов реплики владельца этого же
- *    хода («А сейчас не вспомнишь?» → «Нет, сейчас не вспомнишь»);
+ *  - зеркало — предложение ответа собрано из слов одного предложения реплики
+ *    владельца этого же хода: повтор его утверждения («Правильно: сегодня мы
+ *    просто болтаем» на «Сегодня мы просто болтаем»), его вопрос, возвращённый
+ *    назад, или его «ты», оставленное в ответе («А сейчас не вспомнишь?» →
+ *    «Нет, сейчас не вспомнишь»). Ответ на вопрос его же словами и ответ на
+ *    приветствие зеркалом не считаются — см. [mirrorOf];
  *  - ответ служебной строке — предложение ответа собрано из слов служебного
  *    блока реплики этого же хода (см. [serviceBlocks]).
  * Слитые в один счёт, они не дали бы увидеть, какой из них пошёл на убыль.
@@ -192,7 +197,6 @@ object EchoCheck {
         earlierAnswers: List<String>,
         serviceBlocks: List<String> = emptyList(),
     ): Result {
-        val questionStems = if (question.isBlank()) emptySet() else RiskTrigger.echoStems(question)
         val earlierSentences = earlierAnswers
             .flatMap { Sentences.split(it) }
             .map { RiskTrigger.echoStems(it) }
@@ -200,7 +204,7 @@ object EchoCheck {
         val serviceStems = serviceBlocks.map { it to RiskTrigger.echoStems(it) }.filter { it.second.isNotEmpty() }
 
         var selfRepeat: String? = null
-        var mirror: String? = null
+        val mirror = mirrorOf(answer, question)
         var serviceReply: String? = null
         var serviceBlock: String? = null
         var loop: String? = null
@@ -217,9 +221,6 @@ object EchoCheck {
                 loopAt = index + 1
             }
             ownEarlier.add(stems)
-            if (mirror == null && questionStems.isNotEmpty() && covered(stems, questionStems, MIN_SHARE)) {
-                mirror = sentence
-            }
             // Одно предложение одного прошлого ответа, а не все их слова вместе:
             // слова, рассыпанные по трём ответам, — это не повтор фразы.
             if (selfRepeat == null && earlierSentences.any { covered(stems, it, MIN_SHARE) }) {
@@ -234,6 +235,87 @@ object EchoCheck {
             }
         }
         return Result(selfRepeat, mirror, serviceReply, serviceBlock, loop, loopAt)
+    }
+
+    /**
+     * Слова согласия, которые не считаются при мере зеркала. Модель начинает с
+     * них пересказ реплики («Правильно: …», «Понял: …»), и одно такое своё слово
+     * опускало долю общих основ ниже [MIN_SHARE]: «Правильно: сегодня мы просто
+     * болтаем» — три основы из четырёх, 0.75. Без них остаётся то, что
+     * пересказано. Объявленный список, не подобранный: слова, которыми
+     * подтверждают сказанное. Слова отказа («нет») в нём нет: «нет» меняет
+     * смысл повторённого, а не подтверждает его.
+     */
+    val AGREEMENT_WORDS: Set<String> = stemsOf(
+        "правильно", "верно", "понял", "поняла", "помню", "хорошо", "действительно",
+        "точно", "конечно", "именно", "согласен", "ясно",
+    )
+
+    /**
+     * Слова приветствия и прощания. Предложение владельца, все основы которого
+     * отсюда («Доброй тебе ночи», «Доброе утро»), отвечается теми же словами, и
+     * это не эхо, а обычай. Объявленный список, не подобранный.
+     */
+    val GREETING_WORDS: Set<String> = stemsOf(
+        "доброй", "добрый", "доброе", "доброго", "спокойной", "ночи", "утра", "утро",
+        "вечер", "вечера", "день", "дня", "привет", "пока", "спасибо", "тебе", "вам",
+    )
+
+    private fun stemsOf(vararg words: String): Set<String> =
+        words.flatMapTo(HashSet()) { RiskTrigger.echoStems(it) }
+
+    /**
+     * Первое предложение ответа, отражающее реплику владельца, или null.
+     *
+     * МЕРА — та же, что у прочих видов эха: основы [RiskTrigger.echoStems],
+     * доля [MIN_SHARE], не меньше [MIN_STEMS] основ; только из основ ответа
+     * сначала убираются [AGREEMENT_WORDS]. Сверка — с ОДНИМ предложением
+     * реплики, а не со всеми её словами вместе: слова, собранные из разных
+     * предложений, — это не пересказ фразы (то же правило у повтора себя).
+     *
+     * ЗЕРКАЛО — ТРИ СЛУЧАЯ:
+     *  - предложение ответа само вопрос («Что нового у тебя сегодня?» на «Что у
+     *    тебя нового сегодня?») — агент вернул вопрос назад;
+     *  - отражено утверждение владельца, кроме приветствия ([GREETING_WORDS]) —
+     *    повтор вместо ответа, в том числе подтверждение повтором и чужое «я»
+     *    («У меня — ничего особенного» на те же слова владельца);
+     *  - отражён вопрос, и «ты» вопроса осталось в ответе: и там и там есть
+     *    второе лицо ([PersonForm.ofSentence]) — «Нет, сейчас не вспомнишь» на
+     *    «А сейчас не вспомнишь?».
+     * Ответ на вопрос его же словами («В сутках 24 часа» на «Сколько часов в
+     * сутках?», «Ты — Иван» на «Кто я?») — не зеркало: слова вопроса и есть
+     * слова ответа.
+     *
+     * ЧЕГО НЕ УМЕЕТ:
+     *  - смысла не видит: перефраз без общих основ не ловится;
+     *  - повтор, о котором просили («повтори за мной», «разбери предложение на
+     *    части»), ловится как зеркало — просьбу оно не читает;
+     *  - утверждение владельца, на которое законно ответить его словами
+     *    (продолжение его же перечня), ловится так же;
+     *  - «ты» в ответе на вопрос с «ты» бывает и законным («Ты спросил — я
+     *    отвечу»), если остальные основы собраны из вопроса.
+     * Ход, начатый агентом (пустой `question`), зеркала не имеет.
+     */
+    fun mirrorOf(answer: String, question: String): String? {
+        if (question.isBlank()) return null
+        val owner = Sentences.split(question)
+            .map { it to RiskTrigger.echoStems(it) }
+            .filter { it.second.isNotEmpty() }
+        if (owner.isEmpty()) return null
+        for (sentence in Sentences.split(answer)) {
+            val stems = RiskTrigger.echoStems(sentence) - AGREEMENT_WORDS
+            if (stems.size < MIN_STEMS) continue
+            val (ownerSentence, ownerStems) = owner.firstOrNull { covered(stems, it.second, MIN_SHARE) } ?: continue
+            if (sentence.trimEnd().endsWith("?")) return sentence
+            val ownerAsked = ownerSentence.trimEnd().endsWith("?")
+            if (!ownerAsked) {
+                if (ownerStems.all { it in GREETING_WORDS }) continue
+                return sentence
+            }
+            val second = PersonForm.Person.SECOND
+            if (second in PersonForm.ofSentence(sentence) && second in PersonForm.ofSentence(ownerSentence)) return sentence
+        }
+        return null
     }
 
     /**
