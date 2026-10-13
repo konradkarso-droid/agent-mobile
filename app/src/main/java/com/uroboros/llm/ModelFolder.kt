@@ -61,7 +61,15 @@ object ModelFolder {
         entries.filter { it.kind != AdapterFile.Kind.ADAPTER }.map { it.file }
 
     /** Файл не прочитался — [AdapterFile.Kind.UNKNOWN]: остаётся в моделях. */
-    private fun kindOf(context: Context, uri: Uri): AdapterFile.Kind = try {
+    private fun kindOf(context: Context, uri: Uri): AdapterFile.Kind =
+        header(context, uri)?.let(AdapterFile::kindOf) ?: AdapterFile.Kind.UNKNOWN
+
+    /** Архитектура файла по заголовку ([AdapterFile.architectureOf]); null — не прочиталась. */
+    fun architectureOf(context: Context, uri: Uri): String? =
+        header(context, uri)?.let(AdapterFile::architectureOf)
+
+    /** Начало файла длиной до [AdapterFile.HEADER_BYTES]; null — не открылся. */
+    private fun header(context: Context, uri: Uri): ByteArray? = try {
         context.contentResolver.openInputStream(uri)?.use { input ->
             val buf = ByteArray(AdapterFile.HEADER_BYTES)
             var got = 0
@@ -70,9 +78,9 @@ object ModelFolder {
                 if (n < 0) break
                 got += n
             }
-            AdapterFile.kindOf(buf.copyOf(got))
-        } ?: AdapterFile.Kind.UNKNOWN
+            buf.copyOf(got)
+        }
     } catch (e: Exception) {
-        AdapterFile.Kind.UNKNOWN
+        null
     }
 }
