@@ -104,6 +104,7 @@ import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.Retelling
+import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
@@ -2994,7 +2995,7 @@ class MainActivity : AppCompatActivity() {
         // глаголов на -у/-ю в адресе (nav.RetellHolder.meterLine).
         group(
             "Память", recordsQuestionsLine, circleLine, recordsSources, mirrorSelection, drift, portraitMeter,
-            nameMeter, RetellHolder.meterLine(), cloud,
+            nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(), cloud,
             touchesLine, selfLeader,
         )
         // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
@@ -4076,6 +4077,14 @@ class MainActivity : AppCompatActivity() {
         // причина видна в строке «Зеркало в отборе:».
         lifecycleScope.launch(Dispatchers.IO) {
             RetellHolder.load { assets.open(RETELL_TABLE_ASSET) }
+            withContext(Dispatchers.Main) { renderMetricsPanel() }
+        }
+
+        // Словарь начальных форм (nav.LemmaHolder): один раз за процесс, не в
+        // главном потоке. Потребителей у него пока нет — грузится ради строки
+        // «Словарь начальных форм:» в «Подробно», чтобы цена была видна.
+        lifecycleScope.launch(Dispatchers.IO) {
+            LemmaHolder.load { assets.open(LEMMA_DICTIONARY_ASSET) }
             withContext(Dispatchers.Main) { renderMetricsPanel() }
         }
 
@@ -5650,6 +5659,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         /** Таблица глаголов для разворота (nav.RetellTable) в app/src/main/assets. */
         private const val RETELL_TABLE_ASSET = "verb_person_stems.txt"
+
+        /** Словарь начальных форм (nav.LemmaDictionary) в app/src/main/assets. */
+        private const val LEMMA_DICTIONARY_ASSET = "lemma_forms.txt"
 
         /** Трафарет детектора порчи слов (llm.WordDamage) в app/src/main/assets. */
         private const val WORD_STENCIL_ASSET = "word_stencil6.bin"
