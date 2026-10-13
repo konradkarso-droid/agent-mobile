@@ -3132,12 +3132,15 @@ class MainActivity : AppCompatActivity() {
                     c.without.sorted().joinToString(", ") { (it + 1).toString() }
             is ConversationTurns.Cause.Damage ->
                 "порча слов «${c.words.joinToString(", ")}» → повторная выборка"
+            is ConversationTurns.Cause.Mirror ->
+                "зеркало «${c.sentence}» → вторая попытка, DRY против реплики"
         }
         // Что тогда значат время и токены — у ConversationTurns.Intercept.secondGlanced.
         val look = if (intercept.secondGlanced) " · вторая глянула на приборы" else ""
         val head = "Перехват: $cause$look · ${"%.1f".format(intercept.secondMs / 1000.0)} с, $tokens"
         val secondFaults = buildList {
             if (intercept.secondRepeats) add("тоже повтор")
+            if (intercept.secondMirrors) add("тоже зеркало")
             if (intercept.secondDamage.isNotEmpty()) add("порча «${intercept.secondDamage.joinToString(", ")}»")
         }.joinToString(", ")
         val third = intercept.third
@@ -5189,6 +5192,7 @@ class MainActivity : AppCompatActivity() {
                             when (cause) {
                                 is ConversationTurns.Cause.Repeat -> "Повтор — вторая попытка"
                                 is ConversationTurns.Cause.Damage -> "Испорчено слово — повторная выборка"
+                                is ConversationTurns.Cause.Mirror -> "Повторил ваши слова — вторая попытка"
                             }
                         )
                         autoScrollIfAtBottom()

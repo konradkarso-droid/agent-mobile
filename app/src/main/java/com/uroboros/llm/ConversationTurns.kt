@@ -279,6 +279,14 @@ class ConversationTurns(
          * куски, как их показать.
          */
         data class Damage(val words: List<String>) : Cause()
+
+        /**
+         * Зеркало реплики владельца ([EchoCheck.mirrorOf]): вторая попытка на
+         * том же запросе, но со штрафом DRY против реплики владельца этого хода
+         * — источник копии реплика, а выкинуть её из запроса нельзя: на неё и
+         * отвечают. [sentence] — первое отражённое предложение.
+         */
+        data class Mirror(val sentence: String) : Cause()
     }
 
     /**
@@ -300,6 +308,8 @@ class ConversationTurns(
      *   тупиков была видна на экране.
      * @property secondDamage порча во втором ответе (пусто — нет или детектор не
      *   работает).
+     * @property secondMirrors второй ответ — зеркало реплики владельца
+     *   ([EchoCheck.mirrorOf]).
      * @property third третья ступень — три варианта; null — не понадобилась
      *   (вторая чиста) или вторая не состоялась.
      * @property secondGlanced вторая попытка позвала приборы, хотя первый проход
@@ -317,6 +327,7 @@ class ConversationTurns(
         val secondDamage: List<String>,
         val third: Third? = null,
         val secondGlanced: Boolean = false,
+        val secondMirrors: Boolean = false,
     )
 
     /**
@@ -331,8 +342,9 @@ class ConversationTurns(
      * @property end чем кончилась выдача вариантов.
      * @property ms сколько она шла.
      * @property tokens сколько токенов выдано — по отчёту движка; null — отчёта нет.
-     * @property dryFed сколько токенов прошлых ответов DRY увидел до выдачи; 0 —
-     *   текст не дошёл до движка, и DRY ленты не видел.
+     * @property dryFed сколько токенов DRY увидел до выдачи (прошлые ответы, а
+     *   при зеркале и реплику владельца); 0 — текст не дошёл до движка, и DRY
+     *   ленты не видел.
      */
     data class Third(
         val variants: List<Pair<String, String?>>,
@@ -670,7 +682,8 @@ class ConversationTurns(
 
     /**
      * Почему перехватывать готовый ответ, или null — не надо. Повтор проверяется
-     * первым: при повторе ответ уходит целиком, и его порча уже не важна.
+     * первым: при повторе ответ уходит целиком, и его порча уже не важна. Зеркало
+     * — вторым, по той же причине.
      * Детектор не загружен ([WordDamageHolder]) — порча не проверяется вовсе,
      * и об этом говорит его строка в «Подробно».
      */
@@ -681,6 +694,7 @@ class ConversationTurns(
         request: () -> Set<String>,
     ): Cause? {
         EchoIntercept.decide(answer, question, history)?.let { return Cause.Repeat(it.sentence, it.without) }
+        EchoCheck.mirrorOf(answer, question)?.let { return Cause.Mirror(it) }
         val damage = WordDamageHolder.damage?.check(answer, request()).orEmpty()
         return if (damage.isEmpty()) null else Cause.Damage(damage)
     }
@@ -705,13 +719,14 @@ class ConversationTurns(
         text: StringBuilder,
         onEvent: (GenerationEvent) -> Unit,
         onPiece: () -> Unit,
+        dryAgainst: String? = null,
         onMetrics: (DecodingMetrics) -> Unit,
     ): String? {
         val held = mutableListOf<GenerationEvent>()
         var holding = true
         // Знак отдаётся сборщику ниже до проверки: тот, что открыл вызов,
         // уже лежит в [text], и выдача обрывается на нём же.
-        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT).transformWhile { event ->
+        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = dryAgainst).transformWhile { event ->
             emit(event)
             text.indexOf(Glance.CALL_OPEN) < 0
         }.collect { event ->
@@ -762,18 +777,19 @@ class ConversationTurns(
     /**
      * Вторая попытка после перехвата. При повторе — запрос без ходов-образцов
      * ([ConversationJournal.messagesFor], `without`); при порче — тот же запрос,
-     * то есть повторная выборка. Закрывает ход сам — при любом исходе, в том
-     * числе при отмене.
+     * то есть повторная выборка; при зеркале — тот же запрос со штрафом DRY
+     * против реплики владельца ([Cause.Mirror]). Закрывает ход сам — при любом
+     * исходе, в том числе при отмене.
      *
-     * ЧТО ЛОЖИТСЯ В ЛЕНТУ. Второй ответ выдан до конца — при ПОВТОРЕ он, а первый
-     * в поле «отброшенный» (модели не подаётся, см. [ConversationJournal.Turn]).
-     * При ПОРЧЕ второй берётся, только если он чист: без порчи и не повтор. Иначе
+     * ЧТО ЛОЖИТСЯ В ЛЕНТУ. Второй ответ выдан до конца — при ПОВТОРЕ и ЗЕРКАЛЕ он,
+     * а первый в поле «отброшенный» (модели не подаётся, см. [ConversationJournal.Turn]).
+     * При ПОРЧЕ второй берётся, только если он чист: без порчи, не повтор и не зеркало. Иначе
      * остаётся первый — повторная выборка, давшая повтор вместо порчи, хуже: копия
      * размножается по ленте, а порча — нет. Вторая попытка оборвана, сбилась или
      * пуста — первый ответ как есть: человек его уже видел целиком, а оборванный
      * второй ответом не является.
      *
-     * ВТОРАЯ ВЫДАНА ДО КОНЦА, НО НЕ ГОДНА (повтор или порча) — ход закрывает
+     * ВТОРАЯ ВЫДАНА ДО КОНЦА, НО НЕ ГОДНА (повтор, зеркало или порча) — ход закрывает
      * третья ступень ([thirdAttempt]). Пересчёта ленты она не добавляет: её запрос
      * — запрос второй попытки плюс одна просьба в конце.
      *
@@ -812,6 +828,7 @@ class ConversationTurns(
         // же трёх прошлых ответов, что и у первого.
         val history = journal.history()
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
+        val dry = if (cause is Cause.Mirror) question else null
         // Доска взгляда — и сюда: повторная попытка отвечает на тот же вопрос
         // о приборах и без доски назвала бы числа из головы.
         val base = journal.messagesFor(content, selfNote, dreamNote, recall, without = without)
@@ -830,6 +847,7 @@ class ConversationTurns(
         var end = GenerationEnd.UNEXPLAINED
         var replaced = false
         var repeats = false
+        var mirrors = false
         var damage = emptyList<String>()
         var needThird = false
         // Слова доски — тоже запрос (см. request в runLocked): своя доска
@@ -840,7 +858,7 @@ class ConversationTurns(
         // отменой — для хода это законченная выдача.
         var cutByCall = false
         try {
-            val before = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }) { metrics = it }
+            val before = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
             if (before != null && tail.isEmpty()) {
                 glancedHere = true
                 onGlance()
@@ -853,7 +871,7 @@ class ConversationTurns(
                 second.clear()
                 pieces = 0
                 metrics = null
-                val again = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }) { metrics = it }
+                val again = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
                 if (again != null) {
                     cutByCall = true
                     if (cutAtCall(second, again)) pieces = 0
@@ -873,12 +891,13 @@ class ConversationTurns(
             val done = pieces > 0 && !failed && end == GenerationEnd.COMPLETED
             if (done) {
                 repeats = EchoIntercept.decide(second.toString(), question, history) != null
+                mirrors = EchoCheck.mirrorOf(second.toString(), question) != null
                 damage = WordDamageHolder.damage?.check(second.toString(), requestHere()).orEmpty()
             }
-            needThird = done && (repeats || damage.isNotEmpty())
+            needThird = done && (repeats || mirrors || damage.isNotEmpty())
             replaced = when (cause) {
-                is Cause.Repeat -> done
-                is Cause.Damage -> done && !repeats && damage.isEmpty()
+                is Cause.Repeat, is Cause.Mirror -> done
+                is Cause.Damage -> done && !repeats && !mirrors && damage.isEmpty()
             }
             // Третья ступень закроет ход сама — при любом своём исходе.
             if (!needThird) {
@@ -906,6 +925,7 @@ class ConversationTurns(
             secondDamage = damage,
             third = third,
             secondGlanced = glancedHere,
+            secondMirrors = mirrors,
         )
     }
 
@@ -919,11 +939,12 @@ class ConversationTurns(
      * только просьба: всё до неё движок уже обсчитал для второй попытки.
      *
      * DRY ВИДИТ — при повторе ответы выкинутых ходов-образцов (источник копии),
-     * при порче — три последних ответа ленты. Без поданного текста он ленты не
+     * при порче — три последних ответа ленты, при зеркале — их же и реплику
+     * владельца этого хода. Без поданного текста он ленты не
      * видит вообще (см. [LlmEngine.DRY_PARAMS_JSON]); сколько дошло — [Third.dryFed].
      *
      * ГОДНЫЙ ВАРИАНТ — не вызов приборов, не строка-вступление (кончается двоеточием: «Конечно, вот три
-     * варианта:»), не повтор себя той же мерой, что у перехвата, и без порчи слов.
+     * варианта:»), не повтор себя и не зеркало той же мерой, что у перехвата, и без порчи слов.
      * Разбор ответа на варианты — у ночного зеркала ([com.uroboros.memory.dream.Mirror.parse]);
      * само ночное зеркало в ответ по-прежнему не пишет, здесь взят только разбор.
      *
@@ -968,7 +989,7 @@ class ConversationTurns(
             without.sorted().map { history[it].agentContent }
         } else {
             history.takeLast(EchoCheck.EARLIER_ANSWERS).map { it.agentContent }
-        }
+        } + (if (cause is Cause.Mirror) listOf(question) else emptyList())
         val startedAt = System.currentTimeMillis()
         val text = StringBuilder()
         var metrics: DecodingMetrics? = null
@@ -1014,6 +1035,7 @@ class ConversationTurns(
                         v.contains("tool_call") || v.contains(Glance.TOOL_NAME) -> "вызов приборов"
                         v.endsWith(":") -> "вступление"
                         EchoIntercept.decide(v, question, history) != null -> "повтор"
+                        EchoCheck.mirrorOf(v, question) != null -> "зеркало"
                         else -> WordDamageHolder.damage?.check(v, request())?.takeIf { it.isNotEmpty() }
                             ?.let { "порча «${it.joinToString(", ")}»" }
                     }
@@ -1046,6 +1068,7 @@ class ConversationTurns(
     private fun reasonOf(cause: Cause): String = when (cause) {
         is Cause.Repeat -> "повтор «${cause.sentence}»"
         is Cause.Damage -> "порча слов «${cause.words.joinToString(", ")}»"
+        is Cause.Mirror -> "зеркало «${cause.sentence}»"
     }
 
     /**
