@@ -5356,9 +5356,13 @@ class MainActivity : AppCompatActivity() {
                     // ровно то, что нужно ходу с нулём; убирается он кнопкой
                     // «Убрать ход».
                     journal.hideTurn(userText, "модель не выдала ни одного знака", emptyList())
+                    // Первый шаг модели различает «модель уверенно закончила»
+                    // и «модель посчитала мусор» — см. first_step_report в
+                    // gguf_lib.cpp. Движок не ждёт: занятый — так и скажет.
+                    val firstStep = " · Первый шаг модели: " + llmEngine.firstStepReport
                     interceptLine = "Перехват: модель не выдала ни одного знака — ход скрыт от " +
                         "агента, на экране заглушка · " + explanation.replace("\n\n", " ") +
-                        " · В ленту не записан, записи не помечены уложенными."
+                        firstStep + " · В ленту не записан, записи не помечены уложенными."
                     binding.textResults.text = renderJournal()
                 } else if (ran.hidden) {
                     // Ход скрыт (ConversationJournal.Hidden): годного ответа

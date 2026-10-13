@@ -348,6 +348,9 @@ static struct {
     uint64_t                      last_gloss_spans = 0;  // см. count_gloss_span
     bool                          last_token_cjk   = false;
 
+    // Отчёт о первом шаге последней генерации разговора (см. first_step_report).
+    std::string                   last_first_step;
+
     // Текст, который штраф DRY должен «помнить» до ответа (см.
     // nativeSetDryHistory). Разовый: забирается следующей генерацией разговора
     // и очищается, даже если DRY выключен. last_dry_fed — сколько токенов
@@ -2084,11 +2087,116 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
     return JNI_TRUE;
 }
 
+/*
+ * Прибор «первый шаг модели»: что модель собиралась сказать первым, по сырым
+ * числам её выхода — до сэмплера, то есть без правила перевода, штрафов и
+ * отсечек.
+ *
+ * ЗАЧЕМ. Пустой ответ («модель не выдала ни одного знака») бывает двух
+ * разных родов, и по самому нулю их не различить:
+ *  - модель уверенно считает, что ответ кончен: «конец ответа» с большой
+ *    вероятностью, остальные числа обычные;
+ *  - модель посчитала мусор: среди чисел сломанные (не числа, бесконечности),
+ *    или вероятность размазана по случайным токенам без всякого смысла.
+ * Первое лечится запросом, второе — движком (сборка, ядра процессора,
+ * кэш). Строка отчёта показывает, какой из двух случаев на руках.
+ *
+ * ЧЕГО НЕ УМЕЕТ. Видит только ПЕРВЫЙ шаг: мусор, начавшийся позже, сюда не
+ * попадает. Вероятности — по сырым числам, а выбирает сэмплер с правилом и
+ * штрафами, поэтому «выбран» может не совпасть с первым из пятёрки. Заполняется
+ * только генерацией разговора (nativeGenerateStreamMultiTurn): одноходовая и
+ * картиночная ветки его не трогают, и после них в отчёте остаётся прежний.
+ */
+static bool utf8_whole(const std::string & s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char)s[i];
+        size_t n = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+        if (n == 0 || i + n > s.size()) return false;
+        for (size_t k = 1; k < n; k++) {
+            if (((unsigned char)s[i + k] & 0xC0) != 0x80) return false;
+        }
+        i += n;
+    }
+    return true;
+}
+
+// Токен словами для отчёта. Кусок буквы (русская буква бывает разрезана между
+// двумя токенами) показывается номером, а не байтами: строка уходит в Java, и
+// оборванная буква там превратилась бы в мусор или сбой.
+static std::string first_step_piece(const llama_vocab * vocab, llama_token id) {
+    char buf[256];
+    int n = llama_token_to_piece(vocab, id, buf, sizeof(buf) - 1, 0, true);
+    if (n <= 0) return "#" + std::to_string(id);
+    std::string p(buf, (size_t)n);
+    if (!utf8_whole(p)) return "#" + std::to_string(id) + " (часть буквы)";
+    std::string out;
+    for (char ch : p) {
+        if (ch == '\n') out += "\\n";
+        else if (ch == '\t') out += "\\t";
+        else out += ch;
+    }
+    return out;
+}
+
+static std::string first_step_report(llama_context * ctx, const llama_vocab * vocab) {
+    const float * lg = llama_get_logits_ith(ctx, -1);
+    if (!lg) return "чисел выхода нет";
+    const int nv = llama_vocab_n_tokens(vocab);
+    int broken = 0;
+    float mx = -INFINITY;
+    for (int i = 0; i < nv; i++) {
+        if (!std::isfinite(lg[i])) { broken++; continue; }
+        if (lg[i] > mx) mx = lg[i];
+    }
+    char head[96];
+    snprintf(head, sizeof(head), "сломанных чисел %d из %d", broken, nv);
+    if (broken == nv) return std::string(head) + " — посчитать вероятности не из чего";
+
+    double sum = 0.0, eog = 0.0;
+    for (int i = 0; i < nv; i++) {
+        if (!std::isfinite(lg[i])) continue;
+        double e = std::exp((double)(lg[i] - mx));
+        sum += e;
+        if (llama_vocab_is_eog(vocab, i)) eog += e;
+    }
+    std::vector<int> ids;
+    ids.reserve(nv);
+    for (int i = 0; i < nv; i++) if (std::isfinite(lg[i])) ids.push_back(i);
+    const size_t k = std::min<size_t>(5, ids.size());
+    std::partial_sort(ids.begin(), ids.begin() + k, ids.end(),
+                      [lg](int a, int b) { return lg[a] > lg[b]; });
+
+    std::string out = head;
+    out += " · вероятнее всего:";
+    for (size_t j = 0; j < k; j++) {
+        char pr[32];
+        snprintf(pr, sizeof(pr), " %.3f", std::exp((double)(lg[ids[j]] - mx)) / sum);
+        out += (j == 0 ? " «" : ", «") + first_step_piece(vocab, ids[j]) + "»" + pr;
+    }
+    char tail[64];
+    snprintf(tail, sizeof(tail), " · «конец ответа» всего %.3f", eog / sum);
+    out += tail;
+    return out;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetFirstStepReport(JNIEnv * env, jobject) {
+    // Не ждать генерацию: спрашивают после неё, а занятый замок значит, что
+    // идёт уже следующая и отчёт сейчас перепишется.
+    std::unique_lock<std::mutex> lock(g_state.gen_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return safe_new_string_utf(env, "идёт генерация — отчёт сейчас перепишется");
+    std::string copy = g_state.last_first_step;
+    lock.unlock();
+    return safe_new_string_utf(env, copy.c_str());
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         JNIEnv * env, jobject, jstring jmessagesJson, jint maxTokens, jobject callback) {
 
     std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    g_state.last_first_step = "до первого шага не дошло";
 
     if (!g_state.model || !g_state.ctx) {
         LOGE("Model not loaded");
@@ -2346,6 +2454,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     while (n_generated < maxTokens && !g_state.cancel_flag.load()) {
         if (!g_state.sampler) break;
 
+        // Первый шаг снимается до выборки: отчёт — по сырым числам (см. first_step_report).
+        if (n_generated == 0) g_state.last_first_step = first_step_report(g_state.ctx, vocab);
         auto ts0 = std::chrono::high_resolution_clock::now();
         count_script_ban_hit();
         llama_token id = common_sampler_sample(g_state.sampler, g_state.ctx, -1);
@@ -2353,6 +2463,10 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         count_gloss_span(id);
         auto ts1 = std::chrono::high_resolution_clock::now();
         g_state.last_sample_us += std::chrono::duration_cast<std::chrono::microseconds>(ts1 - ts0).count();
+        if (n_generated == 0) {
+            g_state.last_first_step += " · выбран «" + first_step_piece(vocab, id) + "»" +
+                (llama_vocab_is_eog(vocab, id) ? " — это конец ответа" : "");
+        }
 
         if (llama_vocab_is_eog(vocab, id)) break;
 

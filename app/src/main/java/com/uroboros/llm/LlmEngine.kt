@@ -1021,6 +1021,9 @@ class LlmEngine(
      */
     val lastDryFed: Int get() = engine.lastDryFed()
 
+    /** Первый шаг модели в последней генерации разговора, см. [GGMLEngine.firstStepReport]. */
+    val firstStepReport: String get() = engine.firstStepReport()
+
     /** Стена, ждущая начала следующего запроса разговора; null — не ждёт. Под [wallLock]. */
     private var pendingWall: String? = null
 
