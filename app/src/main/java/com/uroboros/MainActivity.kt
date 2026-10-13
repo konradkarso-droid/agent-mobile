@@ -5634,7 +5634,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** Таблица глаголов для разворота (nav.RetellTable) в app/src/main/assets. */
-        private const val RETELL_TABLE_ASSET = "verb_person_pairs.txt"
+        private const val RETELL_TABLE_ASSET = "verb_person_stems.txt"
 
         /** Трафарет детектора порчи слов (llm.WordDamage) в app/src/main/assets. */
         private const val WORD_STENCIL_ASSET = "word_stencil6.bin"

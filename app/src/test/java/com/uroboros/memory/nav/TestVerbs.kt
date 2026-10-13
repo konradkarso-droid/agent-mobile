@@ -5,7 +5,7 @@ import java.io.File
 
 /**
  * Словари определителя лица для тестов — те же файлы, что грузит приложение:
- * таблица глаголов (`app/src/main/assets/verb_person_pairs.txt`,
+ * таблица глаголов (`app/src/main/assets/verb_person_stems.txt`,
  * [PersonForm.verbs]) и трафарет слов (`app/src/main/assets/word_stencil6.bin`,
  * [PersonForm.words]). Без них «я» глаголом без местоимения («точу»,
  * «работаю») — «не ясно», и тесты мерили бы не то правило, что на телефоне.
@@ -24,7 +24,7 @@ object TestVerbs {
             ?: error("$name не найден от ${File(".").absolutePath}")
 
     val table: RetellTable by lazy {
-        asset("verb_person_pairs.txt").bufferedReader(Charsets.UTF_8).useLines { RetellTable.parse(it) }
+        asset("verb_person_stems.txt").bufferedReader(Charsets.UTF_8).useLines { RetellTable.readStems(it) }
     }
 
     val stencil: WordDamage by lazy { asset("word_stencil6.bin").inputStream().use { WordDamage.read(it) } }
