@@ -4336,8 +4336,15 @@ class MainActivity : AppCompatActivity() {
                 // выгруженные базы обязаны выглядеть по-разному, иначе пропуск
                 // неотличим от успеха. Текст собирает DatabaseExporter.describe.
                 val outcomes = DatabaseExporter.exportAllToDownloads(applicationContext)
+                // Последний запрос разговора — отдельным файлом рядом с базами:
+                // это не база, и в счёт «Выгружено баз» он не входит.
+                val prompt = DatabaseExporter.exportTextToDownloads(
+                    applicationContext, "последний запрос", "posledniy_zapros",
+                    llmEngine.lastConversationPrompt,
+                )
                 binding.buttonSave.isEnabled = true
-                binding.textResults.text = DatabaseExporter.describe(outcomes)
+                binding.textResults.text = DatabaseExporter.describe(outcomes) + "\n" +
+                    (if (prompt.ok) "${prompt.label}: ${prompt.exportedName}" else "${prompt.label}: ${prompt.failure}")
             }
             true
         }

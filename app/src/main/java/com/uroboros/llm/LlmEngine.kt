@@ -1024,6 +1024,9 @@ class LlmEngine(
     /** Первый шаг модели в последней генерации разговора, см. [GGMLEngine.firstStepReport]. */
     val firstStepReport: String get() = engine.firstStepReport()
 
+    /** Последний запрос разговора целиком, см. [GGMLEngine.lastConversationPrompt]. */
+    val lastConversationPrompt: String get() = engine.lastConversationPrompt()
+
     /** Стена, ждущая начала следующего запроса разговора; null — не ждёт. Под [wallLock]. */
     private var pendingWall: String? = null
 

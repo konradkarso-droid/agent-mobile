@@ -479,6 +479,14 @@ class GGMLEngine {
      */
     fun firstStepReport(): String = GGUFNativeLib.nativeGetFirstStepReport()
 
+    /**
+     * Последний запрос разговора целиком, как он ушёл в токенизатор: стена,
+     * ходы и разметка шаблона. Пустая строка — разговора ещё не было или идёт
+     * генерация. Зачем — у `nativeGetLastConversationPrompt` в `gguf_lib.cpp`.
+     */
+    fun lastConversationPrompt(): String =
+        String(GGUFNativeLib.nativeGetLastConversationPrompt(), Charsets.UTF_8)
+
     /** Set the system prompt prepended to every chat. */
     fun setSystemPrompt(prompt: String) = GGUFNativeLib.nativeSetSystemPrompt(prompt)
 

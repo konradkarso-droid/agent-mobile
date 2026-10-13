@@ -138,6 +138,43 @@ object DatabaseExporter {
         }
 
     /**
+     * Текст файлом в Download — рядом с базами той же выгрузки. Пустой текст
+     * не пишется: файл без содержимого читался бы как «выгружено», хотя
+     * выгружать было нечего.
+     *
+     * Сюда кладётся последний запрос разговора целиком (стена, ходы, разметка
+     * шаблона) — чтобы повторить его на стенде до буквы. В нём личные данные
+     * владельца, как и в базах.
+     */
+    suspend fun exportTextToDownloads(context: Context, label: String, baseName: String, text: String): Outcome =
+        withContext(Dispatchers.IO) {
+            if (text.isEmpty()) return@withContext Outcome(label, null, "нечего выгружать: разговора с загрузки модели не было или сейчас идёт ответ")
+            try {
+                val timestamp = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(Date())
+                val exportName = "${baseName}_$timestamp.txt"
+                val resolver = context.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, exportName)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val itemUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: return@withContext Outcome(label, null, "система отказала в записи в Download")
+                val written = resolver.openOutputStream(itemUri)?.use { out ->
+                    out.write(text.toByteArray(Charsets.UTF_8))
+                    true
+                } ?: false
+                if (!written) return@withContext Outcome(label, null, "файл в Download не открылся на запись")
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(itemUri, values, null, null)
+                Outcome(label, exportName, null)
+            } catch (e: Exception) {
+                Outcome(label, null, "отказ: ${e.javaClass.simpleName} ${e.message.orEmpty()}")
+            }
+        }
+
+    /**
      * Отчёт для экрана: строка на каждую базу с её ярлыком и исходом.
      *
      * Строки различают три случая — выгружено, файла ещё нет, отказ — чтобы
