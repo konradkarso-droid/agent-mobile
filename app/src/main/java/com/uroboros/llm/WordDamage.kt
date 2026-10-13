@@ -47,17 +47,86 @@ import java.io.InputStream
  * [check] по выгрузке журнала с телефона и ручным просмотром отмеченного.
  *
  * Трафарет — `app/src/main/assets/word_stencil6.bin`, формат и источник —
- * рядом, в `word_stencil6_SOURCE.md`. В памяти — массив чисел, около 7 МБ.
+ * рядом, в `word_stencil6_SOURCE.md`. В памяти трафарет лежит сжатым так же,
+ * как в файле ([Packed]), — около 2 МБ; распакованный, он занимал бы около 7.
  *
  * ВТОРОЙ ПОТРЕБИТЕЛЬ — определитель лица (memory.nav.PersonForm.words) через
  * [looksLikeWord]: отличить незнакомое слово от знакомого. Чего трафарет при
  * этом не умеет — то же, что выше: слово из настоящих кусочков он считает
  * настоящим, новое слово — незнакомым.
  */
-class WordDamage private constructor(private val codes: LongArray) {
+class WordDamage private constructor(private val codes: Packed) {
 
     /** Сочетаний в трафарете. */
     val size: Int get() = codes.size
+
+    /**
+     * Сочетания по возрастанию, сжатые блоками по [BLOCK]: первое число блока
+     * лежит целиком ([heads]), остальные — разностями с предыдущим, varint, в
+     * общем массиве байт ([data]) с началом блока в [offsets]. Поиск — двоичный
+     * по первым числам блоков, затем распаковка одного блока.
+     *
+     * Ответ тот же, что у поиска в распакованном массиве; платится распаковкой
+     * до [BLOCK] разностей на сочетание — доли миллисекунды на слово.
+     */
+    private class Packed(val size: Int, val heads: LongArray, val offsets: IntArray, val data: ByteArray) {
+        fun contains(code: Long): Boolean {
+            val at = heads.binarySearch(code)
+            if (at >= 0) return true
+            val block = -at - 2
+            if (block < 0) return false
+            var v = heads[block]
+            var p = offsets[block]
+            val end = if (block + 1 < offsets.size) offsets[block + 1] else data.size
+            while (p < end) {
+                var delta = 0L
+                var shift = 0
+                while (true) {
+                    val b = data[p++].toInt()
+                    delta = delta or ((b and 0x7f).toLong() shl shift)
+                    if (b and 0x80 == 0) break
+                    shift += 7
+                }
+                v += delta
+                if (v == code) return true
+                if (v > code) return false
+            }
+            return false
+        }
+    }
+
+    /** Сборка [Packed] по одному сочетанию, по возрастанию. */
+    private class PackedBuilder(private val size: Int) {
+        private val heads = LongArray((size + BLOCK - 1) / BLOCK)
+        private val offsets = IntArray(heads.size)
+        private var data = ByteArray(size + 16)
+        private var len = 0
+        private var count = 0
+        private var prev = 0L
+
+        fun add(code: Long) {
+            if (count % BLOCK == 0) {
+                heads[count / BLOCK] = code
+                offsets[count / BLOCK] = len
+            } else {
+                var d = code - prev
+                while (true) {
+                    if (len + 1 > data.size) data = data.copyOf(data.size * 2)
+                    val low = (d and 0x7f).toInt()
+                    d = d ushr 7
+                    if (d == 0L) { data[len++] = low.toByte(); break }
+                    data[len++] = (low or 0x80).toByte()
+                }
+            }
+            prev = code
+            count++
+        }
+
+        fun build(): Packed {
+            kotlin.check(count == size) { "сочетаний $count, ожидалось $size" }
+            return Packed(size, heads, offsets, data.copyOf(len))
+        }
+    }
 
     /**
      * Найденные испорченные куски — как их показать человеку; пустой список —
@@ -94,7 +163,7 @@ class WordDamage private constructor(private val codes: LongArray) {
     private fun fits(word: String): Boolean {
         val s = "^" + word + "$"
         for (i in 0..s.length - N) {
-            if (codes.binarySearch(pack(s, i)) < 0) return false
+            if (!codes.contains(pack(s, i))) return false
         }
         return true
     }
@@ -110,6 +179,14 @@ class WordDamage private constructor(private val codes: LongArray) {
     companion object {
         /** Длина сочетания в знаках вместе с «^» и «$». */
         const val N = 6
+
+        /**
+         * Сочетаний в блоке сжатого трафарета ([Packed]). Объявленное число, не
+         * подобранное: чем больше, тем меньше памяти на первые числа блоков и
+         * тем дольше распаковка блока при поиске; 64 — около 110 КБ на первые
+         * числа при 900 тысячах сочетаний.
+         */
+        const val BLOCK = 64
 
         private val WORD = Regex("[а-я]+")
         private val CAPS = Regex("(?<![\\p{L}\\p{N}_])[А-ЯЁ]{2,}(?![\\p{L}\\p{N}_])")
@@ -159,7 +236,7 @@ class WordDamage private constructor(private val codes: LongArray) {
             kotlin.check(magic.contentEquals(MAGIC)) { "не файл трафарета" }
             val n = d.readInt()
             kotlin.check(n > 0) { "трафарет пуст" }
-            val codes = LongArray(n)
+            val codes = PackedBuilder(n)
             var prev = 0L
             for (i in 0 until n) {
                 var delta = 0L
@@ -173,9 +250,9 @@ class WordDamage private constructor(private val codes: LongArray) {
                 }
                 kotlin.check(i == 0 || delta > 0) { "сочетания не по возрастанию" }
                 prev += delta
-                codes[i] = prev
+                codes.add(prev)
             }
-            return WordDamage(codes)
+            return WordDamage(codes.build())
         }
 
         /** Трафарет из списка словоформ — для тестов и сверки; формы вне а–я (после приведения) пропускаются. */
@@ -187,7 +264,10 @@ class WordDamage private constructor(private val codes: LongArray) {
                 val s = "^" + w + "$"
                 for (i in 0..s.length - N) set += pack(s, i)
             }
-            return WordDamage(set.toLongArray().also { it.sort() })
+            val sorted = set.toLongArray().also { it.sort() }
+            val codes = PackedBuilder(sorted.size)
+            sorted.forEach(codes::add)
+            return WordDamage(codes.build())
         }
     }
 }

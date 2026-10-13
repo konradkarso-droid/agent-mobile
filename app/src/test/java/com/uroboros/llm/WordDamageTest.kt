@@ -167,4 +167,19 @@ class WordDamageTest {
     @Test
     fun `самопроверка проваливается на пустом по смыслу трафарете`() =
         assertFalse(WordDamage.fromWords(listOf("кот")).selfCheck())
+
+    /**
+     * Трафарет хранится блоками по [WordDamage.BLOCK] сочетаний: слова, чьи
+     * сочетания лежат в разных блоках и на их границах, находятся все, а
+     * соседние несуществующие — нет.
+     */
+    @Test
+    fun `сжатый трафарет — сочетания на границах блоков`() {
+        val many = (0 until 300).map { i -> "слов" + "абвгдежзийклмнопрстуфхцчшщъыьэюя"[i % 32] + "абвгдежзийклмнопрстуфхцчшщъыьэюя"[i / 32] + "о" }
+        val t = WordDamage.fromWords(many)
+        assertTrue(t.size > 2 * WordDamage.BLOCK)
+        for (w in many) assertTrue(w, t.looksLikeWord(w))
+        assertFalse(t.looksLikeWord("словюяо"))
+        assertFalse(t.looksLikeWord("щщщщщщ"))
+    }
 }

@@ -6,7 +6,7 @@ import org.junit.Test
 
 /**
  * Фразы придуманные, не из памяти владельца. Таблица — те строки настоящей
- * таблицы (assets/verb_person_pairs.txt), где встречаются слова этих фраз.
+ * таблицы (assets/verb_person_stems.txt), где встречаются слова этих фраз.
  */
 class RetellingTest {
 
