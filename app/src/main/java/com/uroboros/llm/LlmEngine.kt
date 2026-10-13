@@ -1391,7 +1391,7 @@ class LlmEngine(
         cacheTypeK: Any?,
         cacheTypeV: Any?,
         generation: Any?,
-    ): String = "ctx=$contextSize|fa=$flashAttn|k=$cacheTypeK|v=$cacheTypeV|gen=$generation"
+    ): String = "ctx=$contextSize|fa=$flashAttn|k=$cacheTypeK|v=$cacheTypeV|gen=$generation|repack=off"
 
     /**
      * Что происходит с кэшем системной стены, человеческими словами.

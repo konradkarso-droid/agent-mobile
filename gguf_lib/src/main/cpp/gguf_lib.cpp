@@ -1511,6 +1511,12 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
     // route only the *large* ops to GPU per-tensor.
     mparams.n_gpu_layers = 0;
 
+    // ОПЫТНАЯ СБОРКА, НЕ ДЛЯ СЛИЯНИЯ: веса не перепаковываются под ускоренные
+    // ядра процессора — считаются обычным путём. Проверка, не в ускоренных ли
+    // ядрах разница между телефоном и стендом на Qwen3.
+    mparams.use_extra_bufts = false;
+    LOGI("Repack (extra buffer types): OFF");
+
     g_state.model = llama_model_load_from_file(path_s.c_str(), mparams);
     if (!g_state.model) {
         tn_error_set_last(TN_ERR_MODEL_LOAD, "ModelLoad",
