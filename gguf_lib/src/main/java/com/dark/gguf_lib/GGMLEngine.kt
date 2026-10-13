@@ -471,6 +471,13 @@ class GGMLEngine {
     /** Сколько токенов поданного [setDryHistory] прошло через цепочку в последней генерации разговора. */
     fun lastDryFed(): Int = GGUFNativeLib.nativeGetLastDryFed()
 
+    /**
+     * Что модель собиралась сказать первым в последней генерации разговора:
+     * сломанные числа, пятёрка вероятных токенов, вес «конца ответа» и что
+     * выбрано. Зачем и чего не умеет — у `first_step_report` в `gguf_lib.cpp`.
+     */
+    fun firstStepReport(): String = GGUFNativeLib.nativeGetFirstStepReport()
+
     /** Set the system prompt prepended to every chat. */
     fun setSystemPrompt(prompt: String) = GGUFNativeLib.nativeSetSystemPrompt(prompt)
 
