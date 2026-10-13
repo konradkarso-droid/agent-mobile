@@ -17,10 +17,16 @@ package com.uroboros.llm
  * накладок, и накладкой не считается никогда: спрятать модель из списка или
  * подключить к модели чужой файл хуже, чем показать лишний файл в выборе.
  *
- * ЧЕГО НЕ УМЕЕТ. Не проверяет, под ту ли модель учена накладка: это делает
- * движок при подключении (архитектура и размеры, см. nativeSetAdapterFd в
- * gguf_lib.cpp), и отказ виден строкой [Outcome.Rejected]. Накладку от той же
- * модели, но учёную под другую стену, не отличит никто — это на человеке.
+ * ПОД ТУ ЛИ МОДЕЛЬ. Архитектура накладки сверяется с архитектурой модели по
+ * заголовкам ([architectureOf], [fits]) ДО подключения: накладку чужой
+ * архитектуры (учёная под qwen2 — к модели qwen3) движок не отвергает, а
+ * падает при подключении, и вместе с ним падает приложение. Такая накладка
+ * не подключается вовсе, строка — [Outcome.WrongBase].
+ *
+ * ЧЕГО НЕ УМЕЕТ. Накладку той же архитектуры, но другого размера (учёная под
+ * 3B — к 7B), по заголовку не отличает: её отвергает движок по размерам
+ * тензоров, отказ виден строкой [Outcome.Rejected]. Накладку от той же модели,
+ * но учёную под другую стену, не отличит никто — это на человеке.
  */
 object AdapterFile {
 
@@ -63,6 +69,43 @@ object AdapterFile {
         }
     }
 
+    /**
+     * Архитектура из заголовка GGUF (`general.architecture`: «qwen2», «qwen3»),
+     * или null — не прочиталась (не GGUF, обрыв, ключа нет в прочитанном куске).
+     * У модели и у накладки ключ один и тот же: конвертер llama.cpp пишет его
+     * первым.
+     */
+    fun architectureOf(header: ByteArray): String? {
+        val r = Reader(header)
+        return try {
+            if (r.bytes(4).decodeToString() != "GGUF") return null
+            r.u32() // версия формата
+            r.u64() // число тензоров
+            val kvCount = r.u64()
+            var i = 0L
+            while (i < kvCount) {
+                val key = r.string()
+                val type = r.u32().toInt()
+                if (key == "general.architecture" && type == TYPE_STRING) return r.string()
+                r.skipValue(type)
+                i++
+            }
+            null
+        } catch (e: IndexOutOfBoundsException) {
+            null
+        } catch (e: IllegalStateException) {
+            null
+        }
+    }
+
+    /**
+     * Подходит ли накладка к модели по архитектуре. Неизвестная с любой
+     * стороны — подходит: решает движок, как и без этой проверки (отказ —
+     * [Outcome.Rejected]). Не подходит только явно чужая.
+     */
+    fun fits(adapterArch: String?, modelArch: String?): Boolean =
+        adapterArch == null || modelArch == null || adapterArch == modelArch
+
     /** Какую накладку брать из найденных в папке. */
     sealed class Pick {
         object None : Pick()
@@ -93,6 +136,8 @@ object AdapterFile {
         data class NotOpened(val name: String) : Outcome()
         /** Движок файл не принял; модель работает голой. */
         data class Rejected(val name: String) : Outcome()
+        /** Накладка учена под другую архитектуру — не подключалась; модель голая. */
+        data class WrongBase(val name: String, val adapterArch: String, val modelArch: String) : Outcome()
         data class On(val name: String, val size: Long) : Outcome()
     }
 
@@ -126,6 +171,8 @@ object AdapterFile {
         is Outcome.Several -> "Накладка: нет — в папке моделей их ${outcome.count}, какую брать, не выбираю"
         is Outcome.NotOpened -> "Накладка: нет — файл ${outcome.name} не открылся"
         is Outcome.Rejected -> "Накладка: нет — движок не принял ${outcome.name} (не к этой модели или файл испорчен)"
+        is Outcome.WrongBase -> "Накладка: нет — ${outcome.name} учена под ${outcome.adapterArch}, " +
+            "а модель ${outcome.modelArch}; не подключаю"
         is Outcome.On -> "Накладка: ${outcome.name}"
     }
 

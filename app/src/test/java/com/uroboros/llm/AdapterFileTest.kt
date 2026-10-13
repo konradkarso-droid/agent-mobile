@@ -64,6 +64,42 @@ class AdapterFileTest {
         }
     }
 
+    // ---- Архитектура ----
+
+    @Test
+    fun `архитектура читается из заголовка`() {
+        val adapter = Gguf().string("general.architecture", "qwen2").string("general.type", "adapter").bytes()
+        val model = Gguf().string("general.architecture", "qwen3").string("general.type", "model").bytes()
+        assertEquals("qwen2", AdapterFile.architectureOf(adapter))
+        assertEquals("qwen3", AdapterFile.architectureOf(model))
+    }
+
+    /** Живой случай: накладка под Qwen2.5 у модели на основе Qwen3 роняла приложение. */
+    @Test
+    fun `чужая архитектура не подходит`() {
+        assertEquals(false, AdapterFile.fits("qwen2", "qwen3"))
+        assertEquals(
+            "Накладка: нет — v7.gguf учена под qwen2, а модель qwen3; не подключаю",
+            AdapterFile.line(AdapterFile.Outcome.WrongBase("v7.gguf", "qwen2", "qwen3")),
+        )
+    }
+
+    /** Молчание: та же архитектура и неизвестная — подходят, решает движок. */
+    @Test
+    fun `та же или неизвестная архитектура подходит`() {
+        assertTrue(AdapterFile.fits("qwen2", "qwen2"))
+        assertTrue(AdapterFile.fits(null, "qwen3"))
+        assertTrue(AdapterFile.fits("qwen2", null))
+        assertEquals(null, AdapterFile.architectureOf(Gguf().string("general.type", "model").bytes()))
+        assertEquals(null, AdapterFile.architectureOf("не GGUF".toByteArray()))
+    }
+
+    /** Отказанная по архитектуре накладка модель не меняет — отпечаток как у голой. */
+    @Test
+    fun `чужая накладка не входит в отпечаток`() {
+        assertEquals("", AdapterFile.printPart(AdapterFile.Outcome.WrongBase("v7.gguf", "qwen2", "qwen3")))
+    }
+
     // ---- Опознание ----
 
     @Test

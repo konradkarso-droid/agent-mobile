@@ -681,8 +681,11 @@ class LlmEngine(
      * Ночью ([AdapterFile.Role.NIGHT]) сперва смотрится подпапка ночной
      * накладки; своей нет — ночь берёт то же, что и день, и план это помнит
      * для строки ночи (см. [AdapterFile.nightPlan]).
+     *
+     * Накладка чужой архитектуры движку не заказывается (см. [AdapterFile.fits]).
+     * [modelUri] — модель, к которой ищем.
      */
-    private suspend fun orderAdapterFromFolder(role: AdapterFile.Role): AdapterOrder {
+    private suspend fun orderAdapterFromFolder(role: AdapterFile.Role, modelUri: Uri): AdapterOrder {
         val folder = ModelFolder.folderUri(context)
             ?: return AdapterOrder(null, null, 0, false, nightPlan(role, null))
                 .also { engine.orderAdapter(context, null) }
@@ -692,20 +695,39 @@ class LlmEngine(
             }
             val plan = AdapterFile.nightPlan(night?.map { it.kind })
             if (plan is AdapterFile.NightPlan.Own && night != null) {
-                val file = night[plan.index].file
-                val opened = engine.orderAdapter(context, file.uri)
-                return AdapterOrder(AdapterFile.Pick.One(plan.index), file.name, file.length(), opened, plan)
+                return orderOne(AdapterFile.Pick.One(plan.index), night[plan.index].file, modelUri, plan)
             }
-            return dayOrder(folder, plan)
+            return dayOrder(folder, plan, modelUri)
         }
-        return dayOrder(folder, null)
+        return dayOrder(folder, null, modelUri)
+    }
+
+    /**
+     * Заказать движку один выбранный файл накладки — если архитектура та же,
+     * что у модели. Чужая не заказывается, и заказ снимается.
+     */
+    private suspend fun orderOne(
+        pick: AdapterFile.Pick.One,
+        file: androidx.documentfile.provider.DocumentFile,
+        modelUri: Uri,
+        night: AdapterFile.NightPlan?,
+    ): AdapterOrder {
+        val (adapterArch, modelArch) = withContext(Dispatchers.IO) {
+            ModelFolder.architectureOf(context, file.uri) to ModelFolder.architectureOf(context, modelUri)
+        }
+        if (!AdapterFile.fits(adapterArch, modelArch)) {
+            engine.orderAdapter(context, null)
+            return AdapterOrder(pick, file.name, file.length(), false, night, wrongBase = adapterArch!! to modelArch!!)
+        }
+        val opened = engine.orderAdapter(context, file.uri)
+        return AdapterOrder(pick, file.name, file.length(), opened, night)
     }
 
     private fun nightPlan(role: AdapterFile.Role, why: String?): AdapterFile.NightPlan? =
         if (role == AdapterFile.Role.NIGHT) AdapterFile.NightPlan.Day(why ?: "папки моделей нет") else null
 
     /** Накладка самой папки моделей — дневная. [night] — план ночи, если грузим для ночи. */
-    private suspend fun dayOrder(folder: Uri, night: AdapterFile.NightPlan?): AdapterOrder {
+    private suspend fun dayOrder(folder: Uri, night: AdapterFile.NightPlan?, modelUri: Uri): AdapterOrder {
         val entries = withContext(Dispatchers.IO) {
             runCatching { ModelFolder.scan(context, folder) }.getOrDefault(emptyList())
         }
@@ -714,14 +736,14 @@ class LlmEngine(
             engine.orderAdapter(context, null)
             return AdapterOrder(pick, null, 0, false, night)
         }
-        val file = entries[pick.index].file
-        val opened = engine.orderAdapter(context, file.uri)
-        return AdapterOrder(pick, file.name, file.length(), opened, night)
+        return orderOne(pick, entries[pick.index].file, modelUri, night)
     }
 
     /**
      * Итог поиска накладки перед загрузкой; pick = null — папки моделей нет.
      * [night] — план ночи, если грузили для ночи; null — грузили для дня.
+     * [wrongBase] — архитектуры накладки и модели, если накладка чужая и не
+     * заказывалась; null — не чужая.
      */
     private class AdapterOrder(
         val pick: AdapterFile.Pick?,
@@ -729,11 +751,14 @@ class LlmEngine(
         val size: Long,
         val opened: Boolean,
         val night: AdapterFile.NightPlan?,
+        val wrongBase: Pair<String, String>? = null,
     ) {
         /** Что стало с накладкой, по ответу движка после загрузки. */
-        fun outcome(engineState: Int): AdapterFile.Outcome =
-            pick?.let { AdapterFile.outcome(it, name, size, opened, engineState) }
+        fun outcome(engineState: Int): AdapterFile.Outcome {
+            wrongBase?.let { (a, m) -> return AdapterFile.Outcome.WrongBase(name ?: "(без имени)", a, m) }
+            return pick?.let { AdapterFile.outcome(it, name, size, opened, engineState) }
                 ?: AdapterFile.Outcome.NoFolder
+        }
 
         /**
          * Чем этот поиск отличается от другого — для решения, грузить ли заново.
@@ -745,7 +770,7 @@ class LlmEngine(
             null -> "папки нет"
             is AdapterFile.Pick.None -> "накладки нет"
             is AdapterFile.Pick.Several -> "накладок ${pick.count}"
-            is AdapterFile.Pick.One -> "$name:$size:$opened"
+            is AdapterFile.Pick.One -> "$name:$size:$opened" + (if (wrongBase != null) ":чужая" else "")
         }
     }
 
@@ -802,7 +827,7 @@ class LlmEngine(
      * загруженной модели движок не умеет (см. nativeSetAdapterFd).
      */
     suspend fun loadModelFromUri(uri: Uri, role: AdapterFile.Role = AdapterFile.Role.DAY): Boolean = loadLock.withLock {
-        val adapter = orderAdapterFromFolder(role)
+        val adapter = orderAdapterFromFolder(role, uri)
         if (engine.isLoaded && loadedSource == uri.toString() && loadedAdapterKey == adapter.key) {
             // Заказ не пригодился: грузить нечего, а оставленный заказ ушёл бы
             // к чужой загрузке.
@@ -874,6 +899,14 @@ class LlmEngine(
         loadPrint = shortHash(
             (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
         )
+        // Размышления (`<think>…</think>` перед ответом у моделей с таким
+        // режимом, например на основе Qwen3) выключены для всей работы с
+        // моделью: всё, что модель выдаёт, приложение принимает за ответ —
+        // показывает, кладёт в ленту, разбирает на варианты и вердикты.
+        // Рассуждение съедало бы потолок ответа, и до ответа модель не доходила.
+        // Движок по умолчанию держит их включёнными. Модели без такого режима
+        // шаблон этот выключатель не читает.
+        engine.setThinkingEnabled(false)
         applyChatSampling()
         // Состояние запрета уже известно: библиотека собирает его внутри
         // load(). Поля ban_* в отчёте о декодировании описывают загрузку, а
