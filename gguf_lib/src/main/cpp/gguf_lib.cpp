@@ -2180,6 +2180,21 @@ static std::string first_step_report(llama_context * ctx, const llama_vocab * vo
     return out;
 }
 
+// Последние токены запроса номерами и кусками — как их видит модель. Нужны
+// там же, где отчёт первого шага: если модель видит иной запрос, чем тот, что
+// показан человеку (служебный токен разрезан на буквы, лишний или потерянный
+// кусок в конце), разница видна здесь, а в тексте реплики — нет.
+static std::string prompt_tail_report(const std::vector<llama_token> & tokens,
+                                      const llama_vocab * vocab, size_t count) {
+    std::string out;
+    const size_t from = tokens.size() > count ? tokens.size() - count : 0;
+    for (size_t i = from; i < tokens.size(); i++) {
+        if (i > from) out += " ";
+        out += std::to_string(tokens[i]) + "«" + first_step_piece(vocab, tokens[i]) + "»";
+    }
+    return out;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetFirstStepReport(JNIEnv * env, jobject) {
     // Не ждать генерацию: спрашивают после неё, а занятый замок значит, что
@@ -2455,7 +2470,10 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         if (!g_state.sampler) break;
 
         // Первый шаг снимается до выборки: отчёт — по сырым числам (см. first_step_report).
-        if (n_generated == 0) g_state.last_first_step = first_step_report(g_state.ctx, vocab);
+        if (n_generated == 0) {
+            g_state.last_first_step = first_step_report(g_state.ctx, vocab) +
+                " · хвост запроса: " + prompt_tail_report(tokens, vocab, 16);
+        }
         auto ts0 = std::chrono::high_resolution_clock::now();
         count_script_ban_hit();
         llama_token id = common_sampler_sample(g_state.sampler, g_state.ctx, -1);

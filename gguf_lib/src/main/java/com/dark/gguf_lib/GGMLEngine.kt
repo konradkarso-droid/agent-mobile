@@ -473,8 +473,9 @@ class GGMLEngine {
 
     /**
      * Что модель собиралась сказать первым в последней генерации разговора:
-     * сломанные числа, пятёрка вероятных токенов, вес «конца ответа» и что
-     * выбрано. Зачем и чего не умеет — у `first_step_report` в `gguf_lib.cpp`.
+     * сломанные числа, пятёрка вероятных токенов, вес «конца ответа», что
+     * выбрано, и последние токены запроса. Зачем и чего не умеет — у
+     * `first_step_report` и `prompt_tail_report` в `gguf_lib.cpp`.
      */
     fun firstStepReport(): String = GGUFNativeLib.nativeGetFirstStepReport()
 
