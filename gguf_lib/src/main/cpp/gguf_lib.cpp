@@ -351,6 +351,10 @@ static struct {
     // Отчёт о первом шаге последней генерации разговора (см. first_step_report).
     std::string                   last_first_step;
 
+    // Текст последнего запроса разговора после шаблона — ровно то, что ушло в
+    // токенизатор (см. nativeGetLastConversationPrompt).
+    std::string                   last_conversation_prompt;
+
     // Текст, который штраф DRY должен «помнить» до ответа (см.
     // nativeSetDryHistory). Разовый: забирается следующей генерацией разговора
     // и очищается, даже если DRY выключен. last_dry_fed — сколько токенов
@@ -2195,6 +2199,26 @@ static std::string prompt_tail_report(const std::vector<llama_token> & tokens,
     return out;
 }
 
+// Последний запрос разговора целиком, байтами UTF-8. Нужен, чтобы повторить
+// запрос телефона на стенде до буквы: показ реплики на экране не содержит
+// стены и разметки шаблона, а расхождение может сидеть именно там.
+// Байты, а не строка Java: в запросе бывают знаки вне основной плоскости
+// (эмодзи), а NewStringUTF их не принимает. Пустой массив — разговора ещё не
+// было или идёт генерация (замок занят).
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastConversationPrompt(JNIEnv * env, jobject) {
+    std::string copy;
+    {
+        std::unique_lock<std::mutex> lock(g_state.gen_mutex, std::try_to_lock);
+        if (lock.owns_lock()) copy = g_state.last_conversation_prompt;
+    }
+    jbyteArray out = env->NewByteArray((jsize)copy.size());
+    if (out && !copy.empty()) {
+        env->SetByteArrayRegion(out, 0, (jsize)copy.size(), (const jbyte *)copy.data());
+    }
+    return out;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetFirstStepReport(JNIEnv * env, jobject) {
     // Не ждать генерацию: спрашивают после неё, а занятый замок значит, что
@@ -2271,6 +2295,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         return JNI_FALSE;
     }
 
+    g_state.last_conversation_prompt = tmpl_result.prompt;
     auto tokens = tokenize_string(tmpl_result.prompt, true);
 
     if (tokens.empty()) {
