@@ -609,8 +609,8 @@ class MainActivity : AppCompatActivity() {
     /**
      * Строка хода «О собеседнике:» к последнему ответу (Portrait.meterLine) и
      * предложения портрета, как они пошли бы модели. null — хода в этом
-     * запуске не было; строк нет и тогда, когда на этом адресе портрет не
-     * ищется.
+     * запуске не было; строк нет и тогда, когда у хода нет повода для
+     * портрета (Portrait.reasonOf).
      */
     private var portraitLine: String? = null
     private var portraitShown: List<String>? = null
@@ -2988,7 +2988,7 @@ class MainActivity : AppCompatActivity() {
         val mirrorSelection = mirrorSelectionLine ?: "Зеркало в отборе: $lostNote"
         val cloud = cloudLine ?: "Облако адреса: $lostNote"
         val drift = driftLine ?: "Дрейф: чисел хода на экране нет"
-        val portraitMeter = portraitLine ?: "О собеседнике: $lostNote"
+        val portraitMeter = portraitLine ?: "О собеседнике: чисел хода на экране нет"
         val nameMeter = nameLine ?: "Имя собеседника: чисел хода на экране нет"
         val recordsSources = recordsSourcesLine ?: DolmenCircle.SOURCES_LOST
         // Строка таблицы глаголов печатается всегда: по ней и разворот, и лицо
@@ -4081,8 +4081,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Словарь начальных форм (nav.LemmaHolder): один раз за процесс, не в
-        // главном потоке. Потребителей у него пока нет — грузится ради строки
-        // «Словарь начальных форм:» в «Подробно», чтобы цена была видна.
+        // главном потоке. Пока не загружен, портрет по теме не ищется
+        // (Portrait.topic), причина видна в строке «О собеседнике:».
         lifecycleScope.launch(Dispatchers.IO) {
             LemmaHolder.load { assets.open(LEMMA_DICTIONARY_ASSET) }
             withContext(Dispatchers.Main) { renderMetricsPanel() }
@@ -4535,21 +4535,35 @@ class MainActivity : AppCompatActivity() {
                         }),
                         userText,
                     )
-                // Портрет собеседника — его слова о себе по провенансу, на
-                // вопрос о нём (Portrait). Только чтение базы: записи не
-                // греются. Сбой поиска — словами в строке прибора, ход идёт
-                // без портрета.
+                // Портрет собеседника — его слова о себе по провенансу
+                // (Portrait). Ищется на каждом ходе, модели идёт по поводу:
+                // на вопрос о собеседнике — весь, на тему реплики — строки
+                // темы, иначе ничего (Portrait, «КОГДА ИДЁТ МОДЕЛИ»). Только
+                // чтение базы: записи не греются. Сбой поиска — словами в
+                // строке прибора, ход идёт без портрета.
                 // Имя собеседника (NameClaim) — тем же чтением, по тем же записям.
-                val portraitFound: Result<Triple<Portrait.Result, Map<Long, Sticker>, NameClaim.Result>>? =
-                    if (!Portrait.searched(address)) null else runCatching {
+                val portraitFound: Result<Triple<Portrait.Result, List<Sticker>, NameClaim.Result>> =
+                    runCatching {
                         val all = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
-                        Triple(Portrait.of(all), all.associateBy { it.id }, NameClaim.of(all))
+                        Triple(Portrait.of(all, current = userText), all, NameClaim.of(all))
                     }
-                val portrait = portraitFound?.getOrNull()?.first
-                val ownName = portraitFound?.getOrNull()?.third
+                val portrait = portraitFound.getOrNull()?.first
+                val portraitAsks = Portrait.asksAbout(userText)
+                // Тема — по словарю начальных форм (LemmaHolder); не загружен —
+                // по теме не ищется, вопрос о собеседнике работает.
+                val lemmaDictionary = LemmaHolder.loaded
+                val portraitTopicFound: Result<Portrait.Topic>? =
+                    if (portraitAsks || portrait == null || lemmaDictionary == null) null else runCatching {
+                        Portrait.topic(portrait, portraitFound.getOrThrow().second, userText, lemmaDictionary)
+                    }
+                val portraitTopic = portraitTopicFound?.getOrNull()
+                val portraitReason = Portrait.reasonOf(portraitAsks, portraitTopic)
+                val portraitFed = Portrait.fedLines(portraitReason, portrait, portraitTopic)
+                // Имя идёт только с ответом на вопрос о собеседнике (Portrait.recall).
+                val ownName = portraitFound.getOrNull()?.third?.takeIf { portraitReason == Portrait.Reason.QUESTION }
                 // Запись из портрета общим отбором этого хода не подаётся
                 // (см. Portrait, «КАК ИДЁТ МОДЕЛИ»).
-                val portraitIds = portrait?.chosen?.mapTo(HashSet()) { it.recordId }.orEmpty()
+                val portraitIds = portraitFed.mapTo(HashSet()) { it.recordId }
                 // Строки портрета — пересказом, по таблице разворота мимо
                 // выключателя смешанных (RetellHolder.loaded). Нет таблицы —
                 // портрет модели не подаётся, прибор говорит почему.
@@ -4558,9 +4572,9 @@ class MainActivity : AppCompatActivity() {
                 // (DolmenCircle.circleSeats — почему круг садится после).
                 val portraitTable = RetellHolder.loaded
                 val portraitRetold: List<Pair<Sticker, String>> =
-                    if (portrait == null || portraitTable == null) emptyList() else {
-                        val byId = portraitFound!!.getOrNull()!!.second
-                        portrait.chosen.mapNotNull { line ->
+                    if (portraitFed.isEmpty() || portraitTable == null) emptyList() else {
+                        val byId = portraitFound.getOrThrow().second.associateBy { it.id }
+                        portraitFed.mapNotNull { line ->
                             val sticker = byId[line.recordId] ?: return@mapNotNull null
                             Retelling.retell(line.sentence, portraitTable).text?.let { sticker to it }
                         }.take(DolmenCircle.RECORDS_CEILING)
@@ -4691,7 +4705,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 val portraitNotFed: String? = when {
-                    portrait == null -> null
+                    portraitReason == Portrait.Reason.NONE -> null
                     portraitTable == null -> "таблица разворота не готова"
                     else -> null
                 }
@@ -4719,22 +4733,24 @@ class MainActivity : AppCompatActivity() {
                 nameLine = NameClaim.meterLine(
                     ownName, age = { ProvenanceLabels.ageForModel(it, recordsAt) },
                     fed = portraitLines.isNotEmpty(),
-                    failure = portraitFound?.exceptionOrNull()?.javaClass?.simpleName,
+                    failure = portraitFound.exceptionOrNull()?.javaClass?.simpleName,
                 )
-                if (portraitFound == null) {
-                    portraitLine = "О собеседнике: " + Portrait.meterLine(address, null, fed = false)
-                    portraitShown = null
-                } else {
-                    portraitLine = "О собеседнике: " + Portrait.meterLine(
-                        address, portrait, fed = portraitNotFed == null,
-                        failure = portraitFound.exceptionOrNull()?.javaClass?.simpleName,
-                        whyNotFed = portraitNotFed,
-                    )
-                    portraitShown = portrait?.chosen?.map {
-                        "№${it.recordId} · ${ProvenanceLabels.ageForModel(it.createdAt, recordsAt)}" +
-                            " · касаний ${it.touches}" +
-                            (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
-                    }
+                portraitLine = "О собеседнике: " + Portrait.meterLine(
+                    portraitReason, portrait, portraitTopic,
+                    fed = portraitReason != Portrait.Reason.NONE && portraitNotFed == null,
+                    failure = (portraitFound.exceptionOrNull() ?: portraitTopicFound?.exceptionOrNull())
+                        ?.javaClass?.simpleName,
+                    whyNotFed = portraitNotFed,
+                    topicOff = when {
+                        portraitAsks -> null
+                        lemmaDictionary == null -> "словарь начальных форм не загружен"
+                        else -> null
+                    },
+                )
+                portraitShown = portraitFed.takeIf { it.isNotEmpty() }?.map {
+                    "№${it.recordId} · ${ProvenanceLabels.ageForModel(it.createdAt, recordsAt)}" +
+                        " · касаний ${it.touches}" +
+                        (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
                 }
                 mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
                     address, contextResult.mirrorRemoved + doorMirrored + associatedMirrored,
@@ -4932,12 +4948,14 @@ class MainActivity : AppCompatActivity() {
                 )
                 // Записи — не в реплике, а сообщением агента перед ней (см.
                 // ConversationJournal.recallOf).
-                // На вопрос о собеседнике — портрет под своей подписью, затем
-                // остальные записи (Portrait.recall); иначе как прежде.
-                val recall = if (portrait == null) journal.recallOf(allRecords) else Portrait.recall(
+                // С поводом портрета — его строки под своей подписью, затем
+                // остальные записи (Portrait.recall); без повода — как прежде.
+                val recall = if (portraitReason == Portrait.Reason.NONE) journal.recallOf(allRecords) else Portrait.recall(
                     allRecords, portraitLines.toSet(),
-                    nothing = portrait.chosen.isEmpty() && portraitNotFed == null,
+                    nothing = portraitReason == Portrait.Reason.QUESTION &&
+                        portrait != null && portrait.chosen.isEmpty() && portraitNotFed == null,
                     name = ownName?.found?.name,
+                    topic = portraitReason == Portrait.Reason.TOPIC,
                 )
                 // Прибор ставится ЗДЕСЬ, сразу за сборкой, а не по итогам
                 // хода: ниже стоят два выхода по return@launch, и на них

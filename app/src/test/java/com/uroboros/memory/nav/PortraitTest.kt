@@ -3,7 +3,6 @@ package com.uroboros.memory.nav
 import com.uroboros.memory.Layer
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
-import com.uroboros.memory.nav.Coordinates.Address
 import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -103,12 +102,20 @@ class PortraitTest {
     }
 
     @Test
-    fun `ищется только на адрес владелец и оба`() {
-        assertTrue(Portrait.searched(Address.OWNER))
-        assertTrue(Portrait.searched(Address.BOTH))
-        assertFalse(Portrait.searched(Address.AGENT))
-        assertFalse(Portrait.searched(Address.UNDEFINED))
-        assertTrue(Portrait.meterLine(Address.AGENT, null, fed = false).endsWith("не ищется"))
+    fun `вопрос о собеседнике - вопрос с адресом владелец или оба и первым лицом`() {
+        assertTrue(Portrait.asksAbout("Что знаешь обо мне?"))
+        assertTrue(Portrait.asksAbout("Кто я?"))
+        assertTrue(Portrait.asksAbout("Ну вот, доделал. Как ты? Помнишь кто я и кто ты?"))
+        assertTrue(Portrait.asksAbout("Какая ручка у моего рубанка?"))
+    }
+
+    @Test
+    fun `не вопрос о собеседнике - утверждение, вопрос агенту, безличный вопрос`() {
+        assertFalse(Portrait.asksAbout("Я - Админ"))
+        assertFalse(Portrait.asksAbout("Я работаю по субботам."))
+        assertFalse(Portrait.asksAbout("Как ты себя чувствуешь?"))
+        assertFalse(Portrait.asksAbout("Какая сейчас температура?"))
+        assertFalse(Portrait.asksAbout("Доброй ночи"))
     }
 
     @Test
@@ -122,14 +129,16 @@ class PortraitTest {
                 record(5, "Я сижу.\nМне видно.\nЯ молчу.\nМне стыдно."),
             ),
         )
-        val line = Portrait.meterLine(Address.OWNER, result, fed = false, whyNotFed = "таблица разворота не готова")
+        val line = Portrait.meterLine(
+            Portrait.Reason.QUESTION, result, null, fed = false, whyNotFed = "таблица разворота не готова",
+        )
         assertTrue(line, line.contains("столбиком 4"))
         assertTrue(line, line.contains("обращение к агенту 1"))
         assertTrue(line, line.contains("вопрос/просьба/«мы» 1"))
         assertTrue(line, line.contains("без «я/мой» 1"))
         assertTrue(line, line.contains("в портрет 1"))
         assertTrue(line, line.contains("модели не подано — таблица разворота не готова"))
-        assertTrue(Portrait.meterLine(Address.OWNER, result, fed = true).contains("подано модели"))
+        assertTrue(Portrait.meterLine(Portrait.Reason.QUESTION, result, null, fed = true).contains("подано модели"))
     }
 
     @Test
@@ -190,5 +199,139 @@ class PortraitTest {
     @Test
     fun `местоимение в предложном падеже - о моём`() {
         assertEquals(listOf("В моём клубе фехтуют."), passed("В моём клубе фехтуют."))
+    }
+
+    // --- Тема реплики (Portrait.topic) — на настоящем словаре приложения.
+
+    @Test
+    fun `тема - редкое существительное реплики находит строку портрета`() {
+        val records = listOf(
+            record(1, "Мой любимый инструмент — рубанок с железной колодкой."),
+            record(2, "Я работаю по субботам."),
+        )
+        val topic = topicOf(records, "У рубанка не деревянная колодка.")
+        assertEquals(listOf("Мой любимый инструмент — рубанок с железной колодкой."), topic.lines.map { it.sentence })
+        assertEquals(setOf("рубанок", "колодка"), topic.words.toSet())
+        assertEquals(Portrait.Reason.TOPIC, Portrait.reasonOf(asks = false, topic = topic))
+        val line = Portrait.meterLine(
+            Portrait.Reason.TOPIC, Portrait.of(records), topic, fed = true,
+        )
+        assertTrue(line, line.startsWith("тема: рубанок, колодка → строк 1"))
+    }
+
+    @Test
+    fun `тема - служебное слово с разбором существительного не тема`() {
+        // В словаре «по» — ещё и «ПО», программа; «с» — ещё и сокращение.
+        val records = listOf(record(1, "Я работаю по субботам."), record(2, "Мой рубанок с колодкой."))
+        val topic = topicOf(records, "Перепроверь по памяти, с чего начали")
+        assertFalse(topic.nouns.toString(), "по" in topic.nouns)
+        assertFalse(topic.nouns.toString(), "с" in topic.nouns)
+        assertTrue(topic.lines.isEmpty())
+        assertEquals(Portrait.Reason.NONE, Portrait.reasonOf(asks = false, topic = topic))
+    }
+
+    @Test
+    fun `тема - частое слово не тема`() {
+        val records = listOf(
+            record(1, "Я пишу код."),
+            record(2, "Мой код растёт."),
+            record(3, "Я правлю код по вечерам."),
+        )
+        val topic = topicOf(records, "Твой код хорош")
+        // Омоним «кода» (музыкальная) приходит вместе с «код»: словарь отдаёт все разборы.
+        assertTrue(topic.nouns.toString(), "код" in topic.nouns)
+        assertTrue(topic.rare.isEmpty())
+        assertTrue(topic.lines.isEmpty())
+        val line = Portrait.meterLine(Portrait.Reason.NONE, Portrait.of(records), topic, fed = false)
+        assertTrue(line, line.contains("не редкие"))
+    }
+
+    @Test
+    fun `тема - реплика без существительных и незнакомые слова молчат`() {
+        val records = listOf(record(1, "Мой любимый инструмент — рубанок."))
+        val topic = topicOf(records, "Да, хорошо, дебажу")
+        assertTrue(topic.nouns.isEmpty())
+        assertTrue(topic.lines.isEmpty())
+        val line = Portrait.meterLine(Portrait.Reason.NONE, Portrait.of(records), topic, fed = false)
+        assertTrue(line, line.contains("существительных в реплике нет"))
+    }
+
+    @Test
+    fun `тема - редкое слово есть, а строки портрета с ним нет`() {
+        // «рубанок» есть в одной записи, но она обращена к агенту и в портрет не прошла.
+        val records = listOf(record(1, "Я купил тебе рубанок."), record(2, "Я работаю по субботам."))
+        val topic = topicOf(records, "Где рубанок?")
+        assertEquals(listOf("рубанок"), topic.rare)
+        assertTrue(topic.lines.isEmpty())
+    }
+
+    @Test
+    fun `тема - не больше двух строк, свежие первыми`() {
+        val records = listOf(
+            record(1, "Мой рубанок старый."),
+            record(2, "Я точу рубанок."),
+        )
+        val topic = topicOf(records, "А рубанок?")
+        assertEquals(listOf("Я точу рубанок.", "Мой рубанок старый."), topic.lines.map { it.sentence })
+        assertTrue(topic.lines.size <= Portrait.TOPIC_LIMIT)
+    }
+
+    @Test
+    fun `вопрос о собеседнике важнее темы`() {
+        val topic = topicOf(listOf(record(1, "Мой любимый инструмент — рубанок.")), "Рубанок")
+        assertEquals(Portrait.Reason.QUESTION, Portrait.reasonOf(asks = true, topic = topic))
+        assertEquals(Portrait.Reason.NONE, Portrait.reasonOf(asks = false, topic = null))
+    }
+
+    @Test
+    fun `без повода строки не идут, по теме - только строки темы`() {
+        val records = listOf(record(1, "Мой любимый инструмент — рубанок."), record(2, "Я работаю по субботам."))
+        val result = Portrait.of(records)
+        val topic = topicOf(records, "Рубанок")
+        assertTrue(Portrait.fedLines(Portrait.Reason.NONE, result, topic).isEmpty())
+        assertEquals(topic.lines, Portrait.fedLines(Portrait.Reason.TOPIC, result, topic))
+        assertEquals(result.chosen, Portrait.fedLines(Portrait.Reason.QUESTION, result, topic))
+    }
+
+    @Test
+    fun `повтор текущей реплики в портрет не берётся`() {
+        val records = listOf(record(1, "Я работаю по субботам."), record(2, "Мой рубанок старый."))
+        val result = Portrait.of(records, current = "я работаю по субботам")
+        assertEquals(listOf("Мой рубанок старый."), result.passed.map { it.sentence })
+        assertEquals(1, result.repeats)
+        assertEquals(0, Portrait.of(records, current = "Я не работаю по субботам").repeats)
+    }
+
+    @Test
+    fun `по теме - своя подпись, без имени и без строки ничего не знаю`() {
+        val p1 = "С твоих слов: твой любимый инструмент — рубанок."
+        val g1 = "Твои слова: «Всегда носи с собой полотенце.»."
+        assertEquals(
+            "${Portrait.TOPIC_HEADER}\n$p1\n\n$g1",
+            Portrait.recall(listOf(p1, g1), setOf(p1), nothing = false, name = "Кэп", topic = true),
+        )
+        assertEquals(g1, Portrait.recall(listOf(g1), emptySet(), nothing = true, topic = true))
+    }
+
+    @Test
+    fun `словарь не загружен - строка прибора говорит, что по теме не ищется`() {
+        val result = Portrait.of(listOf(record(1, "Я работаю по субботам.")))
+        val line = Portrait.meterLine(
+            Portrait.Reason.NONE, result, null, fed = false, topicOff = "словарь начальных форм не загружен",
+        )
+        assertTrue(line, line.contains("по теме не ищу — словарь начальных форм не загружен"))
+        assertTrue(line, line.endsWith("портрет не подан"))
+    }
+
+    private fun topicOf(records: List<Sticker>, reply: String): Portrait.Topic =
+        Portrait.topic(Portrait.of(records, current = reply), records, reply, dictionary)
+
+    companion object {
+        /** Словарь приложения (`app/src/main/assets/lemma_forms.txt`), один на все тесты. */
+        private val dictionary: LemmaDictionary by lazy {
+            val file = listOf("src/main/assets/lemma_forms.txt", "app/src/main/assets/lemma_forms.txt")
+                .map { java.io.File(it) }.first { it.exists() }
+            file.bufferedReader(Charsets.UTF_8).useLines { LemmaDictionary.read(it) }
+        }
     }
 }
