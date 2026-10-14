@@ -65,6 +65,23 @@ class RiskTriggerFillerTest {
     }
 
     @Test
+    fun `запись из одного обычая`() {
+        assertTrue(RiskTrigger.isOnlySocial("Доброй тебе ночи."))
+        assertTrue(RiskTrigger.isOnlySocial("Понял, спасибо."))
+        assertTrue(RiskTrigger.isOnlySocial("Привет! Доброй ночи."))
+        assertTrue(RiskTrigger.assertsNothing("Доброй ночи"))
+    }
+
+    @Test
+    fun `молчит - обычай рядом с делом, вопросом или ответом`() {
+        assertFalse(RiskTrigger.isOnlySocial("Привет. Станок называется Вымпел."))
+        assertFalse(RiskTrigger.isOnlySocial("Привет. Что нового?"))
+        assertFalse(RiskTrigger.isOnlySocial("Утро."))
+        assertFalse(RiskTrigger.isOnlySocial(""))
+        assertFalse(RiskTrigger.assertsNothing("Привет. Станок называется Вымпел."))
+    }
+
+    @Test
     fun `граница - междометие не из списка остаётся утверждением`() {
         // Упадёт, когда список расширят, — и это будет видно.
         assertFalse(RiskTrigger.isOnlyQuestions("Ёлки. Что нового?"))

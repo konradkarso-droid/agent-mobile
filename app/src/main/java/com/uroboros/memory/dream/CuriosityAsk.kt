@@ -214,7 +214,8 @@ object CuriosityAsk {
      */
     fun decideGap(gaps: List<Gaps.Gap>, reply: String, previousAnswer: String?, awaitingDream: Boolean): GapDecision {
         val readings = Sentences.split(reply).map { SentenceKind.of(it) }
-        readings.firstOrNull { it.kind != SentenceKind.Kind.STATEMENT }?.let {
+        // Обычай («Привет.», «Ладно.») хода не отдаёт и рассказу не мешает.
+        readings.firstOrNull { it.kind == SentenceKind.Kind.QUESTION || it.kind == SentenceKind.Kind.REQUEST }?.let {
             val what = if (it.kind == SentenceKind.Kind.QUESTION) "вопрос" else "просьба"
             return GapDecision.Refuse("реплика — $what, ход у владельца")
         }

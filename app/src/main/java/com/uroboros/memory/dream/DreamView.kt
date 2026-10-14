@@ -211,6 +211,7 @@ class DreamView(
                 // null — ночь до признака просьб: тогда они снились, и молчание
                 // здесь правдивее нуля.
                 night.skippedRequests?.let { if (it > 0) add("просьб $it") }
+                night.skippedSocial?.let { if (it > 0) add("обычаев $it") }
                 if (night.skippedAgentReports > 0) {
                     add("отчётов агента ${night.skippedAgentReports}")
                 }

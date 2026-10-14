@@ -75,6 +75,24 @@ class DreamWeaverTest {
         assertEquals(1, DreamNight.of(1L, night).skippedRequests)
     }
 
+    @Test
+    fun `запись из одного обычая не снится и сосчитана отдельно`() {
+        // Из живой памяти: сон связал «Понял, спасибо» с «Доброй тебе ночи»,
+        // и ассоциация принесла «спасибо» к ответу.
+        val night = DreamWeaver.weave(
+            listOf(
+                rec(1, "Алеет солнце на закате", at = 0),
+                rec(2, "Доброй тебе ночи.", at = minute),
+                rec(3, "Понял, спасибо.", at = 2 * minute),
+            )
+        )
+        assertTrue("снам не с кем связаться", night.dreams.isEmpty())
+        assertEquals(1, night.dreamers)
+        assertEquals(2, night.skippedSocial)
+        assertEquals(0, night.skippedRequests)
+        assertEquals(2, DreamNight.of(1L, night).skippedSocial)
+    }
+
     // --- По времени ---
 
     @Test

@@ -25,7 +25,7 @@ import com.uroboros.util.TextFold
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class, MirrorVariant::class, ConclusionRow::class,
     ],
-    version = 28,
+    version = 29,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -367,6 +367,15 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Записи из одного обычая, не снившиеся ночью (см.
+        // dream.DreamNight.skippedSocial). У прежних ночей null — «обычай тогда
+        // не узнавался и снился», а не «обычаев ноль».
+        val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE nights ADD COLUMN skippedSocial INTEGER")
+            }
+        }
+
         /**
          * Один проход при открытии базы: записям с `contentFolded IS NULL`
          * пишется приведённое содержимое. Тихо, итог — в лог. Сюда попадают
@@ -422,7 +431,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29)
                  .addCallback(FILL_FOLDED)
                  .build().also { INSTANCE = it }
             }

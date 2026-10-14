@@ -54,6 +54,10 @@ import com.uroboros.util.TextFold
  *  - запись из одних просьб — по той же причине (RiskTrigger.isOnlyRequests).
  *    Короткая просьба к тому же идеальный мост: «Расскажи про правило»
  *    связывала всё со всем. Считаются отдельно от вопросов;
+ *  - запись из одного обычая («Доброй тебе ночи.», «Понял, спасибо.»,
+ *    RiskTrigger.isOnlySocial) — ничего не утверждает, а сон связывал такие
+ *    записи друг с другом, и ассоциация потом приносила «спасибо» к ответу.
+ *    Считаются отдельно;
  *  - отчёт агента о своей работе. В отчётах куски кода и десятки слов, и через
  *    них как через мост связывается всё со всем: на живой памяти это дало сотни
  *    снов за ночь вместо единиц.
@@ -98,6 +102,8 @@ object DreamWeaver {
         val skippedHidden: Int,
         val skippedQuestions: Int,
         val skippedRequests: Int,
+        /** Записи из одного обычая (RiskTrigger.isOnlySocial). */
+        val skippedSocial: Int = 0,
         val skippedAgentReports: Int,
         /** Из участвовавших — сколько в холодном слое (BLUE) и в архиве (PURPLE). */
         val dreamersCold: Int,
@@ -129,6 +135,7 @@ object DreamWeaver {
         var hidden = 0
         var questions = 0
         var requests = 0
+        var social = 0
         var reports = 0
         val dreamers = mutableListOf<Sticker>()
         for (record in records.sortedBy { it.id }) {
@@ -136,6 +143,7 @@ object DreamWeaver {
                 record.reviewPending -> hidden++
                 RiskTrigger.isOnlyQuestions(record.content) -> questions++
                 RiskTrigger.isOnlyRequests(record.content) -> requests++
+                RiskTrigger.isOnlySocial(record.content) -> social++
                 record.source == SourceKind.AGENT_INFERRED.name -> reports++
                 else -> dreamers += record
             }
@@ -203,6 +211,7 @@ object DreamWeaver {
             skippedHidden = hidden,
             skippedQuestions = questions,
             skippedRequests = requests,
+            skippedSocial = social,
             skippedAgentReports = reports,
             dreamersCold = dreamers.count { it.layer == Layer.BLUE.name },
             dreamersArchive = dreamers.count { it.layer == Layer.PURPLE.name },
