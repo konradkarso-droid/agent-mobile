@@ -1,6 +1,7 @@
 package com.uroboros.memory.nav
 
 import com.uroboros.memory.Layer
+import com.uroboros.memory.Sentences
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.nav.Coordinates.Address
 import com.uroboros.util.TextFold
@@ -13,8 +14,34 @@ import com.uroboros.util.TextFold
  * находит «знаешь», а не собеседника. Портрет ищет по тому, кто сказал:
  * все записи собеседника, из любого слоя, включая архив.
  *
- * КОГДА ИЩЕТСЯ: только на адрес вопроса «владелец» или «владелец и агент»
- * (Coordinates.questionAddress). На «агент» и «не определён» не ищется.
+ * КОГДА ИДЁТ МОДЕЛИ — повод ([Reason], [reasonOf]); ищется на каждом ходе,
+ * подаётся по поводу:
+ *  - ВОПРОС О СОБЕСЕДНИКЕ ([asksAbout]) — весь портрет ([Result.chosen]).
+ *    Вопросом считается предложение реплики с «?», у которого адрес
+ *    «владелец» или «оба» (Coordinates.questionAddress, без наследования от
+ *    прошлых вопросов) и есть первое лицо (PersonForm.ofSentence). Адрес всей
+ *    реплики для этого не годится: он ставится и утверждениям («Я работаю по
+ *    субботам»), и безличным репликам по наследству, и тогда портрет шёл
+ *    почти на каждом ходе — модель пересказывает его без спроса;
+ *  - ТЕМА ([topic]) — реплика не вопрос о собеседнике, но в ней есть редкое
+ *    существительное, и оно есть в прошедших строках портрета: идут только
+ *    эти строки, не больше [TOPIC_LIMIT], под своей подписью ([TOPIC_HEADER]).
+ *    Тема — начальная форма слова реплики по словарю (LemmaDictionary), у
+ *    которого есть разбор «существительное» и нет ни одного служебного
+ *    ([FUNCTION_WORDS]): в словаре «по» — ещё и «ПО», программа, а «с» —
+ *    сокращение. Редкое — встречается не больше чем в [RARE] записях этого
+ *    собеседника: частое и так находит общий отбор по словам, а портрет по
+ *    частому слову («код», «агент») был бы тем же портретом на каждом ходе.
+ *    Словарь не загружен — по теме не ищется, вопрос о собеседнике работает;
+ *  - иначе портрета нет, и модели о нём не говорится ничего: строка
+ *    [NOTHING] — ответ на вопрос о собеседнике, а не на каждый ход.
+ *
+ * ПОВТОР РЕПЛИКИ. Предложение записи, совпадающее с предложением текущей
+ * реплики (регистр, «ё» и знак в конце не важны), снимается: владелец
+ * повторил то, что уже говорил, и получил бы в ответ свою же фразу.
+ * Сама текущая реплика в записях хода не встречается — в память она ложится
+ * после ответа (автозапись в MainActivity), здесь ловится только сказанное
+ * раньше теми же словами.
  *
  * КАКАЯ ЗАПИСЬ НЕ СМОТРИТСЯ ВОВСЕ. Запись в [COLUMN_LINES] и больше непустых
  * строк — текст столбиком: стихи, песня, вставленный чужой текст. «Я» в нём —
@@ -81,7 +108,19 @@ import com.uroboros.util.TextFold
  *  - касания считают и подсказанное: собеседник повторил тему, которую
  *    только что назвал агент, — касание засчитано. Чистый счёт
  *    (userMatchUnpromptedCount) на молодой памяти почти весь нулевой, опереться
- *    на него пока нельзя.
+ *    на него пока нельзя;
+ *  - тема — совпадение слова, а не смысла: синоним («инструмент» и
+ *    «рубанок») или та же тема другими словами не находятся; слово вне
+ *    словаря (имя «Кэп», латиница, новое слово) темой не становится;
+ *    омоним со служебным разбором темой не становится никогда;
+ *  - тема берётся только из текущей реплики: о чём говорили ход назад, не
+ *    держится;
+ *  - редкость меняется с памятью: тема, сказанная в третий раз, перестаёт
+ *    быть редкой;
+ *  - поправку подаёт как есть: на «Я не работаю по субботам» тема находит
+ *    «Я работаю по субботам» — строку, которую реплика только что отменила;
+ *  - «вопрос о собеседнике» — по форме: «Привет, ты со мной?» тоже вопрос с
+ *    адресом «оба» и первым лицом, и портрет придёт целиком зря.
  *
  * КАК ИДЁТ МОДЕЛИ. Пересказом со стороны агента («С твоих слов …: ты
  * работаешь по субботам» — ProvenanceLabels.retoldForModel, разворот
@@ -93,7 +132,7 @@ import com.uroboros.util.TextFold
  * Запись, попавшая в портрет, из общего отбора того же хода не подаётся:
  * одна запись дважды — цитатой и пересказом — только путает.
  *
- * ЧИСЛА [LIMIT], [PER_RECORD], [FRESH] и [COLUMN_LINES] объявлены, не измерены. Проверены на ходах
+ * ЧИСЛА [LIMIT], [PER_RECORD], [FRESH], [COLUMN_LINES], [RARE] и [TOPIC_LIMIT] объявлены, не измерены. Проверены на ходах
  * одного владельца с памятью меньше месяца; перепроверять по прибору
  * «О собеседнике:».
  *
@@ -115,6 +154,31 @@ object Portrait {
      * портрет не смотрится. Короткий ответ в две-три строки так не снимается.
      */
     const val COLUMN_LINES = 4
+
+    /** Тема редкая, если её слово есть не больше чем в стольких записях собеседника. */
+    const val RARE = 2
+
+    /** Сколько строк портрета идёт модели по теме — не больше. */
+    const val TOPIC_LIMIT = 2
+
+    /** Части речи, при которых слово темой не бывает, даже если у него есть разбор «существительное». */
+    val FUNCTION_WORDS = setOf("PREP", "CONJ", "PRCL", "INTJ", "NPRO")
+
+    /** Почему портрет идёт модели на этом ходе (описание объекта, «КОГДА ИДЁТ МОДЕЛИ»). */
+    enum class Reason { QUESTION, TOPIC, NONE }
+
+    /**
+     * Тема реплики: [nouns] — начальные формы слов-тем реплики (существительные
+     * без служебных разборов), [rare] — те из них, что редкие ([RARE]),
+     * [lines] — строки портрета с редкими словами, свежие первыми, не больше
+     * [TOPIC_LIMIT]; [words] — по каким словам строки нашлись.
+     */
+    data class Topic(
+        val nouns: List<String>,
+        val rare: List<String>,
+        val lines: List<Line>,
+        val words: List<String>,
+    )
 
     /**
      * Предложение портрета. [fromArchive] — запись лежит в фиолетовом слое;
@@ -146,6 +210,8 @@ object Portrait {
         val inColumn: Int = 0,
         /** Снято проверкой 4 — замечание о разговоре ([TalkRemark]). */
         val aboutTalk: Int = 0,
+        /** Снято как повтор текущей реплики (описание объекта, «ПОВТОР РЕПЛИКИ»). */
+        val repeats: Int = 0,
     )
 
     /** Подпись над строками портрета в записях хода, когда имя не задано. */
@@ -182,6 +248,14 @@ object Portrait {
     const val NOTHING = "О собеседнике я пока ничего не знаю с его слов."
 
     /**
+     * Подпись над строками портрета, поданными по теме. Не [HEADER]: «знаю
+     * только это» над одной-двумя строками темы сказало бы модели, что больше
+     * о собеседнике ничего нет. Имени здесь нет: имя — ответ на вопрос о
+     * собеседнике. Подпись объявлена, стендом на модели не подбиралась.
+     */
+    const val TOPIC_HEADER = "Об этом ты мне говорил:"
+
+    /**
      * Сообщение с записями хода (голосом агента): портрет под [HEADER], пустая
      * строка, остальные записи. [lines] — все записи хода в порядке подачи
      * (записи прошлых ходов модели не подаются, см.
@@ -190,29 +264,62 @@ object Portrait {
      * [nothing] — портрет искался и пуст: вместо него [NOTHING].
      * [name] — как собеседник велел себя называть ([NameClaim]); подпись
      * тогда [header] с именем. Без строк портрета имя не подаётся.
+     * [topic] — строки поданы по теме: подпись [TOPIC_HEADER], без имени, и
+     * [nothing] не действует.
      * null — сообщения не будет.
      */
-    fun recall(lines: List<String>, portraitLines: Set<String>, nothing: Boolean, name: String? = null): String? {
+    fun recall(
+        lines: List<String>,
+        portraitLines: Set<String>,
+        nothing: Boolean,
+        name: String? = null,
+        topic: Boolean = false,
+    ): String? {
         val (portrait, rest) = lines.partition { it in portraitLines }
         val parts = ArrayList<String>()
         when {
-            portrait.isNotEmpty() -> parts += (listOf(header(name)) + portrait).joinToString("\n")
-            nothing -> parts += NOTHING
+            portrait.isNotEmpty() -> parts += (listOf(if (topic) TOPIC_HEADER else header(name)) + portrait).joinToString("\n")
+            nothing && !topic -> parts += NOTHING
         }
         if (rest.isNotEmpty()) parts += rest.joinToString("\n")
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
     }
 
-    /** Ищется ли портрет на вопрос с этим адресом. */
-    fun searched(address: Address): Boolean = address == Address.OWNER || address == Address.BOTH
+    /**
+     * Реплика [reply] спрашивает о собеседнике (описание объекта, «КОГДА ИДЁТ
+     * МОДЕЛИ»): есть предложение с «?», адресом «владелец» или «оба» и первым
+     * лицом. Лицо считается от говорящего: «я» в реплике — тот, кто её сказал.
+     */
+    fun asksAbout(reply: String): Boolean = Sentences.split(reply).any { s ->
+        s.trimEnd().endsWith('?') &&
+            Coordinates.questionAddress(s).let { it == Address.OWNER || it == Address.BOTH } &&
+            PersonForm.Person.FIRST in PersonForm.ofSentence(s)
+    }
+
+    /** Повод хода: вопрос о собеседнике важнее темы; темы без строк — нет повода. */
+    fun reasonOf(asks: Boolean, topic: Topic?): Reason = when {
+        asks -> Reason.QUESTION
+        topic != null && topic.lines.isNotEmpty() -> Reason.TOPIC
+        else -> Reason.NONE
+    }
+
+    /** Строки, которые идут модели по поводу [reason]. */
+    fun fedLines(reason: Reason, result: Result?, topic: Topic?): List<Line> = when (reason) {
+        Reason.QUESTION -> result?.chosen.orEmpty()
+        Reason.TOPIC -> topic?.lines.orEmpty()
+        Reason.NONE -> emptyList()
+    }
 
     /**
      * Портрет собеседника [person] по записям памяти. Записи, ждущие проверки
      * и отвергнутые, не смотрятся — как в облаке (MainActivity.cloudSources).
+     * [current] — текущая реплика: её предложения в портрет не берутся
+     * (описание объекта, «ПОВТОР РЕПЛИКИ»).
      */
-    fun of(records: List<Sticker>, person: PersonKey = PersonKey.OWNER): Result {
-        val own = records
-            .filter { Coordinates.speakerOf(it.source) == person && !it.reviewPending && it.rejectedAt == null }
+    fun of(records: List<Sticker>, person: PersonKey = PersonKey.OWNER, current: String = ""): Result {
+        val repeatKeys = Sentences.split(current).map { sentenceKey(it) }.filter { it.isNotEmpty() }.toSet()
+        var repeats = 0
+        val own = ownRecords(records, person)
             .sortedByDescending { it.createdAt }
         var sentences = 0
         var toAgent = 0
@@ -234,6 +341,7 @@ object Portrait {
                         PersonForm.Person.UNCLEAR in p -> notStatement++
                     !hasFirstPronoun(s.sentence) -> noFirst++
                     TalkRemark.isRemark(s.sentence) -> aboutTalk++
+                    sentenceKey(s.sentence) in repeatKeys -> repeats++
                     else -> passed += Line(
                         record.id, s.sentence, record.createdAt,
                         fromArchive = record.layer == Layer.PURPLE.name,
@@ -242,8 +350,61 @@ object Portrait {
                 }
             }
         }
-        return Result(own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed), inColumn, aboutTalk)
+        return Result(
+            own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed), inColumn, aboutTalk, repeats,
+        )
     }
+
+    /**
+     * Тема реплики [reply] и строки портрета [result] с ней (описание объекта,
+     * «КОГДА ИДЁТ МОДЕЛИ»). Редкость считается по тем же записям собеседника
+     * [person], что и портрет ([records] — все записи, отбор здесь). Нет слов-тем —
+     * записи не перебираются.
+     */
+    fun topic(
+        result: Result,
+        records: List<Sticker>,
+        reply: String,
+        dictionary: LemmaDictionary,
+        person: PersonKey = PersonKey.OWNER,
+    ): Topic {
+        val nouns = LinkedHashSet<String>()
+        for (word in words(reply)) {
+            val analyses = dictionary.analyze(word)
+            if (analyses.any { it.partOfSpeech in FUNCTION_WORDS }) continue
+            analyses.filter { it.partOfSpeech == "NOUN" }.forEach { nouns += it.lemma }
+        }
+        if (nouns.isEmpty()) return Topic(emptyList(), emptyList(), emptyList(), emptyList())
+        val counts = HashMap<String, Int>()
+        for (record in ownRecords(records, person)) {
+            lemmasOf(record.content, dictionary).filter { it in nouns }.forEach { counts[it] = (counts[it] ?: 0) + 1 }
+        }
+        val rare = nouns.filter { (counts[it] ?: 0) in 1..RARE }
+        if (rare.isEmpty()) return Topic(nouns.toList(), emptyList(), emptyList(), emptyList())
+        val hits = result.passed.asSequence()
+            .map { line -> line to lemmasOf(line.sentence, dictionary).filter { it in rare } }
+            .filter { it.second.isNotEmpty() }
+            .take(TOPIC_LIMIT)
+            .toList()
+        val found = hits.flatMapTo(HashSet()) { it.second }
+        return Topic(nouns.toList(), rare, hits.map { it.first }, rare.filter { it in found })
+    }
+
+    private fun ownRecords(records: List<Sticker>, person: PersonKey): List<Sticker> =
+        records.filter { Coordinates.speakerOf(it.source) == person && !it.reviewPending && it.rejectedAt == null }
+
+    // Слово для словаря — буквы и дефис («когда-нибудь» в словаре одним словом).
+    private val WORD = Regex("[\\p{L}-]+")
+
+    private fun words(text: String): List<String> = WORD.findAll(text).map { it.value.trim('-') }.filter { it.isNotEmpty() }.toList()
+
+    /** Начальные формы всех разборов всех слов текста; незнакомые слова не дают ничего. */
+    private fun lemmasOf(text: String, dictionary: LemmaDictionary): Set<String> =
+        words(text).flatMapTo(HashSet()) { dictionary.lemmas(it) }
+
+    /** Предложение для сверки с репликой: приведённое, без пробелов и знаков по краям. */
+    private fun sentenceKey(sentence: String): String =
+        TextFold.fold(sentence).trim().trimEnd('.', '!', '?', '…', ' ').trim()
 
     /** Запись — текст столбиком (описание объекта, [COLUMN_LINES]). */
     fun inColumn(text: String): Boolean = text.lines().count { it.isNotBlank() } >= COLUMN_LINES
@@ -276,28 +437,46 @@ object Portrait {
         TextFold.fold(sentence).split(NOT_LETTER).any { it in PersonForm.FIRST_PRONOUNS }
 
     /**
-     * Строка прибора «О собеседнике:». Печатается всегда. [result] — null,
-     * если на этом адресе портрет не ищется; [failure] — имя сбоя, если
-     * поиск упал (ход при этом идёт). [fed] — поданы ли строки модели;
-     * [whyNotFed] — почему нет, если причина известна.
+     * Строка прибора «О собеседнике:». Печатается всегда. [reason] — повод хода
+     * ([reasonOf]); [result] — null, если поиск не посчитался; [failure] — имя
+     * сбоя поиска портрета (ход при этом идёт); [topic] — null, если тема не
+     * искалась, тогда [topicOff] — почему; [fed] — поданы ли строки модели;
+     * [whyNotFed] — почему нет, если причина известна. Без повода строка
+     * говорит, на каком шаге тема не нашлась: слов-тем нет, они не редкие или
+     * строк с ними в портрете нет.
      */
     fun meterLine(
-        address: Address,
+        reason: Reason,
         result: Result?,
+        topic: Topic?,
         fed: Boolean,
         failure: String? = null,
         whyNotFed: String? = null,
+        topicOff: String? = null,
     ): String {
-        val head = "адрес — ${Coordinates.addressLabel(address)}"
-        if (!searched(address)) return "$head · не ищется"
-        if (failure != null) return "$head · не посчитался — $failure"
-        if (result == null) return "$head · не посчитался"
-        val archive = result.chosen.count { it.fromArchive }
-        return "$head · его записей ${result.records}, предложений ${result.sentences}" +
-            " · снято: столбиком ${result.inColumn}, обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
-            " без «я/мой» ${result.noFirstPronoun}, о разговоре ${result.aboutTalk}" +
-            " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" +
-            (if (fed) " · подано модели" else " · модели не подано" + (whyNotFed?.let { " — $it" } ?: "")) +
+        if (failure != null) return "не посчитался — $failure"
+        if (result == null) return "не посчитался"
+        val repeats = if (result.repeats > 0) " · снято повторов реплики ${result.repeats}" else ""
+        val feeding = (if (fed) " · подано модели" else " · модели не подано" + (whyNotFed?.let { " — $it" } ?: "")) +
             " · не грелось"
+        return when (reason) {
+            Reason.QUESTION -> {
+                val archive = result.chosen.count { it.fromArchive }
+                "вопрос о собеседнике → весь портрет · его записей ${result.records}, предложений ${result.sentences}" +
+                    " · снято: столбиком ${result.inColumn}, обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
+                    " без «я/мой» ${result.noFirstPronoun}, о разговоре ${result.aboutTalk}" +
+                    repeats +
+                    " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" + feeding
+            }
+            Reason.TOPIC ->
+                "тема: ${topic!!.words.joinToString(", ")} → строк ${topic.lines.size}" +
+                    " (прошло в портрет ${result.passed.size})" + repeats + feeding
+            Reason.NONE -> "не вопрос о собеседнике; " + when {
+                topic == null -> "по теме не ищу — ${topicOff ?: "причина неизвестна"}"
+                topic.nouns.isEmpty() -> "темы нет — существительных в реплике нет"
+                topic.rare.isEmpty() -> "темы нет — ${topic.nouns.joinToString(", ")}: не редкие (в записях больше $RARE раз) или их нет в записях"
+                else -> "темы нет — ${topic.rare.joinToString(", ")}: в строках портрета нет (прошло ${result.passed.size})"
+            } + repeats + " · портрет не подан"
+        }
     }
 }
