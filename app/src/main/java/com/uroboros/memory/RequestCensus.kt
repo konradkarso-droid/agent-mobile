@@ -11,6 +11,10 @@ import android.content.Context
  * за просьбу, спрятано от каждого ответа, и по числу это не видно — видно
  * только глазами, по тексту.
  *
+ * ОБЫЧАЙ — ТОЖЕ ТЕКСТАМИ, отдельным списком: запись, принятая за обычай
+ * (RiskTrigger.isOnlySocial), так же спрятана от каждого ответа, и так же
+ * видна только глазами.
+ *
  * ВОПРОСЫ СЧИТАЮТСЯ РЯДОМ, НО ОТДЕЛЬНО. Слитый счёт спрятал бы всплеск ложных
  * срабатываний нового признака под видом «вопросов стало больше».
  *
@@ -39,20 +43,29 @@ object RequestCensus {
         val requests = live.filter { RiskTrigger.isOnlyRequests(it.content) }
             .sortedByDescending { it.createdAt }
         val questions = live.count { RiskTrigger.isOnlyQuestions(it.content) }
+        val social = live.filter { RiskTrigger.isOnlySocial(it.content) }
+            .sortedByDescending { it.createdAt }
 
         append("ПРОСЬБЫ — не снятся, не судятся и не идут в ответ\n")
         append("Живых записей: ").append(live.size)
         append(" · одни просьбы: ").append(requests.size)
         append(" · одни вопросы: ").append(questions)
-        if (requests.isEmpty()) {
-            append("\nПросьб не узнано.")
-            return@buildString
+        append(" · один обычай: ").append(social.size)
+        listed(requests, "Просьб не узнано.")
+        append("\nОБЫЧАЙ — приветствия, прощания, «спасибо»: тоже не снятся, не судятся и не идут в ответ")
+        listed(social, "Обычаев не узнано.")
+    }
+
+    private fun StringBuilder.listed(records: List<Sticker>, none: String) {
+        if (records.isEmpty()) {
+            append("\n").append(none)
+            return
         }
-        for (record in requests.take(MAX_LISTED)) {
+        for (record in records.take(MAX_LISTED)) {
             append("\n№").append(record.id).append(" ").append(short(record.content))
         }
-        if (requests.size > MAX_LISTED) {
-            append("\n… и ещё ").append(requests.size - MAX_LISTED)
+        if (records.size > MAX_LISTED) {
+            append("\n… и ещё ").append(records.size - MAX_LISTED)
         }
     }
 

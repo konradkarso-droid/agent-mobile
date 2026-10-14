@@ -222,6 +222,14 @@ class JudgeLauncher(
                 if (report.onlyRequests.size > SHOWN_IDS) append(", …")
                 append(")\n")
             }
+            if (report.onlySocial.isNotEmpty()) {
+                // Отдельной строкой по той же причине, что просьбы.
+                append("Не судятся — один обычай: ").append(report.onlySocial.size)
+                append(" зап. (")
+                append(report.onlySocial.take(SHOWN_IDS).joinToString(", ") { "№$it" })
+                if (report.onlySocial.size > SHOWN_IDS) append(", …")
+                append(")\n")
+            }
             if (report.outsideSieve > 0) {
                 // Число, а не номера: таких пар большинство. Строка нужна,
                 // чтобы «осталось 0» не читалось как «все пары разобраны».

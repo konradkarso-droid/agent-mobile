@@ -63,10 +63,33 @@ class SentenceKindTest {
             "Скорее всего, это были тестовые фразы.",
             "Мой любимый инструмент — стамеска.",
             "Мои цвета на месте.",
-            "Привет.",
         )) {
             assertEquals(s, Kind.STATEMENT, SentenceKind.of(s).kind)
         }
+    }
+
+    @Test
+    fun `обычай - приветствие, прощание, благодарность, междометие`() {
+        for (s in listOf(
+            "Привет.", "Доброй тебе ночи.", "Понял, спасибо.", "Хммм...", ":)", "Блин.",
+            "Доброе утро!", "И тебе спокойной ночи.", "Ну ладно, пока.",
+        )) {
+            assertEquals(s, Kind.SOCIAL to Certainty.SURE, read(s))
+        }
+    }
+
+    @Test
+    fun `молчит - не обычай`() {
+        // Спутник один обычаем не делает: «Утро.» бывает ответом на «когда?».
+        assertEquals(Kind.STATEMENT, SentenceKind.of("Утро.").kind)
+        assertEquals(Kind.STATEMENT, SentenceKind.of("Добрый день выдался.").kind)
+        assertEquals(Kind.STATEMENT, SentenceKind.of("Нет.").kind)
+        assertEquals(Kind.STATEMENT, SentenceKind.of("Привет, Иван.").kind)
+        assertEquals(Kind.STATEMENT, SentenceKind.of("Дурак.").kind)
+        // Знак «?» решает раньше обычая.
+        assertEquals(Kind.QUESTION, SentenceKind.of("Привет?").kind)
+        // Слово просьбы обычаем не прячется.
+        assertEquals(Kind.REQUEST, SentenceKind.of("Ладно, расскажи про правило.").kind)
     }
 
     @Test

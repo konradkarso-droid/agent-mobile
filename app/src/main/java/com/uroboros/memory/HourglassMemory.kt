@@ -229,7 +229,13 @@ internal const val MAX_SEARCH_WORDS = 6
 /**
  * Слова реплики, по которым имеет смысл искать.
  *
- * Три отсева, каждый по своей причине:
+ * Четыре отсева, каждый по своей причине:
+ *  - предложения-обычаи (SentenceKind, «ОБЫЧАЙ»: «Доброй ночи.», «Привет.»)
+ *    не ищутся вовсе: это акт про сам разговор, и память к нему находит
+ *    только такие же обычаи, которые модель потом пересказывает. Реплика из
+ *    одного обычая не ищет ничего — окно вопроса говорит «нечем искать». Режется
+ *    по предложениям (Sentences.split): в «Привет. Что нового?» ищется второе,
+ *    а «Привет, как дела?» — вопрос, и «привет» в нём ищется;
  *  - короткие слова: предлоги и частицы, совпадут с чем угодно;
  *  - список служебных слов: "сколько", "должно", "будет" — длинные, но
  *    встречаются в любом вопросе и тащат за собой случайные записи. Список
@@ -250,7 +256,7 @@ internal const val MAX_SEARCH_WORDS = 6
  * реплик (DolmenCircle.themeWords), и определение у них обязано быть одно.
  */
 internal fun meaningfulWords(query: String): List<String> =
-    TextFold.fold(query)
+    TextFold.fold(Sentences.split(query).filterNot { SentenceKind.of(it).kind == SentenceKind.Kind.SOCIAL }.joinToString(" "))
         .split(Regex("[^\\p{L}\\p{N}]+"))
         .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
         .distinct()
@@ -369,14 +375,14 @@ internal sealed class SelectionSummary {
      * ответ не годится. Лечится не поиском и не порогами, а самим вопросом —
      * именно он вытащил формулировки себя самого из памяти.
      */
-    data class OnlyQuestionsFound(val questions: Int, val requests: Int = 0) : SelectionSummary() {
+    data class OnlyQuestionsFound(val questions: Int, val requests: Int = 0, val social: Int = 0) : SelectionSummary() {
         override val text =
-            if (requests == 0) {
+            if (requests == 0 && social == 0) {
                 "Отбор: найдено записей $questions, но все — только вопросы; " +
                     "для ответа взять нечего."
             } else {
-                "Отбор: найдено записей ${questions + requests}, но ни одна ничего не " +
-                    "утверждает — вопросов $questions, просьб $requests; для ответа взять нечего."
+                "Отбор: найдено записей ${questions + requests + social}, но ни одна ничего не " +
+                    "утверждает — вопросов $questions, просьб $requests, обычаев $social; для ответа взять нечего."
             }
     }
 
@@ -408,6 +414,8 @@ internal sealed class SelectionSummary {
         val questionsFiltered: Int = 0,
         /** Сколько отсеяно как «только просьбы» там же (RiskTrigger.isOnlyRequests). */
         val requestsFiltered: Int = 0,
+        /** Сколько отсеяно как «один обычай» там же (RiskTrigger.isOnlySocial). */
+        val socialFiltered: Int = 0,
     ) : SelectionSummary() {
 
         val rejected: Int get() = tooNarrow + tooExpensive + tooBoth
@@ -428,7 +436,8 @@ internal sealed class SelectionSummary {
                     ).joinToString(", ")
                 val filtered = (if (questionsFiltered > 0)
                     " · отсеяно вопросов $questionsFiltered" else "") +
-                    (if (requestsFiltered > 0) " · отсеяно просьб $requestsFiltered" else "")
+                    (if (requestsFiltered > 0) " · отсеяно просьб $requestsFiltered" else "") +
+                    (if (socialFiltered > 0) " · отсеяно обычаев $socialFiltered" else "")
                 return head + trim + why + filtered + " · скрыто карантином $hidden"
             }
     }
@@ -469,6 +478,8 @@ data class ContextResult(
     val questionsFiltered: Int = 0,
     /** Сколько записей-просьб отсеяно там же; отдельно от вопросов. */
     val requestsFiltered: Int = 0,
+    /** Сколько записей из одного обычая отсеяно там же; отдельно от вопросов и просьб. */
+    val socialFiltered: Int = 0,
     /** Строка прибора «Круг:» — чем кончилось каждое окно (см. DolmenCircle.meter). */
     val circle: String = DolmenCircle.NOT_GATHERED,
     /**
@@ -1055,10 +1066,13 @@ class HourglassMemory(
         // Строка итога и счёт отсеянных — по окну вопроса, как и прежде: она
         // отвечает, что стало со словами вопроса. Остальные окна — в круге.
         val questionSummary = question?.summary ?: SelectionSummary.NoSearchableWords
-        val (qFiltered, rFiltered) = when (questionSummary) {
-            is SelectionSummary.Weighed -> questionSummary.questionsFiltered to questionSummary.requestsFiltered
-            is SelectionSummary.OnlyQuestionsFound -> questionSummary.questions to questionSummary.requests
-            else -> 0 to 0
+        val (qFiltered, rFiltered, sFiltered) = when (questionSummary) {
+            is SelectionSummary.Weighed -> Triple(
+                questionSummary.questionsFiltered, questionSummary.requestsFiltered, questionSummary.socialFiltered,
+            )
+            is SelectionSummary.OnlyQuestionsFound ->
+                Triple(questionSummary.questions, questionSummary.requests, questionSummary.social)
+            else -> Triple(0, 0, 0)
         }
         return ContextResult(
             stickers = touched,
@@ -1066,6 +1080,7 @@ class HourglassMemory(
             trace = trace,
             questionsFiltered = qFiltered,
             requestsFiltered = rFiltered,
+            socialFiltered = sFiltered,
             circle = circle,
             coldIds = coldIds,
             touches = UserTouches(toMark.size, promptedCount, promptedBy),
@@ -1367,13 +1382,15 @@ class HourglassMemory(
         // свою запись-вопрос. Цель — не стереть вопросы из памяти, а убрать
         // их с пути к ответу: там они занимают место сведений, не неся их.
         //
-        // Просьбы снимаются тем же путём и считаются отдельно; что считается
-        // просьбой — у RiskTrigger.isOnlyRequests.
+        // Просьбы и записи из одного обычая снимаются тем же путём и
+        // считаются отдельно; что считается просьбой — у
+        // RiskTrigger.isOnlyRequests, обычаем — у RiskTrigger.isOnlySocial.
         //
         // ЧЕГО НЕ УМЕЕТ: вопрос без знака считается утверждением. Запись,
         // в которой вопрос или просьба смешаны с фактом, проходит целиком.
         var questionsFiltered = 0
         var requestsFiltered = 0
+        var socialFiltered = 0
         val totalWords = words.size
 
         val passed = mutableListOf<Scored>()
@@ -1389,6 +1406,10 @@ class HourglassMemory(
                 }
                 if (RiskTrigger.isOnlyRequests(sticker.content)) {
                     requestsFiltered++
+                    continue
+                }
+                if (RiskTrigger.isOnlySocial(sticker.content)) {
+                    socialFiltered++
                     continue
                 }
             }
@@ -1428,11 +1449,11 @@ class HourglassMemory(
         // Нашлись кандидаты, но все оказались вопросами или просьбами и были
         // отсеяны. Проверяется здесь, а не до цикла: до цикла счётчики = 0
         // и условие никогда не выполнилось бы.
-        if (stickers.isEmpty() && questionsFiltered + requestsFiltered > 0) {
+        if (stickers.isEmpty() && questionsFiltered + requestsFiltered + socialFiltered > 0) {
             return SelectionResult(
                 emptyList(),
                 trace,
-                SelectionSummary.OnlyQuestionsFound(questionsFiltered, requestsFiltered)
+                SelectionSummary.OnlyQuestionsFound(questionsFiltered, requestsFiltered, socialFiltered)
             )
         }
 
@@ -1452,6 +1473,7 @@ class HourglassMemory(
                 hidden = hidden.size,
                 questionsFiltered = questionsFiltered,
                 requestsFiltered = requestsFiltered,
+                socialFiltered = socialFiltered,
             )
         )
     }

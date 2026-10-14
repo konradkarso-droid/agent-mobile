@@ -105,6 +105,7 @@ import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.Retelling
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.memory.nav.ConversationEdges
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
@@ -620,6 +621,13 @@ class MainActivity : AppCompatActivity() {
      * портретом, на тех же записях. null — хода в этом запуске не было.
      */
     private var nameLine: String? = null
+
+    /**
+     * Строка «Края разговоров:» (nav.ConversationEdges.meterLine) — по архиву
+     * ленты, считается на ходе, где архив уже прочитан. null — хода в этом
+     * запуске не было.
+     */
+    private var edgesLine: String? = null
 
     /**
      * Строка хода «Записи хода:» — из каких источников сложились записи хода
@@ -2995,7 +3003,8 @@ class MainActivity : AppCompatActivity() {
         // глаголов на -у/-ю в адресе (nav.RetellHolder.meterLine).
         group(
             "Память", recordsQuestionsLine, circleLine, recordsSources, mirrorSelection, drift, portraitMeter,
-            nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(), cloud,
+            nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(),
+            edgesLine ?: "Края разговоров: чисел хода на экране нет", cloud,
             touchesLine, selfLeader,
         )
         // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
@@ -4475,6 +4484,15 @@ class MainActivity : AppCompatActivity() {
                 // Архив ленты — для своей речи агента и счёта рассказанных снов.
                 // null — не читается: оба молчат с этой причиной, ход идёт.
                 val archive = journalStore.readArchive()
+                // Слова на краях разговоров — прибор для словаря обычая
+                // (nav.ConversationEdges); на ход не влияет.
+                edgesLine = runCatching {
+                    val ribbons = archive?.groupBy { it.archiveIndex }?.values
+                        ?.map { rows -> rows.sortedBy { it.turnIndex }.map { it.question } }
+                    ConversationEdges.meterLine(
+                        ribbons?.let { ConversationEdges.of(it, LemmaHolder.loaded) }, ribbons?.size ?: 0,
+                    )
+                }.getOrElse { "Края разговоров: не посчитались (${it.javaClass.simpleName})" }
                 // Пробелы (Gaps) — прибор и второй источник выхода «спросить»
                 // (CuriosityAsk.decideGap ниже). Собираются по архиву и открытой
                 // ленте заново на каждом ходе; ход идёт, что бы с ними ни
@@ -4806,6 +4824,7 @@ class MainActivity : AppCompatActivity() {
                     (if (ownLines.isNotEmpty()) " · своей речи: ${ownLines.size}" else "") +
                     (if (questionsFiltered > 0) " · отсеяно вопросов: $questionsFiltered" else "") +
                     (if (requestsFiltered > 0) " · отсеяно просьб: $requestsFiltered" else "") +
+                    (if (contextResult.socialFiltered > 0) " · отсеяно обычаев: ${contextResult.socialFiltered}" else "") +
                     " · дверей открыто: ${behindDoor.size}"
                 renderMetricsPanel()
                 val disputeText = (notice as? DisputeNotice.Result.Found)?.text

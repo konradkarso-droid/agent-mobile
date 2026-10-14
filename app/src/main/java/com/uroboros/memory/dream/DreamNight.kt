@@ -69,6 +69,12 @@ data class DreamNight(
      */
     val skippedRequests: Int? = null,
     /**
+     * Сколько записей из одного обычая не снилось (RiskTrigger.isOnlySocial).
+     * null — ночь прошла раньше, чем обычай стал узнаваться: тогда такие
+     * записи снились, и ноль здесь был бы неправдой.
+     */
+    val skippedSocial: Int? = null,
+    /**
      * Номер записи, которая в эту ночь была лидером по касаниям без подсказки
      * и проходила условие лидера (см. [UnpromptedLeader]); null — такого
      * лидера не было, или сбой подсчёта (тогда о нём сказано в отчёте ночи),
@@ -123,6 +129,7 @@ data class DreamNight(
             skippedHidden = night.skippedHidden,
             skippedQuestions = night.skippedQuestions,
             skippedRequests = night.skippedRequests,
+            skippedSocial = night.skippedSocial,
             skippedAgentReports = night.skippedAgentReports,
             ceilingHit = night.ceilingHit,
         )

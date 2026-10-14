@@ -1,5 +1,6 @@
 package com.uroboros.llm
 
+import com.uroboros.memory.SentenceKind
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.Sentences
 import com.uroboros.memory.nav.PersonForm
@@ -252,14 +253,13 @@ object EchoCheck {
     )
 
     /**
-     * Слова приветствия и прощания. Предложение владельца, все основы которого
+     * Слова обычая — приветствия, прощания, благодарности (словарь один, у
+     * SentenceKind, «ОБЫЧАЙ»). Предложение владельца, все основы которого
      * отсюда («Доброй тебе ночи», «Доброе утро»), отвечается теми же словами, и
-     * это не эхо, а обычай. Объявленный список, не подобранный.
+     * это не эхо, а обычай.
      */
-    val GREETING_WORDS: Set<String> = stemsOf(
-        "доброй", "добрый", "доброе", "доброго", "спокойной", "ночи", "утра", "утро",
-        "вечер", "вечера", "день", "дня", "привет", "пока", "спасибо", "тебе", "вам",
-    )
+    val GREETING_WORDS: Set<String> =
+        stemsOf(*(SentenceKind.SOCIAL_MARKS + SentenceKind.SOCIAL_COMPANIONS).toTypedArray())
 
     private fun stemsOf(vararg words: String): Set<String> =
         words.flatMapTo(HashSet()) { RiskTrigger.echoStems(it) }

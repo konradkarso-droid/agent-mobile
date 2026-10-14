@@ -64,6 +64,11 @@ data class JudgeRunReport(
      */
     val onlyRequests: List<Long> = emptyList(),
     /**
+     * Номера записей из одного обычая («Доброй тебе ночи.») — не судились по
+     * той же причине; считаются отдельно (RiskTrigger.isOnlySocial).
+     */
+    val onlySocial: List<Long> = emptyList(),
+    /**
      * Сколько пар пула не судится, потому что у записей нет ни одного общего
      * значимого слова (см. [JudgeSieve]). Число, а не номера: таких пар
      * большинство, и список из них никто не прочтёт.
@@ -110,7 +115,8 @@ data class JudgeRunReport(
  * — общий с правилом противоречия (RiskTrigger.isOnlyQuestions), и его
  * промахи те же: риторический вопрос со скрытым утверждением судье больше не
  * попадёт, вопрос без знака судится как раньше. Записи из одних просьб не
- * судятся по той же причине (RiskTrigger.isOnlyRequests). Запись при этом не меняется и
+ * судятся по той же причине (RiskTrigger.isOnlyRequests), записи из одного обычая —
+ * тоже (RiskTrigger.isOnlySocial). Запись при этом не меняется и
  * из памяти не уходит; её номер называется в отчёте каждого прогона.
  *
  * Слишком длинные записи не судятся вовсе, ни в одной паре, — см.
@@ -164,7 +170,7 @@ class JudgeRun(
 
         // Как и почему собирается пул — у collectPool().
         val (pool, dropped) = collectPool()
-        val (tooLong, onlyQuestions, onlyRequests) = dropped
+        val (tooLong, onlyQuestions, onlyRequests, onlySocial) = dropped
 
         val queue = queue(pool)
 
@@ -246,6 +252,7 @@ class JudgeRun(
             tooLong = tooLong.map { it.id },
             onlyQuestions = onlyQuestions.map { it.id },
             onlyRequests = onlyRequests.map { it.id },
+            onlySocial = onlySocial.map { it.id },
             outsideSieve = queue.outsideSieve,
         )
     }
@@ -263,11 +270,12 @@ class JudgeRun(
         }
     }
 
-    /** Выпавшие из пула записи — длинные, одни вопросы, одни просьбы. */
+    /** Выпавшие из пула записи — длинные, одни вопросы, одни просьбы, один обычай. */
     private data class Dropped(
         val tooLong: List<Sticker>,
         val onlyQuestions: List<Sticker>,
         val onlyRequests: List<Sticker>,
+        val onlySocial: List<Sticker>,
     )
 
     /**
@@ -290,8 +298,9 @@ class JudgeRun(
             .sortedByDescending { it.createdAt }
         val (sized, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
         val (asserting, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }
-        val (pool, onlyRequests) = asserting.partition { !RiskTrigger.isOnlyRequests(it.content) }
-        return pool to Dropped(tooLong, onlyQuestions, onlyRequests)
+        val (notRequests, onlyRequests) = asserting.partition { !RiskTrigger.isOnlyRequests(it.content) }
+        val (pool, onlySocial) = notRequests.partition { !RiskTrigger.isOnlySocial(it.content) }
+        return pool to Dropped(tooLong, onlyQuestions, onlyRequests, onlySocial)
     }
 
     /** Пары к суду в порядке суда и число пар, не прошедших сито. */
