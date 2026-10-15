@@ -59,8 +59,14 @@ import com.uroboros.memory.Sentences
  *
  * КОГДА РАССКАЗ К МЕСТУ. Вид реплики владельца рассказу не помеха: на «Ты
  * как?» рассказ сна — тоже ответ. Помеха — чужая тема. Рассказ идёт, если
- * реплика в теме сна ([inTopic]) и вклад не ниже [TELL_MIN], или если сон
- * накопил вклад [TELL_PILED] — тогда тема реплики не важна. По запросу («что
+ * реплика в теме сна ([inTopic]) и вклад не ниже [TELL_MIN], или если
+ * несказанное накопилось ([CuriosityPressure.Teller.piled] не ниже
+ * [TELL_PILED]) — тогда тема реплики не важна. Это два разных вопроса на двух
+ * разных счетах: «в теме» спрашивает, к месту ли, и там подхват владельца —
+ * повод; «накопилось» спрашивает, пора ли, и там считается только сторона
+ * агента (почему — в KDoc CuriosityPressure, «НЕСКАЗАННОЕ»). В теме
+ * проверяются все несказанные выводы, а не только первый: давний вывод
+ * всплывает, когда разговор зашёл в его тему. По запросу («что
  * тебе снилось?») сон рассказывает не этот выход, а описание ночи
  * (DreamTopic): там и темы, и вывод.
  *
@@ -108,15 +114,14 @@ object CuriosityAsk {
     const val TELL_MIN = 3
 
     /**
-     * Вклад, при котором рассказ идёт и на реплике не в теме сна: сон
-     * «накопился». Объявленное число, не подобранное, — порог вопроса о сне
-     * ([MIN_CONTRIBUTION]): накопилось столько, что сон стоил бы вопроса.
-     * Вклад меряет, сколько к сну возвращались, а не то, насколько агент знает
-     * то, чего не знает владелец, — это временная мерка для «накопилось».
-     * Перепроверять по строке «Спросить: … рассказать: не в теме сна — вклад N
-     * из 6»: если выводы не рассказываются неделями — порог высок.
+     * Сколько должно накопиться несказанного ([CuriosityPressure.Teller.piled]),
+     * чтобы рассказ шёл и на реплике не в теме сна. Объявленное число, не
+     * подобранное: агент сам дважды вспоминал сон или вывод пролежал четыре
+     * ночи. Перепроверять по строке «Спросить: … рассказать: не в теме сна —
+     * накопилось N из 4»: если выводы лежат неделями — порог высок; если
+     * рассказываются, едва родившись, — низок.
      */
-    const val TELL_PILED = MIN_CONTRIBUTION
+    const val TELL_PILED = 4
 
     sealed class Decision {
         /** Спросить о сне [leader]. */
@@ -231,22 +236,27 @@ object CuriosityAsk {
 
     /**
      * Рассказать ли вывод сна в ответ на реплику [reply]. Ожидание ответа —
-     * общее с вопросом о сне ([decide]). Берётся первый в
-     * [CuriosityPressure.Result.toTell] — с наибольшим вкладом. Когда к месту —
-     * в KDoc объекта, «КОГДА РАССКАЗ К МЕСТУ».
+     * общее с вопросом о сне ([decide]). Когда к месту — в KDoc объекта,
+     * «КОГДА РАССКАЗ К МЕСТУ»: сначала накопившийся (больше всех накопивший),
+     * затем первый в теме с вкладом не ниже [TELL_MIN]. Отказ называет
+     * вывод, ближе всех к рассказу: в теме, если такой есть, иначе больше
+     * всех накопивший.
      */
     fun decideTell(pressure: CuriosityPressure.Result, awaitingAnswer: Boolean, reply: String): TellDecision {
         if (awaitingAnswer) return TellDecision.Refuse("прошлый вопрос без ответа")
-        val first = pressure.toTell.firstOrNull() ?: return TellDecision.Refuse("выводов к рассказу нет")
-        val contribution = first.leader.contribution
-        if (contribution >= TELL_PILED) return TellDecision.Tell(first)
-        if (!inTopic(first, reply)) {
-            return TellDecision.Refuse("не в теме сна — вклад сна с выводом $contribution из $TELL_PILED")
+        val tellers = pressure.toTell
+        val first = tellers.firstOrNull() ?: return TellDecision.Refuse("выводов к рассказу нет")
+        // Ряд стоит по убыванию накопленного: первый и есть больше всех накопивший.
+        if (first.piled >= TELL_PILED) return TellDecision.Tell(first)
+        val topical = tellers.filter { inTopic(it, reply) }
+        topical.firstOrNull { it.leader.contribution >= TELL_MIN }?.let { return TellDecision.Tell(it) }
+        topical.firstOrNull()?.let {
+            return TellDecision.Refuse("вклад сна с выводом ${it.leader.contribution} из $TELL_MIN")
         }
-        if (contribution < TELL_MIN) {
-            return TellDecision.Refuse("вклад сна с выводом $contribution из $TELL_MIN")
-        }
-        return TellDecision.Tell(first)
+        return TellDecision.Refuse(
+            "не в теме сна — накопилось ${first.piled} из $TELL_PILED " +
+                "(ночей без рассказа ${first.nights}, вспоминал сам ${first.recalled})"
+        )
     }
 
     /**

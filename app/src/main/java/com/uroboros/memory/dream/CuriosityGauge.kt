@@ -21,14 +21,19 @@ class CuriosityGauge(
     suspend fun read(now: Long = System.currentTimeMillis()): CuriosityPressure.Result {
         // Только сны с ненулевыми счетами: остальные дали бы ноль. Записи —
         // по номеру и без отметки обращения.
-        val rows = dreams.stirredSince(now - CuriosityPressure.WINDOW_MS)
-        val byId = rows.flatMap { it.ids() }.distinct().associateWith { stickers.getById(it) }
         // Сны с принятым выводом разряжены (см. CuriosityPressure, «РАЗРЯДКА»),
         // а до рассказа ждут его со своим выводом («НО ДО РАССКАЗА»). На набор
-        // записей — последний принятый вывод.
+        // записей — последний принятый вывод; ночи несказанного — после первого.
         val accepted = conclusions.accepted().sortedBy { it.id }
         val concluded = accepted.mapTo(HashSet()) { ConclusionKey(it.dreamNightAt, it.dreamRecordIds) }
         val texts = accepted.associate { it.dreamRecordIds to it.text }
-        return CuriosityPressure.measure(rows, { byId[it] }, now, concluded, texts)
+        val firstNight = accepted.groupBy { it.dreamRecordIds }.mapValues { (_, rows) -> rows.minOf { it.nightAt } }
+        val nights = firstNight.mapValues { (_, at) -> dreams.nightsAfter(at) }
+        // Сны окна — для давления; сны с записями выводов любой ночи — для
+        // несказанного («НЕСКАЗАННОЕ НЕ ОСТЫВАЕТ»).
+        val rows = dreams.stirredSince(now - CuriosityPressure.WINDOW_MS) +
+            (if (texts.isEmpty()) emptyList() else dreams.withRecords(texts.keys.toList()))
+        val byId = rows.flatMap { it.ids() }.distinct().associateWith { stickers.getById(it) }
+        return CuriosityPressure.measure(rows, { byId[it] }, now, concluded, texts) { nights[it] ?: 0 }
     }
 }

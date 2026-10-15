@@ -288,11 +288,11 @@ class CuriosityAskTest {
 
     // ---- Рассказ вывода сна ----
 
-    private fun withThought(vararg dreams: Dream) = CuriosityPressure.measure(
+    private fun withThought(vararg dreams: Dream, nights: Int = 0) = CuriosityPressure.measure(
         dreams.toList(), { live[it] }, now,
         dreams.mapTo(HashSet()) { ConclusionKey.of(it) },
         dreams.associate { it.recordIds to "мысль о ${it.recordIds}" },
-    )
+    ) { nights }
 
     /** Реплика в теме сна: слово «запись» есть в записях фикстуры. */
     private val inTopic = "Сегодня перебирал запись про отпуск."
@@ -314,23 +314,49 @@ class CuriosityAskTest {
     fun `не в теме сна — молчит, пока не накопилось`() {
         // Вклад 3 (подхват ×1) хватает в теме, но не на «Привет! Ты как?».
         assertEquals(
-            CuriosityAsk.TellDecision.Refuse("не в теме сна — вклад сна с выводом 3 из ${CuriosityAsk.TELL_PILED}"),
+            CuriosityAsk.TellDecision.Refuse(
+                "не в теме сна — накопилось 0 из ${CuriosityAsk.TELL_PILED} (ночей без рассказа 0, вспоминал сам 0)"
+            ),
             CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 1)), awaitingAnswer = false, greeting),
         )
-        // Вклад 5 — всё ещё мало.
+        // Вспоминал раз и пролежал ночь — 3 из 4, ещё мало.
         assertEquals(
-            CuriosityAsk.TellDecision.Refuse("не в теме сна — вклад сна с выводом 5 из ${CuriosityAsk.TELL_PILED}"),
-            CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 1, recalled = 1)), awaitingAnswer = false, greeting),
+            CuriosityAsk.TellDecision.Refuse(
+                "не в теме сна — накопилось 3 из ${CuriosityAsk.TELL_PILED} (ночей без рассказа 1, вспоминал сам 1)"
+            ),
+            CuriosityAsk.decideTell(withThought(dream(1, 2, recalled = 1), nights = 1), awaitingAnswer = false, greeting),
         )
     }
 
     @Test
+    fun `подхваты владельца не делают «накопилось» — не в теме молчит`() {
+        val tell = CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 10)), awaitingAnswer = false, greeting)
+        assertTrue(tell.toString(), tell is CuriosityAsk.TellDecision.Refuse)
+    }
+
+    @Test
     fun `накопилось — рассказ и не в теме, и на вопрос`() {
-        // Вклад 6 (подхват ×2): тема и вид реплики не важны.
-        for (reply in listOf(greeting, "Доброй ночи.", "Посмотри на приборы.")) {
-            val tell = CuriosityAsk.decideTell(withThought(dream(1, 2, picked = 2)), awaitingAnswer = false, reply)
-            assertTrue("$reply → $tell", tell is CuriosityAsk.TellDecision.Tell)
+        // Вспоминал сам дважды (2×2) или пролежал четыре ночи (4×1): тема и вид реплики не важны.
+        for (thought in listOf(withThought(dream(1, 2, recalled = 2)), withThought(dream(1, 2), nights = 4))) {
+            for (reply in listOf(greeting, "Доброй ночи.", "Посмотри на приборы.")) {
+                val tell = CuriosityAsk.decideTell(thought, awaitingAnswer = false, reply)
+                assertTrue("$reply → $tell", tell is CuriosityAsk.TellDecision.Tell)
+            }
         }
+    }
+
+    @Test
+    fun `в теме всплывает и не первый в ряду вывод`() {
+        val other = Sticker(id = 20, content = "Колесо у велосипеда спустило")
+        val records = live + (20L to other)
+        val pressure = CuriosityPressure.measure(
+            listOf(dream(1, 2, recalled = 1), dream(20, picked = 1)), { records[it] }, now,
+            setOf(ConclusionKey(now - day, "1,2"), ConclusionKey(now - day, "20")),
+            mapOf("1,2" to "мысль о записях", "20" to "мысль о колесе"),
+        )
+        assertEquals("первым в ряду — накопивший больше", "мысль о записях", pressure.toTell.first().text)
+        val tell = CuriosityAsk.decideTell(pressure, awaitingAnswer = false, "Опять колесо спустило")
+        assertEquals("мысль о колесе", (tell as CuriosityAsk.TellDecision.Tell).teller.text)
     }
 
     @Test
