@@ -46,6 +46,24 @@ class LemmaDictionaryTest {
     }
 
     @Test
+    fun `наклонение, время и пометки местоимений`() {
+        fun tags(w: String) = dictionary.analyze(w).map { it.tags }
+        // Повелительное на «-ь» и прошедшее на «-ли» различаются пометкой, а не окончанием.
+        assertTrue(tags("проверь").any { "VERB" in it && "impr" in it })
+        assertTrue(tags("перевели").all { "past" in it })
+        assertFalse(tags("перевели").any { "impr" in it })
+        // «пойдём» — и будущее 1-го лица, и «давай вместе».
+        assertTrue(tags("пойдём").any { "futr" in it && "1per" in it })
+        assertTrue(tags("пойдём").any { "impr" in it && "incl" in it })
+        assertTrue(tags("твою").all { "Apro" in it })
+        assertTrue(tags("зачем").any { "Ques" in it })
+        assertTrue(tags("кстати").any { "Prnt" in it })
+        // Существительное и наречие повелительными не бывают.
+        assertFalse(tags("люди").any { "impr" in it })
+        assertFalse(tags("теперь").any { "impr" in it })
+    }
+
+    @Test
     fun `омоним отдаёт все разборы`() {
         assertEquals(setOf("вина", "вино"), dictionary.lemmas("вина"))
         assertEquals(setOf("NOUN", "VERB"), dictionary.analyze("стекло").map { it.partOfSpeech }.toSet())

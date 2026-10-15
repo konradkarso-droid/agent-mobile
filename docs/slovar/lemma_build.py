@@ -6,7 +6,8 @@ import sys, re, collections, time
 import pymorphy3
 
 KEEP = {'NOUN', 'ADJF', 'ADJS', 'COMP', 'VERB', 'INFN', 'PRTF', 'PRTS', 'GRND', 'NUMR', 'ADVB', 'NPRO', 'PRED',
-        'PREP', 'CONJ', 'PRCL', 'INTJ', '1per', '2per', '3per', 'sing', 'plur', 'Name', 'Surn', 'Patr', 'Geox'}
+        'PREP', 'CONJ', 'PRCL', 'INTJ', '1per', '2per', '3per', 'sing', 'plur', 'Name', 'Surn', 'Patr', 'Geox',
+        'impr', 'past', 'pres', 'futr', 'incl', 'Apro', 'Prnt', 'Ques'}
 PREF = ['наи', 'по']
 WORD = re.compile('[а-я-]+')
 
