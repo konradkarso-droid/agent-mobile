@@ -3068,7 +3068,9 @@ class MainActivity : AppCompatActivity() {
             // Записанные события «дома» (safety.HomeEvents) — то, что переживёт
             // кому; наблюдение выше живёт до конца процесса.
             runCatching {
-                HomeEvents.meter(HomeEventStore(applicationContext).read(), System.currentTimeMillis(), ::zoneLabel, ::fmtMoment)
+                HomeEventStore(applicationContext).let { store ->
+                    HomeEvents.meter(store.read(), System.currentTimeMillis(), ::zoneLabel, ::fmtMoment, store.toldUpTo())
+                }
             }.getOrElse { "Дом: запись не прочиталась — ${it.javaClass.simpleName}" },
         )
         for (start in metricRules) {
@@ -4996,21 +4998,33 @@ class MainActivity : AppCompatActivity() {
                 // Выбор имени (SelfGap) — первым из выходов: вопрос владельца об
                 // имени и есть повод. Предложен — остальные молчат в этом ходе,
                 // и сон не отмечается спрошенным.
-                val askedGap = if (selfGapLine != null) null else (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
-                curiosityAskLine = if (selfGapLine != null) "Спросить: в этой реплике предложено выбрать себе имя"
-                else CuriosityAsk.meter(gapDecision, tellDecision, askDecision)
-                val toldTeller = if (askedGap != null || selfGapLine != null) null
+                // «Дом» — первым из рассказов (safety.HomeEvents, «РАССКАЗ»), без
+                // порога; уступает только вопросу владельца об имени — на него
+                // и отвечает ход. Сбой чтения — молчать: рассказ терминальный.
+                val homeStore = HomeEventStore(applicationContext)
+                val homeTell = if (selfGapLine != null) null else runCatching {
+                    HomeEvents.tell(homeStore.read(), homeStore.toldUpTo(), ::fmtMoment)
+                }.getOrNull()
+                val askedGap = if (selfGapLine != null || homeTell != null) null
+                else (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
+                curiosityAskLine = when {
+                    selfGapLine != null -> "Спросить: в этой реплике предложено выбрать себе имя"
+                    homeTell != null -> "Спросить: в этой реплике предложено рассказать о доме — ${homeTell.what}"
+                    else -> CuriosityAsk.meter(gapDecision, tellDecision, askDecision)
+                }
+                val toldTeller = if (askedGap != null || selfGapLine != null || homeTell != null) null
                 else (tellDecision as? CuriosityAsk.TellDecision.Tell)?.teller
                 // Рассказ в ходе один: мысль из сна раньше ночи (DreamTopic,
                 // «НЕСКАЗАННАЯ НОЧЬ»). Ночь по вопросу владельца — не рассказ
                 // без спроса, ей мысль не помеха.
                 val dreamNote = requestedNote
-                    ?: if (nightUnpromptedRefusal == null && toldTeller == null) dreamCandidate else null
+                    ?: if (nightUnpromptedRefusal == null && toldTeller == null && homeTell == null) dreamCandidate else null
                 dreamInMirrorLine = DreamTopic.meter(
                     DreamTopic.toldWithinDay(toldBefore, System.currentTimeMillis()) + (if (dreamNote != null) 1 else 0),
                     when {
                         dreamNote != null -> null
-                        dreamRefusal != null && nightUnpromptedRefusal == null -> "в этом ходе рассказывается мысль из сна"
+                        dreamRefusal != null && nightUnpromptedRefusal == null ->
+                            if (homeTell != null) "в этом ходе рассказывается о доме" else "в этом ходе рассказывается мысль из сна"
                         else -> listOfNotNull(dreamRefusal, nightUnpromptedRefusal?.let { "без вопроса: $it" }).joinToString(" · ")
                     },
                 )
@@ -5022,6 +5036,7 @@ class MainActivity : AppCompatActivity() {
                 // ответа тем же путём: дальше по ходу это просто «сон выхода».
                 val askedLeader = when {
                     selfGapLine != null -> null
+                    homeTell != null -> null
                     askedGap != null -> null
                     toldTeller != null -> toldTeller.leader
                     else -> (askDecision as? CuriosityAsk.Decision.Ask)?.leader
@@ -5031,6 +5046,7 @@ class MainActivity : AppCompatActivity() {
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
                     curiosityAsk = selfGapLine
+                        ?: homeTell?.line
                         ?: askedGap?.let { CuriosityAsk.gapLine(it) }
                         ?: toldTeller?.let { CuriosityAsk.tellLine(it) }
                         ?: askedLeader?.let { CuriosityAsk.line(it) },
@@ -5197,6 +5213,8 @@ class MainActivity : AppCompatActivity() {
                         runCatching { curiosityAskMarker.markAsked(leader, repliedAt) }
                             .onFailure { curiosityAskFailure = it.javaClass.simpleName }
                     }
+                    // Рассказ о доме ушёл — всё кончившееся до него рассказано.
+                    if (homeTell != null) runCatching { homeStore.markTold(repliedAt) }
                     nightThoughtTeller?.takeIf { it.leader != askedLeader }?.let { teller ->
                         runCatching { curiosityAskMarker.markAsked(teller.leader, repliedAt) }
                             .onFailure { curiosityAskFailure = it.javaClass.simpleName }
