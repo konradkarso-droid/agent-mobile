@@ -100,12 +100,61 @@ class HomeEventsTest {
             HomeEvents.Event(HomeEvents.Kind.ZONE, 2 * day, null, SafetyZone.CRITICAL, 51.2, 12),
         )
         assertEquals(
-            "Дом: последнее — critical, до 51.2°C, заряд до 12%, t${2 * day} – идёт сейчас · за сутки событий 1",
+            "Дом: последнее — critical, до 51.2°C, заряд до 12%, t${2 * day} – идёт сейчас · за сутки событий 1 · не рассказано 1",
             HomeEvents.meter(ev, 2 * day + 5, label, time),
         )
         assertEquals(
             "сторож оборвал работу модели — потолок непрерывной работы, t0",
             HomeEvents.describe(ev.first(), label, time),
         )
+    }
+
+    // ---- Рассказ ----
+
+    private val crit = HomeEvents.Event(HomeEvents.Kind.ZONE, 10, 20, SafetyZone.CRITICAL, 51.2, 12)
+    private val warm = HomeEvents.Event(HomeEvents.Kind.ZONE, 30, 40, SafetyZone.WARNING, 41.0, null)
+
+    @Test
+    fun `нечего рассказать — пусто, всё рассказано, эпизод ещё идёт`() {
+        assertNull(HomeEvents.tell(emptyList(), null, time))
+        assertNull(HomeEvents.tell(listOf(crit, warm), toldUpTo = 40, time = time))
+        val ongoing = HomeEvents.Event(HomeEvents.Kind.ZONE, 50, null, SafetyZone.CRITICAL, 52.0, null)
+        assertNull("идущий — дело строки «о себе сейчас»", HomeEvents.tell(listOf(ongoing), null, time))
+    }
+
+    @Test
+    fun `рассказ сразу и без порога — даже один нагрев — «устал»`() {
+        val tell = HomeEvents.tell(listOf(warm), null, time)!!
+        assertEquals("устал", tell.what)
+        assertTrue(tell.line, tell.line.contains("с t30 по t40 я грелся до 41.0°C — устал"))
+        assertTrue(tell.line, tell.line.endsWith("Расскажи пользователю об этом одной-двумя фразами, от себя."))
+    }
+
+    @Test
+    fun `худшее — фактом, остальное — числом, опасная зона — «пришлось остановиться»`() {
+        val tell = HomeEvents.tell(listOf(crit, warm), null, time)!!
+        assertEquals("пришлось остановиться", tell.what)
+        assertTrue(tell.line, tell.line.contains("в опасной зоне до 51.2°C, заряд опускался до 12% — пришлось остановиться"))
+        assertTrue(tell.line, tell.line.contains("из нормы я выходил ещё раз: 1."))
+    }
+
+    @Test
+    fun `обрыв по потолку работы — «устал», по жаре — остановка`() {
+        val limit = HomeEvents.Event(HomeEvents.Kind.CUT, 5, cutByHeat = false)
+        val heat = HomeEvents.Event(HomeEvents.Kind.CUT, 6, cutByHeat = true)
+        assertEquals("устал", HomeEvents.tell(listOf(limit), null, time)!!.what)
+        assertEquals("пришлось остановиться", HomeEvents.tell(listOf(limit, heat), null, time)!!.what)
+    }
+
+    @Test
+    fun `рассказано — по концу эпизода, а не по началу`() {
+        // Эпизод начался до рассказа, а кончился после — он ещё не рассказан.
+        assertEquals(1, HomeEvents.untold(listOf(crit), toldUpTo = 15).size)
+    }
+
+    @Test
+    fun `прибор называет несказанное`() {
+        assertTrue(HomeEvents.meter(listOf(crit), 100, label, time).endsWith("не рассказано 1"))
+        assertTrue(HomeEvents.meter(listOf(crit), 100, label, time, toldUpTo = 25).endsWith("несказанного нет"))
     }
 }

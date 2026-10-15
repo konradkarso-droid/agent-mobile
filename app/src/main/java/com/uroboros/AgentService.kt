@@ -16,6 +16,7 @@ import com.uroboros.initiative.FirstOfSources
 import com.uroboros.initiative.GapSource
 import com.uroboros.initiative.SelfGapSource
 import com.uroboros.initiative.TellSource
+import com.uroboros.initiative.HomeSource
 import com.uroboros.initiative.NightSource
 import com.uroboros.initiative.InitiativeDecision
 import com.uroboros.initiative.InitiativeSource
@@ -229,7 +230,8 @@ class AgentService : Service() {
     private var stopNote: String? = null
 
     /**
-     * Поводы заговорить первым, по порядку: выбрать себе имя (пробел о себе —
+     * Поводы заговорить первым, по порядку: рассказ о доме (safety.HomeEvents —
+     * безопасность устройства первой, ARCHITECTURE.md §0), выбрать себе имя (пробел о себе —
      * не чаще раза за разговор), затем рассказ накопившегося вывода сна, затем
      * рассказ несказанных ночей (memory.dream.DreamTopic), затем любопытство о
      * сне, затем разрыв — «что нового с прошлого раза» (сон конкретнее,
@@ -242,6 +244,7 @@ class AgentService : Service() {
         val turns = ProcessObjects.get(applicationContext).turns
         FirstOfSources(
             listOf(
+                HomeSource(applicationContext),
                 SelfGapSource(turns, SelfGapReader(applicationContext, turns.store)),
                 TellSource(applicationContext),
                 NightSource(applicationContext, turns),

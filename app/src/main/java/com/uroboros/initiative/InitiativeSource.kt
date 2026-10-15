@@ -5,7 +5,7 @@ package com.uroboros.initiative
  * прибор — общие (см. [InitiativeDecision] и AgentService); источник решает
  * только, есть ли что сказать и что именно.
  *
- * Источники — выбор имени ([SelfGapSource]), рассказ вывода сна
+ * Источники — рассказ о доме ([HomeSource]), выбор имени ([SelfGapSource]), рассказ вывода сна
  * ([TellSource]), рассказ ночи ([NightSource]), любопытство о сне
  * ([CuriositySource]) и разрыв «что нового» ([GapSource]); порядок задаёт
  * [FirstOfSources] (список — в AgentService). Новый источник — ещё

@@ -24,6 +24,16 @@ class HomeEventStore(context: Context) {
         save(HomeEvents.withCut(load(), byHeat, at))
     }
 
+    /** До какого времени события рассказаны (HomeEvents, «РАССКАЗ»); null — ни разу. */
+    fun toldUpTo(): Long? = synchronized(LOCK) {
+        prefs.getLong(TOLD, -1L).takeIf { it >= 0 }
+    }
+
+    /** Рассказ ушёл в движок в момент [at]: всё кончившееся до него рассказано. */
+    fun markTold(at: Long) = synchronized(LOCK) {
+        prefs.edit().putLong(TOLD, at).apply()
+    }
+
     private fun load(): List<HomeEvents.Event> =
         prefs.getString(KEY, null).orEmpty().lineSequence().mapNotNull { HomeEvents.decode(it) }.toList()
 
@@ -34,6 +44,7 @@ class HomeEventStore(context: Context) {
     private companion object {
         const val NAME = "home_events"
         const val KEY = "events"
+        const val TOLD = "told_up_to"
 
         /** Замок на процесс: хранилищ может быть создано несколько, файл один. */
         val LOCK = Any()

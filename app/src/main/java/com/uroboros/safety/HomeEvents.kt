@@ -24,6 +24,19 @@ import java.util.Locale
  * устройства выше работы, ARCHITECTURE.md §0), а не состояние: один обрыв —
  * одна запись.
  *
+ * РАССКАЗ ([tell]). То, что агент пережил без владельца, — несказанное
+ * (обратная сторона любопытства, memory.dream.CuriosityPressure,
+ * «НЕСКАЗАННОЕ»), и у дома оно рассказывается сразу, без накопления: о
+ * перегреве, о котором владелец не узнал, нельзя промолчать — он повторится
+ * вслепую, а ущерб железу не вернуть. Среди рассказов хода дом первый
+ * (безопасность устройства выше всего, ARCHITECTURE.md §0). Факт собирает код:
+ * модель свой нагрев не помнит. Слова решены владельцем: нагрев, утомление и
+ * долгая работа без перерыва — «устал»; опасная зона и обрыв по ней —
+ * «пришлось остановиться». Рассказывается худшее несказанное, остальные —
+ * числом; рассказ закрывает все ([toldUpTo] в [HomeEventStore]). Идущий эпизод
+ * не рассказывается: нынешние показания — дело строки «о себе сейчас»
+ * (SelfState), а не рассказа о прошлом.
+ *
  * ЧЕГО НЕ УМЕЕТ:
  *  - событий до появления записи не знает;
  *  - эпизод, открытый перед комой, закрывается первым показанием нормы после
@@ -121,6 +134,64 @@ object HomeEvents {
         }.getOrNull()
     }
 
+    // ---- Рассказ ----
+
+    /** Когда событие кончилось: эпизод — концом, обрыв — моментом. */
+    private fun doneAt(e: Event): Long = e.endedAt ?: e.at
+
+    /** Несказанные события: кончились позже [toldUpTo]; идущий эпизод — нет. */
+    fun untold(events: List<Event>, toldUpTo: Long?): List<Event> =
+        events.filter { !it.open && (toldUpTo == null || doneAt(it) > toldUpTo) }
+
+    /** Тяжесть для выбора худшего: остановка тяжелее усталости. */
+    private fun severity(e: Event): Int = when {
+        e.kind == Kind.CUT && e.cutByHeat -> 4
+        e.kind == Kind.ZONE && e.zone == SafetyZone.CRITICAL -> 4
+        e.kind == Kind.CUT -> 2
+        e.zone == SafetyZone.FATIGUE -> 2
+        else -> 1
+    }
+
+    /** Остановка ли это («пришлось остановиться»), а не усталость. */
+    private fun stopped(e: Event): Boolean = severity(e) >= 4
+
+    /**
+     * Что рассказать: строка модели и о чём — для прибора.
+     */
+    data class Tell(val line: String, val what: String)
+
+    /**
+     * Рассказ о доме или null — несказанного нет. Худшее несказанное (при
+     * равной тяжести — позднее) — фактом, остальные — числом.
+     *
+     * @param time время по-человечески — с экрана.
+     */
+    fun tell(events: List<Event>, toldUpTo: Long?, time: (Long) -> String): Tell? {
+        val untold = untold(events, toldUpTo)
+        val worst = untold.maxWithOrNull(compareBy<Event> { severity(it) }.thenBy { doneAt(it) }) ?: return null
+        val fact = fact(worst, time)
+        val more = (untold.size - 1).takeIf { it > 0 }?.let { " Кроме этого, из нормы я выходил ещё раз: $it." } ?: ""
+        val line = "Пока пользователь этого не видел, со мной было: $fact$more " +
+            "Расскажи пользователю об этом одной-двумя фразами, от себя."
+        return Tell(line, if (stopped(worst)) "пришлось остановиться" else "устал")
+    }
+
+    /** Событие от первого лица — факт для модели. */
+    private fun fact(e: Event, time: (Long) -> String): String {
+        val temp = e.maxTemp?.let { " до ${String.format(Locale.US, "%.1f", it)}°C" } ?: ""
+        val charge = e.minPercent?.let { ", заряд опускался до $it%" } ?: ""
+        return when {
+            e.kind == Kind.CUT && e.cutByHeat ->
+                "${time(e.at)} я был в опасной зоне, и сторож оборвал мою работу — пришлось остановиться."
+            e.kind == Kind.CUT ->
+                "${time(e.at)} я слишком долго работал без перерыва, и сторож оборвал работу — я устал."
+            e.zone == SafetyZone.CRITICAL ->
+                "с ${time(e.at)} по ${time(doneAt(e))} я был в опасной зоне$temp$charge — пришлось остановиться."
+            else ->
+                "с ${time(e.at)} по ${time(doneAt(e))} я грелся$temp$charge — устал, сторож сбавлял мне ход."
+        }
+    }
+
     // ---- Прибор ----
 
     /**
@@ -130,10 +201,18 @@ object HomeEvents {
      * @param label зона по-русски — с экрана, вторая копия названий разошлась бы.
      * @param time время по-человечески — с экрана.
      */
-    fun meter(events: List<Event>, now: Long, label: (SafetyZone) -> String, time: (Long) -> String): String {
+    fun meter(
+        events: List<Event>,
+        now: Long,
+        label: (SafetyZone) -> String,
+        time: (Long) -> String,
+        toldUpTo: Long? = null,
+    ): String {
         val last = events.lastOrNull() ?: return "Дом: за пределами нормы не был (с тех пор, как ведётся запись)"
         val day = events.count { now - it.at < DAY_MS }
-        return "Дом: последнее — ${describe(last, label, time)} · за сутки событий $day"
+        val untold = untold(events, toldUpTo).size
+        return "Дом: последнее — ${describe(last, label, time)} · за сутки событий $day · " +
+            (if (untold == 0) "несказанного нет" else "не рассказано $untold")
     }
 
     /** Событие словами — для прибора и, позже, для рассказа. */
