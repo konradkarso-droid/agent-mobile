@@ -44,6 +44,48 @@ class CuriosityAskTest {
         assertEquals(CuriosityAsk.Decision.Refuse("лидера нет"), decide())
     }
 
+    // --- Реплика владельца: вопрос о сне в ходе разговора ---
+
+    private val strong = dream(1, 2, picked = 2)
+
+    @Test
+    fun `молчит о сне — реплика владельца вопрос или просьба`() {
+        assertEquals(
+            CuriosityAsk.Decision.Refuse("реплика — вопрос, ход у владельца"),
+            CuriosityAsk.decideOnReply(pressure(strong), false, "Привет! Ты как?", null),
+        )
+        assertEquals(
+            CuriosityAsk.Decision.Refuse("реплика — просьба, ход у владельца"),
+            CuriosityAsk.decideOnReply(pressure(strong), false, "Назови температуру.", null),
+        )
+    }
+
+    @Test
+    fun `молчит о сне — реплика сразу после вопроса агента`() {
+        assertEquals(
+            CuriosityAsk.Decision.Refuse("реплика — после вопроса агента"),
+            CuriosityAsk.decideOnReply(pressure(strong), false, "Сегодня был у моря.", "А ты где был?"),
+        )
+    }
+
+    @Test
+    fun `спрашивает о сне — реплика утверждение или обычай`() {
+        assertTrue(CuriosityAsk.decideOnReply(pressure(strong), false, "Сегодня был у моря.", "Понял.") is CuriosityAsk.Decision.Ask)
+        assertTrue(CuriosityAsk.decideOnReply(pressure(strong), false, "Доброй ночи.", null) is CuriosityAsk.Decision.Ask)
+    }
+
+    @Test
+    fun `после проверки реплики — те же отказы, что без неё`() {
+        assertEquals(
+            CuriosityAsk.Decision.Refuse("прошлый вопрос без ответа"),
+            CuriosityAsk.decideOnReply(pressure(strong), true, "Сегодня был у моря.", null),
+        )
+        assertEquals(
+            CuriosityAsk.Decision.Refuse("лидера нет"),
+            CuriosityAsk.decideOnReply(pressure(), false, "Сегодня был у моря.", null),
+        )
+    }
+
     @Test
     fun `вклад 5 — отказ, 6 — спросить`() {
         // Подхват ×3 + вспоминание ×2 = 5.
