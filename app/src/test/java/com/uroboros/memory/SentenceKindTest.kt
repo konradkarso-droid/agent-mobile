@@ -2,7 +2,10 @@ package com.uroboros.memory
 
 import com.uroboros.memory.SentenceKind.Certainty
 import com.uroboros.memory.SentenceKind.Kind
+import com.uroboros.memory.nav.PersonForm
+import com.uroboros.memory.nav.TestVerbs
 import org.junit.Assert.assertEquals
+import org.junit.Before
 import org.junit.Test
 
 /**
@@ -14,7 +17,34 @@ import org.junit.Test
  */
 class SentenceKindTest {
 
+    /** Словари — как на телефоне: правило 4 решает словарь начальных форм. */
+    @Before
+    fun dictionaries() = TestVerbs.install()
+
     private fun read(s: String) = SentenceKind.of(s).let { it.kind to it.certainty }
+
+    @Test
+    fun `по словарю — существительное и наречие в начале не просьба, приглашение и -сь — просьба`() {
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Люди разные."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Уровень второй."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Кстати, о температуре."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Теперь назвал верно."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Допустим ответ: неприменимо."))
+        assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Теперь сменим тему."))
+        assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Не спи сегодня ночью"))
+        assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Брось это."))
+    }
+
+    @Test
+    fun `без словаря — по окончанию, как прежде`() {
+        PersonForm.lemmas = null
+        try {
+            assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Люди разные, а цель одна."))
+            assertEquals(Kind.STATEMENT to Certainty.SURE, read("Брось это."))
+        } finally {
+            TestVerbs.install()
+        }
+    }
 
     @Test
     fun `знак вопроса — точный вопрос`() {

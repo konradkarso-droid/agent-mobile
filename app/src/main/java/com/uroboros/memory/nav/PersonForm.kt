@@ -6,10 +6,16 @@ import com.uroboros.util.ImperativeForm
 import com.uroboros.util.TextFold
 
 /**
- * О ком предложение — ПО ФОРМЕ: местоимения и окончания глаголов. Словарей
- * два, оба только для слова на -у/-ю (правило FIRST ниже): таблица глаголов
- * ([verbs], та же, что у разворота, [RetellTable]) и трафарет слов ([words],
- * тот же, что у детектора порчи, llm.WordDamage).
+ * О ком предложение — ПО ФОРМЕ: местоимения и формы глаголов.
+ *
+ * СЛОВАРЬ ПЕРВЫМ. Слово, которое знает словарь начальных форм ([lemmas],
+ * [LemmaDictionary]), решается по его разбору ([byDictionary]): лицо, число,
+ * наклонение и время глагола записаны там, а не угаданы по окончанию.
+ * Правила по окончаниям ниже работают для слов, которых словарь не знает
+ * (сленг, опечатки, новые слова), и для всех слов, пока словарь не загружен.
+ * Для таких слов на -у/-ю словарей два: таблица глаголов ([verbs], та же, что
+ * у разворота, [RetellTable]) и трафарет слов ([words], тот же, что у
+ * детектора порчи, llm.WordDamage).
  *
  * Лицо здесь — направление, а не человек: [Person.FIRST] — «тот, кто сказал»,
  * [Person.SECOND] — «тот, кому сказано». Кто это на самом деле, решают
@@ -52,26 +58,46 @@ import com.uroboros.util.TextFold
  *
  * Сомнение — в UNCLEAR: догадка без уверенности не выдаётся за ответ.
  *
+ * ПО СЛОВАРЮ ([byDictionary]) — для знакомого слова, не местоимения:
+ *  - глагол 1-го лица единственного числа — FIRST («иду», «стою»), 2-го —
+ *    SECOND, 1-го множественного — голое «мы»; прошедшее единственного
+ *    мужского или женского рода — «лица нет», как ниже. Прилагательное
+ *    («другим», «синем»), существительное, наречие — лица не дают;
+ *  - слово, которое бывает и глаголом, и другой частью речи («объём» — и
+ *    «объесть»), словарь не решает: оно идёт по правилам окончаний, как без
+ *    словаря. Имя собственное («иду» — и «Ида») глаголу не мешает;
+ *  - повелительное первым словом — если среди разборов есть повелительное
+ *    («проверь», «брось», «удали» — хоть оно и «удаль») и нет местоимения,
+ *    числительного, предлога, союза или частицы: «мой» (и «мыть»), «три» (и
+ *    «тереть»), «при» (и «переть») просьбой не читаются. Приглашение «давай
+ *    вместе» («пойдём», «сменим») — не просьба к собеседнику, а «мы»: его
+ *    даёт глагол 1-го лица множественного; просьбой его считает только вид
+ *    предложения ([firstWordIsRequest] с `invitation`), и то если все разборы
+ *    слова глагольные («допустим» — ещё и краткое прилагательное).
+ *
  * ЧЕГО НЕ УМЕЕТ (по форме, а не по смыслу):
- *  - глагол 1-го лица, которого нет в таблице, но чьи кусочки трафарет
- *    узнаёт, читается знакомым не-глаголом и лица не даёт; незнакомое слово
- *    даёт лишь «не ясно», а не «я» — даже если это сленговый глагол
- *    («гуглю»). Слово, которое бывает и глаголом, и другой частью речи
- *    («стою», «пилю»), читается глаголом. Глаголы короче [MIN_VERB_LENGTH]
- *    («иду») не смотрятся вовсе, и словари тут не помогают;
+ *  - слово, которое бывает и глаголом, и другой частью речи («объём»),
+ *    решается правилами по окончаниям — со всеми их промахами ниже;
+ *  - без словаря (не загружен или слова в нём нет): глагол 1-го лица, которого
+ *    нет в таблице, но чьи кусочки трафарет узнаёт, читается знакомым
+ *    не-глаголом и лица не даёт; незнакомое слово даёт лишь «не ясно», а не
+ *    «я» — даже если это сленговый глагол («гуглю»); глаголы короче
+ *    [MIN_VERB_LENGTH] не смотрятся вовсе;
  *  - пока таблица не загружена (первые секунды после запуска, или она не
  *    загрузилась — см. RetellHolder), «я» глаголом без местоимения («Да,
  *    скоро ложусь») — UNCLEAR, и вопрос получает адрес «не определён». Это
  *    промах в сторону пропуска, но видимый: строка таблицы в «Подробно»;
- *  - прилагательные на -им/-ем («другим», «синем») дают ложное голое «мы»;
+ *  - без словаря прилагательные на -им/-ем («другим», «синем») дают ложное
+ *    голое «мы»;
  *  - обобщённое «ты» («Всегда носи с собой полотенце») читается как «о
  *    собеседнике», хотя это о мире;
  *  - ирония и чужая речь («он сказал: я устал») — ошибка или UNCLEAR;
  *  - «надеюсь», «я думал» в записи об агенте делают её «об обоих»;
- *  - повелительное — только по первому слову предложения. Мягкий знак даёт
- *    ложное повелительное у первого слова-существительного или наречия
- *    («Теперь…», «Семь…») и не ловит повелительное на «-сь» («Брось»), —
- *    цена правила [looksSoftSignImperative].
+ *  - повелительное — только по первому слову предложения («Теперь сменим
+ *    тему» просьбой не читается). Без словаря мягкий знак даёт ложное
+ *    повелительное у первого слова-существительного или наречия («Теперь…»,
+ *    «Семь…») и не ловит повелительное на «-сь» («Садись»), — цена правила
+ *    [looksSoftSignImperative].
  */
 object PersonForm {
 
@@ -188,6 +214,14 @@ object PersonForm {
     @Volatile
     var words: WordDamage? = null
 
+    /**
+     * Словарь начальных форм (правила «ПО СЛОВАРЮ» в шапке). Ставит
+     * [LemmaHolder], когда словарь загружен; null — не загружен, и все слова
+     * решаются правилами по окончаниям.
+     */
+    @Volatile
+    var lemmas: LemmaDictionary? = null
+
     /** Объявленные числа, не подобранные. */
     const val MIN_VERB_LENGTH = 4
     const val MIN_SECOND_VERB_LENGTH = 5
@@ -211,13 +245,24 @@ object PersonForm {
         var doubtfulFirst = false
         val table = verbs
         val stencil = this.words // трафарет [words], а не список слов предложения выше
+        val dictionary = lemmas
         for ((i, w) in words.withIndex()) {
             val afterPreposition = i > 0 && words[i - 1] in PREPOSITIONS
+            val known = if (dictionary == null || w in FIRST_PRONOUNS || w in SECOND_PRONOUNS ||
+                w in WE_PRONOUNS || w in OUR_PRONOUNS
+            ) null else byDictionary(dictionary, w)
             when {
                 w in FIRST_PRONOUNS -> first = true
                 w in SECOND_PRONOUNS -> second = true
                 w in WE_PRONOUNS -> bareWe = true
                 w in OUR_PRONOUNS -> our = true
+                known != null -> when (known) {
+                    WordPerson.FIRST -> first = true
+                    WordPerson.SECOND -> second = true
+                    WordPerson.WE -> bareWe = true
+                    WordPerson.PAST -> pastWithoutPerson = true
+                    WordPerson.NONE -> Unit
+                }
                 w in NOT_VERBS -> Unit
                 isFirstPersonVerb(w) && !afterPreposition -> when {
                     table == null -> doubtfulFirst = true
@@ -253,13 +298,71 @@ object PersonForm {
      * Одно правило на определитель лица и разворот (см. [Retelling]).
      * Слово берётся после util.TextFold, дефис его рвёт («Когда-нибудь» → «когда»).
      */
-    fun firstWordIsRequest(sentence: String): Boolean {
+    fun firstWordIsRequest(sentence: String, invitation: Boolean = false): Boolean {
         val first = TextFold.fold(sentence).split(NOT_LETTER).firstOrNull { it.isNotEmpty() } ?: return false
-        return isRequestWord(first)
+        return isRequestWord(first, invitation)
     }
 
-    private fun isRequestWord(w: String): Boolean =
-        ImperativeForm.looksImperative(w) || looksSoftSignImperative(w)
+    /**
+     * Повелительное ли слово [w]. Словарь знает слово — по разбору (правила
+     * «ПО СЛОВАРЮ» в шапке); [invitation] — считать ли просьбой и приглашение
+     * «давай вместе». Не знает — по окончанию.
+     */
+    private fun isRequestWord(w: String, invitation: Boolean = false): Boolean {
+        val analyses = lemmas?.analyze(w).orEmpty()
+        if (analyses.isNotEmpty()) {
+            if (analyses.any { it.partOfSpeech in NOT_REQUEST_PARTS || "Apro" in it.tags }) return false
+            if (analyses.any { it.partOfSpeech == "VERB" && "impr" in it.tags && "incl" !in it.tags }) return true
+            return invitation && analyses.all { it.partOfSpeech == "VERB" } &&
+                analyses.any { "impr" in it.tags && "incl" in it.tags }
+        }
+        return ImperativeForm.looksImperative(w) || looksSoftSignImperative(w)
+    }
+
+    /**
+     * Слово, которое не несёт вида предложения: словарь знает его только как
+     * наречие, союз, частицу или междометие («теперь», «кстати», «вот»). Для
+     * вида предложения (memory.SentenceKind) — его пропускают, ища первое
+     * слово части. Словарь не загружен или слова не знает — false.
+     */
+    fun isLeadWord(w: String): Boolean {
+        val analyses = lemmas?.analyze(w).orEmpty()
+        return analyses.isNotEmpty() && analyses.all { it.partOfSpeech in LEAD_PARTS }
+    }
+
+    private val LEAD_PARTS = setOf("ADVB", "CONJ", "PRCL", "INTJ")
+
+    /** Пометки имён собственных в словаре: имя, фамилия, отчество, место. */
+    private val PROPER_NAMES = setOf("Name", "Surn", "Patr", "Geox")
+
+    /** Части речи, при которых слово просьбой не читается, даже если есть и повелительный разбор. */
+    private val NOT_REQUEST_PARTS = setOf("NPRO", "NUMR", "PREP", "CONJ", "PRCL")
+
+    /** Что слово даёт лицу предложения по словарю (правила «ПО СЛОВАРЮ» в шапке). */
+    private enum class WordPerson { FIRST, SECOND, WE, PAST, NONE }
+
+    /**
+     * Лицо слова [w] по разбору словаря; null — словарь слова не знает, и оно
+     * решается правилами по окончаниям.
+     */
+    private fun byDictionary(dictionary: LemmaDictionary, w: String): WordPerson? {
+        val analyses = dictionary.analyze(w)
+        if (analyses.isEmpty()) return null
+        val verbs = analyses.filter { it.partOfSpeech == "VERB" }
+        if (verbs.isEmpty()) return WordPerson.NONE
+        // Глагол и не-глагол сразу («объём» — и «объесть»): словарь не решает,
+        // решают правила по окончаниям, как без словаря. Имя собственное
+        // («иду» — и «Ида») глаголу не мешает.
+        if (analyses.any { it.partOfSpeech != "VERB" && it.tags.none { t -> t in PROPER_NAMES } }) return null
+        fun has(vararg tags: String) = verbs.any { a -> tags.all { it in a.tags } }
+        return when {
+            has("1per", "sing") -> WordPerson.FIRST
+            has("2per", "sing") -> WordPerson.SECOND
+            has("1per", "plur") -> WordPerson.WE
+            has("past", "sing") && isPersonalPast(w) -> WordPerson.PAST
+            else -> WordPerson.NONE
+        }
+    }
 
     /**
      * Повелительное на мягкий знак («проверь», «ответь», «поставь») — правило

@@ -288,7 +288,7 @@ object LemmaHolder {
         is State.Ready -> {
             val heap = s.heapBytes?.let { "куча ≈ ${mb(it)} МБ" } ?: "кучу измерить не вышло"
             "Словарь начальных форм: лексем ${s.dictionary.lexemeCount}, образцов ${s.dictionary.patternCount}, " +
-                "загружен за ${s.millis} мс · массивы ${mb(s.dictionary.arrayBytes)} МБ, $heap · потребитель: портрет по теме"
+                "загружен за ${s.millis} мс · массивы ${mb(s.dictionary.arrayBytes)} МБ, $heap · потребители: портрет по теме, определитель лица"
         }
         State.Loading -> "Словарь начальных форм: загружается"
         State.Off -> "Словарь начальных форм: выключен"
@@ -323,6 +323,7 @@ object LemmaHolder {
             val dictionary = open().bufferedReader(Charsets.UTF_8).useLines { LemmaDictionary.read(it) }
             val millis = (System.nanoTime() - t0) / 1_000_000
             val grown = usedHeap() - before
+            PersonForm.lemmas = dictionary
             State.Ready(dictionary, millis, grown.takeIf { it > 0 })
         } catch (e: Throwable) {
             State.Failed(e.javaClass.simpleName + (e.message?.let { ": $it" } ?: ""))
