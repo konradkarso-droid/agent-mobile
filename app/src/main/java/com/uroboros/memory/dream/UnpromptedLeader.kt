@@ -1,6 +1,7 @@
 package com.uroboros.memory.dream
 
 import com.uroboros.memory.Prism
+import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.UnpromptedTouch
 
 /**
@@ -15,6 +16,10 @@ import com.uroboros.memory.UnpromptedTouch
  *    [Prism.IDENTITY_TAG]: отвергнутая и ждущая решения скрыты от всего
  *    остального, а запись с меткой уже лежит в RED — предлагать её в «о себе»
  *    незачем.
+ *  - Не считаются записи, что ничего не утверждают
+ *    (RiskTrigger.assertsNothing): вопрос или просьба («Привет, назови
+ *    температуру…») набирает касания, как любая запись, но в строку «о себе»
+ *    не годится никогда. Отбор, сон, суд и дверь снимают их так же.
  *  - Лидер — запись с наибольшим счётом, если у неё не меньше [MIN_TOUCHES]
  *    касаний и счёт не меньше чем в [MIN_LEAD] раза больше счёта второй.
  *    Второй нет или у неё ноль — обгон выполнен.
@@ -71,6 +76,8 @@ object UnpromptedLeader {
      * @property secondCount счёт второй записи; 0 — второй нет.
      * @property tiedAtTop сколько записей делят первое место (1 — ничьей нет).
      * @property leaderId [topId], если условие лидера выполнено, иначе null.
+     * @property assertsNothing сколько записей с касаниями не считалось, потому
+     *   что ничего не утверждают.
      */
     data class Standing(
         val topId: Long?,
@@ -78,6 +85,7 @@ object UnpromptedLeader {
         val secondCount: Int,
         val tiedAtTop: Int,
         val leaderId: Long?,
+        val assertsNothing: Int = 0,
     ) {
         /** Во сколько раз первое место обгоняет второе; null — второй нет. */
         val lead: Double? get() = if (secondCount > 0) topCount.toDouble() / secondCount else null
@@ -85,6 +93,10 @@ object UnpromptedLeader {
 
     /** Учитывается ли запись вообще (см. «ПРАВИЛО» выше). */
     fun eligible(touch: UnpromptedTouch): Boolean =
+        visible(touch) && !RiskTrigger.assertsNothing(touch.content)
+
+    /** Запись с касаниями, не скрытая и не «о себе» — до проверки текста. */
+    private fun visible(touch: UnpromptedTouch): Boolean =
         touch.count > 0 &&
             touch.rejectedAt == null &&
             !touch.reviewPending &&
@@ -92,14 +104,15 @@ object UnpromptedLeader {
 
     /** Первое место по касаниям без подсказки и выполнено ли условие лидера. */
     fun standing(touches: List<UnpromptedTouch>): Standing {
+        val dropped = touches.count { visible(it) && !eligible(it) }
         val ranked = touches.filter(::eligible).sortedWith(compareBy({ -it.count }, { it.id }))
-        val top = ranked.firstOrNull() ?: return Standing(null, 0, 0, 0, null)
+        val top = ranked.firstOrNull() ?: return Standing(null, 0, 0, 0, null, dropped)
         val tied = ranked.count { it.count == top.count }
         val second = ranked.getOrNull(1)?.count ?: 0
         val passes = tied == 1 &&
             top.count >= MIN_TOUCHES &&
             (second == 0 || top.count >= MIN_LEAD * second)
-        return Standing(top.id, top.count, second, tied, if (passes) top.id else null)
+        return Standing(top.id, top.count, second, tied, if (passes) top.id else null, dropped)
     }
 
     /** Номер лидера, проходящего условие, или null. */
@@ -135,10 +148,17 @@ object UnpromptedLeader {
      * «Лидер» здесь — первое место, даже если условие не выполнено: прибор
      * показывает, насколько до условия далеко.
      *
+     * В конце строки — сколько записей, что ничего не утверждают, в счёте нет:
+     * без этого «касаний нет» не отличить от «касания были, но у вопросов».
+     *
      * @param content текст записи первого места; null — не прочитан.
      * @param lastNights как у [isCandidate].
      */
-    fun meter(standing: Standing, content: String?, lastNights: List<Long?>): String {
+    fun meter(standing: Standing, content: String?, lastNights: List<Long?>): String =
+        meterHead(standing, content, lastNights) +
+            " · записей, что ничего не утверждают, в счёте нет: ${standing.assertsNothing}"
+
+    private fun meterHead(standing: Standing, content: String?, lastNights: List<Long?>): String {
         val topId = standing.topId
             ?: return "Нажитое о себе: молчу — касаний без подсказки нет"
         val nights = lastNights.take(NIGHTS_WINDOW)

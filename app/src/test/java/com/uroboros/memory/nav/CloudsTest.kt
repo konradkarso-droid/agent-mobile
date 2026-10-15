@@ -4,6 +4,7 @@ import com.uroboros.memory.SourceKind
 import com.uroboros.memory.nav.Coordinates.Address
 import org.junit.Before
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -90,7 +91,11 @@ class CloudsTest {
     @Test
     fun `раздел облаков называет чьими словами набран вес`() {
         val sources = listOf(Clouds.fromRecord("Работаю над твоей памятью", owner, now))
-        val text = Clouds.section(Clouds.of(PersonKey.OWNER, sources, now), Clouds.of(PersonKey.AGENT, sources, now))
+        val text = Clouds.section(
+            Clouds.of(PersonKey.OWNER, sources, now),
+            Clouds.of(PersonKey.AGENT, sources, now),
+            Clouds.Gathered(sources, 0, 0),
+        )
         assertTrue(text.startsWith("ОБЛАКА"))
         assertTrue(text.contains("владелец"))
     }
@@ -107,5 +112,70 @@ class CloudsTest {
         assertTrue(words.toString(), "радуги" in words)
         assertTrue(words.toString(), words.none { it.startsWith("агент") })
         assertTrue(words.toString(), words.none { it == "радуг" })
+    }
+
+    // ---- Чистка ----
+
+    private fun stems(cloud: Clouds.Cloud) = cloud.elements.map { it.stem }
+
+    @Test
+    fun `запись, что ничего не утверждает, в облака не идёт`() {
+        assertFalse(Clouds.keepsRecord("Что тебе снилось?"))
+        assertFalse(Clouds.keepsRecord("Привет, назови температуру и уровень заряда."))
+        assertFalse(Clouds.keepsRecord("Доброй ночи."))
+        assertTrue(Clouds.keepsRecord("Я живу в телефоне."))
+        assertTrue(Clouds.keepsRecord("Я точу рубанок. Ты умеешь точить?"))
+    }
+
+    @Test
+    fun `своя речь не о себе в облако агента не идёт`() {
+        assertFalse(Clouds.keepsOwn("Белки поддерживают температуру тела."))
+        assertFalse(Clouds.keepsOwn("Море было тёплым."))
+        assertTrue(Clouds.keepsOwn("Я живу в телефоне."))
+        assertTrue(Clouds.keepsOwn("Мне снилось море."))
+    }
+
+    @Test
+    fun `слова-связки снимаются по словарю`() {
+        val sources = listOf(Clouds.ofAgent("Спасибо тебе за этот разговор, пока", now))
+        val cloud = Clouds.of(PersonKey.AGENT, sources, now, TestVerbs.lemmas)
+        assertTrue(stems(cloud).toString(), stems(cloud).none { it.startsWith("теб") || it.startsWith("пок") })
+        assertTrue(stems(cloud).toString(), stems(cloud).any { it.startsWith("разговор") })
+        assertTrue(cloud.linkWords!! >= 2)
+    }
+
+    @Test
+    fun `притяжательные снимаются, а существительные остаются`() {
+        val sources = listOf(Clouds.ofAgent("Твою память и свою модель храню в телефоне", now))
+        val s = stems(Clouds.of(PersonKey.AGENT, sources, now, TestVerbs.lemmas))
+        assertTrue(s.toString(), s.none { it.startsWith("тво") || it.startsWith("сво") })
+        assertTrue(s.toString(), listOf("памят", "модел", "телефон").all { p -> s.any { it.startsWith(p) } })
+    }
+
+    @Test
+    fun `без словаря связки не снимаются, и строка это говорит`() {
+        val sources = listOf(Clouds.ofAgent("Спасибо тебе за этот разговор", now))
+        val agent = Clouds.of(PersonKey.AGENT, sources, now)
+        assertTrue(stems(agent).toString(), stems(agent).any { it.startsWith("теб") })
+        assertEquals(null, agent.linkWords)
+        val line = Clouds.cleaningLine(Clouds.Gathered(sources, 3, 2), Clouds.Cloud(emptyList()), agent)
+        assertEquals(
+            "Снято: записей, что ничего не утверждают, 3 · предложений своей речи не о себе 2 · " +
+                "слова-связки не сняты — словарь не загружен",
+            line,
+        )
+    }
+
+    @Test
+    fun `строка чистки со словарём считает связки порознь`() {
+        val sources = listOf(
+            Clouds.fromRecord("Я люблю твою память", owner, now),
+            Clouds.ofAgent("Спасибо тебе за разговор", now),
+        )
+        val o = Clouds.of(PersonKey.OWNER, sources, now, TestVerbs.lemmas)
+        val a = Clouds.of(PersonKey.AGENT, sources, now, TestVerbs.lemmas)
+        val line = Clouds.cleaningLine(Clouds.Gathered(sources, 0, 0), o, a)
+        assertTrue(line, line.endsWith("слов-связок: у владельца ${o.linkWords}, у агента ${a.linkWords}"))
+        assertTrue(Clouds.section(o, a, Clouds.Gathered(sources, 0, 0)).contains(line))
     }
 }

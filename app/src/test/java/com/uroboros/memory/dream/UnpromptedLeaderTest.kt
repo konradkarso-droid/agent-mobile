@@ -25,7 +25,8 @@ class UnpromptedLeaderTest {
         tag: String = "general",
         rejected: Boolean = false,
         pending: Boolean = false,
-    ) = UnpromptedTouch(id, count, tag, if (rejected) 1L else null, pending)
+        content: String = "Я точу рубанок по субботам.",
+    ) = UnpromptedTouch(id, count, tag, if (rejected) 1L else null, pending, content)
 
     // --- Условие лидера ---
 
@@ -91,6 +92,24 @@ class UnpromptedLeaderTest {
         assertEquals(2L, UnpromptedLeader.leaderOf(listOf(touch(1, 9, pending = true), touch(2, 6))))
     }
 
+    @Test
+    fun `запись, что ничего не утверждает, не лидер и не мешает обгону`() {
+        val touches = listOf(
+            touch(1, 20, content = "Привет, назови температуру и уровень заряда."),
+            touch(2, 9, content = "Какая у тебя модель?"),
+            touch(3, 6),
+        )
+        val standing = UnpromptedLeader.standing(touches)
+        assertEquals(3L, standing.leaderId)
+        assertEquals(2, standing.assertsNothing)
+    }
+
+    @Test
+    fun `запись-утверждение с вопросом внутри считается`() {
+        val touches = listOf(touch(1, 6, content = "Я точу рубанок. Ты умеешь точить?"))
+        assertEquals(1L, UnpromptedLeader.leaderOf(touches))
+    }
+
     // --- «3 из 5» ---
 
     @Test
@@ -124,7 +143,7 @@ class UnpromptedLeaderTest {
     @Test
     fun `прибор без касаний называет причину`() {
         val line = UnpromptedLeader.meter(UnpromptedLeader.standing(emptyList()), null, emptyList())
-        assertEquals("Нажитое о себе: молчу — касаний без подсказки нет", line)
+        assertEquals("Нажитое о себе: молчу — касаний без подсказки нет · записей, что ничего не утверждают, в счёте нет: 0", line)
     }
 
     @Test
@@ -133,7 +152,7 @@ class UnpromptedLeaderTest {
         val line = UnpromptedLeader.meter(standing, "Про рубанок", listOf(null, 4L))
         assertEquals(
             "Нажитое о себе: молчу — лидер №4 «Про рубанок», касаний 3 из 5, " +
-                "обгон ×1.5 из 1.5, ночей 1 из 3 (из последних 2)",
+                "обгон ×1.5 из 1.5, ночей 1 из 3 (из последних 2) · записей, что ничего не утверждают, в счёте нет: 0",
             line,
         )
     }
@@ -159,7 +178,17 @@ class UnpromptedLeaderTest {
         val standing = UnpromptedLeader.standing(listOf(touch(4, 6), touch(9, 2)))
         val line = UnpromptedLeader.meter(standing, "Про рубанок", listOf(4L, 4L, null, 4L))
         assertEquals(
-            "Нажитое о себе: кандидат №4 «Про рубанок» — 6 касаний, обгон ×3.0, ночей 3 из 4",
+            "Нажитое о себе: кандидат №4 «Про рубанок» — 6 касаний, обгон ×3.0, ночей 3 из 4 · записей, что ничего не утверждают, в счёте нет: 0",
+            line,
+        )
+    }
+
+    @Test
+    fun `прибор называет, сколько записей не в счёте`() {
+        val standing = UnpromptedLeader.standing(listOf(touch(1, 9, content = "Как дела?")))
+        val line = UnpromptedLeader.meter(standing, null, emptyList())
+        assertEquals(
+            "Нажитое о себе: молчу — касаний без подсказки нет · записей, что ничего не утверждают, в счёте нет: 1",
             line,
         )
     }

@@ -129,4 +129,23 @@ class SentenceKindTest {
         assertEquals("«волнуйся»", SentenceKind.of("Ладно, не волнуйся.").why)
         assertEquals("", SentenceKind.of("Это были тестовые фразы.").why)
     }
+
+    @Test
+    fun `ведущий ритуал на вид предложения не влияет`() {
+        assertEquals(read("Назови температуру и уровень заряда"), read("Привет, назови температуру и уровень заряда"))
+        assertEquals(Kind.REQUEST to Certainty.SURE, read("Привет, назови температуру и уровень заряда"))
+        assertEquals(Kind.REQUEST to Certainty.SURE, read("Добрый день! Расскажи, как ты."))
+        assertEquals(Kind.REQUEST to Certainty.SURE, read("Спасибо — назови заряд."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Привет, я сегодня у моря."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Привет, Иван."))
+        assertEquals(Kind.QUESTION to Certainty.DOUBTFUL, read("Привет, как жизнь."))
+    }
+
+    @Test
+    fun `отклик, «пока» и ритуал без знака не снимаются`() {
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Ясно, что станок выключен."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Понял, станок выключен."))
+        assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Пока, назови заряд."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Привет назови температуру"))
+    }
 }
