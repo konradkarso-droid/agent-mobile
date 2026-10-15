@@ -2,6 +2,7 @@ package com.uroboros.initiative
 
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.memory.DolmenCircle
+import com.uroboros.memory.nav.LemmaHolder
 
 /**
  * Любопытство разрыва: чем дольше не говорили, тем больше неизвестного — что
@@ -56,7 +57,7 @@ object GapCuriosity {
 
     /** Слова темы прошлого разговора; пусто — темы нет. */
     fun topic(lastTalk: List<ConversationJournal.Turn>): List<String> =
-        DolmenCircle.themeWords(lastTalk.map { it.question }, emptyList()).take(TOPIC_WORDS)
+        DolmenCircle.themeWords(lastTalk.map { it.question }, emptyList(), LemmaHolder.loaded).take(TOPIC_WORDS)
 
     /** Порог молчания (описание объекта). */
     fun threshold(hasTopic: Boolean, agentHasMove: Boolean): Long = when {

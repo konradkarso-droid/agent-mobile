@@ -16,10 +16,9 @@ import kotlin.math.roundToInt
  *
  * ЗАЧЕМ. Следующая реплика должна опираться на разговор целиком, а не на одну
  * предыдущую. Короткое «А белки?» своих слов для поиска почти не несёт, а тема
- * ясна из прошлых ходов. Окно темы круга дольменов (memory.DolmenCircle.themeWords)
- * делает то же грубо: три последние реплики, слова как написаны, все равны.
- * Карта — его замена, а не второе определение темы рядом. Пока она только
- * прибор: в отбор не идёт, окно темы работает как было.
+ * ясна из прошлых ходов. Окно темы круга дольменов и любопытство
+ * (memory.DolmenCircle.themeWords) ищут по карте ([searchWords]): определение
+ * темы разговора одно на весь код.
  *
  * РАЗГОВОР — эпизод по правилу [Episodes]: тишина дольше часа начинает новый.
  * Не кнопка и не вся лента: в чате другого собеседника кнопки нет, а тема
@@ -74,8 +73,13 @@ object WindowMap {
     /** Ход ленты: реплика владельца и когда сказана (null — время не известно). */
     data class Turn(val question: String, val at: Long?)
 
-    /** Слово-тема: начальные формы одного написанного слова и вес. */
-    data class Word(val lemmas: Set<String>, val weight: Double) {
+    /**
+     * Слово-тема: начальные формы одного написанного слова, вес и [form] —
+     * самая частая написанная форма (приведённая, TextFold). Ищется в памяти
+     * форма, а не начальная: поиск идёт по написанному (лестница
+     * HourglassMemory.ladder укорачивает слово, «белки» найдёт и «белка»).
+     */
+    data class Word(val lemmas: Set<String>, val weight: Double, val form: String = lemmas.first()) {
         val label: String get() = lemmas.sorted().joinToString("/")
     }
 
@@ -108,15 +112,19 @@ object WindowMap {
      * Слова-темы текста — по единице на написанное слово, в порядке появления,
      * без повторов.
      */
-    fun topicWords(text: String, dictionary: LemmaDictionary?): List<Set<String>> {
-        val out = LinkedHashMap<String, Set<String>>()
+    fun topicWords(text: String, dictionary: LemmaDictionary?): List<Set<String>> =
+        written(text, dictionary).map { it.first }
+
+    /** Слова-темы текста вместе с тем, как каждое написано. */
+    private fun written(text: String, dictionary: LemmaDictionary?): List<Pair<Set<String>, String>> {
+        val out = LinkedHashMap<String, Pair<Set<String>, String>>()
         for (sentence in Sentences.split(text)) {
             if (SentenceKind.of(sentence).kind == SentenceKind.Kind.SOCIAL) continue
             for (raw in WORD_BREAK.split(TextFold.fold(sentence))) {
                 val word = raw.trim('-')
                 if (word.isEmpty() || word.any { it.isDigit() }) continue
                 val unit = unitOf(word, dictionary) ?: continue
-                out.putIfAbsent(unit.sorted().joinToString("/"), unit)
+                out.putIfAbsent(unit.sorted().joinToString("/"), unit to word)
             }
         }
         return out.values.toList()
@@ -141,20 +149,30 @@ object WindowMap {
      * @param now когда сказана реплика — для границы разговора.
      */
     fun of(ribbon: List<Turn>, reply: String, now: Long, dictionary: LemmaDictionary?): Result {
-        val episode = currentEpisode(ribbon, now)
+        val episode = episodeOf(ribbon, now)
+        // Ключ — набор начальных форм; порядок вставки — порядок первого
+        // появления, он и решает при равном весе.
         val weights = LinkedHashMap<String, Pair<Set<String>, Double>>()
+        val forms = HashMap<String, HashMap<String, Int>>()
         for ((index, turn) in episode.withIndex()) {
             val ago = episode.size - 1 - index
             val w = 0.5.pow(ago / HALF_LIFE_TURNS)
-            for (unit in topicWords(turn.question, dictionary)) {
+            for ((unit, word) in written(turn.question, dictionary)) {
                 val key = unit.sorted().joinToString("/")
                 val prev = weights[key]?.second ?: 0.0
                 weights[key] = unit to prev + w
+                val f = forms.getOrPut(key) { HashMap() }
+                f[word] = (f[word] ?: 0) + 1
             }
         }
-        val words = weights.values
-            .map { (lemmas, w) -> Word(lemmas, w) }
-            .sortedWith(compareByDescending<Word> { it.weight }.thenBy { it.label })
+        val words = weights.entries
+            .map { (key, value) ->
+                val form = forms[key].orEmpty().entries
+                    .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+                    .first().key
+                Word(value.first, value.second, form)
+            }
+            .sortedByDescending { it.weight }
         val own = topicWords(reply, dictionary)
         val onMap = words.flatMapTo(HashSet()) { it.lemmas }
         val footing = when {
@@ -167,8 +185,23 @@ object WindowMap {
         return Result(words, episode.size, footing, own, dictionary != null)
     }
 
-    /** Ходы ленты, что в одном разговоре с репликой, сказанной в [now]. */
-    private fun currentEpisode(ribbon: List<Turn>, now: Long): List<Turn> {
+    /**
+     * Слова окна темы для поиска в памяти: написанные формы самых тяжёлых
+     * слов карты, без тех, что есть в самой реплике, — их ищет окно вопроса,
+     * а слитые в один запрос два набора уронили бы долю вопроса (см.
+     * memory.DolmenCircle.themeWords). Не больше [limit].
+     */
+    fun searchWords(result: Result, limit: Int): List<String> {
+        val own = result.own.flatMapTo(HashSet()) { it }
+        return result.words.filter { w -> w.lemmas.none { it in own } }.take(limit).map { it.form }
+    }
+
+    /**
+     * Ходы ленты, что в одном разговоре с репликой, сказанной в [now]; ходы
+     * без времени разговор не делят. Пустые реплики (агент писал первым)
+     * пропускаются.
+     */
+    fun episodeOf(ribbon: List<Turn>, now: Long): List<Turn> {
         if (ribbon.isEmpty()) return emptyList()
         val numbers = Episodes.number(ribbon.map { Episodes.Point(it.at) } + Episodes.Point(now))
         val current = numbers.last()

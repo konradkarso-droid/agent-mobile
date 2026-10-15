@@ -106,28 +106,46 @@ class DolmenCircleTest {
     // --- Слова темы ---
 
     @Test
-    fun `тема берётся из трёх последних непустых реплик минус слова вопроса`() {
+    fun `тема — слова карты окна минус слова вопроса, тяжёлые первыми`() {
         val words = DolmenCircle.themeWords(
             recentQuestions = listOf("старый рубанок забыт", "колодка рубанка", "", "берёза крепкая", "лезвие острое"),
             questionWords = listOf("лезвие"),
+            dictionary = null,
         )
-        // «старый рубанок забыт» — четвёртая с конца непустая, за окном темы.
-        assertTrue("рубанок" !in words)
         assertTrue("лезвие" !in words)
-        assertEquals(setOf("острое", "береза", "крепкая", "колодка", "рубанка"), words.toSet())
+        // Самая свежая реплика — первой; самое старое слово карты за потолком.
+        assertEquals(listOf("острое", "береза", "крепкая", "колодка", "рубанка", "старый"), words)
+        assertEquals(MAX_SEARCH_WORDS, words.size)
     }
 
     @Test
     fun `без ленты темы нет`() {
-        assertTrue(DolmenCircle.themeWords(emptyList(), listOf("рубанок")).isEmpty())
-        assertTrue(DolmenCircle.themeWords(listOf("", "  "), emptyList()).isEmpty())
+        assertTrue(DolmenCircle.themeWords(emptyList(), listOf("рубанок"), null).isEmpty())
+        assertTrue(DolmenCircle.themeWords(listOf("", "  "), emptyList(), null).isEmpty())
     }
 
-    /** Слова темы — тем же отсевом, что и слова вопроса: короткие и служебные уходят. */
+    /** Без словаря — тем же отсевом, что и слова вопроса: короткие и служебные уходят. */
     @Test
     fun `тема отсеивает короткие и служебные слова`() {
-        val words = DolmenCircle.themeWords(listOf("что это было про рубанок"), emptyList())
+        val words = DolmenCircle.themeWords(listOf("что это было про рубанок"), emptyList(), null)
         assertEquals(listOf("рубанок"), words)
+    }
+
+    /** Со словарём — существительные; форма для поиска — как написано. */
+    @Test
+    fun `со словарём тема — существительные, написанные формы`() {
+        val words = DolmenCircle.themeWords(
+            listOf("Расскажи подробно про белки в клетке."), emptyList(), com.uroboros.memory.nav.TestVerbs.lemmas,
+        )
+        assertEquals(listOf("белки", "клетке"), words)
+    }
+
+    @Test
+    fun `слово вопроса в любой форме не повторяется в теме`() {
+        val words = DolmenCircle.themeWords(
+            listOf("Что делают белки в клетке?"), listOf("клетка"), com.uroboros.memory.nav.TestVerbs.lemmas,
+        )
+        assertEquals(listOf("белки"), words)
     }
 
     // --- Правило окна темы ---

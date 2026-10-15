@@ -3,6 +3,7 @@ package com.uroboros.memory
 import android.util.Log
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnCorrection
 import com.uroboros.memory.nav.RetellHolder
@@ -252,8 +253,8 @@ internal const val MAX_SEARCH_WORDS = 6
  * Список этих слов задаёт знаменатель "доли вопроса" в searchByWords, так
  * что каждое добавленное служебное слово заодно смягчает порог отсева.
  *
- * На верхнем уровне, а не в классе: те же слова берёт окно темы из прошлых
- * реплик (DolmenCircle.themeWords), и определение у них обязано быть одно.
+ * На верхнем уровне, а не в классе: тот же отсев — короткие и служебные
+ * слова — у карты окна без словаря (nav.WindowMap).
  */
 internal fun meaningfulWords(query: String): List<String> =
     TextFold.fold(Sentences.split(query).filterNot { SentenceKind.of(it).kind == SentenceKind.Kind.SOCIAL }.joinToString(" "))
@@ -831,9 +832,10 @@ class HourglassMemory(
         query: String?,
         limit: Int,
         /**
-         * Реплики владельца из ленты, от старых к новым, — источник окна темы
-         * (см. DolmenCircle.themeWords). Пустой список — темы нет: так зовёт
-         * просмотр памяти, у которого ленты нет.
+         * Реплики владельца нынешнего разговора, от старых к новым, —
+         * источник окна темы (см. DolmenCircle.themeWords); границу разговора
+         * проводит вызывающий (nav.WindowMap.episodeOf). Пустой список — темы
+         * нет: так зовёт просмотр памяти, у которого ленты нет.
          */
         recentQuestions: List<String> = emptyList(),
         /**
@@ -911,7 +913,7 @@ class HourglassMemory(
         // выбросил бы годное молча.
         val trace = mutableListOf<String>()
         val questionWords = meaningfulWords(query)
-        val themeWords = DolmenCircle.themeWords(recentQuestions, questionWords)
+        val themeWords = DolmenCircle.themeWords(recentQuestions, questionWords, LemmaHolder.loaded)
         // Исключение идёт внутри поиска каждого окна, а не после него — почему,
         // см. searchByWords и KDoc StickerDao.searchAnyCase.
         val excludedRaw = excludedTexts.filter { it.isNotBlank() }.distinct()
