@@ -770,8 +770,8 @@ class AgentService : Service() {
                 }
                 if (missing.mirror) {
                     // Лента читается здесь, на главном потоке, как в ночи по кнопке.
-                    val history = objects.turns.journal.history()
-                    outcomes += noteMirror(db, nightAt, MirrorStep.run(db, objects.llmEngine, nightAt, history) { why() })
+                    val talk = objects.turns.lastTalk()
+                    outcomes += noteMirror(db, nightAt, MirrorStep.run(db, objects.llmEngine, nightAt, talk) { why() })
                 }
                 if (missing.conclusions) {
                     outcomes += noteConclusions(db, nightAt, ConclusionStep.run(db, objects.llmEngine, nightAt) { why() })
@@ -998,9 +998,10 @@ class AgentService : Service() {
                 // Зеркало — там же и при тех же условиях, после строки о себе
                 // (см. MirrorStep). Лента читается здесь, на главном потоке:
                 // ход ложится в неё на нём же (ConversationTurns.run), так что
-                // копия снимается без замка хода и без ожидания.
+                // копия снимается без замка хода и без ожидания; пустая — архив
+                // (ConversationTurns.lastTalk).
                 val mirror = if (dreamFirst) {
-                    val outcome = MirrorStep.run(db, objects.llmEngine, nightAt, objects.turns.journal.history()) {
+                    val outcome = MirrorStep.run(db, objects.llmEngine, nightAt, objects.turns.lastTalk()) {
                         whyModelCannotRun(applicationContext)
                     }
                     noteMirror(db, nightAt, outcome)

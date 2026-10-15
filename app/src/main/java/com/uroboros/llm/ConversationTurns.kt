@@ -55,6 +55,32 @@ class ConversationTurns(
     /** Лента разговора; живёт процесс (см. [ConversationJournal.shared]). */
     val journal: ConversationJournal = ConversationJournal.shared
 
+    /**
+     * Последний разговор: открытая лента, если в ней есть ходы, иначе
+     * последний разговор архива ленты ([archiveIndex] — его номер). Пустой
+     * [turns] — разговоров нет нигде.
+     */
+    data class LastTalk(val turns: List<ConversationJournal.Turn>, val archiveIndex: Int?)
+
+    /**
+     * Последний разговор (см. [LastTalk]); null — открытая лента пуста, а архив
+     * не прочитался. Открытая лента читается до обращения к диску: ход ложится
+     * в неё на главном потоке, и зовущий оттуда получает её без замка хода.
+     *
+     * ЧЕГО НЕ УМЕЕТ: после комы открытая лента в памяти пуста, пока её не
+     * подняли с диска; до этого последним разговором считается архивный.
+     */
+    suspend fun lastTalk(): LastTalk? {
+        val live = journal.history()
+        if (live.isNotEmpty()) return LastTalk(live, null)
+        val archive = store.readArchive() ?: return null
+        val lastIndex = archive.maxOfOrNull { it.archiveIndex } ?: return LastTalk(emptyList(), null)
+        val turns = archive.filter { it.archiveIndex == lastIndex }
+            .sortedBy { it.turnIndex }
+            .map { ConversationJournal.Turn(it.userContent, it.agentContent, it.question, at = it.at) }
+        return LastTalk(turns, lastIndex)
+    }
+
     /** Исход записи хода на диск. [ok] = false — ход остался только в памяти. */
     data class DiskWrite(val index: Int, val ok: Boolean)
 

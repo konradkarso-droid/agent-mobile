@@ -2,6 +2,8 @@ package com.uroboros.memory.dream
 
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.memory.RiskTrigger
+import com.uroboros.memory.SentenceKind
+import com.uroboros.memory.Sentences
 import com.uroboros.util.TextFold
 
 /**
@@ -23,8 +25,17 @@ import com.uroboros.util.TextFold
  * ЧЕГО НЕ УМЕЕТ:
  *  - «сбылось» — совпадение основ слов, а не смысла: пересказ другими словами
  *    не сбудется, а два общих слова в разном смысле сбудутся;
- *  - смотрит только на ленту в памяти процесса: после перезапуска, пока лента
- *    не поднята, зеркало молчит с этой причиной, а не читает диск;
+ *  - когда открытая лента пуста (после «Начать заново» или комы), смотрит на
+ *    последний разговор архива ленты: догадка — о продолжении закрытого
+ *    разговора, а не о том, с чего владелец начнёт новый; в отчёте ночи это
+ *    видно по «смотрело на архив»;
+ *  - обычай (приветствие, благодарность, отклик — словарь SentenceKind) в
+ *    «сбылось» не считается: «Доброе утро» сбывается всегда и о догадке
+ *    ничего не говорит. Основы снимаются по словарю обычая целиком, поэтому
+ *    «хорошо» в «Хорошо, что ты спросил» тоже не в счёт;
+ *  - вариант голосом агента отбрасывается, только если модель сама пометила
+ *    его «Агент:» ([ownerVariants]); голос агента без пометки («Я ошибся,
+ *    извини») остаётся вариантом;
  *  - реплика сверяется с вариантами всех ночей, окно которых не кончилось, —
  *    реплика не обязана быть ответом на тот разговор, на который смотрело
  *    зеркало;
@@ -88,12 +99,15 @@ object Mirror {
          * @property excludedStems основы вопросов владельца и ответов агента этих
          *   ходов целиком, до обрезки: слово, которое уже было в разговоре,
          *   сбывшейся догадкой не считается.
+         * @property archiveIndex номер разговора архива, если открытая лента
+         *   была пуста и зеркало смотрело на архив; null — на открытую ленту.
          */
         data class Ready(
             val text: String,
             val fromTurn: Int,
             val toTurn: Int,
             val excludedStems: Set<String>,
+            val archiveIndex: Int? = null,
         ) : Request()
 
         data class Silent(val reason: String) : Request()
@@ -103,9 +117,12 @@ object Mirror {
      * Конец ленты — в запрос. Берутся последние [TURNS] ходов: реплика
      * владельца, если она была (ход, начатый агентом, реплики не имеет), и
      * ответ агента. [ConversationJournal.Turn.userContent] не берётся никогда.
+     *
+     * @param history ходы последнего разговора (llm.ConversationTurns.lastTalk).
+     * @param archiveIndex номер разговора архива, если ходы взяты из архива.
      */
-    fun request(history: List<ConversationJournal.Turn>): Request {
-        if (history.isEmpty()) return Request.Silent("лента пуста или не поднята")
+    fun request(history: List<ConversationJournal.Turn>, archiveIndex: Int? = null): Request {
+        if (history.isEmpty()) return Request.Silent("лента пуста, в архиве разговоров нет")
         val from = maxOf(0, history.size - TURNS)
         val seen = history.subList(from, history.size)
         val text = seen.joinToString("\n") { turn ->
@@ -122,6 +139,7 @@ object Mirror {
             fromTurn = from + 1,
             toTurn = history.size,
             excludedStems = excluded,
+            archiveIndex = archiveIndex,
         )
     }
 
@@ -156,6 +174,53 @@ object Mirror {
         return out
     }
 
+    /**
+     * Варианты ночного зеркала после [parse]: догадки о реплике владельца, и
+     * сколько отброшено.
+     *
+     * @property droppedAgent сколько отброшено как ответ агента.
+     * @property droppedSocial сколько отброшено как обычай.
+     */
+    data class Owned(val variants: List<String>, val droppedAgent: Int, val droppedSocial: Int)
+
+    /** Пометки говорящего, которые модель ставит в начало строки, — в приведённом виде ([TextFold]). */
+    private val OWNER_MARKS = listOf("собеседник", "пользователь")
+    private const val AGENT_MARK = "агент"
+    private val SPEAKER = Regex("^\\s*([\\p{L}]+)\\s*:\\s*")
+
+    /**
+     * Только догадки о реплике владельца. Модель иногда продолжает разговор в
+     * его же разметке ([request]): «Собеседник: …» — пометка снимается,
+     * «Агент: …» — это догадка об ответе агента, вариант отбрасывается.
+     * Вариант из одного обычая («Доброе утро!») отбрасывается: обычай в
+     * «сбылось» не считается ([check]), и такой вариант не сбудется никогда.
+     *
+     * Отдельно от [parse], потому что [parse] служит и разговору
+     * (llm.ConversationTurns): там варианты — ответы агента, и пометки
+     * говорящего значат другое.
+     */
+    fun ownerVariants(parsed: List<String>): Owned {
+        var agent = 0
+        var social = 0
+        val out = mutableListOf<String>()
+        for (variant in parsed) {
+            val mark = SPEAKER.find(variant)
+            val speaker = mark?.groupValues?.get(1)?.let { TextFold.fold(it) }
+            if (speaker == AGENT_MARK) {
+                agent++
+                continue
+            }
+            val text = if (speaker in OWNER_MARKS) variant.substring(mark!!.range.last + 1).trim() else variant
+            if (text.isEmpty()) continue
+            if (Sentences.split(text).all { SentenceKind.of(it).kind == SentenceKind.Kind.SOCIAL }) {
+                social++
+                continue
+            }
+            out += text
+        }
+        return Owned(out, agent, social)
+    }
+
     // ---- Сверка ----
 
     /** Итог сверки одной реплики с одним вариантом. */
@@ -176,9 +241,17 @@ object Mirror {
      */
     fun check(variant: String, excludedStems: Set<String>, repliesSeen: Int, reply: String): Checked? {
         if (repliesSeen >= CHECK_WINDOW) return null
-        val common = (RiskTrigger.significantStems(variant) - excludedStems) intersect
+        val common = (RiskTrigger.significantStems(variant) - excludedStems - socialStems) intersect
             RiskTrigger.significantStems(reply)
         return Checked(repliesSeen + 1, common.takeIf { it.size >= FULFIL_STEMS })
+    }
+
+    /**
+     * Основы слов обычая (словарь — SentenceKind): в «сбылось» не считаются,
+     * см. «ЧЕГО НЕ УМЕЕТ» в KDoc объекта.
+     */
+    private val socialStems: Set<String> by lazy {
+        RiskTrigger.significantStems((SentenceKind.SOCIAL_MARKS + SentenceKind.SOCIAL_COMPANIONS).joinToString(" "))
     }
 
     /** Основы — в строку для базы: через запятую, по алфавиту. */
@@ -196,12 +269,33 @@ object Mirror {
     fun silentOutcome(reason: String): String =
         "${OUTCOME_HEAD}не смотрю — " + reason.replaceFirstChar { it.lowercaseChar() }
 
-    /** Зеркало смотрело; [failure] — почему вариантов нет, если их нет. */
-    fun lookedOutcome(fromTurn: Int, toTurn: Int, variants: Int, failure: String? = null): String =
-        "${OUTCOME_HEAD}смотрело на ходы $fromTurn–$toTurn, " +
+    /**
+     * Зеркало смотрело; [failure] — почему вариантов нет, если их нет.
+     * [archiveIndex] — смотрело на разговор архива ([Request.Ready.archiveIndex]).
+     * [owned] — сколько отброшено [ownerVariants]; печатается, когда не ноль.
+     */
+    fun lookedOutcome(
+        fromTurn: Int,
+        toTurn: Int,
+        variants: Int,
+        failure: String? = null,
+        archiveIndex: Int? = null,
+        owned: Owned? = null,
+    ): String =
+        OUTCOME_HEAD + (if (archiveIndex == null) "смотрело на ходы" else "смотрело на архив, разговор $archiveIndex, ходы") +
+            " $fromTurn–$toTurn, " +
             when {
                 failure != null -> "вариантов нет — $failure"
-                variants == 0 -> "вариантов 0 — модель не дала вариантов"
+                variants == 0 && owned == null -> "вариантов 0 — модель не дала вариантов"
                 else -> "вариантов $variants"
-            }
+            } +
+            (owned?.let { dropped(it) } ?: "")
+
+    private fun dropped(owned: Owned): String {
+        val parts = listOfNotNull(
+            owned.droppedAgent.takeIf { it > 0 }?.let { "ответ агента $it" },
+            owned.droppedSocial.takeIf { it > 0 }?.let { "обычай $it" },
+        )
+        return if (parts.isEmpty()) "" else " · отброшено: ${parts.joinToString(", ")}"
+    }
 }
