@@ -1,6 +1,6 @@
 package com.uroboros.memory.dream
 
-import com.uroboros.llm.ConversationJournal
+import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.MemoryDatabase
@@ -39,17 +39,18 @@ object MirrorStep {
      * Пройти шаг и вернуть одну строку итога для отчёта ночи и для
      * [DreamNight.mirrorOutcome]. Исключений не выпускает, кроме отмены.
      *
-     * @param history лента разговора, как её прочитал зовущий.
+     * @param talk последний разговор (ConversationTurns.lastTalk); null —
+     *   открытая лента пуста, а архив не прочитался.
      * @param whyNot условия модели прямо перед вызовом; null — можно звать.
      */
     suspend fun run(
         db: MemoryDatabase,
         engine: LlmEngine,
         nightAt: Long,
-        history: List<ConversationJournal.Turn>,
+        talk: ConversationTurns.LastTalk?,
         whyNot: () -> String?,
     ): String = try {
-        attempt(db, engine, nightAt, history, whyNot)
+        attempt(db, engine, nightAt, talk, whyNot)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (t: Throwable) {
@@ -60,16 +61,18 @@ object MirrorStep {
         db: MemoryDatabase,
         engine: LlmEngine,
         nightAt: Long,
-        history: List<ConversationJournal.Turn>,
+        talk: ConversationTurns.LastTalk?,
         whyNot: () -> String?,
     ): String {
-        val request = when (val built = Mirror.request(history)) {
+        if (talk == null) return Mirror.silentOutcome("лента пуста, архив ленты не прочитался")
+        val request = when (val built = Mirror.request(talk.turns, talk.archiveIndex)) {
             is Mirror.Request.Silent -> return Mirror.silentOutcome(built.reason)
             is Mirror.Request.Ready -> built
         }
         whyNot()?.let { return Mirror.silentOutcome(it) }
 
-        fun failed(reason: String) = Mirror.lookedOutcome(request.fromTurn, request.toTurn, 0, reason)
+        fun failed(reason: String) =
+            Mirror.lookedOutcome(request.fromTurn, request.toTurn, 0, reason, request.archiveIndex)
 
         val answer = try {
             EngineJudgeLlm(engine, ANSWER_TOKENS).answer(Mirror.SYSTEM, request.text)
@@ -83,8 +86,16 @@ object MirrorStep {
             else -> Unit
         }
 
-        val variants = Mirror.parse(answer)
-        if (variants.isEmpty()) return Mirror.lookedOutcome(request.fromTurn, request.toTurn, 0)
+        val parsed = Mirror.parse(answer)
+        if (parsed.isEmpty()) {
+            return Mirror.lookedOutcome(request.fromTurn, request.toTurn, 0, archiveIndex = request.archiveIndex)
+        }
+        val owned = Mirror.ownerVariants(parsed)
+        val variants = owned.variants
+        fun looked() = Mirror.lookedOutcome(
+            request.fromTurn, request.toTurn, variants.size, archiveIndex = request.archiveIndex, owned = owned,
+        )
+        if (variants.isEmpty()) return looked()
 
         // Отмена, пришедшая за время ответа, не должна успеть оставить варианты.
         currentCoroutineContext().ensureActive()
@@ -101,6 +112,6 @@ object MirrorStep {
                 )
             }
         )
-        return Mirror.lookedOutcome(request.fromTurn, request.toTurn, variants.size)
+        return looked()
     }
 }

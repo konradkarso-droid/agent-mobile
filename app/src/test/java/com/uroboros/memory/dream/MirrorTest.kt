@@ -79,7 +79,56 @@ class MirrorTest {
     @Test
     fun `пустая лента — молчание с причиной`() {
         val request = Mirror.request(emptyList())
-        assertEquals(Mirror.Request.Silent("лента пуста или не поднята"), request)
+        assertEquals(Mirror.Request.Silent("лента пуста, в архиве разговоров нет"), request)
+    }
+
+    @Test
+    fun `разговор из архива — так и сказано в отчёте ночи`() {
+        val request = Mirror.request(listOf(turn("один", "два")), archiveIndex = 88) as Mirror.Request.Ready
+        assertEquals(88, request.archiveIndex)
+        assertEquals(
+            "Зеркало: смотрело на архив, разговор 88, ходы 1–1, вариантов 3",
+            Mirror.lookedOutcome(1, 1, 3, archiveIndex = request.archiveIndex),
+        )
+        assertEquals("Зеркало: смотрело на ходы 1–1, вариантов 3", Mirror.lookedOutcome(1, 1, 3))
+    }
+
+    // ---- Только догадки о реплике владельца ----
+
+    @Test
+    fun `пометка собеседника снимается, вариант агента отбрасывается`() {
+        val owned = Mirror.ownerVariants(
+            listOf("Собеседник: Расскажи про рубанки", "Агент: Да, всё в порядке.", "Что с погодой?")
+        )
+        assertEquals(listOf("Расскажи про рубанки", "Что с погодой?"), owned.variants)
+        assertEquals(1, owned.droppedAgent)
+        assertEquals(0, owned.droppedSocial)
+    }
+
+    @Test
+    fun `вариант из одного обычая отбрасывается, с делом — остаётся`() {
+        val owned = Mirror.ownerVariants(listOf("Собеседник: Доброе утро!", "Доброе утро! Проснулся?", "Спасибо."))
+        assertEquals(listOf("Доброе утро! Проснулся?"), owned.variants)
+        assertEquals(2, owned.droppedSocial)
+    }
+
+    @Test
+    fun `голос агента без пометки не отбрасывается — этого правило не умеет`() {
+        val owned = Mirror.ownerVariants(listOf("Сплетить оказалось моей ошибкой, извини."))
+        assertEquals(1, owned.variants.size)
+    }
+
+    @Test
+    fun `отброшенное видно в отчёте ночи`() {
+        val owned = Mirror.Owned(listOf("Что с погодой?"), droppedAgent = 2, droppedSocial = 1)
+        assertEquals(
+            "Зеркало: смотрело на ходы 1–2, вариантов 1 · отброшено: ответ агента 2, обычай 1",
+            Mirror.lookedOutcome(1, 2, 1, owned = owned),
+        )
+        assertEquals(
+            "Зеркало: смотрело на ходы 1–2, вариантов 0 · отброшено: ответ агента 3",
+            Mirror.lookedOutcome(1, 2, 0, owned = Mirror.Owned(emptyList(), 3, 0)),
+        )
     }
 
     // ---- Разбор ответа ----
@@ -128,6 +177,20 @@ class MirrorTest {
         assertNotNull(checked)
         assertEquals(1, checked!!.repliesSeen)
         assertEquals(RiskTrigger.significantStems("рубанки стамески"), checked.fulfilledWords)
+    }
+
+    @Test
+    fun `обычай не сбывается — приветствие в обеих репликах не в счёт`() {
+        val checked = Mirror.check(
+            "Доброе утро! Проснулся?", emptySet(), 0, "Доброго утра. Как спалось, чего нового у тебя?",
+        )
+        assertEquals(Mirror.Checked(1, null), checked)
+    }
+
+    @Test
+    fun `обычай рядом с делом не мешает сбыться делу`() {
+        val checked = Mirror.check("Привет! Расскажи про рубанки и стамески", emptySet(), 0, "Привет, хочу про рубанки и стамески")
+        assertEquals(RiskTrigger.significantStems("рубанки стамески"), checked!!.fulfilledWords)
     }
 
     @Test
