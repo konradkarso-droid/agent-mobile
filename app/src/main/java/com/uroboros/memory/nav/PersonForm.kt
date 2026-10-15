@@ -1,6 +1,7 @@
 package com.uroboros.memory.nav
 
 import com.uroboros.llm.WordDamage
+import com.uroboros.memory.SentenceKind
 import com.uroboros.memory.Sentences
 import com.uroboros.util.ImperativeForm
 import com.uroboros.util.TextFold
@@ -70,10 +71,9 @@ import com.uroboros.util.TextFold
  *    («проверь», «брось», «удали» — хоть оно и «удаль») и нет местоимения,
  *    числительного, предлога, союза или частицы: «мой» (и «мыть»), «три» (и
  *    «тереть»), «при» (и «переть») просьбой не читаются. Приглашение «давай
- *    вместе» («пойдём», «сменим») — не просьба к собеседнику, а «мы»: его
- *    даёт глагол 1-го лица множественного; просьбой его считает только вид
- *    предложения ([firstWordIsRequest] с `invitation`), и то если все разборы
- *    слова глагольные («допустим» — ещё и краткое прилагательное).
+ *    вместе» («сменим», «сделаем») — не просьба к собеседнику, а «мы»: его
+ *    даёт глагол 1-го лица множественного. По словарю повелительное ловится и
+ *    в начале части после запятой или тире ([partIsRequest]).
  *
  * ЧЕГО НЕ УМЕЕТ (по форме, а не по смыслу):
  *  - слово, которое бывает и глаголом, и другой частью речи («объём»),
@@ -93,8 +93,10 @@ import com.uroboros.util.TextFold
  *    собеседнике», хотя это о мире;
  *  - ирония и чужая речь («он сказал: я устал») — ошибка или UNCLEAR;
  *  - «надеюсь», «я думал» в записи об агенте делают её «об обоих»;
- *  - повелительное — только по первому слову предложения («Теперь сменим
- *    тему» просьбой не читается). Без словаря мягкий знак даёт ложное
+ *  - повелительное — по первому слову предложения, а по словарю ещё и по
+ *    первому слову части; приглашение «Теперь сменим тему» просьбой не
+ *    читается. Повелительное к не-собеседнику («Мчись же, время!») — просьба.
+ *    Без словаря мягкий знак даёт ложное
  *    повелительное у первого слова-существительного или наречия («Теперь…»,
  *    «Семь…») и не ловит повелительное на «-сь» («Садись»), — цена правила
  *    [looksSoftSignImperative].
@@ -282,7 +284,7 @@ object PersonForm {
             if (bareWe) out += Person.UNCLEAR
         }
         if (first) out += Person.FIRST
-        if (words.isNotEmpty() && isRequestWord(words.first())) out += Person.IMPERATIVE
+        if (words.isNotEmpty() && isRequestWord(words.first()) || partIsRequest(sentence)) out += Person.IMPERATIVE
         if ((pastWithoutPerson || doubtfulFirst) &&
             out.none { it == Person.FIRST || it == Person.SECOND || it == Person.WE_WITH_YOU }
         ) {
@@ -298,23 +300,40 @@ object PersonForm {
      * Одно правило на определитель лица и разворот (см. [Retelling]).
      * Слово берётся после util.TextFold, дефис его рвёт («Когда-нибудь» → «когда»).
      */
-    fun firstWordIsRequest(sentence: String, invitation: Boolean = false): Boolean {
+    fun firstWordIsRequest(sentence: String): Boolean {
         val first = TextFold.fold(sentence).split(NOT_LETTER).firstOrNull { it.isNotEmpty() } ?: return false
-        return isRequestWord(first, invitation)
+        return isRequestWord(first)
     }
 
     /**
-     * Повелительное ли слово [w]. Словарь знает слово — по разбору (правила
-     * «ПО СЛОВАРЮ» в шапке); [invitation] — считать ли просьбой и приглашение
-     * «давай вместе». Не знает — по окончанию.
+     * Повелительное в начале части предложения после «,», «;», «:» или тире
+     * («Если части нет, поставь прочерк»; «Семь цветов, процитируй правило»).
+     * Только по словарю: правило окончаний в середине предложения ловило бы
+     * существительные на «-и» и «-ь» на каждом шагу. Вводные слова части
+     * пропускаются так же, как у вида предложения (memory.SentenceKind).
      */
-    private fun isRequestWord(w: String, invitation: Boolean = false): Boolean {
+    private fun partIsRequest(sentence: String): Boolean {
+        val dictionary = lemmas ?: return false
+        for (part in sentence.split(PART_BREAK).drop(1)) {
+            val word = TextFold.fold(part).split(NOT_LETTER)
+                .firstOrNull { it.isNotEmpty() && it !in SentenceKind.PART_LEADERS && !isLeadWord(it) } ?: continue
+            val analyses = dictionary.analyze(word)
+            if (analyses.isNotEmpty() && isRequestWord(word)) return true
+        }
+        return false
+    }
+
+    private val PART_BREAK = Regex("[,;:]|\\s[—–-]\\s")
+
+    /**
+     * Повелительное ли слово [w]. Словарь знает слово — по разбору (правила
+     * «ПО СЛОВАРЮ» в шапке). Не знает — по окончанию.
+     */
+    private fun isRequestWord(w: String): Boolean {
         val analyses = lemmas?.analyze(w).orEmpty()
         if (analyses.isNotEmpty()) {
             if (analyses.any { it.partOfSpeech in NOT_REQUEST_PARTS || "Apro" in it.tags }) return false
-            if (analyses.any { it.partOfSpeech == "VERB" && "impr" in it.tags && "incl" !in it.tags }) return true
-            return invitation && analyses.all { it.partOfSpeech == "VERB" } &&
-                analyses.any { "impr" in it.tags && "incl" in it.tags }
+            return analyses.any { it.partOfSpeech == "VERB" && "impr" in it.tags && "incl" !in it.tags }
         }
         return ImperativeForm.looksImperative(w) || looksSoftSignImperative(w)
     }

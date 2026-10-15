@@ -195,7 +195,9 @@ class PersonFormTest {
         assertFalse(Person.IMPERATIVE in persons("Теперь поговорим о погоде"))
         assertFalse(Person.IMPERATIVE in persons("Люди разные"))
         assertFalse(Person.IMPERATIVE in persons("Уровень второй"))
-        assertFalse(Person.IMPERATIVE in persons("Если части нет, поставь прочерк"))
+        assertTrue(Person.IMPERATIVE in persons("Если части нет, поставь прочерк"))
+        assertTrue(Person.IMPERATIVE in persons("Семь цветов, процитируй само правило"))
+        assertFalse(Person.IMPERATIVE in persons("Кстати, помнишь, что было неделю назад?"))
     }
 
     @Test
@@ -248,7 +250,12 @@ class PersonFormTest {
     @Test
     fun `существительное на -у не даёт я — вопрос к агенту остаётся к агенту`() {
         assertFalse(Person.FIRST in PersonForm.ofSentence("Назови модель и температуру"))
-        assertEquals(Coordinates.Address.AGENT, Coordinates.questionAddress("Привет, назови температуру и уровень заряда"))
+        assertFalse(Person.FIRST in PersonForm.ofSentence("Привет, назови температуру и уровень заряда"))
+        // Приветствие перед просьбой её не прячет: адрес тот же, что у просьбы без приветствия.
+        assertEquals(
+            Coordinates.questionAddress("Назови температуру и уровень заряда"),
+            Coordinates.questionAddress("Привет, назови температуру и уровень заряда"),
+        )
         assertEquals(Coordinates.Address.AGENT, Coordinates.questionAddress("Ты имел ввиду - Африканский рог?"))
         // Просьба без лица — «не определён», а не «владелец», как было.
         assertEquals(Coordinates.Address.UNDEFINED, Coordinates.questionAddress("Посмотри свою модель LLM, пожалуйста."))

@@ -33,9 +33,9 @@ import com.uroboros.util.TextFold
  *     сомнительно: «Что ж, годится» — тоже так начинается;
  *  4. первое слово предложения или его части после «,», «;», «:» или тире
  *     (после [PART_LEADERS] и слов, которые словарь знает только как
- *     наречие, союз, частицу, — PersonForm.isLeadWord) — повелительное или
- *     приглашение «давай вместе» по словарю, а для незнакомого словарю слова —
- *     по окончанию (PersonForm.firstWordIsRequest), кроме [NOT_REQUEST]; возвратное
+ *     наречие, союз, частицу, — PersonForm.isLeadWord) — повелительное по
+ *     словарю, а для незнакомого словарю слова — по окончанию
+ *     (PersonForm.firstWordIsRequest), кроме [NOT_REQUEST]; возвратное
  *     проверяется и без «-ся/-сь» («не волнуйся»); или в предложении есть
  *     слово из [REQUEST_MARKS] — просьба, сомнительно;
  *  5. иначе — утверждение.
@@ -76,8 +76,9 @@ import com.uroboros.util.TextFold
  *    («Интересно, как это устроено») — утверждение;
  *  - повелительное не в начале части («Тогда давай ты расскажешь…» — есть
  *    «давай», а «Ты лучше расскажи» — нет) — утверждение;
- *  - приглашение «давай вместе» по словарю — сомнительная просьба, и тогда,
- *    когда это план, а не приглашение («Потом будем разговаривать»);
+ *  - приглашение «давай вместе» без «давай» («Теперь сменим тему») —
+ *    утверждение: по форме его не отличить от плана («Потом будем
+ *    разговаривать», «Сначала сделаем тебе речь»);
  *  - без словаря (не загружен или слова в нём нет): существительное на «-ь»
  *    или «-и» в начале части («…, цель — …», «Люди разные») и прошедшее на
  *    «-ли» («Перевели…») — сомнительная просьба;
@@ -237,9 +238,7 @@ object SentenceKind {
             val word = words(part).firstOrNull { it !in PART_LEADERS && !PersonForm.isLeadWord(it) } ?: continue
             if (word in NOT_REQUEST) continue
             val base = word.removeSuffix("ся").removeSuffix("сь")
-            if (PersonForm.firstWordIsRequest(word, invitation = true) ||
-                (base != word && PersonForm.firstWordIsRequest(base, invitation = true))
-            ) {
+            if (PersonForm.firstWordIsRequest(word) || (base != word && PersonForm.firstWordIsRequest(base))) {
                 return word
             }
         }

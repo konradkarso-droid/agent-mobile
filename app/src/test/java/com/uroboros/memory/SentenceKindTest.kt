@@ -24,13 +24,14 @@ class SentenceKindTest {
     private fun read(s: String) = SentenceKind.of(s).let { it.kind to it.certainty }
 
     @Test
-    fun `по словарю — существительное и наречие в начале не просьба, приглашение и -сь — просьба`() {
+    fun `по словарю — существительное, наречие и приглашение не просьба, -сь — просьба`() {
         assertEquals(Kind.STATEMENT to Certainty.SURE, read("Люди разные."))
         assertEquals(Kind.STATEMENT to Certainty.SURE, read("Уровень второй."))
         assertEquals(Kind.STATEMENT to Certainty.SURE, read("Кстати, о температуре."))
         assertEquals(Kind.STATEMENT to Certainty.SURE, read("Теперь назвал верно."))
         assertEquals(Kind.STATEMENT to Certainty.SURE, read("Допустим ответ: неприменимо."))
-        assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Теперь сменим тему."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Теперь сменим тему."))
+        assertEquals(Kind.STATEMENT to Certainty.SURE, read("Сначала сделаем тебе речь."))
         assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Не спи сегодня ночью"))
         assertEquals(Kind.REQUEST to Certainty.DOUBTFUL, read("Брось это."))
     }
