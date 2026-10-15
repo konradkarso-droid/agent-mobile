@@ -34,6 +34,7 @@ import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.dream.Conclusion
 import com.uroboros.memory.dream.ConclusionStep
+import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.dream.DreamTopicStep
 import com.uroboros.memory.dream.DreamWeaver
 import com.uroboros.memory.dream.Mirror
@@ -779,6 +780,9 @@ class AgentService : Service() {
                     outcomes += noteMirror(db, nightAt, MirrorStep.run(db, objects.llmEngine, nightAt, talk) { why() })
                 }
                 if (missing.conclusions) {
+                    // Словарь для проверки выводов: экран мог не открываться с
+                    // подъёма, а грузит его обычно он (LemmaHolder — один на процесс).
+                    withContext(Dispatchers.IO) { LemmaHolder.load { assets.open(LemmaHolder.ASSET) } }
                     outcomes += noteConclusions(db, nightAt, ConclusionStep.run(db, objects.llmEngine, nightAt) { why() })
                 }
                 // Темы снов — после выводов (см. DreamTopicStep); шаг сам пишет
@@ -1017,6 +1021,8 @@ class AgentService : Service() {
                 // (см. ConclusionStep). Условия модели переспрашиваются перед
                 // каждым вызовом внутри шага.
                 val conclusions = if (dreamFirst) {
+                    // Словарь для проверки выводов — как в ночи без кнопки.
+                    withContext(Dispatchers.IO) { LemmaHolder.load { assets.open(LemmaHolder.ASSET) } }
                     val outcome = ConclusionStep.run(db, objects.llmEngine, nightAt) {
                         whyModelCannotRun(applicationContext)
                     }

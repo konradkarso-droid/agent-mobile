@@ -4114,7 +4114,7 @@ class MainActivity : AppCompatActivity() {
         // главном потоке. Пока не загружен, портрет по теме не ищется
         // (Portrait.topic), причина видна в строке «О собеседнике:».
         lifecycleScope.launch(Dispatchers.IO) {
-            LemmaHolder.load { assets.open(LEMMA_DICTIONARY_ASSET) }
+            LemmaHolder.load { assets.open(LemmaHolder.ASSET) }
             withContext(Dispatchers.Main) { renderMetricsPanel() }
         }
 
@@ -5739,7 +5739,6 @@ class MainActivity : AppCompatActivity() {
         private const val RETELL_TABLE_ASSET = "verb_person_stems.txt"
 
         /** Словарь начальных форм (nav.LemmaDictionary) в app/src/main/assets. */
-        private const val LEMMA_DICTIONARY_ASSET = "lemma_forms.txt"
 
         /** Трафарет детектора порчи слов (llm.WordDamage) в app/src/main/assets. */
         private const val WORD_STENCIL_ASSET = "word_stencil6.bin"

@@ -1,5 +1,7 @@
 package com.uroboros.memory.dream
 
+import com.uroboros.memory.nav.LemmaDictionary
+import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.MemoryDatabase
@@ -82,8 +84,12 @@ object ConclusionStep {
         whyNot: () -> String?,
     ): String {
         val conclusions = db.conclusionDao()
-        val recheck = recheckRejected(db, nightAt)
-        fun outcome(text: String) = Conclusion.withRecheck(text, recheck.checked, recheck.passed.size)
+        // Словарь начальных форм — для сравнения слов в проверке (Conclusion.check);
+        // нет — проверка по основам, и итог ночи это называет.
+        val dictionary = LemmaHolder.loaded
+        val recheck = recheckRejected(db, nightAt, dictionary)
+        fun outcome(text: String) = Conclusion.withRecheck(text, recheck.checked, recheck.passed.size) +
+            (if (dictionary == null) " · проверка без словаря — по основам" else "")
 
         // Давление читается тем же путём, что прибор: сны с принятым выводом
         // в ряд уже не попадают, записи — по номеру и без отметки обращения.
@@ -111,7 +117,7 @@ object ConclusionStep {
                 break
             }
             val texts = candidate.records.map { it.content }
-            val (text, reason) = when (val result = conclude(engine, texts)) {
+            val (text, reason) = when (val result = conclude(engine, texts, dictionary)) {
                 // Сбой — не проба: строки нет, шаг кончается (см. «СБОЙ — НЕ ПРОБА»).
                 is Attempt.Failed -> {
                     stoppedBy = result.reason
@@ -147,7 +153,7 @@ object ConclusionStep {
      * обращения, как у показа выводов; сон с молчащим звеном не
      * перепроверяется (см. [Conclusion.recheck]).
      */
-    private suspend fun recheckRejected(db: MemoryDatabase, nightAt: Long): Conclusion.Recheck {
+    private suspend fun recheckRejected(db: MemoryDatabase, nightAt: Long, dictionary: LemmaDictionary?): Conclusion.Recheck {
         val conclusions = db.conclusionDao()
         val rejected = conclusions.rejected()
         if (rejected.isEmpty()) return Conclusion.Recheck(0, emptyList())
@@ -162,7 +168,7 @@ object ConclusionStep {
             if (records.isEmpty() || records.any { Dream.silences(it) }) continue
             recordsOf[row.dreamRecordIds] = records.map { it!!.content }
         }
-        val result = Conclusion.recheck(rejected, accepted, recordsOf, nightAt)
+        val result = Conclusion.recheck(rejected, accepted, recordsOf, nightAt, dictionary)
         for (row in result.passed) {
             currentCoroutineContext().ensureActive()
             conclusions.insert(row)
@@ -180,7 +186,7 @@ object ConclusionStep {
     }
 
     /** Спросить модель о записях одного сна, разобрать и проверить. */
-    private suspend fun conclude(engine: LlmEngine, texts: List<String>): Attempt {
+    private suspend fun conclude(engine: LlmEngine, texts: List<String>, dictionary: LemmaDictionary?): Attempt {
         val answer = try {
             engine.withDeterministicSampling {
                 EngineJudgeLlm(engine, Conclusion.ANSWER_TOKENS).answer(Conclusion.SYSTEM, Conclusion.request(texts))
@@ -198,6 +204,6 @@ object ConclusionStep {
             is Conclusion.Parsed.Refused -> return Attempt.Answered(parsed.raw, parsed.reason)
             is Conclusion.Parsed.Text -> parsed.text
         }
-        return Attempt.Answered(text, Conclusion.check(text, texts))
+        return Attempt.Answered(text, Conclusion.check(text, texts, dictionary))
     }
 }

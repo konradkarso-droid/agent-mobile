@@ -398,4 +398,53 @@ class ConclusionTest {
         val fresh = ConclusionView.render(null, listOf(ConclusionView.Item(row(true, "кошка спит весь день"), dream, live)))
         assertFalse(fresh, fresh.contains(ConclusionView.RECHECKED))
     }
+
+    // ---- Сравнение слов по словарю начальных форм ----
+
+    private val rainbow = listOf("Мнемоническое правило помогает запомнить порядок.", "Какие у радуги цвета?")
+
+    @Test
+    fun `по словарю формы одного слова совпадают — «радугой» и «радуги»`() {
+        val thought = "записи связаны с радугой и мнемоническим правилом"
+        assertEquals("вывод держится за слова одной записи сна", Conclusion.check(thought, rainbow))
+        assertNull(Conclusion.check(thought, rainbow, dictionary))
+    }
+
+    @Test
+    fun `словарь не делает опорой пересказ одной записи`() {
+        assertEquals(
+            "вывод держится за слова одной записи сна",
+            Conclusion.check("мнемоническое правило помогает запомнить порядок", rainbow, dictionary),
+        )
+    }
+
+    @Test
+    fun `однокоренные разные слова словарь не сводит — этого он не умеет`() {
+        val records = listOf("Я состою в клубе исторического фехтования.", "Твою склонность к юмору я ощущаю.")
+        assertEquals(
+            "вывод держится за слова одной записи сна",
+            Conclusion.check("мы оба любим историю и юмор", records, dictionary),
+        )
+    }
+
+    @Test
+    fun `перепроверка берёт словарь — прежний отказ проходит`() {
+        val row = ConclusionRow(
+            nightAt = 1, dreamNightAt = 1, dreamRecordIds = "1,2",
+            text = "записи связаны с радугой и мнемоническим правилом", accepted = false, reason = "одна запись",
+        )
+        val without = Conclusion.recheck(listOf(row), emptySet(), mapOf("1,2" to rainbow), nightAt = 9)
+        assertTrue(without.passed.isEmpty())
+        val with = Conclusion.recheck(listOf(row), emptySet(), mapOf("1,2" to rainbow), nightAt = 9, dictionary = dictionary)
+        assertEquals(1, with.passed.size)
+    }
+
+    companion object {
+        /** Словарь приложения (`app/src/main/assets/lemma_forms.txt`), один на все тесты. */
+        private val dictionary: com.uroboros.memory.nav.LemmaDictionary by lazy {
+            val file = listOf("src/main/assets/lemma_forms.txt", "app/src/main/assets/lemma_forms.txt")
+                .map { java.io.File(it) }.first { it.exists() }
+            file.bufferedReader(Charsets.UTF_8).useLines { com.uroboros.memory.nav.LemmaDictionary.read(it) }
+        }
+    }
 }

@@ -1,6 +1,7 @@
 package com.uroboros.memory.dream
 
 import com.uroboros.memory.RiskTrigger
+import com.uroboros.memory.nav.LemmaDictionary
 
 /**
  * Вывод из сна: ночью модель одной фразой называет, что связывает записи сна.
@@ -43,8 +44,17 @@ import com.uroboros.memory.RiskTrigger
  *    же, как «X похоже на Y»;
  *  - банальный вывод («связаны с работой») не отсеется, если слова есть в
  *    записях;
- *  - опора на запись — общая основа слова, а не смысл: «ключ» от двери и
- *    «ключ» родника опорой засчитаются одинаково;
+ *  - опора на запись — общее слово, а не смысл: «ключ» от двери и «ключ»
+ *    родника опорой засчитаются одинаково. Слово сравнивается начальными
+ *    формами по словарю (nav.LemmaDictionary), если он загружен: «радугой» и
+ *    «радуги» — одно слово «радуга»; без словаря — основами, как
+ *    RiskTrigger.significantStems, и тогда формы с беглой гласной расходятся.
+ *    Однокоренные разные слова («история» и «исторический») не сводит и
+ *    словарь;
+ *  - склейку записей («повторить ответ запрещено и читать книги хочешь») и
+ *    слова собеседника, пересказанные от лица агента, проверка пропускает: у
+ *    них слова из двух записей. На снах, к которым никто не возвращался,
+ *    такого большинство, поэтому вход шага узкий (см. [pick]);
  *  - фраза, оборванная потолком токенов ([ANSWER_TOKENS]), не отличается от
  *    законченной — это видно только на экране;
  *  - отпечаток вопроса ([QUESTION_PRINT]) — только текст [SYSTEM] и потолок
@@ -185,6 +195,7 @@ object Conclusion {
         acceptedRecords: Set<String>,
         recordsOf: Map<String, List<String>>,
         nightAt: Long,
+        dictionary: LemmaDictionary? = null,
     ): Recheck {
         var checked = 0
         val passed = mutableListOf<ConclusionRow>()
@@ -196,7 +207,7 @@ object Conclusion {
             val records = recordsOf[row.dreamRecordIds] ?: continue
             checked++
             val text = (parse(row.text) as? Parsed.Text)?.text ?: continue
-            if (check(text, records) != null) continue
+            if (check(text, records, dictionary) != null) continue
             passed += row.copy(id = 0, nightAt = nightAt, text = text, accepted = true, reason = null, rechecked = true)
             done += row.dreamRecordIds
         }
@@ -252,20 +263,35 @@ object Conclusion {
      * [MAX_OWN_STEMS]; основы есть хотя бы у [MIN_SUPPORT] разных записей.
      * null — прошёл; иначе причина словами. Лишние основы называются при
      * отказе: по ним видно, что модель досочинила.
+     *
+     * Слово — его основа и, если есть [dictionary], все его начальные формы:
+     * два слова совпадают, когда совпала основа или хоть одна начальная форма
+     * (см. «ЧЕГО НЕ УМЕЕТ» в KDoc объекта).
      */
-    fun check(text: String, records: List<String>): String? {
-        val words = RiskTrigger.significantStems(text) - LINK_STEMS
+    fun check(text: String, records: List<String>, dictionary: LemmaDictionary? = null): String? {
+        val words = wordsOf(text, dictionary)
         if (words.isEmpty()) return "в выводе нет слов записей"
-        val stemsOf = records.map { RiskTrigger.significantStems(it) }
-        val extra = words - stemsOf.flatMapTo(HashSet()) { it }
+        val recordWords = records.map { wordsOf(it, dictionary) }
+        val all = recordWords.flatten()
+        fun same(a: Word, b: Word) = a.stem == b.stem || a.lemmas.any { it in b.lemmas }
+        val extra = words.filter { w -> all.none { same(w, it) } }.map { it.stem }
         if (extra.size > MAX_OWN_STEMS) {
             return "своих основ ${extra.size} — больше $MAX_OWN_STEMS: ${extra.sorted().joinToString(", ") { "«$it»" }}"
         }
-        val support = stemsOf.count { stems -> stems.any { it in words } }
+        val support = recordWords.count { rec -> rec.any { r -> words.any { same(it, r) } } }
         if (support == 0) return "в выводе нет слов записей"
         if (support < MIN_SUPPORT) return "вывод держится за слова одной записи сна"
         return null
     }
+
+    /** Значимое слово для [check]: основа и начальные формы написанных форм. */
+    private class Word(val stem: String, val lemmas: Set<String>)
+
+    /** Значимые слова текста без связующих ([LINK_STEMS]). */
+    private fun wordsOf(text: String, dictionary: LemmaDictionary?): List<Word> =
+        RiskTrigger.significantWords(text).filterKeys { it !in LINK_STEMS }.map { (stem, forms) ->
+            Word(stem, dictionary?.let { d -> forms.flatMapTo(HashSet()) { d.lemmas(it.lowercase()) } }.orEmpty())
+        }
 
     // ---- Слова для отчёта ночи и экрана ----
 
