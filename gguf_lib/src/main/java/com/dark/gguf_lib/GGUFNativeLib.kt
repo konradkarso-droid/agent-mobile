@@ -135,6 +135,9 @@ internal object GGUFNativeLib {
     /** Returns the *effective* thread mode (what the engine is actually running). */
     external fun nativeGetEffectiveThreadMode(): Int
 
+    /** Команды процессора движка: строка llama_print_system_info. */
+    external fun nativeSystemInfo(): String
+
     /**
      * Override default thermal thresholds. Defaults: warm=60000, hot=75000,
      * crit=85000 (milli-Celsius). Pass <=0 to keep a field's current value.

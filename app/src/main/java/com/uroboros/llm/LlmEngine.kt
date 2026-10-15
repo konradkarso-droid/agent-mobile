@@ -2346,6 +2346,9 @@ class LlmEngine(
      */
     fun getEffectiveThreadMode(): Int = engine.getEffectiveThreadMode()
 
+    /** Команды процессора движка — строка как есть (см. MainActivity.cpuLine). */
+    fun systemInfo(): String = engine.systemInfo()
+
     /** Включён ли собственный тепловой авто-режим библиотеки. */
     fun isEngineAutoModeEnabled(): Boolean = engine.isAutoModeEnabled()
 

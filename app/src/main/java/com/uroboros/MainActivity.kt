@@ -3404,6 +3404,22 @@ class MainActivity : AppCompatActivity() {
      * когда-нибудь мы зададим «производительность», а на экране останется
      * «баланс» — значит нас понизили, и мерить мы будем не то, что задали.
      */
+    /**
+     * С какими командами процессора собран движок: «Процессор: NEON, DOTPROD,
+     * KLEIDIAI…» — включённые из строки llama_print_system_info, и отдельно
+     * «нет DOTPROD», если её нет: без скалярного произведения обсчёт запроса
+     * идёт почти по токену (см. gguf_lib/src/main/cpp/CMakeLists.txt).
+     * Строка не разобралась — показывается как есть.
+     */
+    private fun cpuLine(): String {
+        val raw = runCatching { llmEngine.systemInfo() }.getOrElse { return "Процессор: не прочитано — ${it.javaClass.simpleName}" }
+        val flags = Regex("""([A-Z0-9_]+) = (\d+)""").findAll(raw).map { it.groupValues[1] to it.groupValues[2] }.toList()
+        if (flags.isEmpty()) return "Процессор: ${raw.trim()}"
+        val on = flags.filter { it.second != "0" }.map { it.first }.distinct()
+        val noDot = if (flags.any { it.first == "DOTPROD" && it.second == "0" }) " · нет DOTPROD" else ""
+        return "Процессор: ${on.joinToString(", ")}$noDot"
+    }
+
     private fun threadModeLine(): String {
         val mode = llmEngine.getEffectiveThreadMode()
         val modeName = when (mode) {
@@ -3672,7 +3688,7 @@ class MainActivity : AppCompatActivity() {
         // эту строку уже потерять (он кольцевой) — тогда строка честно
         // скажет, что параметры не найдены.
         engineParamsLine = extractEngineParams(llmEngine.getDebugLog()) +
-            "\n" + threadModeLine()
+            "\n" + threadModeLine() + "\n" + cpuLine()
         // Кэш обсчитанной системной стены. Читается сразу после загрузки
         // намеренно: на ВТОРОМ холодном запуске файл кэша уже лежит на
         // диске, и его размер виден ещё до первого вопроса. То есть

@@ -3280,6 +3280,13 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetEffectiveThreadMode(JNIEnv *, job
     return (jint)g_state.thread_mode;
 }
 
+// С какими командами процессора собран и работает движок (ggml): строка
+// llama_print_system_info, «NEON = 1 | DOTPROD = 1 | KLEIDIAI = 1 | …».
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSystemInfo(JNIEnv * env, jobject) {
+    return env->NewStringUTF(llama_print_system_info());
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetThermalThresholds(
         JNIEnv *, jobject, jint warmMilliC, jint hotMilliC, jint critMilliC) {
