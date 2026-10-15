@@ -8,9 +8,12 @@ import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.safety.HomeEventStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 
 /**
  * Объекты, которые живут столько же, сколько процесс, а не столько, сколько экран.
@@ -87,6 +90,14 @@ object ProcessObjects {
         // знает, какие строки приняты, движок — только что их надо поставить.
         val stickers = MemoryDatabase.getInstance(app).stickerDao()
         val llmEngine = LlmEngine(app, watchdog) { stickers.identityWall(SelfLine.WALL_CEILING) }
+        // «Дом» (safety.HomeEvents): выход из нормы и обрыв сторожем пишутся на
+        // диск, чтобы пережить кому, — о них агент потом расскажет фактом.
+        val home = HomeEventStore(app)
+        processScope.launch {
+            combine(watchdog.zone, watchdog.power) { zone, power -> zone to power }
+                .collect { (zone, power) -> home.onZone(zone, power, System.currentTimeMillis()) }
+        }
+        llmEngine.onWatchdogCut = { byHeat -> home.onCut(byHeat, System.currentTimeMillis()) }
         return Held(
             mediator = TrustedMediator(app),
             watchdog = watchdog,

@@ -109,6 +109,8 @@ import com.uroboros.memory.nav.ConversationEdges
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.memory.nav.WindowMap
 import com.uroboros.safety.DeviceSafetyWatchdog
+import com.uroboros.safety.HomeEventStore
+import com.uroboros.safety.HomeEvents
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
 import com.uroboros.will.SimplePendingQuerySource
@@ -3063,6 +3065,11 @@ class MainActivity : AppCompatActivity() {
             // Печатается ВСЕГДА, включая случай "событий не было": прибор,
             // молчащий при нуле, неотличим от неподключённого.
             watchdog.formatZoneObservation(::zoneLabel),
+            // Записанные события «дома» (safety.HomeEvents) — то, что переживёт
+            // кому; наблюдение выше живёт до конца процесса.
+            runCatching {
+                HomeEvents.meter(HomeEventStore(applicationContext).read(), System.currentTimeMillis(), ::zoneLabel, ::fmtMoment)
+            }.getOrElse { "Дом: запись не прочиталась — ${it.javaClass.simpleName}" },
         )
         for (start in metricRules) {
             metrics.setSpan(
