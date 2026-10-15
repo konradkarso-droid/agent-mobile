@@ -3690,6 +3690,7 @@ class MainActivity : AppCompatActivity() {
         // эту строку уже потерять (он кольцевой) — тогда строка честно
         // скажет, что параметры не найдены.
         engineParamsLine = extractEngineParams(llmEngine.getDebugLog()) +
+            "\n" + EngineLines.engineMemory(llmEngine.getDebugLog()) +
             "\n" + threadModeLine() + "\n" + cpuLine()
         // Кэш обсчитанной системной стены. Читается сразу после загрузки
         // намеренно: на ВТОРОМ холодном запуске файл кэша уже лежит на
