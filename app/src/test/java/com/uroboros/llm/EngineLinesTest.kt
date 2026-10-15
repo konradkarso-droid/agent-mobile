@@ -33,6 +33,14 @@ class EngineLinesTest {
     }
 
     @Test
+    fun `движок — физическая пачка показывается отдельно от логической`() {
+        assertEquals(
+            "окно 8192 ток. · потоков 3 на выдачу, 4 на запрос · пачка 1024 · за проход 256",
+            EngineLines.engineParams("I: Model loaded (ctx=8192 threads_gen=3 threads_batch=4 batch=1024 ubatch=256 mode=2)"),
+        )
+    }
+
+    @Test
     fun `движок — без окна строка лога остаётся как есть`() {
         assertEquals("Loading model x.gguf", EngineLines.engineParams("  Loading model x.gguf "))
     }
