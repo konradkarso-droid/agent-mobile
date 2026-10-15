@@ -402,6 +402,15 @@ static struct {
     uint64_t last_decode_us   = 0;
     uint64_t last_decode_tokens = 0;
 
+    // Обсчёт запроса последнего вызова: сколько НОВЫХ токенов (сверх
+    // совпавшего начала) посчитано и за сколько микросекунд. Отдельно от
+    // last_decode_* — то выдача ответа, у них разная природа и скорость.
+    uint64_t last_prompt_eval_us     = 0;
+    uint64_t last_prompt_eval_tokens = 0;
+
+    // Обсчёт запроса только на быстрых ядрах (см. apply_thread_mode).
+    bool batch_on_fast_cores = true;
+
     // Explicit ggml threadpool, pre-spawned at model load and re-spawned on
     // setThreadMode. nullptr = let ggml create an implicit on-demand pool
     // (the historical behavior — slower because threads are spawned each
@@ -559,6 +568,25 @@ static ggml_threadpool_t build_threadpool(int n_threads,
 static void apply_thread_mode(int mode) {
     tn_thread_config cfg = tn_thread_config_for_mode((tn_thread_mode)mode);
     g_state.thread_mode = mode;
+
+    // ОБСЧЁТ ЗАПРОСА — ТОЛЬКО НА БЫСТРЫХ ЯДРАХ. Режим «производительность»
+    // движка отдаёт обсчёт всем ядрам, слабым тоже (thread-engine.cpp,
+    // TN_THREAD_PERFORMANCE: n_threads_batch = n_total). Пачка делится между
+    // потоками поровну, и все ждут самый медленный, — на телефоне с четырьмя
+    // слабыми ядрами (Snapdragon 865: 1 сильное, 3 средних, 4 слабых) это
+    // подозрение на медленный обсчёт. Здесь поток обсчёта ставится на каждое
+    // быстрое ядро и только на них. Выключается nativeSetBatchOnFastCores(false).
+    // Чего не умеет: «быстрые» — как их делит движок (по самому большому
+    // разрыву частот); устройство без деления на кластеры остаётся как было.
+    if (g_state.batch_on_fast_cores && cfg.n_perf_core_ids > 0 &&
+        cfg.n_perf_core_ids < cfg.n_threads_batch) {
+        cfg.n_threads_batch = cfg.n_perf_core_ids;
+        std::memset(cfg.cpumask_batch, 0, sizeof(cfg.cpumask_batch));
+        for (int i = 0; i < cfg.n_perf_core_ids; i++) {
+            int c = (int)cfg.perf_core_ids[i];
+            if (c >= 0 && c < TN_MAX_CPUS) cfg.cpumask_batch[c] = true;
+        }
+    }
 
     // Detach + free old pools first. detach must precede free or llama_context
     // ends up with dangling pool pointers.
@@ -1686,9 +1714,11 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         LOGE("Warm-up decode threw unknown exception — continuing");
     }
 
+    // Потоки — фактические, после режима (apply_thread_mode), а не заданные
+    // при загрузке: режим их перезаписывает, и заданное здесь врало бы.
     LOGI("Model loaded (ctx=%d threads_gen=%d threads_batch=%d batch=%d mode=%d)",
-         (int)llama_n_ctx(g_state.ctx), cparams.n_threads, cparams.n_threads_batch,
-         cparams.n_batch, g_state.thread_mode);
+         (int)llama_n_ctx(g_state.ctx), (int)llama_n_threads(g_state.ctx),
+         (int)llama_n_threads_batch(g_state.ctx), cparams.n_batch, g_state.thread_mode);
     return JNI_TRUE;
 }
 
@@ -1941,6 +1971,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
 
     // set up progress reporting for long prompt evaluation
     jni_progress_ctx progress_ctx = { env, callback };
+    auto t_eval0 = std::chrono::high_resolution_clock::now();
     if (!new_tokens.empty() && !eval_tokens(new_tokens, g_state.n_past,
                                              jni_eval_progress, &progress_ctx)) {
         jstring jerr = env->NewStringUTF("Failed to evaluate prompt");
@@ -1948,6 +1979,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         env->DeleteLocalRef(jerr);
         return JNI_FALSE;
     }
+    g_state.last_prompt_eval_tokens = new_tokens.size();
+    g_state.last_prompt_eval_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - t_eval0).count();
 
     // save prompt tokens for next call's prefix comparison
     g_state.prev_prompt_tokens = tokens;
@@ -2423,6 +2457,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     // progress reporting for long prompt evaluation
     jni_progress_ctx mt_progress = { env, callback };
+    auto t_eval0 = std::chrono::high_resolution_clock::now();
     if (!new_tokens.empty() && !eval_tokens(new_tokens, g_state.n_past,
                                              jni_eval_progress, &mt_progress)) {
         jstring jerr = env->NewStringUTF("Failed to evaluate prompt");
@@ -2430,6 +2465,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         env->DeleteLocalRef(jerr);
         return JNI_FALSE;
     }
+    g_state.last_prompt_eval_tokens = new_tokens.size();
+    g_state.last_prompt_eval_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - t_eval0).count();
 
     // try saving system prompt cache for future warm restarts
     // Только для запроса, начавшегося со стены, — см. starts_with_wall.
@@ -3188,6 +3226,15 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetThreadMode(JNIEnv *, jobject, jin
          mode, effective, (int)g_state.auto_mode);
 }
 
+// Обсчёт запроса только на быстрых ядрах (см. apply_thread_mode). Применяется
+// сразу: пулы потоков пересобираются тем же режимом.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetBatchOnFastCores(JNIEnv *, jobject, jboolean on) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    g_state.batch_on_fast_cores = on;
+    apply_thread_mode(g_state.thread_mode);
+}
+
 // Power-engine surface. The Kotlin SDK polls nativeGetThermalState() at its
 // own cadence (typically per-decode) and uses it to drive the auto-mode loop
 // or surface the temperature in the UI.
@@ -3273,12 +3320,13 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env, jobject) {
     uint64_t total = g_state.last_sample_us + g_state.last_detok_us
                    + g_state.last_stop_us  + g_state.last_decode_us;
-    char buf[384];
+    char buf[512];
     snprintf(buf, sizeof(buf),
         "{\"tokens\":%llu,\"sample_us\":%llu,\"detok_us\":%llu,"
         "\"stop_us\":%llu,\"decode_us\":%llu,\"total_us\":%llu,"
         "\"ban_state\":%d,\"ban_tokens\":%zu,\"ban_hits\":%llu,"
-        "\"gloss_state\":%d,\"gloss_spans\":%llu}",
+        "\"gloss_state\":%d,\"gloss_spans\":%llu,"
+        "\"prompt_tokens\":%llu,\"prompt_us\":%llu,\"batch_threads\":%d}",
         (unsigned long long)g_state.last_decode_tokens,
         (unsigned long long)g_state.last_sample_us,
         (unsigned long long)g_state.last_detok_us,
@@ -3289,7 +3337,10 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env,
         g_state.script_ban.size(),
         (unsigned long long)g_state.last_ban_hits,
         g_state.gloss_state,
-        (unsigned long long)g_state.last_gloss_spans);
+        (unsigned long long)g_state.last_gloss_spans,
+        (unsigned long long)g_state.last_prompt_eval_tokens,
+        (unsigned long long)g_state.last_prompt_eval_us,
+        g_state.ctx ? (int)llama_n_threads_batch(g_state.ctx) : -1);
     return env->NewStringUTF(buf);
 }
 
