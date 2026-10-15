@@ -35,6 +35,7 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ModelFolder
+import com.uroboros.llm.ResidentMemory
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.initiative.InitiativeHolder
 import com.uroboros.memory.nav.OwnCorrection
@@ -3545,6 +3546,7 @@ class MainActivity : AppCompatActivity() {
                 "ответ ${metrics.tokensPredicted}"
             lines += "Память: пик ${fmt0(metrics.peakMemoryMB.toDouble())} МБ " +
                 "(${fmt0(metrics.memoryUsagePercent.toDouble())}%)"
+            lines += ResidentMemory.line(ResidentMemory.read())
         }
 
         breakdown?.let { breakdownLine(it) }?.let { lines += it }
