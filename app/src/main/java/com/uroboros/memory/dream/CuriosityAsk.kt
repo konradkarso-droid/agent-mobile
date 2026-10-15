@@ -1,5 +1,6 @@
 package com.uroboros.memory.dream
 
+import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.SentenceKind
 import com.uroboros.memory.Sentences
 
@@ -56,6 +57,13 @@ import com.uroboros.memory.Sentences
  * Рассказ ставит ту же метку, что вопрос ([Dream.askedAt]), поэтому «не
  * больше одного без ответа» у них общее.
  *
+ * КОГДА РАССКАЗ К МЕСТУ. Вид реплики владельца рассказу не помеха: на «Ты
+ * как?» рассказ сна — тоже ответ. Помеха — чужая тема. Рассказ идёт, если
+ * реплика в теме сна ([inTopic]) и вклад не ниже [TELL_MIN], или если сон
+ * накопил вклад [TELL_PILED] — тогда тема реплики не важна. По запросу («что
+ * тебе снилось?») сон рассказывает не этот выход, а описание ночи
+ * (DreamTopic): там и темы, и вывод.
+ *
  * Спрашивается только при ясном: реплика владельца — утверждение во всех
  * предложениях (SentenceKind; сомнительный вид — не утверждение: вопрос или
  * просьба владельца оставляют ход ему), прошлый ответ агента без вопроса
@@ -98,6 +106,17 @@ object CuriosityAsk {
      * [MIN_CONTRIBUTION] — в KDoc объекта, «ТРЕТИЙ ИСТОЧНИК».
      */
     const val TELL_MIN = 3
+
+    /**
+     * Вклад, при котором рассказ идёт и на реплике не в теме сна: сон
+     * «накопился». Объявленное число, не подобранное, — порог вопроса о сне
+     * ([MIN_CONTRIBUTION]): накопилось столько, что сон стоил бы вопроса.
+     * Вклад меряет, сколько к сну возвращались, а не то, насколько агент знает
+     * то, чего не знает владелец, — это временная мерка для «накопилось».
+     * Перепроверять по строке «Спросить: … рассказать: не в теме сна — вклад N
+     * из 6»: если выводы не рассказываются неделями — порог высок.
+     */
+    const val TELL_PILED = MIN_CONTRIBUTION
 
     sealed class Decision {
         /** Спросить о сне [leader]. */
@@ -173,17 +192,40 @@ object CuriosityAsk {
     }
 
     /**
-     * Рассказать ли вывод сна. Условия реплики владельца — те же, что у
-     * вопроса о сне ([decide]): ожидание ответа общее. Берётся первый в
-     * [CuriosityPressure.Result.toTell] — с наибольшим вкладом.
+     * Рассказать ли вывод сна в ответ на реплику [reply]. Ожидание ответа —
+     * общее с вопросом о сне ([decide]). Берётся первый в
+     * [CuriosityPressure.Result.toTell] — с наибольшим вкладом. Когда к месту —
+     * в KDoc объекта, «КОГДА РАССКАЗ К МЕСТУ».
      */
-    fun decideTell(pressure: CuriosityPressure.Result, awaitingAnswer: Boolean): TellDecision {
+    fun decideTell(pressure: CuriosityPressure.Result, awaitingAnswer: Boolean, reply: String): TellDecision {
         if (awaitingAnswer) return TellDecision.Refuse("прошлый вопрос без ответа")
         val first = pressure.toTell.firstOrNull() ?: return TellDecision.Refuse("выводов к рассказу нет")
-        if (first.leader.contribution < TELL_MIN) {
-            return TellDecision.Refuse("вклад сна с выводом ${first.leader.contribution} из $TELL_MIN")
+        val contribution = first.leader.contribution
+        if (contribution >= TELL_PILED) return TellDecision.Tell(first)
+        if (!inTopic(first, reply)) {
+            return TellDecision.Refuse("не в теме сна — вклад сна с выводом $contribution из $TELL_PILED")
+        }
+        if (contribution < TELL_MIN) {
+            return TellDecision.Refuse("вклад сна с выводом $contribution из $TELL_MIN")
         }
         return TellDecision.Tell(first)
+    }
+
+    /**
+     * Реплика в теме сна: есть хоть одна значимая основа, общая с выводом или
+     * с записями сна.
+     *
+     * ЧЕГО НЕ УМЕЕТ: тема — общие основы слов, а не смысл; одной общей основы
+     * хватает, поэтому случайное совпадение слова («модель» самолёта и модель
+     * агента) засчитается темой. Реплика без значимых слов («Привет! Ты
+     * как?») в теме не бывает никогда.
+     */
+    fun inTopic(teller: CuriosityPressure.Teller, reply: String): Boolean {
+        val asked = RiskTrigger.significantStems(reply)
+        if (asked.isEmpty()) return false
+        val dream = RiskTrigger.significantStems(teller.text) +
+            teller.leader.records.flatMap { RiskTrigger.significantStems(it.content) }
+        return asked.any { it in dream }
     }
 
     /**
