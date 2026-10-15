@@ -308,6 +308,9 @@ object LemmaHolder {
      * (нет файла, файл не по формату, нехватка памяти) — [State.Failed] с
      * причиной; приложение работает как без словаря.
      */
+    /** Файл словаря в assets приложения. Одно место имени для всех, кто грузит. */
+    const val ASSET = "lemma_forms.txt"
+
     fun load(open: () -> InputStream) {
         synchronized(this) {
             if (started) return
