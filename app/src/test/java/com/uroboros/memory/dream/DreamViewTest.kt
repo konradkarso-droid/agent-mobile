@@ -184,6 +184,8 @@ class DreamViewTest {
         // Прошлых ночей в этих тестах нет: показ и давление считают их пустыми.
         override suspend fun ofRecentNights(count: Int, skip: Int): List<Dream> = emptyList()
         override suspend fun stirredSince(since: Long): List<Dream> = error("показ не читает пружину")
+        override suspend fun withRecords(recordIds: List<String>): List<Dream> = error("показ не читает несказанное")
+        override suspend fun nightsAfter(after: Long): Int = error("показ не читает несказанное")
         override suspend fun lastAskedAt(): Long? = error("показ не читает выход любопытства")
         override suspend fun lastUnpromptedLeaders(limit: Int): List<Long?> = error("показ не читает ряд лидеров")
         override suspend fun setSelfLineOutcome(nightAt: Long, outcome: String): Int = error("показ не пишет итог шага")
