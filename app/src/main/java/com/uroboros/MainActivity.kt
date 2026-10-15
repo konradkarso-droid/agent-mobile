@@ -107,6 +107,7 @@ import com.uroboros.memory.nav.Retelling
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.ConversationEdges
 import com.uroboros.memory.nav.RetellHolder
+import com.uroboros.memory.nav.WindowMap
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -628,6 +629,12 @@ class MainActivity : AppCompatActivity() {
      * запуске не было.
      */
     private var edgesLine: String? = null
+
+    /**
+     * Строка хода «Карта окна:» (nav.WindowMap.meterLine) — по ленте, на ход
+     * не влияет. null — хода в этом запуске не было.
+     */
+    private var windowMapLine: String? = null
 
     /**
      * Строка хода «Записи хода:» — из каких источников сложились записи хода
@@ -3002,7 +3009,8 @@ class MainActivity : AppCompatActivity() {
         // Строка таблицы глаголов печатается всегда: по ней и разворот, и лицо
         // глаголов на -у/-ю в адресе (nav.RetellHolder.meterLine).
         group(
-            "Память", recordsQuestionsLine, circleLine, recordsSources, mirrorSelection, drift, portraitMeter,
+            "Память", recordsQuestionsLine, circleLine,
+            windowMapLine ?: "Карта окна: чисел хода на экране нет", recordsSources, mirrorSelection, drift, portraitMeter,
             nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(),
             edgesLine ?: "Края разговоров: чисел хода на экране нет", cloud,
             touchesLine, selfLeader,
@@ -3322,6 +3330,7 @@ class MainActivity : AppCompatActivity() {
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
         circleLine = null
+        windowMapLine = null
         mirrorSelectionLine = null
         driftLine = null
         gapsLine = null
@@ -4481,6 +4490,16 @@ class MainActivity : AppCompatActivity() {
                 // Прошлый ответ агента — по нему касание признаётся
                 // подсказанным (см. promptedStems в HourglassMemory.kt).
                 val ribbonQuestions = journal.history().map { it.question }
+                // Карта окна — прибор: в отбор не идёт, окно темы круга
+                // работает как было (nav.WindowMap).
+                windowMapLine = runCatching {
+                    val started = System.currentTimeMillis()
+                    val map = WindowMap.of(
+                        journal.history().map { WindowMap.Turn(it.question, it.at) },
+                        userText, started, LemmaHolder.loaded,
+                    )
+                    WindowMap.meterLine(map, System.currentTimeMillis() - started)
+                }.getOrElse { WindowMap.meterLine(null, null, it.javaClass.simpleName) }
                 // Архив ленты — для своей речи агента и счёта рассказанных снов.
                 // null — не читается: оба молчат с этой причиной, ход идёт.
                 val archive = journalStore.readArchive()

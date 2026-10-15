@@ -369,11 +369,7 @@ object Portrait {
         person: PersonKey = PersonKey.OWNER,
     ): Topic {
         val nouns = LinkedHashSet<String>()
-        for (word in words(reply)) {
-            val analyses = dictionary.analyze(word)
-            if (analyses.any { it.partOfSpeech in FUNCTION_WORDS }) continue
-            analyses.filter { it.partOfSpeech == "NOUN" }.forEach { nouns += it.lemma }
-        }
+        for (word in words(reply)) nouns += nounLemmas(word, dictionary)
         if (nouns.isEmpty()) return Topic(emptyList(), emptyList(), emptyList(), emptyList())
         val counts = HashMap<String, Int>()
         for (record in ownRecords(records, person)) {
@@ -388,6 +384,18 @@ object Portrait {
             .toList()
         val found = hits.flatMapTo(HashSet()) { it.second }
         return Topic(nouns.toList(), rare, hits.map { it.first }, rare.filter { it in found })
+    }
+
+    /**
+     * Начальные формы слова [word] как темы: разборы «существительное», если
+     * ни одного служебного ([FUNCTION_WORDS]) нет; иначе и для незнакомого
+     * слова — пусто. Двузначное слово («белки» — белка и белок) даёт все
+     * свои существительные. Одно правило темы на портрет и карту окна (WindowMap).
+     */
+    fun nounLemmas(word: String, dictionary: LemmaDictionary): Set<String> {
+        val analyses = dictionary.analyze(word)
+        if (analyses.any { it.partOfSpeech in FUNCTION_WORDS }) return emptySet()
+        return analyses.filter { it.partOfSpeech == "NOUN" }.mapTo(LinkedHashSet()) { it.lemma }
     }
 
     private fun ownRecords(records: List<Sticker>, person: PersonKey): List<Sticker> =
