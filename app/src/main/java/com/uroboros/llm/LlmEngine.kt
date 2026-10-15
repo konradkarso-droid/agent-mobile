@@ -361,8 +361,20 @@ class LlmEngine(
      * истёкший потолок разом). Записывается та, что проверена раньше.
      */
     private fun recordGenerationEnd(reason: GenerationEnd) {
-        generationEnd.compareAndSet(GenerationEnd.RUNNING, reason)
+        val first = generationEnd.compareAndSet(GenerationEnd.RUNNING, reason)
+        if (first && (reason == GenerationEnd.WATCHDOG_CRITICAL || reason == GenerationEnd.WATCHDOG_TIMEOUT)) {
+            runCatching { onWatchdogCut?.invoke(reason == GenerationEnd.WATCHDOG_CRITICAL) }
+        }
     }
+
+    /**
+     * Кому сказать, что сторож оборвал прогон (true — опасная зона, false —
+     * потолок работы): запись «дома» (safety.HomeEvents), ставит ProcessObjects.
+     * Зовётся один раз на прогон — первой причиной, как и [recordGenerationEnd].
+     * Сбой записи прогону не мешает.
+     */
+    @Volatile
+    var onWatchdogCut: ((byHeat: Boolean) -> Unit)? = null
 
     /**
      * Сколько событий барьер пропустил наружу за последний прогон.
