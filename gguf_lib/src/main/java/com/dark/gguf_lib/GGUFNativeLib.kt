@@ -95,6 +95,9 @@ internal object GGUFNativeLib {
 
     external fun nativeSetThreadMode(mode: Int)
 
+    /** Обсчёт запроса только на быстрых ядрах (см. apply_thread_mode в gguf_lib.cpp). */
+    external fun nativeSetBatchOnFastCores(on: Boolean)
+
     // ── Power engine / decode diagnostics ──────────────────────────────────
     //
     // The thermal/auto-mode surface lives outside the load path so the host

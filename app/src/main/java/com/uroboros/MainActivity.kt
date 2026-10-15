@@ -3424,6 +3424,21 @@ class MainActivity : AppCompatActivity() {
      * ушла в сэмплер, детокенизацию или стоп-строки — тормозит не железо, а
      * обвязка, и лечится это в другом месте.
      */
+    /**
+     * Обсчёт запроса — отдельно от выдачи: сколько новых токенов (сверх
+     * совпавшего начала) посчитано, за сколько и на скольких потоках. По ней
+     * сверяется, быстрее ли обсчёт на одних быстрых ядрах (gguf_lib.cpp,
+     * apply_thread_mode). Ноль новых — строка так и говорит: всё взято готовым.
+     */
+    private fun promptEvalLine(b: GGMLEngine.DecodeBreakdown): String? {
+        if (b.batchThreads < 0 && b.promptTokens == 0L) return null
+        val threads = if (b.batchThreads > 0) " · потоков обсчёта ${b.batchThreads}" else ""
+        if (b.promptTokens == 0L) return "Обсчёт запроса: новых токенов нет — всё взято готовым$threads"
+        val sec = b.promptUs / 1_000_000.0
+        val speed = if (b.promptUs > 0) " — ${fmt1(b.promptTokens / sec)} ток/с" else ""
+        return "Обсчёт запроса: ${b.promptTokens} новых ток. за ${fmtSec(b.promptUs / 1000.0)} с$speed$threads"
+    }
+
     private fun breakdownLine(b: GGMLEngine.DecodeBreakdown): String? {
         if (b.totalUs <= 0L || b.tokens <= 0L) return null
 
@@ -3517,6 +3532,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         breakdown?.let { breakdownLine(it) }?.let { lines += it }
+        breakdown?.let { promptEvalLine(it) }?.let { lines += it }
         hieroglyphLine(breakdown)?.let { lines += it }
 
         // Ответ, упёршийся в потолок, обрывается на полуслове и внешне

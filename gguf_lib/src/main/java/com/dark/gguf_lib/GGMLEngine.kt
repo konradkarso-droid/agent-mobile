@@ -200,6 +200,9 @@ class GGMLEngine {
      */
     fun setThreadMode(mode: Int) = GGUFNativeLib.nativeSetThreadMode(mode)
 
+    /** Обсчёт запроса только на быстрых ядрах; по умолчанию включено (см. gguf_lib.cpp). */
+    fun setBatchOnFastCores(on: Boolean) = GGUFNativeLib.nativeSetBatchOnFastCores(on)
+
     // ── Power engine + decode diagnostics ──────────────────────────────────
 
     /**
@@ -244,6 +247,12 @@ class GGMLEngine {
         val banHits: Long = 0,
         val glossState: Int = -1,
         val glossSpans: Long = 0,
+        /** Новых токенов запроса (сверх совпавшего начала), посчитанных в этом вызове. */
+        val promptTokens: Long = 0,
+        /** Сколько микросекунд шёл их обсчёт. */
+        val promptUs: Long = 0,
+        /** Потоков обсчёта запроса фактически; -1 — модель не загружена. */
+        val batchThreads: Int = -1,
     )
 
     fun getLastDecodeBreakdown(): DecodeBreakdown {
@@ -262,6 +271,9 @@ class GGMLEngine {
             banHits  = j.optLong("ban_hits"),
             glossState = j.optInt("gloss_state", -1),
             glossSpans = j.optLong("gloss_spans"),
+            promptTokens = j.optLong("prompt_tokens"),
+            promptUs = j.optLong("prompt_us"),
+            batchThreads = j.optInt("batch_threads", -1),
         )
     }
 
