@@ -253,11 +253,25 @@ object CuriosityAsk {
         topical.firstOrNull()?.let {
             return TellDecision.Refuse("вклад сна с выводом ${it.leader.contribution} из $TELL_MIN")
         }
-        return TellDecision.Refuse(
-            "не в теме сна — накопилось ${first.piled} из $TELL_PILED " +
-                "(ночей без рассказа ${first.nights}, вспоминал сам ${first.recalled})"
-        )
+        return TellDecision.Refuse("не в теме сна — ${piledNote(first)}")
     }
+
+    /**
+     * Рассказ вывода, когда владелец молчит (путь «пишу первым»,
+     * initiative.TellSource). Реплики нет, поэтому «в теме» не бывает: только
+     * «накопилось» — тот же счёт и тот же [TELL_PILED], что в [decideTell].
+     */
+    fun decideTellFirst(pressure: CuriosityPressure.Result, awaitingAnswer: Boolean): TellDecision {
+        if (awaitingAnswer) return TellDecision.Refuse("прошлый вопрос без ответа")
+        val first = pressure.toTell.firstOrNull() ?: return TellDecision.Refuse("выводов к рассказу нет")
+        if (first.piled >= TELL_PILED) return TellDecision.Tell(first)
+        return TellDecision.Refuse(piledNote(first))
+    }
+
+    /** Сколько накопилось и из чего — для прибора, одно место для обоих путей. */
+    private fun piledNote(teller: CuriosityPressure.Teller): String =
+        "накопилось ${teller.piled} из $TELL_PILED " +
+            "(ночей без рассказа ${teller.nights}, вспоминал сам ${teller.recalled})"
 
     /**
      * Реплика в теме сна: есть хоть одна значимая основа, общая с выводом или
@@ -283,6 +297,14 @@ object CuriosityAsk {
      */
     fun tellLine(teller: CuriosityPressure.Teller): String =
         "${Conclusion.dreamt(teller.text)} Если к месту — расскажи пользователю об этом одной фразой " +
+            "и скажи, что это пришло во сне."
+
+    /**
+     * Строка для пути «пишу первым». Отличается от [tellLine] только просьбой:
+     * без «если к месту» — по той же причине, что [lineFirst].
+     */
+    fun tellLineFirst(teller: CuriosityPressure.Teller): String =
+        "${Conclusion.dreamt(teller.text)} Расскажи пользователю об этом одной фразой " +
             "и скажи, что это пришло во сне."
 
     /** Решение о вопросе по пробелу. */

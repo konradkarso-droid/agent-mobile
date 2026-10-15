@@ -15,6 +15,7 @@ import com.uroboros.initiative.CuriositySource
 import com.uroboros.initiative.FirstOfSources
 import com.uroboros.initiative.GapSource
 import com.uroboros.initiative.SelfGapSource
+import com.uroboros.initiative.TellSource
 import com.uroboros.initiative.InitiativeDecision
 import com.uroboros.initiative.InitiativeSource
 import com.uroboros.initiative.InitiativeTally
@@ -229,14 +230,18 @@ class AgentService : Service() {
     /** Повод заговорить первым. Источник пока один — см. [InitiativeSource]. */
     /**
      * Поводы заговорить первым, по порядку: выбрать себе имя (пробел о себе —
-     * не чаще раза за разговор), затем любопытство о сне, затем разрыв — «что
-     * нового с прошлого раза» (сон конкретнее, поэтому раньше).
+     * не чаще раза за разговор), затем рассказ накопившегося вывода сна, затем
+     * любопытство о сне, затем разрыв — «что нового с прошлого раза» (сон
+     * конкретнее, поэтому раньше). Рассказ раньше вопроса о сне — тот же
+     * порядок, что в ответе на реплику (dream.CuriosityAsk, «ТРЕТИЙ ИСТОЧНИК»):
+     * готовая мысль раньше сырой связи.
      */
     private val initiativeSource: InitiativeSource by lazy {
         val turns = ProcessObjects.get(applicationContext).turns
         FirstOfSources(
             listOf(
                 SelfGapSource(turns, SelfGapReader(applicationContext, turns.store)),
+                TellSource(applicationContext),
                 CuriositySource(applicationContext),
                 GapSource(turns, conversationTimes),
             )
