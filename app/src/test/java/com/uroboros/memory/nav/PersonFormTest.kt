@@ -169,14 +169,59 @@ class PersonFormTest {
         )
     }
 
+    /** Без словаря — граница правила окончаний; со словарём её нет (ниже, «По словарю»). */
+    private fun withoutDictionary(block: () -> Unit) {
+        PersonForm.lemmas = null
+        try { block() } finally { TestVerbs.install() }
+    }
+
     @Test
-    fun `первое слово на мягкий знак — ложное повелительное`() {
+    fun `без словаря первое слово на мягкий знак — ложное повелительное`() = withoutDictionary {
         assertTrue(Person.IMPERATIVE in persons("Теперь поговорим о погоде"))
     }
 
     @Test
-    fun `повелительное на -сь не ловится`() {
+    fun `без словаря повелительное на -сь не ловится`() = withoutDictionary {
         assertFalse(Person.IMPERATIVE in persons("Брось мяч"))
+    }
+
+    // --- По словарю ---
+
+    @Test
+    fun `по словарю — повелительное на мягкий знак и -сь, наречие не просьба`() {
+        assertTrue(Person.IMPERATIVE in persons("Брось мяч"))
+        assertTrue(Person.IMPERATIVE in persons("Проверь зажим"))
+        assertTrue(Person.IMPERATIVE in persons("Удали запись про Сашу"))
+        assertFalse(Person.IMPERATIVE in persons("Теперь поговорим о погоде"))
+        assertFalse(Person.IMPERATIVE in persons("Люди разные"))
+        assertFalse(Person.IMPERATIVE in persons("Уровень второй"))
+        assertTrue(Person.IMPERATIVE in persons("Если части нет, поставь прочерк"))
+        assertTrue(Person.IMPERATIVE in persons("Семь цветов, процитируй само правило"))
+        assertFalse(Person.IMPERATIVE in persons("Кстати, помнишь, что было неделю назад?"))
+    }
+
+    @Test
+    fun `по словарю — слово, бывающее местоимением, числительным или предлогом, не просьба`() {
+        assertFalse(Person.IMPERATIVE in persons("Мой любимый инструмент — рубанок"))
+        assertFalse(Person.IMPERATIVE in persons("Три часа прошло"))
+        assertFalse(Person.IMPERATIVE in persons("При расхождении ядро сверяется с файлом"))
+    }
+
+    @Test
+    fun `по словарю — короткий глагол и второе лицо, прилагательное на -им не мы`() {
+        assertEquals(setOf(Person.FIRST), persons("Сейчас иду домой"))
+        assertEquals(setOf(Person.FIRST, Person.SECOND), persons("Надеюсь, поделишься ими."))
+        assertFalse(Person.UNCLEAR in persons("Расскажи другим"))
+        assertFalse(Person.UNCLEAR in persons("Станок в мастерской называется Вымпел"))
+    }
+
+    @Test
+    fun `по словарю — незнакомое слово решается по окончанию`() {
+        // «гуглю» в словаре нет: таблица и трафарет, как раньше.
+        assertEquals(PersonForm.ofSentence("Гуглю рецепты"), run {
+            PersonForm.lemmas = null
+            try { PersonForm.ofSentence("Гуглю рецепты") } finally { TestVerbs.install() }
+        })
     }
 
     // --- Оборот темы ---
@@ -205,7 +250,12 @@ class PersonFormTest {
     @Test
     fun `существительное на -у не даёт я — вопрос к агенту остаётся к агенту`() {
         assertFalse(Person.FIRST in PersonForm.ofSentence("Назови модель и температуру"))
-        assertEquals(Coordinates.Address.AGENT, Coordinates.questionAddress("Привет, назови температуру и уровень заряда"))
+        assertFalse(Person.FIRST in PersonForm.ofSentence("Привет, назови температуру и уровень заряда"))
+        // Приветствие перед просьбой её не прячет: адрес тот же, что у просьбы без приветствия.
+        assertEquals(
+            Coordinates.questionAddress("Назови температуру и уровень заряда"),
+            Coordinates.questionAddress("Привет, назови температуру и уровень заряда"),
+        )
         assertEquals(Coordinates.Address.AGENT, Coordinates.questionAddress("Ты имел ввиду - Африканский рог?"))
         // Просьба без лица — «не определён», а не «владелец», как было.
         assertEquals(Coordinates.Address.UNDEFINED, Coordinates.questionAddress("Посмотри свою модель LLM, пожалуйста."))
@@ -252,6 +302,7 @@ class PersonFormTest {
     @Test
     fun `без таблицы слово на -у — не ясно, местоимение — я`() {
         PersonForm.verbs = null
+        PersonForm.lemmas = null
         try {
             assertEquals(setOf(Person.UNCLEAR), PersonForm.ofSentence("Да, скоро ложусь"))
             assertEquals(Coordinates.Address.UNDEFINED, Coordinates.questionAddress("Да, скоро ложусь"))
