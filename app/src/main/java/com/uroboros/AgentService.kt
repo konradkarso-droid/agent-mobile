@@ -16,6 +16,7 @@ import com.uroboros.initiative.FirstOfSources
 import com.uroboros.initiative.GapSource
 import com.uroboros.initiative.SelfGapSource
 import com.uroboros.initiative.TellSource
+import com.uroboros.initiative.NightSource
 import com.uroboros.initiative.InitiativeDecision
 import com.uroboros.initiative.InitiativeSource
 import com.uroboros.initiative.InitiativeTally
@@ -227,14 +228,15 @@ class AgentService : Service() {
     /** Почему самостоятельный прогон оборван не по своим причинам; null — не оборван. */
     private var stopNote: String? = null
 
-    /** Повод заговорить первым. Источник пока один — см. [InitiativeSource]. */
     /**
      * Поводы заговорить первым, по порядку: выбрать себе имя (пробел о себе —
      * не чаще раза за разговор), затем рассказ накопившегося вывода сна, затем
-     * любопытство о сне, затем разрыв — «что нового с прошлого раза» (сон
-     * конкретнее, поэтому раньше). Рассказ раньше вопроса о сне — тот же
-     * порядок, что в ответе на реплику (dream.CuriosityAsk, «ТРЕТИЙ ИСТОЧНИК»):
-     * готовая мысль раньше сырой связи.
+     * рассказ несказанных ночей (memory.dream.DreamTopic), затем любопытство о
+     * сне, затем разрыв — «что нового с прошлого раза» (сон конкретнее,
+     * поэтому раньше). Рассказ раньше вопроса о сне — тот же порядок, что в
+     * ответе на реплику (dream.CuriosityAsk, «ТРЕТИЙ ИСТОЧНИК»): готовая мысль
+     * раньше сырой связи; мысль раньше ночи — как в ответе (DreamTopic,
+     * «НЕСКАЗАННАЯ НОЧЬ»).
      */
     private val initiativeSource: InitiativeSource by lazy {
         val turns = ProcessObjects.get(applicationContext).turns
@@ -242,6 +244,7 @@ class AgentService : Service() {
             listOf(
                 SelfGapSource(turns, SelfGapReader(applicationContext, turns.store)),
                 TellSource(applicationContext),
+                NightSource(applicationContext, turns),
                 CuriositySource(applicationContext),
                 GapSource(turns, conversationTimes),
             )
@@ -479,6 +482,7 @@ class AgentService : Service() {
                 content = say.line,
                 question = "",
                 records = emptyList(),
+                dreamNote = say.dreamNote,
                 afterSend = {
                     val at = System.currentTimeMillis()
                     sentAt = at
