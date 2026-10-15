@@ -65,9 +65,14 @@ set(GGML_LTO             ON  CACHE BOOL "" FORCE)
 set(GGML_VULKAN          OFF CACHE BOOL "" FORCE)
 
 if(ANDROID_ABI STREQUAL "arm64-v8a")
-    # Baseline armv8-a — KleidiAI dispatches dotprod/i8mm/SVE per-device at runtime.
-    # armv8.6-a as a global target caused SIGILL on Cortex-A76/A77 without i8mm.
-    set(GGML_CPU_ARM_ARCH "armv8-a" CACHE STRING "" FORCE)
+    # armv8.2-a+dotprod: команда скалярного произведения нужна собственным
+    # ядрам ggml (сжатые веса × сжатые активации, внимание по q8_0). На
+    # armv8-a их собирали без неё, и обсчёт запроса шёл лишь вдвое быстрее
+    # выдачи. KleidiAI добирает dotprod/i8mm на лету только в своих ядрах.
+    # Граница: устройства без dotprod (ARMv8.0: Cortex-A53/A57/A72/A73)
+    # упадут с SIGILL. armv8.6-a тоже нельзя: требует i8mm, которой нет у
+    # Cortex-A76/A77 (Snapdragon 865), — на нём был SIGILL.
+    set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod" CACHE STRING "" FORCE)
     set(GGML_CPU_KLEIDIAI ON CACHE BOOL "" FORCE)
 else()
     set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)

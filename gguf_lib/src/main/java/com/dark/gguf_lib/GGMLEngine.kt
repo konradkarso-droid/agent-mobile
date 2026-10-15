@@ -326,6 +326,9 @@ class GGMLEngine {
     /** The thread mode the engine is actually running (after any auto-mode adjustment). */
     fun getEffectiveThreadMode(): Int = GGUFNativeLib.nativeGetEffectiveThreadMode()
 
+    /** Команды процессора, с которыми собран движок (llama_print_system_info). */
+    fun systemInfo(): String = GGUFNativeLib.nativeSystemInfo()
+
     /**
      * Override the per-level thermal thresholds (milli-Celsius). Pass `<=0`
      * for any field to keep the current value. Values are clamped to
