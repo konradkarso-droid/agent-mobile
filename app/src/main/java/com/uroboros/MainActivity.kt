@@ -4495,8 +4495,8 @@ class MainActivity : AppCompatActivity() {
                 // Прошлый ответ агента — по нему касание признаётся
                 // подсказанным (см. promptedStems в HourglassMemory.kt).
                 val ribbonQuestions = journal.history().map { it.question }
-                // Карта окна — прибор: в отбор не идёт, окно темы круга
-                // работает как было (nav.WindowMap).
+                // Строка карты окна; по той же карте ищет окно темы круга
+                // (nav.WindowMap, DolmenCircle.themeWords).
                 windowMapLine = runCatching {
                     val started = System.currentTimeMillis()
                     val map = WindowMap.of(
@@ -4625,7 +4625,11 @@ class MainActivity : AppCompatActivity() {
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
                     limit = 5,
-                    recentQuestions = ribbonQuestions,
+                    // Тема — только нынешний разговор: после часа тишины
+                    // прежний её не держит (nav.WindowMap.episodeOf).
+                    recentQuestions = WindowMap.episodeOf(
+                        journal.history().map { WindowMap.Turn(it.question, it.at) }, System.currentTimeMillis(),
+                    ).map { it.question },
                     excludedTexts = ribbonQuestions + userText,
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
                     address = address,

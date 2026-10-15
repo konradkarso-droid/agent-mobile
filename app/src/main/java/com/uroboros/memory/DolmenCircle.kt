@@ -1,5 +1,8 @@
 package com.uroboros.memory
 
+import com.uroboros.memory.nav.LemmaDictionary
+import com.uroboros.memory.nav.WindowMap
+
 /**
  * Круг дольменов: как места в ответе делятся между окнами отбора. Чистая
  * часть — без базы и без Android, чтобы правила закреплялись обычными
@@ -7,7 +10,7 @@ package com.uroboros.memory
  *
  * ОКНА. Каждое ищет в своих слоях и по своим словам:
  *  - вопрос — оранжевый, жёлтый, зелёный; по словам вопроса;
- *  - тема — те же слои; по словам последних реплик владельца ([themeWords]);
+ *  - тема — те же слои; по карте окна — теме нынешнего разговора ([themeWords]);
  *  - холод — синий, затем фиолетовый; по словам вопроса, а если их нет — по
  *    словам темы.
  *
@@ -30,8 +33,9 @@ package com.uroboros.memory
  * ЧЕГО КРУГ НЕ УМЕЕТ:
  *  - окна смотрят только то, что принёс поиск лестницей. Запись, которую
  *    лестница не нашла, не видна ни одному окну;
- *  - тема — это слова, а не смысл: сменил владелец тему — окно ещё три хода
- *    ищет по старой.
+ *  - тема — это слова, а не смысл: сменил владелец тему — окно ищет и по
+ *    старой, пока её вес не угаснет (смену темы по словам не поймать, см.
+ *    nav.WindowMap).
  */
 object DolmenCircle {
 
@@ -103,13 +107,6 @@ object DolmenCircle {
     fun left(taken: Int): Int = (RECORDS_CEILING - taken).coerceAtLeast(0)
 
     /**
-     * Из скольких последних реплик владельца берётся тема. Объявленное число,
-     * не подобранное: столько обычно длится разговор об одном (то же, что
-     * срок двери сна).
-     */
-    const val THEME_TURNS = 3
-
-    /**
      * Сколько разных слов темы должна задеть запись, чтобы пройти окно темы.
      * Объявленное число, не подобранное: одно общее слово из десятка — это
      * случайность, два — уже разговор о том же. Правило целиком — в
@@ -176,27 +173,28 @@ object DolmenCircle {
     }
 
     /**
-     * Слова темы: значимые слова ([meaningfulWords]) из реплик владельца
-     * последних [THEME_TURNS] ходов, минус слова текущего вопроса.
-     *
-     * Пустые реплики пропускаются — это ходы, где агент написал первым, и
-     * владелец в них ничего не сказал. Берутся три последние НЕпустые.
+     * Слова темы — из карты окна (nav.WindowMap): написанные формы самых
+     * тяжёлых слов-тем реплик владельца нынешнего разговора, не больше
+     * [MAX_SEARCH_WORDS], минус слова текущего вопроса.
      *
      * Слова вопроса вычитаются, потому что их уже ищет окно вопроса; и
      * сливать два набора в один запрос нельзя: доля вопроса упала бы, и отсев
      * по ней выбросил бы годное молча (см. [scoreThemeCandidate]).
      *
-     * @param recentQuestions реплики владельца в порядке ленты, от старых к новым.
+     * @param recentQuestions реплики владельца нынешнего разговора, от старых
+     *   к новым; границу разговора проводит вызывающий (nav.WindowMap.episodeOf).
+     * @param dictionary словарь начальных форм; null — слова как написаны.
      */
-    fun themeWords(recentQuestions: List<String>, questionWords: List<String>): List<String> {
-        val asked = questionWords.toHashSet()
-        return recentQuestions
-            .filter { it.isNotBlank() }
-            .takeLast(THEME_TURNS)
-            .asReversed()
-            .flatMap { meaningfulWords(it) }
-            .distinct()
-            .filter { it !in asked }
+    fun themeWords(
+        recentQuestions: List<String>,
+        questionWords: List<String>,
+        dictionary: LemmaDictionary?,
+    ): List<String> {
+        val map = WindowMap.of(
+            recentQuestions.map { WindowMap.Turn(it, null) },
+            questionWords.joinToString(" "), 0L, dictionary,
+        )
+        return WindowMap.searchWords(map, MAX_SEARCH_WORDS)
     }
 
     /** Чем кончилось одно окно — для прибора. */
