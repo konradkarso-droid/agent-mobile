@@ -34,7 +34,7 @@ class WindowMapTest {
     }
 
     @Test
-    fun `короткая реплика без своих слов опирается на карту`() {
+    fun `у короткой реплики без своих слов тема только на карте`() {
         val r = map("А что было потом?", "Что делают белки в клетке?")
         assertEquals(Footing.MAP, r.footing)
         assertTrue(labels(r).toString(), labels(r).any { "клетка" in it })
@@ -62,10 +62,12 @@ class WindowMapTest {
     }
 
     @Test
-    fun `смена темы — опора на реплику`() {
+    fun `общих слов с картой нет — так и сказано, без «смены темы»`() {
         val r = map("Тебе снилось море?", "Какой самый холодный континент?", "Антарктида или Гималаи?")
-        assertEquals(Footing.NEW_TOPIC, r.footing)
-        assertTrue(WindowMap.meterLine(r, 1).contains("смена темы — опора на реплику"))
+        assertEquals(Footing.NO_COMMON, r.footing)
+        val line = WindowMap.meterLine(r, 1)
+        assertTrue(line, line.contains("общих слов с картой нет"))
+        assertFalse(line, line.contains("смена"))
     }
 
     @Test
