@@ -137,8 +137,9 @@ object CuriosityAsk {
         lastAskedAt != null && (lastOwnerReplyAt == null || lastOwnerReplyAt <= lastAskedAt)
 
     /**
-     * Решение. Порядок отказов — как у SelfJudgeDecision.refusal: первое
-     * невыполненное условие и называется.
+     * Решение без реплики владельца — путь «пишу первым» и доска. В ходе
+     * разговора зовётся [decideOnReply]. Порядок отказов — как у
+     * SelfJudgeDecision.refusal: первое невыполненное условие и называется.
      */
     fun decide(pressure: CuriosityPressure.Result, awaitingAnswer: Boolean): Decision {
         if (awaitingAnswer) return Decision.Refuse("прошлый вопрос без ответа")
@@ -150,6 +151,43 @@ object CuriosityAsk {
             return Decision.Refuse("вклад лидера ${leader.contribution} из $MIN_CONTRIBUTION")
         }
         return Decision.Ask(leader)
+    }
+
+    /**
+     * Решение о вопросе о сне в ответ на реплику [reply]: сначала реплика
+     * ([replyRefusal] — вопрос или просьба владельца, ответ на вопрос агента),
+     * потом то же, что [decide]. Путь «пишу первым» реплики не имеет и зовёт
+     * [decide] прямо.
+     *
+     * @param previousAnswer прошлый ответ агента в ленте; null — ответа нет.
+     */
+    fun decideOnReply(
+        pressure: CuriosityPressure.Result,
+        awaitingAnswer: Boolean,
+        reply: String,
+        previousAnswer: String?,
+    ): Decision {
+        replyRefusal(reply, previousAnswer)?.let { return Decision.Refuse(it) }
+        return decide(pressure, awaitingAnswer)
+    }
+
+    /**
+     * Почему на реплику [reply] агенту не спрашивать — ни о сне, ни о
+     * пробеле, — или null: спрашивать можно. Одно место для обоих вопросов
+     * (условия — в KDoc объекта, «Спрашивается только при ясном»). Рассказу
+     * вывода эта проверка не помеха («КОГДА РАССКАЗ К МЕСТУ»).
+     */
+    fun replyRefusal(reply: String, previousAnswer: String?): String? {
+        val readings = Sentences.split(reply).map { SentenceKind.of(it) }
+        // Обычай («Привет.», «Ладно.») хода не отдаёт и вопросу не мешает.
+        readings.firstOrNull { it.kind == SentenceKind.Kind.QUESTION || it.kind == SentenceKind.Kind.REQUEST }?.let {
+            val what = if (it.kind == SentenceKind.Kind.QUESTION) "вопрос" else "просьба"
+            return "реплика — $what, ход у владельца"
+        }
+        if (previousAnswer != null && Sentences.split(previousAnswer).any { it.trimEnd().endsWith('?') }) {
+            return "реплика — после вопроса агента"
+        }
+        return null
     }
 
     /**
@@ -255,15 +293,7 @@ object CuriosityAsk {
      * @param awaitingDream вопрос о сне ждёт ответа ([awaiting]).
      */
     fun decideGap(gaps: List<Gaps.Gap>, reply: String, previousAnswer: String?, awaitingDream: Boolean): GapDecision {
-        val readings = Sentences.split(reply).map { SentenceKind.of(it) }
-        // Обычай («Привет.», «Ладно.») хода не отдаёт и рассказу не мешает.
-        readings.firstOrNull { it.kind == SentenceKind.Kind.QUESTION || it.kind == SentenceKind.Kind.REQUEST }?.let {
-            val what = if (it.kind == SentenceKind.Kind.QUESTION) "вопрос" else "просьба"
-            return GapDecision.Refuse("реплика — $what, ход у владельца")
-        }
-        if (previousAnswer != null && Sentences.split(previousAnswer).any { it.trimEnd().endsWith('?') }) {
-            return GapDecision.Refuse("реплика — после вопроса агента")
-        }
+        replyRefusal(reply, previousAnswer)?.let { return GapDecision.Refuse(it) }
         if (awaitingDream) return GapDecision.Refuse("вопрос о сне без ответа")
         val touching = gaps.filter { it.state == Gaps.State.OPEN && Gaps.touches(it, reply) }
         if (touching.isEmpty()) return GapDecision.Refuse("открытого пробела по теме нет")

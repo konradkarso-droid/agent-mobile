@@ -4932,7 +4932,12 @@ class MainActivity : AppCompatActivity() {
                 val askDecision = if (pressure == null) {
                     CuriosityAsk.Decision.Refuse("давление не прочиталось")
                 } else {
-                    runCatching { CuriosityAsk.decide(pressure, curiosityAskMarker.awaiting()) }
+                    runCatching {
+                        CuriosityAsk.decideOnReply(
+                            pressure, curiosityAskMarker.awaiting(), userText,
+                            journal.history().lastOrNull()?.agentContent,
+                        )
+                    }
                         .getOrElse {
                             CuriosityAsk.Decision.Refuse(
                                 "не прочиталось, ждёт ли прошлый вопрос ответа (${it.javaClass.simpleName})"
