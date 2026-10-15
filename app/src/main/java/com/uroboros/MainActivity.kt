@@ -4924,13 +4924,25 @@ class MainActivity : AppCompatActivity() {
                         alreadyInRibbon = journal.history().any { it.dreamNote == dreamCandidate },
                         stored = lastNightTopics.getOrNull(),
                     )
-                val dreamNote = if (dreamRefusal == null) dreamCandidate else null
+                val requestedNote = if (dreamRefusal == null) dreamCandidate else null
                 val toldBefore = journal.history().filter { it.dreamNote != null }.map { it.at } +
                     archive.orEmpty().filter { it.dreamNote != null }.map { it.at }
-                dreamInMirrorLine = DreamTopic.meter(
-                    DreamTopic.toldWithinDay(toldBefore, System.currentTimeMillis()) + (if (dreamNote != null) 1 else 0),
-                    dreamRefusal,
-                )
+                // Ночь без вопроса — как несказанное (DreamTopic, «НЕСКАЗАННАЯ
+                // НОЧЬ»): в теме её снов или когда набралось. Решается здесь,
+                // подаётся ниже — только если в этом ходе не рассказывается мысль.
+                val lastToldNightAt = toldBefore.filterNotNull().maxOrNull()
+                val lastNightAt = lastNight.getOrNull()?.nightAt
+                val nightUnpromptedRefusal = if (requestedNote != null) null else runCatching {
+                    val withTopics = MemoryDatabase.getInstance(applicationContext).dreamDao().nightsWithTopics().map { it.nightAt }
+                    DreamTopic.unpromptedRefusal(
+                        dreamCandidate,
+                        DreamTopic.load(lastNightTopics.getOrNull()),
+                        lastNightUntold = lastNightAt != null && (lastToldNightAt == null || lastNightAt > lastToldNightAt),
+                        untold = DreamTopic.untoldNights(withTopics, lastToldNightAt),
+                        reply = userText,
+                        ribbonEmpty = journal.history().isEmpty(),
+                    )
+                }.getOrElse { "ночи не прочитались (${it.javaClass.simpleName})" }
                 // Выход пружины любопытства (см. CuriosityAsk): давление
                 // перечитывается к этой реплике. Сбой чтения — не спрашивать:
                 // выход терминальный, и сомнение решается в сторону молчания.
@@ -4989,6 +5001,23 @@ class MainActivity : AppCompatActivity() {
                 else CuriosityAsk.meter(gapDecision, tellDecision, askDecision)
                 val toldTeller = if (askedGap != null || selfGapLine != null) null
                 else (tellDecision as? CuriosityAsk.TellDecision.Tell)?.teller
+                // Рассказ в ходе один: мысль из сна раньше ночи (DreamTopic,
+                // «НЕСКАЗАННАЯ НОЧЬ»). Ночь по вопросу владельца — не рассказ
+                // без спроса, ей мысль не помеха.
+                val dreamNote = requestedNote
+                    ?: if (nightUnpromptedRefusal == null && toldTeller == null) dreamCandidate else null
+                dreamInMirrorLine = DreamTopic.meter(
+                    DreamTopic.toldWithinDay(toldBefore, System.currentTimeMillis()) + (if (dreamNote != null) 1 else 0),
+                    when {
+                        dreamNote != null -> null
+                        dreamRefusal != null && nightUnpromptedRefusal == null -> "в этом ходе рассказывается мысль из сна"
+                        else -> listOfNotNull(dreamRefusal, nightUnpromptedRefusal?.let { "без вопроса: $it" }).joinToString(" · ")
+                    },
+                )
+                // Ночь, рассказанная с мыслью, отмечает рассказанной и мысль
+                // (DreamTopic, «НЕСКАЗАННАЯ НОЧЬ»).
+                val nightThoughtTeller = if (dreamNote != null && lastNightThought != null)
+                    pressure?.toTell?.firstOrNull { it.text == lastNightThought } else null
                 // Рассказанный сон отмечается так же, как спрошенный, и ждёт
                 // ответа тем же путём: дальше по ходу это просто «сон выхода».
                 val askedLeader = when {
@@ -5166,6 +5195,10 @@ class MainActivity : AppCompatActivity() {
                     conversationTimes.noteOwnerReply(repliedAt)
                     askedLeader?.let { leader ->
                         runCatching { curiosityAskMarker.markAsked(leader, repliedAt) }
+                            .onFailure { curiosityAskFailure = it.javaClass.simpleName }
+                    }
+                    nightThoughtTeller?.takeIf { it.leader != askedLeader }?.let { teller ->
+                        runCatching { curiosityAskMarker.markAsked(teller.leader, repliedAt) }
                             .onFailure { curiosityAskFailure = it.javaClass.simpleName }
                     }
 

@@ -1,6 +1,7 @@
 package com.uroboros.memory.dream
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,5 +124,57 @@ class DreamTopicTest {
         )
         assertEquals("Во сне мне подумалось, что всё связано с цветом.", DreamTopic.line(emptyList(), "всё связано с цветом"))
         assertNull(DreamTopic.line(emptyList(), null))
+    }
+
+    // ---- Несказанная ночь ----
+
+    private val topics = listOf("рубанок", "температура и заряд")
+    private val line = "Этой ночью мне снилось: рубанок и температура и заряд."
+
+    @Test
+    fun `несказанные ночи — с темами и позже последнего рассказа`() {
+        assertEquals(3, DreamTopic.untoldNights(listOf(1, 5, 9, 12), lastToldAt = 4))
+        assertEquals("не рассказывалась ни разу — все", 4, DreamTopic.untoldNights(listOf(1, 5, 9, 12), null))
+        assertEquals(0, DreamTopic.untoldNights(listOf(1, 5), lastToldAt = 7))
+    }
+
+    @Test
+    fun `в теме снов — общая основа с темами, привет не тема`() {
+        assertTrue(DreamTopic.inTopic("Купил новый рубанок", topics))
+        assertFalse(DreamTopic.inTopic("Привет! Ты как?", topics))
+        assertFalse(DreamTopic.inTopic("", topics))
+    }
+
+    private fun refuse(
+        untold: Int,
+        reply: String = "Привет! Ты как?",
+        lastNightUntold: Boolean = true,
+        ribbonEmpty: Boolean = false,
+        l: String? = line,
+    ) = DreamTopic.unpromptedRefusal(l, topics, lastNightUntold, untold, reply, ribbonEmpty)
+
+    @Test
+    fun `без вопроса — молчит, пока не набралось и не в теме`() {
+        assertEquals(
+            "не в теме снов — ночей без рассказа 3 из ${CuriosityAsk.TELL_PILED}",
+            refuse(untold = 3),
+        )
+        assertNull("набралось", refuse(untold = CuriosityAsk.TELL_PILED))
+        assertNull("в теме — и одна ночь годится", refuse(untold = 1, reply = "Купил новый рубанок"))
+    }
+
+    @Test
+    fun `без вопроса — молчит о рассказанной ночи, на пустой ленте и без тем`() {
+        assertEquals("последняя ночь уже рассказана", refuse(untold = 9, lastNightUntold = false))
+        assertEquals("лента пуста — первым системное не ставится", refuse(untold = 9, ribbonEmpty = true))
+        assertEquals("у последней ночи ни темы, ни вывода", refuse(untold = 9, l = null))
+    }
+
+    @Test
+    fun `путь «пишу первым» — пустая реплика, в теме не бывает`() {
+        assertEquals(
+            "не в теме снов — ночей без рассказа 1 из ${CuriosityAsk.TELL_PILED}",
+            refuse(untold = 1, reply = ""),
+        )
     }
 }

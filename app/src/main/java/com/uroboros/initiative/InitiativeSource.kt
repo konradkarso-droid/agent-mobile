@@ -6,8 +6,8 @@ package com.uroboros.initiative
  * только, есть ли что сказать и что именно.
  *
  * Источники — выбор имени ([SelfGapSource]), рассказ вывода сна
- * ([TellSource]), любопытство о сне ([CuriositySource]) и разрыв «что
- * нового» ([GapSource]); порядок задаёт
+ * ([TellSource]), рассказ ночи ([NightSource]), любопытство о сне
+ * ([CuriositySource]) и разрыв «что нового» ([GapSource]); порядок задаёт
  * [FirstOfSources] (список — в AgentService). Новый источник — ещё
  * одна реализация; общие условия он ослабить не может: они проверяются до и
  * после него, а не им.
@@ -30,12 +30,16 @@ interface InitiativeSource {
          * @param onSent строка ушла в движок в момент `at` (зовётся и на нуле
          *   токенов: строка всё равно сказана).
          * @param onAppended ход лёг в ленту — сообщение агента существует.
+         * @param dreamNote описание ночи системным сообщением хода
+         *   (memory.dream.DreamTopic); ложится в ход ленты и тем отмечает ночь
+         *   рассказанной. null — не нужно.
          */
         class Say(
             val line: String,
             val what: String,
             val onSent: suspend (at: Long) -> Unit,
             val onAppended: suspend () -> Unit,
+            val dreamNote: String? = null,
         ) : Offer()
     }
 }
