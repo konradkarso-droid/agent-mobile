@@ -1577,6 +1577,16 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         }
         cparams.n_batch = nBatch > 0 ? nBatch : cfg.n_batch;
     }
+    // Физическая пачка (ubatch): сколько токенов движок пропускает через
+    // модель за один проход. Рабочий буфер обсчёта резервируется под худший
+    // случай — оценку каждого слова словаря для каждого токена пачки
+    // (токенов × размер словаря × 4 байта), так что его размер растёт с
+    // пачкой линейно: у словаря на ~152 тыс. слов это ~0,6 МБ на токен.
+    // 256 вместо умолчания библиотеки (512) — объявленное число, не
+    // подобранное: вдвое меньше буфер ценой, возможно, более медленного
+    // обсчёта запроса. Логическая пачка (n_batch) не меняется — движок сам
+    // режет её на физические.
+    cparams.n_ubatch = 256;
 
     if (flashAttn) cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
 
@@ -1716,9 +1726,10 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
 
     // Потоки — фактические, после режима (apply_thread_mode), а не заданные
     // при загрузке: режим их перезаписывает, и заданное здесь врало бы.
-    LOGI("Model loaded (ctx=%d threads_gen=%d threads_batch=%d batch=%d mode=%d)",
+    LOGI("Model loaded (ctx=%d threads_gen=%d threads_batch=%d batch=%d ubatch=%d mode=%d)",
          (int)llama_n_ctx(g_state.ctx), (int)llama_n_threads(g_state.ctx),
-         (int)llama_n_threads_batch(g_state.ctx), cparams.n_batch, g_state.thread_mode);
+         (int)llama_n_threads_batch(g_state.ctx), cparams.n_batch,
+         (int)llama_n_ubatch(g_state.ctx), g_state.thread_mode);
     return JNI_TRUE;
 }
 

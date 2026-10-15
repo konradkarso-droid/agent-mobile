@@ -26,7 +26,9 @@ object EngineLines {
 
     /**
      * Параметры загрузки по строке лога вида
-     * «I: Model loaded (ctx=8192 threads_gen=3 threads_batch=8 batch=1024 mode=2)».
+     * «I: Model loaded (ctx=8192 threads_gen=3 threads_batch=8 batch=1024 ubatch=256 mode=2)».
+     * «за проход» — физическая пачка: столько токенов идёт через модель за
+     * один проход; от неё зависит буфер обсчёта (см. `gguf_lib.cpp`).
      *
      * Режим потоков (mode=) не печатается: его словами называет соседняя
      * строка «Режим потоков», и фактический, а не заданный при загрузке.
@@ -42,6 +44,7 @@ object EngineLines {
             parts += "потоков $gen на выдачу, $batchThreads на запрос"
         }
         values["batch"]?.let { parts += "пачка $it" }
+        values["ubatch"]?.let { parts += "за проход $it" }
         return parts.joinToString(" · ")
     }
     private val MODEL_BUFFER = Regex("""(\S+)\s+model buffer size\s*=\s*([\d.]+)\s*MiB""")
