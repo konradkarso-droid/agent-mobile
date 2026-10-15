@@ -308,20 +308,82 @@ class CuriosityPressureTest {
     }
 
     @Test
-    fun `без текста вывода и без вклада рассказывать нечего`() {
+    fun `без текста вывода рассказывать нечего`() {
         val noText = CuriosityPressure.measure(
             listOf(dream(1, 2, picked = 1)), { live[it] }, now, setOf(ConclusionKey(now - day, "1,2")),
         )
         assertTrue(noText.toTell.isEmpty())
-        assertTrue(told(listOf(dream(1, 2, served = 3)), mapOf("1,2" to "мысль")).toTell.isEmpty())
     }
 
     @Test
-    fun `к рассказу — по вкладу, первым больший`() {
+    fun `несказанный вывод без вклада всё равно ждёт рассказа`() {
+        val got = told(listOf(dream(1, 2, served = 3)), mapOf("1,2" to "мысль"))
+        assertEquals(listOf("мысль"), got.toTell.map { it.text })
+        assertEquals(0, got.toTell.single().leader.contribution)
+    }
+
+    @Test
+    fun `к рассказу — по накопленному, первым больший`() {
         val got = told(
-            listOf(dream(1, 2, recalled = 1), dream(3, 4, picked = 1, recalled = 1)),
+            listOf(dream(1, 2, picked = 3), dream(3, 4, recalled = 1)),
             mapOf("1,2" to "первая", "3,4" to "вторая"),
         )
-        assertEquals(listOf("вторая", "первая"), got.toTell.map { it.text })
+        assertEquals("подхваты владельца в накопленное не идут", listOf("вторая", "первая"), got.toTell.map { it.text })
+        assertEquals(listOf(2, 0), got.toTell.map { it.piled })
+    }
+
+    // ---- Несказанное: только сторона агента и без остывания ----
+
+    @Test
+    fun `накопленное — вспоминания агента и ночи без рассказа, подхваты не в счёт`() {
+        val got = CuriosityPressure.measure(
+            listOf(dream(1, 2, picked = 10, recalled = 1)), { live[it] }, now,
+            setOf(ConclusionKey(now - day, "1,2")), mapOf("1,2" to "мысль"),
+        ) { if (it == "1,2") 3 else 0 }
+        val teller = got.toTell.single()
+        assertEquals(1, teller.recalled)
+        assertEquals(3, teller.nights)
+        assertEquals(
+            CuriosityPressure.RECALLED_WEIGHT * 1 + CuriosityPressure.UNTOLD_NIGHT_WEIGHT * 3,
+            teller.piled,
+        )
+        assertEquals("подхваты остаются во вкладе", 32, teller.leader.contribution)
+    }
+
+    @Test
+    fun `несказанный вывод не остывает — сон старше окна всё равно к рассказу`() {
+        val old = dream(1, 2, nightAt = now - 30 * day, recalled = 1)
+        val got = told(listOf(old), mapOf("1,2" to "мысль"))
+        assertEquals(listOf("мысль"), got.toTell.map { it.text })
+        assertEquals("давлению старый сон по-прежнему ничего не даёт", 0, got.pressure)
+        assertEquals("и разряженным в окне не считается", 0, got.concluded)
+    }
+
+    @Test
+    fun `рассказанный давно вывод не возвращается и за окном`() {
+        val toldLongAgo = dream(1, 2, nightAt = now - 30 * day, askedAt = now - 29 * day)
+        val got = told(listOf(toldLongAgo, dream(1, 2, recalled = 2)), mapOf("1,2" to "мысль"))
+        assertTrue(got.toTell.isEmpty())
+    }
+
+    @Test
+    fun `одни записи в разные ночи — один вывод, вспоминания всех ночей`() {
+        val got = told(
+            listOf(dream(1, 2, nightAt = now - 10 * day, recalled = 1), dream(1, 2, recalled = 1)),
+            mapOf("1,2" to "мысль"),
+        )
+        val teller = got.toTell.single()
+        assertEquals(2, teller.recalled)
+        assertEquals("сон самой поздней ночи", now - day, teller.leader.dream.nightAt)
+    }
+
+    @Test
+    fun `молчащий несказанный вывод не рассказывается`() {
+        val hidden = live + (2L to record(2, hidden = true))
+        val got = CuriosityPressure.measure(
+            listOf(dream(1, 2, recalled = 3)), { hidden[it] }, now,
+            setOf(ConclusionKey(now - day, "1,2")), mapOf("1,2" to "мысль"),
+        )
+        assertTrue(got.toTell.isEmpty())
     }
 }

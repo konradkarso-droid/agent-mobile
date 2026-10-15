@@ -57,6 +57,18 @@ interface DreamDao {
     suspend fun stirredSince(since: Long): List<Dream>
 
     /**
+     * Все сны любой ночи с наборами записей [recordIds] — для несказанных
+     * выводов, к которым окно не применяется (см. CuriosityPressure,
+     * «НЕСКАЗАННОЕ НЕ ОСТЫВАЕТ»). Наборов — сколько принятых выводов.
+     */
+    @Query("SELECT * FROM dreams WHERE recordIds IN (:recordIds)")
+    suspend fun withRecords(recordIds: List<String>): List<Dream>
+
+    /** Сколько ночей прошло строго после [after] (см. CuriosityPressure.Teller.nights). */
+    @Query("SELECT COUNT(*) FROM nights WHERE nightAt > :after")
+    suspend fun nightsAfter(after: Long): Int
+
+    /**
      * Когда владельцу в последний раз предложено спросить о сне; null — ни
      * разу. Нужно, чтобы знать, ждёт ли вопрос ответа (см. [CuriosityAsk]).
      */
