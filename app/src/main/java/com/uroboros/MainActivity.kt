@@ -591,14 +591,19 @@ class MainActivity : AppCompatActivity() {
     private val selfGapReader by lazy { SelfGapReader(applicationContext, journalStore) }
 
     /** Источники облаков — см. SelfGapReader.cloudSources. */
-    private suspend fun cloudSources(archive: List<JournalArchiveTurn>?): List<Clouds.Source> =
+    private suspend fun cloudSources(archive: List<JournalArchiveTurn>?): Clouds.Gathered =
         selfGapReader.cloudSources(archive)
 
     /** Раздел «ОБЛАКА» в «Показать»: считается при открытии. Сбой — словами. */
     private suspend fun cloudsSection(): String = runCatching {
-        val sources = cloudSources(journalStore.readArchive())
+        val gathered = cloudSources(journalStore.readArchive())
         val now = System.currentTimeMillis()
-        Clouds.section(Clouds.of(PersonKey.OWNER, sources, now), Clouds.of(PersonKey.AGENT, sources, now))
+        val dictionary = LemmaHolder.loaded
+        Clouds.section(
+            Clouds.of(PersonKey.OWNER, gathered.sources, now, dictionary),
+            Clouds.of(PersonKey.AGENT, gathered.sources, now, dictionary),
+            gathered,
+        )
     }.getOrElse { "ОБЛАКА\nне посчитались — ${it.javaClass.simpleName}" }
 
     /**
@@ -4613,12 +4618,13 @@ class MainActivity : AppCompatActivity() {
                     Clouds.addressLine(address, null, null)
                 } else {
                     runCatching {
-                        val sources = cloudSources(archive)
+                        val sources = cloudSources(archive).sources
                         val now = System.currentTimeMillis()
+                        val dictionary = LemmaHolder.loaded
                         Clouds.addressLine(
                             address,
-                            Clouds.of(PersonKey.OWNER, sources, now),
-                            Clouds.of(PersonKey.AGENT, sources, now),
+                            Clouds.of(PersonKey.OWNER, sources, now, dictionary),
+                            Clouds.of(PersonKey.AGENT, sources, now, dictionary),
                         )
                     }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
                 }

@@ -33,6 +33,8 @@ data class UnpromptedTouch(
     val tag: String,
     val rejectedAt: Long?,
     val reviewPending: Boolean,
+    /** Текст записи: лидер не считается среди записей, что ничего не утверждают. */
+    val content: String = "",
 )
 
 /**
@@ -459,7 +461,7 @@ interface StickerDao {
      * повторён, и правило закрепляется тестами там, а не здесь.
      */
     @Query(
-        "SELECT id, userMatchUnpromptedCount AS count, tag, rejectedAt, reviewPending FROM stickers " +
+        "SELECT id, userMatchUnpromptedCount AS count, tag, rejectedAt, reviewPending, content FROM stickers " +
             "WHERE userMatchUnpromptedCount > 0 AND rejectedAt IS NULL AND reviewPending = 0 " +
             "AND tag != '" + Prism.IDENTITY_TAG + "'"
     )
