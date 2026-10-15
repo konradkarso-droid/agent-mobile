@@ -346,6 +346,39 @@ class CuriosityAskTest {
     }
 
     @Test
+    fun `первым — только накопившееся, подхваты владельца не в счёт`() {
+        assertEquals(
+            CuriosityAsk.TellDecision.Refuse(
+                "накопилось 3 из ${CuriosityAsk.TELL_PILED} (ночей без рассказа 1, вспоминал сам 1)"
+            ),
+            CuriosityAsk.decideTellFirst(withThought(dream(1, 2, picked = 10, recalled = 1), nights = 1), false),
+        )
+        val tell = CuriosityAsk.decideTellFirst(withThought(dream(1, 2), nights = 4), false)
+        assertEquals("мысль о 1,2", (tell as CuriosityAsk.TellDecision.Tell).teller.text)
+    }
+
+    @Test
+    fun `первым — молчит без выводов и пока прошлый вопрос без ответа`() {
+        assertEquals(
+            CuriosityAsk.TellDecision.Refuse("выводов к рассказу нет"),
+            CuriosityAsk.decideTellFirst(pressure(dream(1, 2, recalled = 5)), false),
+        )
+        assertEquals(
+            CuriosityAsk.TellDecision.Refuse("прошлый вопрос без ответа"),
+            CuriosityAsk.decideTellFirst(withThought(dream(1, 2), nights = 9), true),
+        )
+    }
+
+    @Test
+    fun `строка «первым» — с подписью сна, просьба прямо`() {
+        val teller = withThought(dream(1, 2), nights = 4).toTell.single()
+        val line = CuriosityAsk.tellLineFirst(teller)
+        assertTrue(line, line.startsWith("Во сне мне подумалось, что мысль о 1,2. "))
+        assertTrue(line, line.contains("Расскажи пользователю"))
+        assertFalse(line, line.contains("Если к месту"))
+    }
+
+    @Test
     fun `в теме всплывает и не первый в ряду вывод`() {
         val other = Sticker(id = 20, content = "Колесо у велосипеда спустило")
         val records = live + (20L to other)
