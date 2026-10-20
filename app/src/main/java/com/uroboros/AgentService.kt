@@ -38,6 +38,8 @@ import com.uroboros.memory.dream.Conclusion
 import com.uroboros.memory.dream.ConclusionStep
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.dream.DreamTopicStep
+import com.uroboros.memory.dream.RecordChunkStep
+import com.uroboros.llm.RecordChunkStore
 import com.uroboros.memory.dream.DreamWeaver
 import com.uroboros.memory.dream.Mirror
 import com.uroboros.memory.dream.MirrorStep
@@ -797,6 +799,10 @@ class AgentService : Service() {
                 if (missing.dreamTopics) {
                     outcomes += DreamTopicStep.run(db, objects.llmEngine, nightAt) { why() }
                 }
+                // Куски записей — последними и на дневной загрузке (см.
+                // RecordChunkStep); finally ниже вернёт её ещё раз даром.
+                backToDay()
+                outcomes += RecordChunkStep.run(RecordChunkStore.get(applicationContext), objects.llmEngine, System.currentTimeMillis()) { why() }
                 stepsSummary = NightSteps.summary(outcomes)
                 outcomes.joinToString("\n\n")
             } catch (failed: NightLoadFailed) {
@@ -1045,7 +1051,17 @@ class AgentService : Service() {
                 } else {
                     null
                 }
-                listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics).joinToString("\n\n")
+                // Куски записей — последними и на дневной загрузке (см.
+                // RecordChunkStep); finally ниже вернёт её ещё раз даром.
+                val chunks = if (dreamFirst) {
+                    backToDay()
+                    RecordChunkStep.run(RecordChunkStore.get(applicationContext), objects.llmEngine, System.currentTimeMillis()) {
+                        whyModelCannotRun(applicationContext)
+                    }
+                } else {
+                    null
+                }
+                listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics, chunks).joinToString("\n\n")
             } catch (failed: NightLoadFailed) {
                 NIGHT_LOAD_FAILED
             } catch (cancelled: CancellationException) {

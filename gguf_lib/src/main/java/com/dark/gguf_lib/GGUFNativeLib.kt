@@ -64,6 +64,8 @@ internal object GGUFNativeLib {
     external fun nativeGetFirstStepReport(): String
     external fun nativeSetRecordPlan(json: String)
     external fun nativeGetRecordReport(): String
+    external fun nativeSetRecordChunkDir(path: String, identity: String)
+    external fun nativeBuildRecordChunks(linesJson: String, finish: Boolean): String
     external fun nativeGetLastConversationPrompt(): ByteArray
 
     external fun nativeGenerateStream(

@@ -494,8 +494,19 @@ class GGMLEngine {
      */
     fun setRecordPlan(json: String) = GGUFNativeLib.nativeSetRecordPlan(json)
 
-    /** Отчёт о разрезе записей последней генерации разговора (JSON); пусто — плана не было. */
+    /** Отчёт о записях последней генерации разговора (JSON); пусто — плана не было. */
     fun recordReport(): String = GGUFNativeLib.nativeGetRecordReport()
+
+    /** Папка готовых кусков записей этой загрузки и отпечаток, с которым они сверяются; см. `record_splice.h`. */
+    fun setRecordChunkDir(path: String, identity: String) = GGUFNativeLib.nativeSetRecordChunkDir(path, identity)
+
+    /**
+     * Обсчитать куски для строк записей (JSON-массив строк) в папку кусков;
+     * [finish] — последняя порция. Отчёт — JSON. Держит замок движка на время
+     * порции. Чего не умеет — у `nativeBuildRecordChunks` в `gguf_lib.cpp`.
+     */
+    fun buildRecordChunks(linesJson: String, finish: Boolean): String =
+        GGUFNativeLib.nativeBuildRecordChunks(linesJson, finish)
 
     /**
      * Что модель собиралась сказать первым в последней генерации разговора:
