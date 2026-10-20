@@ -62,6 +62,8 @@ internal object GGUFNativeLib {
     external fun nativeSetDryHistory(text: String)
     external fun nativeGetLastDryFed(): Int
     external fun nativeGetFirstStepReport(): String
+    external fun nativeSetRecordPlan(json: String)
+    external fun nativeGetRecordReport(): String
     external fun nativeGetLastConversationPrompt(): ByteArray
 
     external fun nativeGenerateStream(

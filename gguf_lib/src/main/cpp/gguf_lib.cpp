@@ -37,6 +37,7 @@
 #include "vlm_kv_cache.h"
 #include "rag_ingest/rag_ingest.h"
 #include "text_digest/text_digest.h"
+#include "record_splice/record_splice.h"
 #include "error_tracker.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -361,6 +362,14 @@ static struct {
     // проведено через цепочку в последней генерации разговора (0 — не было).
     std::string                   dry_history;
     int                           last_dry_fed     = 0;
+
+    // Записи хода, разобранные приложением на подписи и содержание (см.
+    // nativeSetRecordPlan и record_splice.h). Разовое задание, как dry_history:
+    // забирается следующей генерацией разговора и очищается. last_record_report
+    // — отчёт о разрезе последней генерации разговора (JSON, пусто — плана не
+    // было). Запрос пока обсчитывается целиком: разрез только меряется.
+    std::string                   record_plan;
+    std::string                   last_record_report;
 
     std::string system_prompt;
     std::string chat_template_override;
@@ -2264,6 +2273,35 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastConversationPrompt(JNIEnv * e
     return out;
 }
 
+// Отчёт о разрезе записей этого запроса (см. record_splice.h): JSON с числами
+// или с причиной, почему резать нельзя; пусто — плана записей не было.
+// Вызывается под замком генерации. Только меряет: запрос по-прежнему
+// обсчитывается целиком.
+//
+// Модель с Mamba-слоями (рекуррентная или гибрид) не режется вовсе: её
+// состояние — одно на весь разговор, и готовый кусок в него не вставить.
+static std::string record_report(const std::string & prompt) {
+    if (g_state.record_plan.empty()) return "";
+    nlohmann::json out;
+    if (llama_model_is_recurrent(g_state.model) || llama_model_is_hybrid(g_state.model)) {
+        out["why"] = "у модели Mamba-слои: готовый кусок в её состояние не вставить";
+        return out.dump();
+    }
+    auto plan = record_splice::parse_plan(g_state.record_plan);
+    auto cut = record_splice::cut(prompt, plan);
+    if (!cut.ok) {
+        out["why"] = cut.why;
+        return out.dump();
+    }
+    auto c = record_splice::count(llama_model_get_vocab(g_state.model), plan, cut);
+    out["lines"] = c.lines;
+    out["sig"] = c.sig_tokens;
+    out["content"] = c.content_tokens;
+    out["seams"] = c.seam_tokens;
+    out["seams_whole"] = c.seam_whole_tokens;
+    return out.dump();
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetFirstStepReport(JNIEnv * env, jobject) {
     // Не ждать генерацию: спрашивают после неё, а занятый замок значит, что
@@ -2341,6 +2379,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     }
 
     g_state.last_conversation_prompt = tmpl_result.prompt;
+    g_state.last_record_report = record_report(tmpl_result.prompt);
+    g_state.record_plan.clear();
     auto tokens = tokenize_string(tmpl_result.prompt, true);
 
     if (tokens.empty()) {
@@ -2889,6 +2929,29 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetDryHistory(
     const char * cstr = env->GetStringUTFChars(jtext, nullptr);
     g_state.dry_history = cstr ? std::string(cstr) : std::string();
     if (cstr) env->ReleaseStringUTFChars(jtext, cstr);
+}
+
+// Записи хода, разобранные на подписи и содержание: JSON
+// {"recall": "...", "lines": [{"s": подпись, "c": содержание}]} (см.
+// record_splice.h). Разовое задание следующей генерации разговора.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetRecordPlan(
+        JNIEnv * env, jobject, jstring jjson) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    const char * cstr = env->GetStringUTFChars(jjson, nullptr);
+    g_state.record_plan = cstr ? std::string(cstr) : std::string();
+    if (cstr) env->ReleaseStringUTFChars(jjson, cstr);
+}
+
+// Отчёт о разрезе записей последней генерации разговора (см. record_report).
+// Как и отчёт первого шага, не ждёт идущую генерацию.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetRecordReport(JNIEnv * env, jobject) {
+    std::unique_lock<std::mutex> lock(g_state.gen_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return safe_new_string_utf(env, "{\"why\":\"идёт генерация — отчёт сейчас перепишется\"}");
+    std::string copy = g_state.last_record_report;
+    lock.unlock();
+    return safe_new_string_utf(env, copy.c_str());
 }
 
 // Сколько токенов поданного текста прошло через цепочку в последней генерации
