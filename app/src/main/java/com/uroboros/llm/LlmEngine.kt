@@ -1066,6 +1066,7 @@ class LlmEngine(
                         missing = j.optInt("missing"),
                         stale = j.optInt("stale"),
                         failed = j.optInt("failed"),
+                        unsplit = j.optInt("unsplit"),
                     ) else null,
                 )
             }.getOrElse { RecordSplit.Report(why = "отчёт движка не разобран") }

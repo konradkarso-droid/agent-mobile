@@ -90,17 +90,98 @@ Counts count(const llama_vocab * vocab, const Plan & plan, const Cut & cut) {
     }
     for (const Segment & s : cut.segments) {
         if (s.line < 0) continue;
-        const int n = (int) tokenize(vocab, s.text, false).size();
+        const int n = (int) tokenize(vocab, chunk_text(s.text), false).size();
         c.line_tokens += n;
         c.seam_tokens += seam_tokens(n);
     }
     return c;
 }
 
-std::vector<std::vector<llama_token>> segment_tokens(const llama_vocab * vocab, const Cut & cut) {
-    std::vector<std::vector<llama_token>> out;
-    out.reserve(cut.segments.size());
-    for (size_t i = 0; i < cut.segments.size(); i++) out.push_back(tokenize(vocab, cut.segments[i].text, i == 0));
+std::string chunk_text(const std::string & line) {
+    return line + "\n";
+}
+
+namespace {
+
+// Байты текста, который даёт токен; служебные метки — своим текстом, как их
+// пишет шаблон чата.
+std::string piece(const llama_vocab * vocab, llama_token t) {
+    char buf[256];
+    int n = llama_token_to_piece(vocab, t, buf, sizeof(buf), 0, true);
+    if (n >= 0) return std::string(buf, n);
+    std::string big((size_t) -n, '\0');
+    n = llama_token_to_piece(vocab, t, big.data(), (int) big.size(), 0, true);
+    return n >= 0 ? big.substr(0, (size_t) n) : std::string();
+}
+
+} // namespace
+
+Layout spans(const llama_vocab * vocab, const std::vector<llama_token> & tokens,
+             const std::string & prompt, const Cut & cut) {
+    Layout out;
+    const int N = (int) tokens.size();
+    // Где в тексте начинается каждый токен. Служебное начало (BOS), если
+    // движок его добавил, текста в запросе не имеет: пробуем без него.
+    std::vector<std::string> pieces(N);
+    for (int i = 0; i < N; i++) pieces[i] = piece(vocab, tokens[i]);
+    std::vector<size_t> at;
+    bool fits = false;
+    for (int lead = 0; lead <= 1 && lead <= N && !fits; lead++) {
+        at.assign(N + 1, 0);
+        size_t pos = 0;
+        fits = true;
+        for (int i = 0; i < N; i++) {
+            at[i] = pos;
+            if (i < lead) continue;
+            if (prompt.compare(pos, pieces[i].size(), pieces[i]) != 0) { fits = false; break; }
+            pos += pieces[i].size();
+        }
+        at[N] = pos;
+        fits = fits && pos == prompt.size();
+    }
+    if (!fits) {
+        out.why = "токены запроса не складываются в его текст";
+        return out;
+    }
+    // Первый токен, начинающийся не раньше символа c; -1 — ровно на c токена нет.
+    auto first_from = [&](size_t c) {
+        return (int) (std::lower_bound(at.begin(), at.end() - 1, c) - at.begin());
+    };
+    auto starts_at = [&](size_t c) {
+        const int i = first_from(c);
+        return (i < N && at[i] == c) || (i == N && at[N] == c) ? i : -1;
+    };
+
+    int done = 0;           // токены до done уже разложены
+    size_t c = 0;           // символ, с которого начинается следующий кусок разреза
+    for (const Segment & seg : cut.segments) {
+        const size_t a = c;
+        c += seg.text.size();
+        if (seg.line < 0) continue;
+        const size_t b = c;
+        const bool newline = b < prompt.size() && prompt[b] == '\n';
+        const int ti = starts_at(a);
+        const int tj = newline ? starts_at(b + 1) : -1;
+        Span line;
+        line.line = seg.line;
+        line.text = chunk_text(seg.text);
+        if (ti >= done && tj > ti) {
+            line.begin = ti;
+            line.end = tj;
+            const auto own = tokenize(vocab, line.text, false);
+            line.whole = std::equal(tokens.begin() + ti, tokens.begin() + tj, own.begin(), own.end());
+        } else {
+            // Не отрезать ровно: строке достаются целые токены внутри неё,
+            // считать её всё равно заново.
+            line.begin = std::max(done, first_from(a));
+            line.end = std::max(line.begin, first_from(b));
+        }
+        if (line.begin > done) out.spans.push_back({done, line.begin, -1, false, ""});
+        out.spans.push_back(line);
+        done = line.end;
+    }
+    if (done < N) out.spans.push_back({done, N, -1, false, ""});
+    out.ok = true;
     return out;
 }
 
@@ -291,47 +372,54 @@ bool insert_chunk(llama_context * ctx, const std::vector<uint8_t> & bytes, const
 
 // ── Ход ────────────────────────────────────────────────────────────────────
 
-bool eval_turn(llama_context * ctx, const Cut & cut,
-               const std::vector<std::vector<llama_token>> & seg_tokens,
+bool eval_turn(llama_context * ctx, const std::vector<llama_token> & tokens, const Layout & layout,
                const std::string & identity, const std::vector<llama_token> & wall,
                const std::string & dir, int & n_past, const EvalFresh & eval, TurnStats & stats) {
-    int pos = 0;
-    for (size_t i = 0; i < cut.segments.size(); i++) {
-        const auto & toks = seg_tokens[i];
-        const int len = (int) toks.size();
-        const int start = pos;
-        pos += len;
-        if (pos <= n_past) continue;  // уже в кэше с прошлого хода
-        const bool is_line = cut.segments[i].line >= 0;
-        if (is_line) stats.lines++;
-
-        // Строку можно взять готовой, только если она начинается ровно там,
-        // где кончается кэш: середину строки из куска не взять.
-        if (is_line && start == n_past && !dir.empty()) {
-            const std::string path = dir + "/" + chunk_file_name(cut.segments[i].text);
+    // Свежие токены копятся от n_past до upto и обсчитываются одной пачкой.
+    int upto = n_past;
+    auto flush = [&]() {
+        if (upto <= n_past) return true;
+        const std::vector<llama_token> fresh(tokens.begin() + n_past, tokens.begin() + upto);
+        stats.fresh_tokens += (int) fresh.size();
+        return eval(fresh, n_past);
+    };
+    for (const Span & sp : layout.spans) {
+        if (sp.end <= n_past) continue;  // уже в кэше с прошлого хода
+        if (sp.line >= 0) {
+            stats.lines++;
+            if (!sp.whole) stats.unsplit++;
+        }
+        // Готовым можно взять только строку целиком: середину строки из куска
+        // не взять.
+        if (sp.line >= 0 && sp.whole && sp.begin >= n_past && !dir.empty()) {
+            const std::string path = dir + "/" + chunk_file_name(sp.text);
+            const ChunkKey key{identity, wall, std::vector<llama_token>(tokens.begin() + sp.begin, tokens.begin() + sp.end)};
             std::vector<uint8_t> bytes;
             if (!read_file(path, bytes)) {
                 stats.missing++;
+            } else if (!chunk_matches(bytes, key)) {
+                stats.stale++;
             } else {
+                upto = sp.begin;
+                if (!flush()) return false;
                 std::string why;
-                const int seam = seam_tokens(len);
-                if (insert_chunk(ctx, bytes, ChunkKey{identity, wall, toks}, start, seam, why)) {
+                const int seam = seam_tokens(sp.end - sp.begin);
+                if (insert_chunk(ctx, bytes, key, sp.begin, seam, why)) {
                     touch_file(path);
                     stats.ready++;
                     stats.seam_tokens += seam;
                     stats.fresh_tokens += seam;
-                    n_past = pos;
+                    n_past = upto = sp.end;
                     continue;
                 }
                 if (why == "сбой движка на шве" || why == "движок не принял кусок") stats.failed++;
                 else stats.stale++;
             }
         }
-        const std::vector<llama_token> rest(toks.begin() + (n_past - start), toks.end());
-        stats.fresh_tokens += (int) rest.size();
-        if (!eval(rest, n_past)) return false;
+        upto = sp.end;
     }
-    return true;
+    upto = (int) tokens.size();
+    return flush();
 }
 
 // ── Хранилище ──────────────────────────────────────────────────────────────
