@@ -106,6 +106,9 @@ set(RAG_INGEST_SOURCES
 set(TEXT_DIGEST_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/text_digest)
 set(TEXT_DIGEST_SOURCES ${TEXT_DIGEST_DIR}/text_digest.cpp)
 
+set(RECORD_SPLICE_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/record_splice)
+set(RECORD_SPLICE_SOURCES ${RECORD_SPLICE_DIR}/record_splice.cpp)
+
 set(VLM_DIR ${LLAMA_DIR}/engine/vlm)
 set(VLM_SOURCES
     ${VLM_DIR}/clip.cpp
@@ -143,6 +146,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     ${LLAMA_DIR}/engine/vlm_kv_cache.cpp
     ${RAG_INGEST_SOURCES}
     ${TEXT_DIGEST_SOURCES}
+    ${RECORD_SPLICE_SOURCES}
     ${VLM_SOURCES})
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
@@ -155,6 +159,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${RAG_INGEST_DIR}
     ${TEXT_DIGEST_DIR}
+    ${RECORD_SPLICE_DIR}
 )
 
 # -Wno-cast-qual silences vendored stb_image / miniaudio warnings used by VLM.

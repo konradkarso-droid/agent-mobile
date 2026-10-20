@@ -1036,6 +1036,28 @@ class LlmEngine(
     /** Первый шаг модели в последней генерации разговора, см. [GGMLEngine.firstStepReport]. */
     val firstStepReport: String get() = engine.firstStepReport()
 
+    /**
+     * Разрез записей последней генерации разговора (см. [RecordSplit]); null —
+     * записей в ней не было. Разбор JSON здесь, а не в [RecordSplit]: тот
+     * остаётся чистым и проверяется обычными тестами.
+     */
+    val recordReport: RecordSplit.Report?
+        get() {
+            val raw = runCatching { engine.recordReport() }.getOrNull()
+            if (raw.isNullOrEmpty()) return null
+            return runCatching {
+                val j = JSONObject(raw)
+                if (j.has("why")) RecordSplit.Report(why = j.getString("why"))
+                else RecordSplit.Report(
+                    lines = j.optInt("lines"),
+                    sigTokens = j.optInt("sig"),
+                    contentTokens = j.optInt("content"),
+                    seamTokens = j.optInt("seams"),
+                    seamWholeTokens = j.optInt("seams_whole"),
+                )
+            }.getOrElse { RecordSplit.Report(why = "отчёт движка не разобран") }
+        }
+
     /** Последний запрос разговора целиком, см. [GGMLEngine.lastConversationPrompt]. */
     val lastConversationPrompt: String get() = engine.lastConversationPrompt()
 
@@ -1892,10 +1914,18 @@ class LlmEngine(
         messages: List<Pair<String, String>>,
         maxTokens: Int = 512,
         dryAgainst: String? = null,
+        /**
+         * Вспоминание этого хода — тот же текст, что лежит в [messages]
+         * сообщением агента (см. [ConversationJournal.messagesFor]); null —
+         * записей нет. Движок режет по нему запрос для прибора «Записи:»
+         * ([RecordSplit]).
+         */
+        recall: String? = null,
     ): Flow<GenerationEvent> = guardedFlow(
         conversationMessages(messages),
         maxTokens,
         dryAgainst = dryAgainst,
+        recall = recall,
         // Лента разговора первым системного сообщения не несёт — стену ставит
         // движок; системные сообщения посреди ленты (строка о себе, см.
         // ConversationJournal.messagesFor) первыми не стоят никогда. Первым
@@ -1923,6 +1953,8 @@ class LlmEngine(
          * границы — у [DRY_PARAMS_JSON].
          */
         dryAgainst: String? = null,
+        /** Вспоминание хода для прибора «Записи:»; только разговору. См. [generateConversationFlow]. */
+        recall: String? = null,
     ): Flow<GenerationEvent> = channelFlow {
         // Движок уходит от разговора к чужой работе — сперва точка разговора
         // на диск. Зачем и чего не умеет — у [conversationDisplaced].
@@ -1953,6 +1985,10 @@ class LlmEngine(
             engine.updateSamplerParams(DRY_PARAMS_JSON)
             engine.setDryHistory(dryAgainst!!)
         }
+        // План записей ставится на каждый запрос разговора, и пустым тоже:
+        // иначе отчёт прибора мог бы описать записи прошлого хода. Судье и
+        // ночным работам не ставится — их запрос записей хода не несёт.
+        if (conversation) withContext(Dispatchers.IO) { engine.setRecordPlan(recordPlanJson(recall)) }
         // Первым делом, до всякой работы движка: с этого момента состояние в
         // нём принадлежит этому запросу, как бы он ни кончился.
         stateIsConversation = conversation
@@ -2191,6 +2227,16 @@ class LlmEngine(
      * где роль назначается, — тогда ошибку видно там, где её сделали, а
      * не здесь, где её уже не отличить от правильной.
      */
+    /** План записей для движка (см. `nativeSetRecordPlan`); пустая строка — записей нет. */
+    private fun recordPlanJson(recall: String?): String {
+        if (recall.isNullOrBlank()) return ""
+        val lines = JSONArray()
+        for (line in RecordSplit.lines(recall)) {
+            lines.put(JSONObject().put("s", line.sig).put("c", line.content))
+        }
+        return JSONObject().put("recall", recall).put("lines", lines).toString()
+    }
+
     private fun conversationMessages(messages: List<Pair<String, String>>): String {
         val array = JSONArray()
         for ((role, content) in messages) {

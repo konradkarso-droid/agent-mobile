@@ -487,6 +487,17 @@ class GGMLEngine {
     fun lastDryFed(): Int = GGUFNativeLib.nativeGetLastDryFed()
 
     /**
+     * Записи хода, разобранные на подписи и содержание (JSON), для следующей
+     * генерации разговора; пустая строка — записей нет. Разовое, как
+     * [setDryHistory]. Формат и зачем — у `nativeSetRecordPlan` и
+     * `record_splice.h` в нативной части.
+     */
+    fun setRecordPlan(json: String) = GGUFNativeLib.nativeSetRecordPlan(json)
+
+    /** Отчёт о разрезе записей последней генерации разговора (JSON); пусто — плана не было. */
+    fun recordReport(): String = GGUFNativeLib.nativeGetRecordReport()
+
+    /**
      * Что модель собиралась сказать первым в последней генерации разговора:
      * сломанные числа, пятёрка вероятных токенов, вес «конца ответа», что
      * выбрано, и последние токены запроса. Зачем и чего не умеет — у

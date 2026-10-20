@@ -48,6 +48,7 @@ import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
+import com.uroboros.llm.RecordSplit
 import com.uroboros.llm.WordDamageHolder
 import com.uroboros.memory.AcceptCheck
 import com.uroboros.memory.ConfidenceLevel
@@ -236,6 +237,12 @@ class MainActivity : AppCompatActivity() {
      */
     private var journalDiskLine: String? = null
     private var lastMetricsLine: String? = null
+
+    /**
+     * Прибор «Записи:» последнего хода — разрез записей на подписи и
+     * содержание (см. [RecordSplit]). Живёт и стирается вместе с числами хода.
+     */
+    private var recordsLine: String? = null
 
     /**
      * Что сказала сверка на последнем ходе — о записях между собой и о записи
@@ -3041,7 +3048,7 @@ class MainActivity : AppCompatActivity() {
             dreamInMirrorLine ?: "Сон в зеркале: в этом запуске хода ещё не было",
         )
         group(
-            "Ход", lastMetricsLine, echoLine, interceptMeter(),
+            "Ход", lastMetricsLine, recordsLine ?: "Записи: чисел хода на экране нет", echoLine, interceptMeter(),
             glanceLine ?: "Взгляд: чисел хода на экране нет",
             WordDamageHolder.meterLine(), disputeNoticeLine, composedLine,
         )
@@ -3335,6 +3342,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun clearRunMetrics() {
         lastMetricsLine = null
+        recordsLine = null
         // Строка сверки стирается вместе с числами и по той же причине: она
         // описывает ход, который может не состояться, и оставшись на экране,
         // читалась бы как относящаяся к следующему.
@@ -5661,6 +5669,14 @@ class MainActivity : AppCompatActivity() {
                 // Если она осталась пустой — кэш не пишется, и это надо
                 // видеть сразу, а не через сутки по неизменившемуся времени.
                 promptCacheLine = llmEngine.getPromptCacheReport()
+                // Тем же моментом, что разбивка: движок хранит разрез только
+                // последней генерации разговора. Не дошла генерация до
+                // обсчёта — разреза этого хода нет, и строка так и скажет.
+                recordsLine = if (engineMetrics != null || tokensSeen > 0) {
+                    RecordSplit.meterLine(llmEngine.recordReport)
+                } else {
+                    "Записи: не известно — генерация не дошла до ответа"
+                }
                 lastSpeed = engineMetrics?.let { fmt1(it.tokensPerSecond.toDouble()) }
                 lastMetricsLine = metricsReport(
                     metrics = engineMetrics,

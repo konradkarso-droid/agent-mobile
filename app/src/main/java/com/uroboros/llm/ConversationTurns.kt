@@ -551,7 +551,7 @@ class ConversationTurns(
 
         // Один проход модели с ловлей вызова приборов (см. [passCatchingCall]).
         suspend fun pass(msgs: List<Pair<String, String>>): String? =
-            passCatchingCall(msgs, answer, onEvent, onPiece = {
+            passCatchingCall(msgs, answer, onEvent, recall = recall, onPiece = {
                 if (firstTokenAtMs == null) firstTokenAtMs = System.currentTimeMillis() - startMs
                 tokensSeen++
             }) { metrics = it }
@@ -744,6 +744,8 @@ class ConversationTurns(
         messages: List<Pair<String, String>>,
         text: StringBuilder,
         onEvent: (GenerationEvent) -> Unit,
+        /** Вспоминание хода — движку для прибора «Записи:» ([RecordSplit]). */
+        recall: String?,
         onPiece: () -> Unit,
         dryAgainst: String? = null,
         onMetrics: (DecodingMetrics) -> Unit,
@@ -752,7 +754,7 @@ class ConversationTurns(
         var holding = true
         // Знак отдаётся сборщику ниже до проверки: тот, что открыл вызов,
         // уже лежит в [text], и выдача обрывается на нём же.
-        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = dryAgainst).transformWhile { event ->
+        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = dryAgainst, recall = recall).transformWhile { event ->
             emit(event)
             text.indexOf(Glance.CALL_OPEN) < 0
         }.collect { event ->
@@ -884,7 +886,7 @@ class ConversationTurns(
         // отменой — для хода это законченная выдача.
         var cutByCall = false
         try {
-            val before = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
+            val before = passCatchingCall(base + tail, second, onEvent, recall = recall, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
             if (before != null && tail.isEmpty()) {
                 glancedHere = true
                 onGlance()
@@ -897,7 +899,7 @@ class ConversationTurns(
                 second.clear()
                 pieces = 0
                 metrics = null
-                val again = passCatchingCall(base + tail, second, onEvent, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
+                val again = passCatchingCall(base + tail, second, onEvent, recall = recall, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
                 if (again != null) {
                     cutByCall = true
                     if (cutAtCall(second, again)) pieces = 0
@@ -1029,7 +1031,7 @@ class ConversationTurns(
             onThird()
             val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without) +
                 glanceTail + (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
-            engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = sources.joinToString("\n")).collect { event ->
+            engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = sources.joinToString("\n"), recall = recall).collect { event ->
                 when (event) {
                     is GenerationEvent.Token -> text.append(event.text)
                     is GenerationEvent.Metrics -> metrics = event.metrics
