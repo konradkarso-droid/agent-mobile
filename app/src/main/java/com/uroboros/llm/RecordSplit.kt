@@ -45,6 +45,8 @@ object RecordSplit {
         val stale: Int = 0,
         /** Сбой подъёма. */
         val failed: Int = 0,
+        /** Строку не отрезать ровно по токенам — готовой её не взять (почему — `chunk_text` в `record_splice.h`). */
+        val unsplit: Int = 0,
     )
 
     /** Отчёт движка о записях хода (см. `plan_splice` в `gguf_lib.cpp`). */
@@ -87,6 +89,7 @@ object RecordSplit {
             turn.missing.takeIf { it > 0 }?.let { "нет куска $it" },
             turn.stale.takeIf { it > 0 }?.let { "кусок не годен $it" },
             turn.failed.takeIf { it > 0 }?.let { "сбой $it" },
+            turn.unsplit.takeIf { it > 0 }?.let { "не отрезать ровно $it" },
         )
         return if (parts.isEmpty()) "" else " (${parts.joinToString(", ")})"
     }

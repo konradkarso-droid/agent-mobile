@@ -2291,12 +2291,12 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastConversationPrompt(JNIEnv * e
 }
 
 // Записи хода (см. record_splice.h) — разрез запроса, отчёт для прибора и,
-// если склейка включена и возможна, токены запроса по кускам.
+// если склейка включена и возможна, токены запроса по участкам.
 struct splice_turn {
     bool use = false;                                // ход идёт по кускам
     record_splice::Cut cut;
-    std::vector<std::vector<llama_token>> segs;      // токены каждого куска
-    std::vector<llama_token> tokens;                 // они же подряд — токены запроса
+    std::vector<llama_token> tokens;                 // токены запроса — те же, что без склейки
+    record_splice::Layout layout;                    // они же по участкам
     std::vector<llama_token> wall;                   // токены стены
     nlohmann::json report;                           // для прибора; null — плана не было
 };
@@ -2343,17 +2343,19 @@ static splice_turn plan_splice(const std::string & prompt, bool starts_with_wall
     else if (!starts_with_wall) off = "запрос начинается не со стены";
     else {
         t.wall = wall_tokens(g_state.system_prompt);
-        t.segs = record_splice::segment_tokens(vocab, t.cut);
-        for (auto & seg : t.segs) t.tokens.insert(t.tokens.end(), seg.begin(), seg.end());
+        t.tokens = tokenize_string(prompt, true);
         if (t.wall.empty() || t.tokens.size() < t.wall.size() ||
                 !std::equal(t.wall.begin(), t.wall.end(), t.tokens.begin())) {
             off = "стена в запросе режется на токены иначе, чем отдельно";
+        } else {
+            t.layout = record_splice::spans(vocab, t.tokens, prompt, t.cut);
+            if (!t.layout.ok) off = t.layout.why;
         }
     }
     if (!off.empty()) {
         out["off"] = off;
         t.tokens.clear();
-        t.segs.clear();
+        t.layout = {};
         return t;
     }
     t.use = true;
@@ -2437,8 +2439,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     }
 
     g_state.last_conversation_prompt = tmpl_result.prompt;
-    // Записи хода: разрез для прибора и, при включённой склейке, токены по
-    // кускам — те же, по которым ход пойдёт ниже (eval_turn).
+    // Записи хода: разрез для прибора и, при включённой склейке, токены
+    // запроса по участкам — по ним ход пойдёт ниже (eval_turn).
     splice_turn splice = plan_splice(tmpl_result.prompt, starts_with_wall);
     g_state.record_plan.clear();
     g_state.last_record_report = splice.report.is_null() ? "" : splice.report.dump();
@@ -2576,7 +2578,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         // Ход по кускам: строки записей — готовыми, где кусок годен.
         record_splice::TurnStats stats;
         evaluated = record_splice::eval_turn(
-            g_state.ctx, splice.cut, splice.segs, g_state.chunk_identity, splice.wall,
+            g_state.ctx, splice.tokens, splice.layout, g_state.chunk_identity, splice.wall,
             g_state.chunk_dir, g_state.n_past,
             [&](const std::vector<llama_token> & t, int & n_past) {
                 return eval_tokens(t, n_past, jni_eval_progress, &mt_progress);
@@ -2591,6 +2593,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         r["missing"] = stats.missing;
         r["stale"] = stats.stale;
         r["failed"] = stats.failed;
+        r["unsplit"] = stats.unsplit;
         g_state.last_record_report = r.dump();
     } else {
         evaluated = new_tokens.empty() || eval_tokens(new_tokens, g_state.n_past,
@@ -3087,7 +3090,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeBuildRecordChunks(
     try {
         for (auto & item : nlohmann::json::parse(lines_json)) {
             if (g_state.cancel_flag.load()) { stopped = true; break; }
-            const std::string line = item.get<std::string>();
+            const std::string line = record_splice::chunk_text(item.get<std::string>());
             const record_splice::ChunkKey key{g_state.chunk_identity, wall, record_splice::tokenize(vocab, line, false)};
             const std::string path = g_state.chunk_dir + "/" + record_splice::chunk_file_name(line);
             std::vector<uint8_t> bytes;

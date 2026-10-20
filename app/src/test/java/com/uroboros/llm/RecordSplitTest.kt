@@ -97,6 +97,14 @@ class RecordSplitTest {
     }
 
     @Test
+    fun `ход по кускам — строку не отрезать ровно названа отдельно`() {
+        assertEquals(
+            "Записи: 7 · подписи 105 ток. · содержание 101 ток. · готовых 6 из 7 (не отрезать ровно 1) · заново обсчитано 70 ток.",
+            RecordSplit.meterLine(counted.copy(on = true, turn = RecordSplit.Turn(lines = 7, ready = 6, freshTokens = 70, unsplit = 1))),
+        )
+    }
+
+    @Test
     fun `ход по кускам — все готовы, лишнего в скобках нет`() {
         assertEquals(
             "Записи: 7 · подписи 105 ток. · содержание 101 ток. · готовых 7 из 7 · заново обсчитано 58 ток.",
