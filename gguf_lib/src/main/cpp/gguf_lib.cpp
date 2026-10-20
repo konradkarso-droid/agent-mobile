@@ -363,13 +363,18 @@ static struct {
     std::string                   dry_history;
     int                           last_dry_fed     = 0;
 
-    // Записи хода, разобранные приложением на подписи и содержание (см.
-    // nativeSetRecordPlan и record_splice.h). Разовое задание, как dry_history:
-    // забирается следующей генерацией разговора и очищается. last_record_report
-    // — отчёт о разрезе последней генерации разговора (JSON, пусто — плана не
-    // было). Запрос пока обсчитывается целиком: разрез только меряется.
+    // Записи хода, разобранные приложением на строки (см. nativeSetRecordPlan
+    // и record_splice.h). Разовое задание, как dry_history: забирается
+    // следующей генерацией разговора и очищается. last_record_report — отчёт
+    // о записях последней генерации разговора (JSON, пусто — плана не было).
     std::string                   record_plan;
     std::string                   last_record_report;
+    // Склейка готовых записей: папка кусков этой загрузки и отпечаток загрузки
+    // (см. nativeSetRecordChunkDir). splice_ready — контекст создан с тремя
+    // последовательностями общего кэша (у моделей с Mamba-слоями — нет).
+    std::string                   chunk_dir;
+    std::string                   chunk_identity;
+    bool                          splice_ready = false;
 
     std::string system_prompt;
     std::string chat_template_override;
@@ -1631,6 +1636,18 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         LOGI("op_offload: enabled — large ops will be routed to GPU when available");
     }
 
+    // Три последовательности одного общего кэша — для склейки готовых записей
+    // (см. record_splice.h). Общий кэш (kv_unified) окно между ними не делит:
+    // одна и та же ячейка стены принадлежит и разговору, и стене, и памяти это
+    // не прибавляет. Моделям с Mamba-слоями — одна последовательность, как
+    // прежде: склейка им не включается, а их состояние на каждую
+    // последовательность своё.
+    g_state.splice_ready = !llama_model_is_recurrent(g_state.model) && !llama_model_is_hybrid(g_state.model);
+    if (g_state.splice_ready) {
+        cparams.n_seq_max  = record_splice::SEQ_COUNT;
+        cparams.kv_unified = true;
+    }
+
     g_state.ctx = llama_init_from_model(g_state.model, cparams);
     if (!g_state.ctx) {
         char msg[256];
@@ -2273,33 +2290,74 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastConversationPrompt(JNIEnv * e
     return out;
 }
 
-// Отчёт о разрезе записей этого запроса (см. record_splice.h): JSON с числами
-// или с причиной, почему резать нельзя; пусто — плана записей не было.
-// Вызывается под замком генерации. Только меряет: запрос по-прежнему
-// обсчитывается целиком.
-//
-// Модель с Mamba-слоями (рекуррентная или гибрид) не режется вовсе: её
-// состояние — одно на весь разговор, и готовый кусок в него не вставить.
-static std::string record_report(const std::string & prompt) {
-    if (g_state.record_plan.empty()) return "";
-    nlohmann::json out;
-    if (llama_model_is_recurrent(g_state.model) || llama_model_is_hybrid(g_state.model)) {
+// Записи хода (см. record_splice.h) — разрез запроса, отчёт для прибора и,
+// если склейка включена и возможна, токены запроса по кускам.
+struct splice_turn {
+    bool use = false;                                // ход идёт по кускам
+    record_splice::Cut cut;
+    std::vector<std::vector<llama_token>> segs;      // токены каждого куска
+    std::vector<llama_token> tokens;                 // они же подряд — токены запроса
+    std::vector<llama_token> wall;                   // токены стены
+    nlohmann::json report;                           // для прибора; null — плана не было
+};
+
+// Токены стены в том виде, в каком она начинает запрос: системное сообщение
+// через шаблон, со служебным началом. Пусто — шаблон не собрал одно системное
+// сообщение (тогда склейки нет: не с чем сверить начало запроса).
+static std::vector<llama_token> wall_tokens(const std::string & system_prompt) {
+    try {
+        std::vector<common_chat_msg> sys{{"system", system_prompt}};
+        return tokenize_string(apply_chat_template(sys, false).prompt, true);
+    } catch (...) {
+        return {};
+    }
+}
+
+// Под замком генерации. Обсчёт не трогает: только режет и считает.
+static splice_turn plan_splice(const std::string & prompt, bool starts_with_wall) {
+    splice_turn t;
+    if (g_state.record_plan.empty()) return t;
+    auto & out = t.report;
+    if (!g_state.splice_ready) {
         out["why"] = "у модели Mamba-слои: готовый кусок в её состояние не вставить";
-        return out.dump();
+        return t;
     }
     auto plan = record_splice::parse_plan(g_state.record_plan);
-    auto cut = record_splice::cut(prompt, plan);
-    if (!cut.ok) {
-        out["why"] = cut.why;
-        return out.dump();
+    t.cut = record_splice::cut(prompt, plan);
+    if (!t.cut.ok) {
+        out["why"] = t.cut.why;
+        return t;
     }
-    auto c = record_splice::count(llama_model_get_vocab(g_state.model), plan, cut);
+    const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
+    auto c = record_splice::count(vocab, plan, t.cut);
     out["lines"] = c.lines;
     out["sig"] = c.sig_tokens;
     out["content"] = c.content_tokens;
+    out["line_tokens"] = c.line_tokens;
     out["seams"] = c.seam_tokens;
-    out["seams_whole"] = c.seam_whole_tokens;
-    return out.dump();
+    out["on"] = plan.on;
+    if (!plan.on) return t;
+
+    std::string off;
+    if (g_state.chunk_dir.empty()) off = "папка кусков не задана";
+    else if (!starts_with_wall) off = "запрос начинается не со стены";
+    else {
+        t.wall = wall_tokens(g_state.system_prompt);
+        t.segs = record_splice::segment_tokens(vocab, t.cut);
+        for (auto & seg : t.segs) t.tokens.insert(t.tokens.end(), seg.begin(), seg.end());
+        if (t.wall.empty() || t.tokens.size() < t.wall.size() ||
+                !std::equal(t.wall.begin(), t.wall.end(), t.tokens.begin())) {
+            off = "стена в запросе режется на токены иначе, чем отдельно";
+        }
+    }
+    if (!off.empty()) {
+        out["off"] = off;
+        t.tokens.clear();
+        t.segs.clear();
+        return t;
+    }
+    t.use = true;
+    return t;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -2379,9 +2437,12 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     }
 
     g_state.last_conversation_prompt = tmpl_result.prompt;
-    g_state.last_record_report = record_report(tmpl_result.prompt);
+    // Записи хода: разрез для прибора и, при включённой склейке, токены по
+    // кускам — те же, по которым ход пойдёт ниже (eval_turn).
+    splice_turn splice = plan_splice(tmpl_result.prompt, starts_with_wall);
     g_state.record_plan.clear();
-    auto tokens = tokenize_string(tmpl_result.prompt, true);
+    g_state.last_record_report = splice.report.is_null() ? "" : splice.report.dump();
+    auto tokens = splice.use ? splice.tokens : tokenize_string(tmpl_result.prompt, true);
 
     if (tokens.empty()) {
         jstring jerr = env->NewStringUTF("Failed to tokenize prompt");
@@ -2509,14 +2570,39 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     // progress reporting for long prompt evaluation
     jni_progress_ctx mt_progress = { env, callback };
     auto t_eval0 = std::chrono::high_resolution_clock::now();
-    if (!new_tokens.empty() && !eval_tokens(new_tokens, g_state.n_past,
-                                             jni_eval_progress, &mt_progress)) {
+    bool evaluated;
+    size_t evaluated_tokens = new_tokens.size();
+    if (splice.use) {
+        // Ход по кускам: строки записей — готовыми, где кусок годен.
+        record_splice::TurnStats stats;
+        evaluated = record_splice::eval_turn(
+            g_state.ctx, splice.cut, splice.segs, g_state.chunk_identity, splice.wall,
+            g_state.chunk_dir, g_state.n_past,
+            [&](const std::vector<llama_token> & t, int & n_past) {
+                return eval_tokens(t, n_past, jni_eval_progress, &mt_progress);
+            },
+            stats);
+        evaluated_tokens = stats.fresh_tokens;
+        auto & r = splice.report;
+        r["turn_lines"] = stats.lines;
+        r["ready"] = stats.ready;
+        r["fresh"] = stats.fresh_tokens;
+        r["turn_seams"] = stats.seam_tokens;
+        r["missing"] = stats.missing;
+        r["stale"] = stats.stale;
+        r["failed"] = stats.failed;
+        g_state.last_record_report = r.dump();
+    } else {
+        evaluated = new_tokens.empty() || eval_tokens(new_tokens, g_state.n_past,
+                                                      jni_eval_progress, &mt_progress);
+    }
+    if (!evaluated) {
         jstring jerr = env->NewStringUTF("Failed to evaluate prompt");
         env->CallVoidMethod(callback, g_onError, jerr);
         env->DeleteLocalRef(jerr);
         return JNI_FALSE;
     }
-    g_state.last_prompt_eval_tokens = new_tokens.size();
+    g_state.last_prompt_eval_tokens = evaluated_tokens;
     g_state.last_prompt_eval_us = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - t_eval0).count();
 
@@ -2943,7 +3029,92 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetRecordPlan(
     if (cstr) env->ReleaseStringUTFChars(jjson, cstr);
 }
 
-// Отчёт о разрезе записей последней генерации разговора (см. record_report).
+// Папка кусков этой загрузки и отпечаток загрузки, с которым куски сверяются
+// (см. record_splice.h). Пустой путь — склейки нет.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetRecordChunkDir(
+        JNIEnv * env, jobject, jstring jpath, jstring jidentity) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    const char * path = env->GetStringUTFChars(jpath, nullptr);
+    const char * identity = env->GetStringUTFChars(jidentity, nullptr);
+    g_state.chunk_dir = path ? path : "";
+    g_state.chunk_identity = identity ? identity : "";
+    if (path) env->ReleaseStringUTFChars(jpath, path);
+    if (identity) env->ReleaseStringUTFChars(jidentity, identity);
+}
+
+// Потолок папки кусков. Объявленное число, не подобранное: кусок строки в
+// ~30 токенов весит около 2,4 МБ, то есть это около двухсот строк.
+static const uint64_t CHUNK_DIR_CAP_BYTES = 512ull * 1024 * 1024;
+
+// Обсчитать куски для строк записей (JSON-массив строк) и положить в папку
+// кусков. Годный кусок не пересчитывается. Стена держится в своей
+// последовательности между вызовами; finish — последний вызов, стена
+// убирается и папка подрезается до потолка.
+//
+// Звать порциями по несколько строк: между порциями зовущий сверяется со
+// сторожем. Остановка (nativeStopGeneration) прерывает между строками.
+//
+// ЧЕГО НЕ УМЕЕТ: первый вызов, когда стены в разговоре нет, обсчитывает её
+// целиком (больше тысячи токенов), и остановка этого обсчёта не прерывает.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeBuildRecordChunks(
+        JNIEnv * env, jobject, jstring jlines, jboolean finish) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    nlohmann::json out;
+    const char * cstr = env->GetStringUTFChars(jlines, nullptr);
+    std::string lines_json = cstr ? cstr : "";
+    if (cstr) env->ReleaseStringUTFChars(jlines, cstr);
+
+    auto reply = [&](const char * why) {
+        if (why) out["why"] = why;
+        return safe_new_string_utf(env, out.dump().c_str());
+    };
+    if (!g_state.model || !g_state.ctx) return reply("модель не загружена");
+    if (!g_state.splice_ready) return reply("у модели Mamba-слои: куски не вставить");
+    if (g_state.chunk_dir.empty()) return reply("папка кусков не задана");
+    if (g_state.system_prompt.empty()) return reply("стены нет");
+    const auto wall = wall_tokens(g_state.system_prompt);
+    if (wall.empty()) return reply("стена не собирается шаблоном");
+
+    g_state.cancel_flag = false;
+    if (!record_splice::ensure_wall(g_state.ctx, wall, g_state.prev_prompt_tokens, g_state.n_past)) {
+        return reply("сбой движка на стене");
+    }
+    const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
+    int built = 0, kept = 0, failed = 0;
+    bool stopped = false;
+    try {
+        for (auto & item : nlohmann::json::parse(lines_json)) {
+            if (g_state.cancel_flag.load()) { stopped = true; break; }
+            const std::string line = item.get<std::string>();
+            const record_splice::ChunkKey key{g_state.chunk_identity, wall, record_splice::tokenize(vocab, line, false)};
+            const std::string path = g_state.chunk_dir + "/" + record_splice::chunk_file_name(line);
+            std::vector<uint8_t> bytes;
+            if (record_splice::read_file(path, bytes) && record_splice::chunk_matches(bytes, key)) {
+                kept++;
+                continue;
+            }
+            if (record_splice::build_chunk(g_state.ctx, key, bytes) && record_splice::write_file(path, bytes)) built++;
+            else failed++;
+        }
+    } catch (...) {
+        out["why"] = "строки не разобраны";
+    }
+    out["built"] = built;
+    out["kept"] = kept;
+    out["failed"] = failed;
+    out["stopped"] = stopped;
+    if (finish || stopped) {
+        llama_memory_seq_rm(llama_get_memory(g_state.ctx), record_splice::SEQ_WALL, -1, -1);
+        uint64_t total = 0;
+        out["removed"] = record_splice::enforce_cap(g_state.chunk_dir, CHUNK_DIR_CAP_BYTES, total);
+        out["total_bytes"] = total;
+    }
+    return safe_new_string_utf(env, out.dump().c_str());
+}
+
+// Отчёт о записях последней генерации разговора (см. plan_splice).
 // Как и отчёт первого шага, не ждёт идущую генерацию.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetRecordReport(JNIEnv * env, jobject) {

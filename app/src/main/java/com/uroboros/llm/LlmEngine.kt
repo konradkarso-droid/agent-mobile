@@ -6,8 +6,10 @@ import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
+import com.uroboros.memory.RecordChunks
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -911,6 +913,7 @@ class LlmEngine(
         loadPrint = shortHash(
             (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
         )
+        applyRecordChunkDir()
         // Размышления (`<think>…</think>` перед ответом у моделей с таким
         // режимом, например на основе Qwen3) выключены для всей работы с
         // моделью: всё, что модель выдаёт, приложение принимает за ответ —
@@ -1052,8 +1055,18 @@ class LlmEngine(
                     lines = j.optInt("lines"),
                     sigTokens = j.optInt("sig"),
                     contentTokens = j.optInt("content"),
+                    lineTokens = j.optInt("line_tokens"),
                     seamTokens = j.optInt("seams"),
-                    seamWholeTokens = j.optInt("seams_whole"),
+                    on = j.optBoolean("on"),
+                    off = j.optString("off").ifEmpty { null },
+                    turn = if (j.has("ready")) RecordSplit.Turn(
+                        lines = j.optInt("turn_lines"),
+                        ready = j.optInt("ready"),
+                        freshTokens = j.optInt("fresh"),
+                        missing = j.optInt("missing"),
+                        stale = j.optInt("stale"),
+                        failed = j.optInt("failed"),
+                    ) else null,
                 )
             }.getOrElse { RecordSplit.Report(why = "отчёт движка не разобран") }
         }
@@ -2234,7 +2247,82 @@ class LlmEngine(
         for (line in RecordSplit.lines(recall)) {
             lines.put(JSONObject().put("s", line.sig).put("c", line.content))
         }
-        return JSONObject().put("recall", recall).put("lines", lines).toString()
+        return JSONObject().put("recall", recall).put("lines", lines)
+            .put("on", RecordChunkStore.get(context).on).toString()
+    }
+
+    /** Папка готовых кусков этой загрузки; null — не задана (см. [applyRecordChunkDir]). */
+    @Volatile
+    private var recordChunkDir: File? = null
+
+    /**
+     * Папка готовых кусков записей — своя на каждую загрузку ([loadPrint]):
+     * кусок чужой модели или накладки бесполезен. Отпечаток загрузки уходит в
+     * движок вместе с папкой и сверяется внутри каждого куска, так что и
+     * случайно попавший чужой кусок не возьмётся. Чей разговор — тоже в
+     * отпечатке ([RecordChunks.OWNER]).
+     *
+     * Прежние папки здесь не убираются: ночь грузит модель с ночной накладкой,
+     * и уборка при каждой загрузке стирала бы дневные куски. Их убирает ночная
+     * сборка ([buildRecordChunks]), которая идёт на дневной загрузке.
+     */
+    private fun applyRecordChunkDir() {
+        val print = loadPrint
+        val dir = print?.let { File(File(context.filesDir, RecordChunkStore.ROOT), it) }
+        if (dir == null || (!dir.isDirectory && !dir.mkdirs())) {
+            recordChunkDir = null
+            engine.setRecordChunkDir("", "")
+            return
+        }
+        recordChunkDir = dir
+        engine.setRecordChunkDir(dir.absolutePath, "$print|${RecordChunks.OWNER}")
+    }
+
+    /**
+     * Обсчитать куски для строк [lines] — порция ночной сборки (см.
+     * memory.dream.RecordChunkStep). [finish] — последняя порция: тогда же
+     * убираются папки кусков других загрузок.
+     *
+     * Под тем же присмотром, что генерация: занятость движка ([activity]),
+     * счёт непрерывного обсчёта у сторожа и часовой, который при опасной зоне
+     * просит движок остановиться. Остановка прерывает порцию между строками.
+     */
+    suspend fun buildRecordChunks(lines: List<String>, finish: Boolean): RecordSplit.Build = withContext(Dispatchers.IO) {
+        coroutineScope {
+            watchdog.markInferenceStarted()
+            val clock = launch {
+                while (isActive) {
+                    delay(WATCHDOG_TICK_MS)
+                    if (barrierStopReason(watchdog.zone.value) != null) engine.stopGeneration()
+                }
+            }
+            activity.begin()
+            try {
+                val raw = engine.buildRecordChunks(JSONArray(lines).toString(), finish)
+                if (finish) {
+                    val keep = recordChunkDir
+                    File(context.filesDir, RecordChunkStore.ROOT).listFiles()?.forEach { old ->
+                        if (old.isDirectory && old != keep) old.deleteRecursively()
+                    }
+                }
+                runCatching {
+                    val j = JSONObject(raw)
+                    RecordSplit.Build(
+                        built = j.optInt("built"),
+                        kept = j.optInt("kept"),
+                        failed = j.optInt("failed"),
+                        stopped = j.optBoolean("stopped"),
+                        removed = j.optInt("removed"),
+                        totalBytes = if (j.has("total_bytes")) j.getLong("total_bytes") else null,
+                        why = j.optString("why").ifEmpty { null },
+                    )
+                }.getOrElse { RecordSplit.Build(why = "отчёт движка не разобран") }
+            } finally {
+                activity.end()
+                clock.cancel()
+                watchdog.resetInferenceTimer()
+            }
+        }
     }
 
     private fun conversationMessages(messages: List<Pair<String, String>>): String {

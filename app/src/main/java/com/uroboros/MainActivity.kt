@@ -49,6 +49,8 @@ import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.llm.RecordSplit
+import com.uroboros.llm.RecordChunkStore
+import com.uroboros.memory.RecordChunks
 import com.uroboros.llm.WordDamageHolder
 import com.uroboros.memory.AcceptCheck
 import com.uroboros.memory.ConfidenceLevel
@@ -2953,7 +2955,32 @@ class MainActivity : AppCompatActivity() {
         // (ночная накладка, AgentService.loadForNight), и запомненная строка
         // показывала бы прошлую загрузку. До первой загрузки экраном — пусто.
         val adapterNow = adapterLine?.let { llmEngine.getAdapterReport() }
-        group("Движок и стена", engineParamsLine, adapterNow, promptCacheLine, buildSelf, turns.wallChangeLine)
+        // Выключатель склейки — ссылкой в конце строки, как «показать» у строк
+        // о себе: склейка меняет ответы, и включает её человек.
+        val chunkStore = RecordChunkStore.get(applicationContext)
+        val spliceLink = if (chunkStore.on) SPLICE_OFF_WORD else SPLICE_ON_WORD
+        val spliceLine = (if (chunkStore.on) "Склейка записей: включена" else "Склейка записей: выключена") + " — $spliceLink"
+        val chunksNight = chunkStore.nightLine ?: "Куски ночи: ещё не собирала"
+        group("Движок и стена", engineParamsLine, adapterNow, promptCacheLine, buildSelf, turns.wallChangeLine, spliceLine, chunksNight)
+        run {
+            val at = metrics.lastIndexOf(spliceLine)
+            if (at >= 0) {
+                val end = at + spliceLine.length
+                metrics.setSpan(
+                    object : ClickableSpan() {
+                        override fun onClick(widget: View) {
+                            chunkStore.on = !chunkStore.on
+                            renderMetricsPanel()
+                        }
+                        override fun updateDrawState(ds: TextPaint) {
+                            ds.color = colorRecordsLink
+                            ds.isUnderlineText = false
+                        }
+                    },
+                    end - spliceLink.length, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+        }
         if (buildSelf != null && buildSelfLinked) {
             val end = metrics.lastIndexOf(BUILD_SELF_LINK) + BUILD_SELF_LINK.length
             val start = end - BUILD_SELF_LINK_WORD.length
@@ -4787,9 +4814,17 @@ class MainActivity : AppCompatActivity() {
                 // включён. Сама запись не меняется — счёт пользы, пометка «кто →
                 // о ком» и сны берут её текст как есть.
                 var retoldCount = 0
+                // Части строк, ушедших модели, — ночной сборке готовых кусков
+                // (RecordChunks): те же части, из которых собраны строки ниже.
+                val chunkCandidates = ArrayList<RecordChunks.Candidate>()
                 val stickerLines = stickers.map { sticker ->
                     val recordEpisode = episodeClock.episodeAt(sticker.createdAt)
                     val shown = MirrorFilter.shown(sticker, address, retell)
+                    RecordChunks.candidate(
+                        if (shown != null && shown.retold) ProvenanceLabels.retoldParts(shown.text)
+                        else ProvenanceLabels.recordParts(if (shown == null) sticker else sticker.copy(content = shown.text)),
+                        sticker.createdAt,
+                    )?.let { chunkCandidates += it }
                     if (shown != null && shown.retold) {
                         retoldCount++
                         ProvenanceLabels.retoldForModel(
@@ -4809,6 +4844,7 @@ class MainActivity : AppCompatActivity() {
                     else -> null
                 }
                 val portraitLines = portraitRetold.map { (sticker, retold) ->
+                    RecordChunks.candidate(ProvenanceLabels.retoldParts(retold), sticker.createdAt)?.let { chunkCandidates += it }
                     ProvenanceLabels.retoldForModel(
                         sticker, retold, recordsAt,
                         recordEpisode = episodeClock.episodeAt(sticker.createdAt), currentEpisode = currentEpisode,
@@ -4817,6 +4853,9 @@ class MainActivity : AppCompatActivity() {
                 // Портрет первым: так его строки и собираются в сообщение
                 // (Portrait.recall).
                 val allRecords = portraitLines + stickerLines + ownLines
+                // Запомнить сразу: строки ушли модели, каким бы ни вышел ответ.
+                // Кэш — сбой записи ход не трогает (RecordChunkStore.remember).
+                lifecycleScope.launch { RecordChunkStore.get(applicationContext).remember(chunkCandidates, recordsAt) }
                 // Из чего сложилась сумма (DolmenCircle.sourcesLine). Части
                 // считаются по тем же спискам, из которых собран allRecords,
                 // а дверь сна записей круга не берёт (DreamDoor.pick), так что
@@ -5850,6 +5889,10 @@ class MainActivity : AppCompatActivity() {
 
         /** Слово-ссылка в строке «О себе от сборки», см. showBuildSelfDialog. */
         private const val BUILD_SELF_LINK_WORD = "показать"
+
+        /** Слова-ссылки выключателя склейки записей (см. RecordChunkStore.on). */
+        private const val SPLICE_ON_WORD = "включить"
+        private const val SPLICE_OFF_WORD = "выключить"
         private const val BUILD_SELF_LINK = " — $BUILD_SELF_LINK_WORD"
 
         private const val KEY_MODEL_FOLDER_URI = ModelFolder.KEY_MODEL_FOLDER_URI

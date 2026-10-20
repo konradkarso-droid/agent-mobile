@@ -67,24 +67,75 @@ class RecordSplitTest {
         )
     }
 
+    private val counted = RecordSplit.Report(lines = 7, sigTokens = 105, contentTokens = 101, lineTokens = 206, seamTokens = 35)
+
     @Test
-    fun `прибор — доли свежего при подписи отдельно и с подписью`() {
+    fun `выключено — сколько считалось бы заново при готовых кусках`() {
         assertEquals(
-            "Записи: 6 · подписи 92 ток. · содержание 114 ток. · свежими при склейке: " +
-                "подпись отдельно 112 ток. (54 %), с подписью 33 ток. (16 %) · " +
-                "склейки ещё нет — записи обсчитаны целиком",
+            "Записи: 7 · подписи 105 ток. · содержание 101 ток. · склейка выключена — записи обсчитаны целиком; " +
+                "при готовых кусках заново считалось бы 35 ток. из 206",
+            RecordSplit.meterLine(counted),
+        )
+    }
+
+    @Test
+    fun `включено, но ход не пошёл по кускам — причина словами`() {
+        assertEquals(
+            "Записи: 7 · подписи 105 ток. · содержание 101 ток. · склейка включена, но в этом ходе не пошла: запрос начинается не со стены",
+            RecordSplit.meterLine(counted.copy(on = true, off = "запрос начинается не со стены")),
+        )
+    }
+
+    @Test
+    fun `ход по кускам — готовых из строк и почему не все`() {
+        assertEquals(
+            "Записи: 7 · подписи 105 ток. · содержание 101 ток. · готовых 5 из 7 (нет куска 1, кусок не годен 1) · заново обсчитано 81 ток.",
             RecordSplit.meterLine(
-                RecordSplit.Report(lines = 6, sigTokens = 92, contentTokens = 114, seamTokens = 20, seamWholeTokens = 33),
+                counted.copy(on = true, turn = RecordSplit.Turn(lines = 7, ready = 5, freshTokens = 81, missing = 1, stale = 1)),
             ),
         )
     }
 
     @Test
-    fun `прибор не делит на ноль`() {
+    fun `ход по кускам — все готовы, лишнего в скобках нет`() {
         assertEquals(
-            "Записи: 0 · подписи 0 ток. · содержание 0 ток. · свежими при склейке: " +
-                "подпись отдельно 0 ток., с подписью 0 ток. · склейки ещё нет — записи обсчитаны целиком",
-            RecordSplit.meterLine(RecordSplit.Report()),
+            "Записи: 7 · подписи 105 ток. · содержание 101 ток. · готовых 7 из 7 · заново обсчитано 58 ток.",
+            RecordSplit.meterLine(counted.copy(on = true, turn = RecordSplit.Turn(lines = 7, ready = 7, freshTokens = 58))),
+        )
+    }
+
+    @Test
+    fun `ночь — причина, по которой не собирала`() {
+        assertEquals("Куски ночи: не собирала — склейка выключена", RecordSplit.nightLine(0, null, "склейка выключена"))
+    }
+
+    @Test
+    fun `ночь — сумма порций, диск и вытеснение`() {
+        val sum = RecordSplit.sum(
+            listOf(
+                RecordSplit.Build(built = 3, kept = 1),
+                RecordSplit.Build(built = 2, kept = 2, failed = 1, removed = 4, totalBytes = 30L * 1024 * 1024),
+            ),
+        )
+        assertEquals(
+            "Куски ночи: строк 8 · обсчитано 5 · уже были готовы 3 · сбоев 1 · на диске 30 МБ · вытеснено 4",
+            RecordSplit.nightLine(8, sum, null),
+        )
+    }
+
+    @Test
+    fun `ночь — остановка сторожем видна`() {
+        assertEquals(
+            "Куски ночи: строк 8 · обсчитано 2 · уже были готовы 0 · на диске 5 МБ · остановлено сторожем",
+            RecordSplit.nightLine(8, RecordSplit.Build(built = 2, stopped = true, totalBytes = 5L * 1024 * 1024), null),
+        )
+    }
+
+    @Test
+    fun `ночь — порция без движка называет причину`() {
+        assertEquals(
+            "Куски ночи: не вышло — модель не загружена",
+            RecordSplit.nightLine(8, RecordSplit.sum(listOf(RecordSplit.Build(why = "модель не загружена"))), null),
         )
     }
 }

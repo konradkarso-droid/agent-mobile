@@ -74,9 +74,8 @@ object ProvenanceLabels {
         currentEpisode: Int? = null,
     ): String {
         val time = recordTime(sticker, now, zone, recordEpisode, currentEpisode)
-        val who = forModel(sticker.source)
-        val head = if (who == UNKNOWN_FOR_MODEL) "Записано $time, источник не записан" else "$who $time"
-        return "$head: «${sticker.content}»."
+        val parts = recordParts(sticker) ?: return "Записано $time, источник не записан: «${sticker.content}»."
+        return line(parts, time)
     }
 
     /**
@@ -100,7 +99,35 @@ object ProvenanceLabels {
         zone: ZoneId = ZoneId.systemDefault(),
         recordEpisode: Int? = null,
         currentEpisode: Int? = null,
-    ): String = "$RETOLD_FOR_MODEL ${recordTime(sticker, now, zone, recordEpisode, currentEpisode)}: $retold"
+    ): String = line(retoldParts(retold), recordTime(sticker, now, zone, recordEpisode, currentEpisode))
+
+    /**
+     * Строка записи без времени: кто сказал ([who]) и что ([body], с пробелом
+     * в начале). Строка для модели — «$who $время:$body». Разделена затем,
+     * чтобы ту же строку можно было собрать к другому моменту (ночная сборка
+     * готовых записей, memory.RecordChunks) тем же правилом, что и в ходе.
+     */
+    data class Parts(val who: String, val body: String)
+
+    /** Строка записи из частей и подписи времени — одно место на все подписи. */
+    fun line(parts: Parts, time: String): String = "${parts.who} $time:${parts.body}"
+
+    /** Части строки записи ([recordForModel]); null — источник не записан, у такой строки своя форма. */
+    fun recordParts(sticker: Sticker): Parts? {
+        val who = forModel(sticker.source)
+        return if (who == UNKNOWN_FOR_MODEL) null else Parts(who, " «${sticker.content}».")
+    }
+
+    /** Части строки развёрнутой записи ([retoldForModel]). */
+    fun retoldParts(retold: String): Parts = Parts(RETOLD_FOR_MODEL, " $retold")
+
+    /**
+     * Подпись времени записи из прошлого эпизода к моменту [now]:
+     * «в прошлом разговоре, на днях». Та же, что у [recordForModel] при
+     * записи из прошлого эпизода.
+     */
+    fun pastEpisodeTime(createdAt: Long, now: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+        "$PAST_EPISODE, ${ageForModel(createdAt, now, zone)}"
 
     const val RETOLD_FOR_MODEL = "С твоих слов"
 
@@ -112,9 +139,8 @@ object ProvenanceLabels {
         recordEpisode: Int?,
         currentEpisode: Int?,
     ): String {
-        val age = ageForModel(sticker.createdAt, now, zone)
         val past = recordEpisode != null && currentEpisode != null && recordEpisode < currentEpisode
-        return if (past) "$PAST_EPISODE, $age" else age
+        return if (past) pastEpisodeTime(sticker.createdAt, now, zone) else ageForModel(sticker.createdAt, now, zone)
     }
 
     /**
