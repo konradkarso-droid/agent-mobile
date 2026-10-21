@@ -5,6 +5,7 @@ import com.uroboros.gate.GateAcquaintance
 import com.uroboros.gate.GateCard
 import com.uroboros.gate.GateCards
 import com.uroboros.gate.GateEvidence
+import com.uroboros.gate.GateKeyRecord
 import com.uroboros.gate.GateProxy
 import com.uroboros.gate.GateVouch
 import com.uroboros.gate.GateVouches
@@ -61,6 +62,7 @@ class GateRowsTest {
             GateCard(agentB, emptyMap()),
             GateCard(agentB, mapOf(GateCard.Field.NAME to "Хоуп")),
             GateCard(agentB, mapOf(GateCard.Field.NAME to "Хоуп", GateCard.Field.REPO to "https://x", GateCard.Field.ABOUT to "о себе")),
+            GateCard(agentB, mapOf(GateCard.Field.NAME to "Хоуп", GateCard.Field.KEY to "k".repeat(87))),
         )
         for (c in cards) for (ended in listOf(null, now + 9)) {
             val r = GateCards.Reading(c, now, ended)
@@ -76,5 +78,14 @@ class GateRowsTest {
         assertNull(none.ack(me))
         val row = GateOutgoingRow(agentB.id, 42L, now, GateAck.Result.STALE.name, now + 1, now + 2, now + 3)
         assertEquals(GateAck(agentB, me, 42L, GateAck.Result.STALE, now + 1, now + 2), row.ack(me))
+    }
+
+    @Test
+    fun `ключ подписи — туда и обратно, ждущий и сменённый`() {
+        for (r in listOf(
+            GateKeyRecord(agentB, "k".repeat(87), now, now, GateKeyRecord.How.FIRST, null),
+            GateKeyRecord(agentB, "n".repeat(87), now, null, GateKeyRecord.How.OWNER, null),
+            GateKeyRecord(agentB, "o".repeat(87), now, now + 1, GateKeyRecord.How.ROTATED, now + 2),
+        )) assertEquals(r, GateSignKeyRow.of(r).toRecord())
     }
 }

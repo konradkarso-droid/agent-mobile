@@ -8,6 +8,7 @@ import com.uroboros.gate.GateAcquaintance
 import com.uroboros.gate.GateCard
 import com.uroboros.gate.GateCards
 import com.uroboros.gate.GateEvidence
+import com.uroboros.gate.GateKeyRecord
 import com.uroboros.gate.GateProxy
 import com.uroboros.gate.GateVouch
 import com.uroboros.gate.GateVouches
@@ -119,12 +120,15 @@ data class GateCardReadingRow(
     val about: String?,
     val receivedMs: Long,
     val endedMs: Long?,
+    /** Ключ подписи из карточки; у строк до подписей — пусто. */
+    val signKey: String? = null,
 ) {
     fun toRecord(): GateCards.Reading {
         val fields = LinkedHashMap<GateCard.Field, String>()
         name?.let { fields[GateCard.Field.NAME] = it }
         repo?.let { fields[GateCard.Field.REPO] = it }
         about?.let { fields[GateCard.Field.ABOUT] = it }
+        signKey?.let { fields[GateCard.Field.KEY] = it }
         return GateCards.Reading(GateCard(PersonKey(agent), fields), receivedMs, endedMs)
     }
 
@@ -136,6 +140,7 @@ data class GateCardReadingRow(
             about = r.card.fields[GateCard.Field.ABOUT],
             receivedMs = r.receivedMs,
             endedMs = r.endedMs,
+            signKey = r.card.fields[GateCard.Field.KEY],
         )
     }
 }
@@ -167,3 +172,23 @@ data class GateOutgoingRow(
 /** Попытка отправки пакета: момент по моим часам. */
 @Entity(tableName = "gate_outgoing_attempts", primaryKeys = ["toKey", "number", "atMs"])
 data class GateAttemptRow(val toKey: String, val number: Long, val atMs: Long)
+
+/** Ключ подписи агента, как я его знаю ([GateKeyRecord]). */
+@Entity(tableName = "gate_sign_keys")
+data class GateSignKeyRow(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val agent: String,
+    val signKey: String,
+    val seenMs: Long,
+    val trustedMs: Long?,
+    val how: String,
+    val endedMs: Long?,
+) {
+    fun toRecord() = GateKeyRecord(PersonKey(agent), signKey, seenMs, trustedMs, GateKeyRecord.How.valueOf(how), endedMs)
+
+    companion object {
+        fun of(r: GateKeyRecord) = GateSignKeyRow(
+            agent = r.agent.id, signKey = r.key, seenMs = r.seenMs, trustedMs = r.trustedMs, how = r.how.name, endedMs = r.endedMs,
+        )
+    }
+}

@@ -37,6 +37,12 @@ data class GateCard(val agent: PersonKey, val fields: Map<Field, String>) {
         NAME("name", "называет себя", 64),
         REPO("repo", "репозиторий", 200),
         ABOUT("about", "о себе", 280),
+
+        /**
+         * Открытый ключ подписи ([GateSign]) — только в подписанной карточке
+         * ([GateWire.readCard]). Длина задана видом ключа, а не объявлена.
+         */
+        KEY("key", "ключ подписи", GateSign.KEY_CHARS),
     }
 
     /**
@@ -165,15 +171,15 @@ object GateCards {
                 val f = t.current.card.fields
                 if (f.isEmpty()) "Карточка: $who — впервые, пустая"
                 else "Карточка: $who — впервые: " +
-                    GateCard.Field.values().filter { it in f }.joinToString("; ") { "${it.words} «${f.getValue(it)}»" }
+                    GateCard.Field.values().filter { it in f }.joinToString("; ") { "${it.words} «${shown(it, f.getValue(it))}»" }
             }
             is Change.Same -> "Карточка: $who — без перемен с ${date(c.since)}"
             is Change.Changed -> "Карточка: $who — изменилась (принята ${date(t.current.receivedMs)}): " +
                 c.diff.joinToString("; ") { d ->
                     when {
-                        d.was == null -> "${d.field.words}: добавлено «${d.now}»"
-                        d.now == null -> "${d.field.words}: убрано (было «${d.was}»)"
-                        else -> "${d.field.words}: было «${d.was}», стало «${d.now}»"
+                        d.was == null -> "${d.field.words}: добавлено «${shown(d.field, d.now!!)}»"
+                        d.now == null -> "${d.field.words}: убрано (было «${shown(d.field, d.was)}»)"
+                        else -> "${d.field.words}: было «${shown(d.field, d.was)}», стало «${shown(d.field, d.now)}»"
                     }
                 }
         }
@@ -182,6 +188,9 @@ object GateCards {
     /** Строка прибора, когда карточки агента нет: «нет» отличается от пустой строки. */
     fun meterNone(agent: PersonKey, nameOf: (PersonKey) -> String?): String =
         "Карточка: ${name(agent, nameOf)} — карточки нет"
+
+    /** Ключ подписи в строке — первыми 8 знаками: целиком его глазами не сверить. */
+    private fun shown(f: GateCard.Field, v: String) = if (f == GateCard.Field.KEY) v.take(8) + "…" else v
 
     private fun name(k: PersonKey, nameOf: (PersonKey) -> String?) = nameOf(k)?.takeIf { it.isNotBlank() } ?: k.id
 }

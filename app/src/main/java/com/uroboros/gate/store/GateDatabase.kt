@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * База врат — отдельный файл, не база памяти и не база ленты.
@@ -35,7 +37,7 @@ import androidx.room.RoomDatabase
     entities = [
         GateNumberRow::class, GateKnownKeyRow::class, GateProxyRow::class, GateEvidenceRow::class,
         GateAcquaintanceRow::class, GateVouchRow::class, GateCardReadingRow::class, GateCardSentRow::class,
-        GateOutgoingRow::class, GateAttemptRow::class,
+        GateOutgoingRow::class, GateAttemptRow::class, GateSignKeyRow::class,
     ],
     version = GateDatabase.SCHEMA_VERSION,
     exportSchema = false,
@@ -50,9 +52,36 @@ abstract class GateDatabase : RoomDatabase() {
          * Версия схемы врат — своя, отдельно от баз памяти и ленты. При подъёме
          * сюда же добавляется миграция: без неё база не откроется.
          */
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         const val FILE_NAME = "uroboros_gate.db"
+
+        /**
+         * Версия 2: ключи подписи агентов (`gate_sign_keys`, [GateSignKeyRow])
+         * и столбец `signKey` у показаний карточек. Старые показания — без
+         * ключа: карточек с ключом до этой версии не было, NULL — правда.
+         *
+         * Текст `CREATE TABLE` — слово в слово тот, что строит сам Room для
+         * [GateSignKeyRow]: Room сверяет схему при открытии и не откроет базу
+         * при расхождении. Поэтому у таблицы нет индекса — его имя и форму
+         * пришлось бы повторять руками.
+         */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `gate_card_readings` ADD COLUMN `signKey` TEXT")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `gate_sign_keys` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`agent` TEXT NOT NULL, " +
+                        "`signKey` TEXT NOT NULL, " +
+                        "`seenMs` INTEGER NOT NULL, " +
+                        "`trustedMs` INTEGER, " +
+                        "`how` TEXT NOT NULL, " +
+                        "`endedMs` INTEGER" +
+                        ")",
+                )
+            }
+        }
 
         @Volatile
         private var INSTANCE: GateDatabase? = null
@@ -60,6 +89,7 @@ abstract class GateDatabase : RoomDatabase() {
         fun getInstance(context: Context): GateDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(context.applicationContext, GateDatabase::class.java, FILE_NAME)
+                    .addMigrations(MIGRATION_1_2)
                     .build().also { INSTANCE = it }
             }
         }

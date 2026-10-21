@@ -143,8 +143,8 @@ class GateIntakeTest {
 
     @Test
     fun `чужая версия — не разбирается вовсе, даже с мусором вместо тела`() {
-        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap(goodBody, version = 3)))
-        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap("это не JSON", version = 3)))
+        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap(goodBody, version = 4)))
+        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap("это не JSON", version = 4)))
     }
 
     @Test

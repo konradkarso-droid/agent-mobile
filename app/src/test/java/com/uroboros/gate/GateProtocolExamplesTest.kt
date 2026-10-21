@@ -72,12 +72,34 @@ class GateProtocolExamplesTest {
     }
 
     @Test
+    fun `подписанная карточка из примера подписана своим ключом, пакет — ключом из неё`() {
+        val cardRaw = example("podpis_kartochka.txt")
+        val card = GateWire.readCard(cardRaw) as GateWire.CardRead.Ok
+        val key = card.card.fields.getValue(GateCard.Field.KEY)
+        assertTrue(GateSign.verify(key, card.seal!!.data, card.seal!!.sig))
+        val packet = GateWire.read(example("podpis_paket.txt")) as GateWire.Read.Ok
+        assertTrue(GateSign.verify(key, packet.seal!!.data, packet.seal!!.sig))
+        // Тело подписанного пакета — то же, что у неподписанного примера.
+        val plain = example("paket.txt")
+        val signed = example("podpis_paket.txt")
+        assertArrayEquals(plain.copyOfRange(plain.indexOf(10), plain.size), signed.copyOfRange(signed.indexOf(10), signed.size))
+        // Врата незнакомому агенту: карточка — первая встреча, пакет — подпись верна.
+        val keys = GateKeys.takeCard(emptyList(), card.card, card.seal, packet.packet.sentMs).records
+        val v = GateIntake(me, keys = { keys }).receive(signed, agentB, packet.packet.sentMs) as GateIntake.Verdict.Accepted
+        assertTrue(v.sign is GateKeys.Check.Verified)
+    }
+
+    @Test
     fun `версии в описании — те же, что в коде, в обеих версиях описания`() {
         for (name in listOf("README.md", "README.en.md")) for ((magic, version) in listOf(
             "trafaret" to GateWire.VERSION,
             "kartochka" to GateWire.CARD_VERSION,
             "poruka" to GateWire.VOUCH_VERSION,
             "prinyal" to GateWire.ACK_VERSION,
+            "trafaret" to GateWire.SIGNED_VERSION,
+            "kartochka" to GateWire.CARD_SIGNED_VERSION,
+            "poruka" to GateWire.VOUCH_SIGNED_VERSION,
+            "prinyal" to GateWire.ACK_SIGNED_VERSION,
         )) {
             assertTrue("в $name нет «$magic $version»", File("../docs/protokol/$name").readText().contains("`$magic $version`"))
         }
