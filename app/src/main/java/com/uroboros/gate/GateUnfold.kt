@@ -75,7 +75,8 @@ import com.uroboros.util.TextFold
  *  - вставка подлежащего бывает коряво: «старый Борис отдаст сыну»;
  *  - род сказавшего не проверяет: «я сама» от Бориса даст «Борис сама»;
  *  - только русский, только по форме; смысла не видит;
- *  - склонение имени — по последней букве (см. [NameCases]).
+ *  - склонение и род имени — по словарю, а чего там нет — по последней букве
+ *    (см. [NameCases]); откуда взято — в строке прибора ([meterLine]).
  *
  * Проверено стендом на трёх моделях (4B, 7B, 8B): 80 придуманных фраз,
  * половина — написана до запуска кода, и 25 живых предложений одного владельца
@@ -92,6 +93,7 @@ object GateUnfold {
      * [text] — для модели: развёрнутые предложения и оставленные как сказаны,
      * по порядку. [off] — развёртка не включалась вовсе (тогда [text] — слова
      * как сказаны). [taken] — предложений взято, из них [changed] с заменой лица.
+     * [names] — имена сказавшего и того, кому перескажут, и откуда их падежи.
      */
     data class Result(
         val text: String,
@@ -99,6 +101,7 @@ object GateUnfold {
         val taken: Int,
         val changed: Int,
         val kept: List<Kept>,
+        val names: List<Pair<String, NameCases.Source>> = emptyList(),
     )
 
     /**
@@ -119,7 +122,7 @@ object GateUnfold {
         if (speakerName.isNullOrBlank()) return off("имя собеседника не известно")
         if (dictionary == null || table == null) return off("словарь или таблица глаголов не загружены")
 
-        val speaker = NameCases.of(speakerName)
+        val speaker = NameCases.of(speakerName, dictionary)
         val addressee = NameCases.phrase("агент", speaker.of(NameCases.Case.GEN))
         val work = words.replace('ë', 'ё').replace('Ë', 'Ё')
         // Обращение по имени к тому, кому перескажут («Антон, привет!»): «ты» в
@@ -129,8 +132,8 @@ object GateUnfold {
             fold(firstWord.value) == fold(listenerName) &&
             work.substring(firstWord.range.last + 1).trimStart().firstOrNull() in setOf(',', '!')
         val ctx = Ctx(
-            speaker, if (vocative) null else addressee, NameCases.of(listenerName),
-            NameCases.genderOf(listenerName), dictionary, table,
+            speaker, if (vocative) null else addressee, NameCases.of(listenerName, dictionary),
+            NameCases.genderOf(listenerName, dictionary), dictionary, table,
         )
         val out = ArrayList<String>()
         val kept = ArrayList<Kept>()
@@ -147,7 +150,8 @@ object GateUnfold {
                 out += r
             }
         }
-        return Result(out.joinToString(" "), null, taken, changed, kept)
+        val names = listOf(speakerName.trim() to ctx.s.source, listenerName.trim() to ctx.l.source)
+        return Result(out.joinToString(" "), null, taken, changed, kept, names)
     }
 
     /**
@@ -161,6 +165,10 @@ object GateUnfold {
         if (r.kept.isNotEmpty()) {
             sb.append(" · как сказано ${r.kept.size}: ")
             sb.append(r.kept.joinToString("; ") { it.reason })
+        }
+        if (r.names.isNotEmpty()) {
+            sb.append(" · падежи имён: ")
+            sb.append(r.names.joinToString(", ") { (n, src) -> "$n — ${src.label}" })
         }
         return sb.toString()
     }
