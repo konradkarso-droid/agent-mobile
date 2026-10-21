@@ -26,6 +26,8 @@ enum class GateRefusal(val words: String) {
     REPEAT("повтор"),
     UNSIGNED("без подписи, а ключ агента известен"),
     BAD_SIGNATURE("подпись не та"),
+    NOT_A_KONVERT("не конверт"),
+    CANNOT_OPEN("не расшифровать"),
 }
 
 /**
@@ -98,6 +100,15 @@ enum class GateRefusal(val words: String) {
  * кому пакет слали, и только мне. Что «принял» значит и на какие отказы он
  * отвечается, — [GateAck].
  *
+ * КОНВЕРТ ([receiveKonvert]) — форма, закрытая моим ключом шифрования
+ * ([GateBox]). Вход — тот же (размер со своим пределом → схема → поток), и
+ * конверт засчитывается в поток один раз: форма внутри второй раз не
+ * считается. Дальше: форма конверта → мой ли это ключ → точка ли одноразовый
+ * ключ на кривой → расшифровка → форма внутри идёт по своим проверкам целиком,
+ * как пришедшая открыто. Расшифровка не заменяет ни одной из них: закрыть мне
+ * конверт может любой, кто знает мой открытый ключ. Карточка и конверт внутри
+ * конверта — отказ. Не открылся — без «принял»: номера пакета не видно.
+ *
  * ЧЕГО НЕ УМЕЕТ: подлинность отправителя — не больше, чем у канала: ключу
  * канала верит как есть (см. [GatePacket]); за кого отправитель говорит, не
  * решает — это [GateWho];
@@ -121,6 +132,7 @@ class GateIntake(
     private val knownSchemes: Set<String> = setOf("tg"),
     private val numbers: GateNumbers = GateNumbers.InMemory(),
     private val keys: () -> List<GateKeyRecord> = { emptyList() },
+    private val opener: GateOpener? = null,
 ) {
 
     data class Limits(
@@ -129,13 +141,15 @@ class GateIntake(
         val windowMs: Long,
         val repeatWindowMs: Long,
         val futureMs: Long,
+        val maxKonvertBytes: Int,
     ) {
         companion object {
             /**
              * Объявленные числа, не подобранные: 8 КБ на пакет, 20 пакетов за 10
              * минут от одного ключа; номера помнятся 7 суток — с запасом против
              * суток, что канал держит недоставленное, на выключенный телефон
-             * отправителя; часы отправителя могут спешить на сутки.
+             * отправителя; часы отправителя могут спешить на сутки. Конверт — до
+             * 12 КБ: форма до 8 КБ, закрытая и в base64 (+⅓), с ключами и шапкой.
              */
             val DECLARED = Limits(
                 maxBytes = 8 * 1024,
@@ -143,6 +157,7 @@ class GateIntake(
                 windowMs = 10 * 60_000L,
                 repeatWindowMs = 7 * DAY_MS,
                 futureMs = DAY_MS,
+                maxKonvertBytes = 12 * 1024,
             )
         }
     }
@@ -187,6 +202,17 @@ class GateIntake(
         }
     }
 
+    /** Что вышло из конверта: отказ самого конверта или итог приёма формы внутри. */
+    sealed class KonvertVerdict {
+        data class Packet(val verdict: Verdict) : KonvertVerdict()
+        data class Vouch(val verdict: VouchVerdict) : KonvertVerdict()
+        data class Ack(val verdict: AckVerdict) : KonvertVerdict()
+        data class Refused(val refusal: GateRefusal, val detail: String) : KonvertVerdict() {
+            /** Строка для прибора. */
+            val words: String get() = "Конверт: не принят — ${refusal.words}: $detail"
+        }
+    }
+
     /** Ключ отправителя → моменты засчитанных сообщений всех форм в окне [Limits.windowMs]. */
     private val recent = HashMap<String, ArrayDeque<Long>>()
 
@@ -194,7 +220,12 @@ class GateIntake(
     /** [sender] — ключ того, от кого пакет пришёл, по словам канала (см. «отправитель» выше). */
     @Synchronized
     fun receive(raw: ByteArray, sender: PersonKey, nowMs: Long): Verdict {
-        entry(raw, sender, nowMs)?.let { return Verdict.Refused(it.first, it.second) }
+        entry(raw, sender, nowMs, limits.maxBytes)?.let { return Verdict.Refused(it.first, it.second) }
+        return packet(raw, sender, nowMs)
+    }
+
+    /** Пакет слов после входа: открытый — из [receive], закрытый — из [receiveKonvert]. */
+    private fun packet(raw: ByteArray, sender: PersonKey, nowMs: Long): Verdict {
         val read = when (val r = GateWire.read(raw)) {
             is GateWire.Read.Fail -> return Verdict.Refused(r.refusal, r.detail)
             is GateWire.Read.Ok -> r
@@ -235,7 +266,7 @@ class GateIntake(
     /** [sender] — ключ того, от кого карточка пришла, по словам канала. Карточка агента — только с его ключа. */
     @Synchronized
     fun receiveCard(raw: ByteArray, sender: PersonKey, nowMs: Long): CardVerdict {
-        entry(raw, sender, nowMs)?.let { return CardVerdict.Refused(it.first, it.second) }
+        entry(raw, sender, nowMs, limits.maxBytes)?.let { return CardVerdict.Refused(it.first, it.second) }
         val read = when (val r = GateWire.readCard(raw)) {
             is GateWire.CardRead.Fail -> return CardVerdict.Refused(r.refusal, r.detail)
             is GateWire.CardRead.Ok -> r
@@ -259,7 +290,11 @@ class GateIntake(
     /** [sender] — ключ того, от кого поручительство пришло, по словам канала. Поручитель — только он. */
     @Synchronized
     fun receiveVouch(raw: ByteArray, sender: PersonKey, nowMs: Long): VouchVerdict {
-        entry(raw, sender, nowMs)?.let { return VouchVerdict.Refused(it.first, it.second) }
+        entry(raw, sender, nowMs, limits.maxBytes)?.let { return VouchVerdict.Refused(it.first, it.second) }
+        return vouch(raw, sender)
+    }
+
+    private fun vouch(raw: ByteArray, sender: PersonKey): VouchVerdict {
         val read = when (val r = GateWire.readVouch(raw)) {
             is GateWire.VouchRead.Fail -> return VouchVerdict.Refused(r.refusal, r.detail)
             is GateWire.VouchRead.Ok -> r
@@ -280,7 +315,11 @@ class GateIntake(
     /** [sender] — ключ того, от кого «принял» пришёл, по словам канала. Отвечает только он. */
     @Synchronized
     fun receiveAck(raw: ByteArray, sender: PersonKey, nowMs: Long): AckVerdict {
-        entry(raw, sender, nowMs)?.let { return AckVerdict.Refused(it.first, it.second) }
+        entry(raw, sender, nowMs, limits.maxBytes)?.let { return AckVerdict.Refused(it.first, it.second) }
+        return ack(raw, sender)
+    }
+
+    private fun ack(raw: ByteArray, sender: PersonKey): AckVerdict {
         val read = when (val r = GateWire.readAck(raw)) {
             is GateWire.AckRead.Fail -> return AckVerdict.Refused(r.refusal, r.detail)
             is GateWire.AckRead.Ok -> r
@@ -296,12 +335,36 @@ class GateIntake(
         return AckVerdict.Accepted(ack, sign)
     }
 
+    /** [sender] — ключ того, от кого конверт пришёл, по словам канала (см. «конверт» выше). */
+    @Synchronized
+    fun receiveKonvert(raw: ByteArray, sender: PersonKey, nowMs: Long): KonvertVerdict {
+        fun no(r: GateRefusal, d: String) = KonvertVerdict.Refused(r, d)
+        entry(raw, sender, nowMs, limits.maxKonvertBytes)?.let { return no(it.first, it.second) }
+        val k = when (val r = GateWire.readKonvert(raw)) {
+            is GateWire.KonvertRead.Fail -> return no(r.refusal, r.detail)
+            is GateWire.KonvertRead.Ok -> r.konvert
+        }
+        val opener = opener ?: return no(GateRefusal.CANNOT_OPEN, "у меня нет ключа шифрования")
+        if (k.key != opener.publicKey) return no(GateRefusal.CANNOT_OPEN, "закрыто не моим ключом (${k.key.take(8)}…)")
+        if (GateSign.decodeKey(k.enc) == null) return no(GateRefusal.CANNOT_OPEN, "одноразовый ключ — не точка кривой P-256")
+        val inner = GateBox.open(opener, k) ?: return no(GateRefusal.CANNOT_OPEN, "не открылся: испорчен или подделан")
+        if (inner.size > limits.maxBytes) return no(GateRefusal.TOO_BIG, "внутри ${inner.size} Б, предел ${limits.maxBytes}")
+        return when (GateWire.formOf(inner)) {
+            GateWire.Form.PACKET -> KonvertVerdict.Packet(packet(inner, sender, nowMs))
+            GateWire.Form.VOUCH -> KonvertVerdict.Vouch(vouch(inner, sender))
+            GateWire.Form.ACK -> KonvertVerdict.Ack(ack(inner, sender))
+            GateWire.Form.CARD -> no(GateRefusal.MALFORMED, "карточка в конверте — карточка идёт открытой")
+            GateWire.Form.KONVERT -> no(GateRefusal.MALFORMED, "конверт в конверте")
+            null -> no(GateRefusal.MALFORMED, "внутри не форма врат")
+        }
+    }
+
     /**
      * Общий вход всех форм, до разбора: размер → схема ключа канала → предел
      * потока. null — пропустить к разбору; иначе причина и подробность отказа.
      */
-    private fun entry(raw: ByteArray, sender: PersonKey, nowMs: Long): Pair<GateRefusal, String>? {
-        if (raw.size > limits.maxBytes) return GateRefusal.TOO_BIG to "${raw.size} Б, предел ${limits.maxBytes}"
+    private fun entry(raw: ByteArray, sender: PersonKey, nowMs: Long, maxBytes: Int): Pair<GateRefusal, String>? {
+        if (raw.size > maxBytes) return GateRefusal.TOO_BIG to "${raw.size} Б, предел $maxBytes"
         unknownScheme(listOf(sender))?.let { return GateRefusal.UNKNOWN_SCHEME to it }
         if (!countWithinLimit(sender.id, nowMs)) {
             return GateRefusal.FLOOD to "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин"

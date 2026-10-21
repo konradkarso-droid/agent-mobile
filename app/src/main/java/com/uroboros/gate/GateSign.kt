@@ -45,7 +45,7 @@ interface GateSigner {
  * ([seal]). В шапке есть знак формы и версия: подпись от карточки к пакету не
  * приставить.
  *
- * ЧЕГО НЕ УМЕЕТ: не шифрует — содержимое видит канал; что ключ принадлежит
+ * ЧЕГО НЕ УМЕЕТ: не шифрует — это [GateBox]; что ключ принадлежит
  * именно этому агенту, сама подпись не говорит — это решает [GateKeys];
  * подпись, сделанная до кражи телефона вместе с разблокировкой, от подписи
  * вора не отличается.
@@ -60,7 +60,7 @@ object GateSign {
     /** Открытый ключ base64url без `=`: 65 байт → 87 знаков. */
     const val KEY_CHARS = 87
 
-    private val P256: ECParameterSpec by lazy {
+    internal val P256: ECParameterSpec by lazy {
         AlgorithmParameters.getInstance("EC").apply { init(ECGenParameterSpec("secp256r1")) }
             .getParameterSpec(ECParameterSpec::class.java)
     }
@@ -85,17 +85,36 @@ object GateSign {
         return b64(byteArrayOf(4) + fixed(k.w.affineX) + fixed(k.w.affineY))
     }
 
-    /** Ключ с провода; null — не точка кривой P-256 в нужном виде. */
+    /**
+     * Ключ с провода; null — не точка кривой P-256 в нужном виде.
+     *
+     * Лежит ли точка на кривой, проверяется здесь явно, а не оставляется
+     * библиотеке: не все реализации `KeyFactory` это делают. Для подписи
+     * точка вне кривой — просто неверная подпись, для шифрования ([GateBox]) —
+     * способ выведать закрытый ключ получателя.
+     */
     fun decodeKey(s: String): ECPublicKey? {
         if (s.length != KEY_CHARS) return null
         val b = unb64(s) ?: return null
         if (b.size != 65 || b[0] != 4.toByte()) return null
+        val x = BigInteger(1, b.copyOfRange(1, 33))
+        val y = BigInteger(1, b.copyOfRange(33, 65))
+        if (!onCurve(x, y)) return null
         return try {
-            val point = ECPoint(BigInteger(1, b.copyOfRange(1, 33)), BigInteger(1, b.copyOfRange(33, 65)))
-            KeyFactory.getInstance("EC").generatePublic(ECPublicKeySpec(point, P256)) as ECPublicKey
+            KeyFactory.getInstance("EC").generatePublic(ECPublicKeySpec(ECPoint(x, y), P256)) as ECPublicKey
         } catch (e: Exception) {
             null
         }
+    }
+
+    /** y² = x³ + ax + b по модулю p, и обе координаты меньше p. У P-256 сомножитель 1: точки кривой — вся группа. */
+    private fun onCurve(x: BigInteger, y: BigInteger): Boolean {
+        val c = P256.curve
+        val p = (c.field as java.security.spec.ECFieldFp).p
+        if (x >= p || y >= p) return false
+        val left = y.multiply(y).mod(p)
+        val right = x.multiply(x).multiply(x).add(c.a.multiply(x)).add(c.b).mod(p)
+        return left == right
     }
 
     /** Подпись [sig] (r и s по 32 байта) под [data] ключом [key] с провода. */
@@ -145,8 +164,8 @@ object GateSign {
 
     /**
      * Подписать форму: [raw] — неподписанная форма ([GateWire.write] и
-     * соседи), её версия заменяется подписанной, в шапку пятым словом
-     * ложится подпись. Тело не меняется.
+     * соседи), её версия заменяется подписанной ([GateWire.signedVersion]), в
+     * шапку пятым словом ложится подпись. Тело не меняется.
      *
      * [previous] — прежний ключ при его смене, только для карточки: он
      * подписывает те же байты, подпись ложится шестым словом ([GateKeys]).
@@ -157,9 +176,10 @@ object GateSign {
         val parts = String(raw, 0, nl, Charsets.US_ASCII).split(' ')
         require(parts.size == 4) { "шапка уже с подписью или не шапка" }
         val form = GateWire.Form.values().firstOrNull { it.magic == parts[0] } ?: error("не форма врат")
+        require(form.signed.isNotEmpty()) { "форма «${form.magic}» не подписывается" }
         require(parts[1].toIntOrNull() == form.unsigned) { "не та версия для подписи" }
-        val head = "${parts[0]} ${form.signed} ${parts[2]} ${parts[3]}"
         val body = raw.copyOfRange(nl + 1, raw.size)
+        val head = "${parts[0]} ${GateWire.signedVersion(form, body)} ${parts[2]} ${parts[3]}"
         require(previous == null || form == GateWire.Form.CARD) { "прежним ключом подписывается только карточка" }
         val data = signedBytes(head, body)
         val sigs = listOfNotNull(signer.sign(data), previous?.sign(data)).joinToString(" ") { b64(it) }

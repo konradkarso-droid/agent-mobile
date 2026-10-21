@@ -122,6 +122,8 @@ data class GateCardReadingRow(
     val endedMs: Long?,
     /** Ключ подписи из карточки; у строк до подписей — пусто. */
     val signKey: String? = null,
+    /** Ключ шифрования из карточки; у строк до шифрования и у карточек без него — пусто. */
+    val encKey: String? = null,
 ) {
     fun toRecord(): GateCards.Reading {
         val fields = LinkedHashMap<GateCard.Field, String>()
@@ -129,6 +131,7 @@ data class GateCardReadingRow(
         repo?.let { fields[GateCard.Field.REPO] = it }
         about?.let { fields[GateCard.Field.ABOUT] = it }
         signKey?.let { fields[GateCard.Field.KEY] = it }
+        encKey?.let { fields[GateCard.Field.ENC] = it }
         return GateCards.Reading(GateCard(PersonKey(agent), fields), receivedMs, endedMs)
     }
 
@@ -141,6 +144,7 @@ data class GateCardReadingRow(
             receivedMs = r.receivedMs,
             endedMs = r.endedMs,
             signKey = r.card.fields[GateCard.Field.KEY],
+            encKey = r.card.fields[GateCard.Field.ENC],
         )
     }
 }

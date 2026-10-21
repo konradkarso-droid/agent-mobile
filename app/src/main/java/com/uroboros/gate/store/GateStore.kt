@@ -2,6 +2,7 @@ package com.uroboros.gate.store
 
 import com.uroboros.gate.GateAck
 import com.uroboros.gate.GateAcquaintance
+import com.uroboros.gate.GateBox
 import com.uroboros.gate.GateCard
 import com.uroboros.gate.GateCards
 import com.uroboros.gate.GateEvidence
@@ -103,6 +104,9 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
     // --- Карточки ---
 
     fun cardReadings(): List<GateCards.Reading> = dao.cardReadings().map { it.toRecord() }
+
+    /** Ключ шифрования [agent] из его нынешней карточки ([GateBox.encKeyOf]); null — писать открыто. */
+    fun encKeyOf(agent: PersonKey): String? = GateBox.encKeyOf(cardReadings(), agent)
 
     // --- Ключи подписи ---
 

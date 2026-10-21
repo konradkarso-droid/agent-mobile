@@ -105,7 +105,7 @@ class GateCardTest {
 
     @Test
     fun `чужая версия карточки не разбирается`() {
-        assertEquals(GateRefusal.FOREIGN_VERSION, readFail(wrap("мусор", version = GateWire.CARD_SIGNED_VERSION + 1)))
+        assertEquals(GateRefusal.FOREIGN_VERSION, readFail(wrap("мусор", version = GateWire.CARD_ENC_VERSION + 1)))
     }
 
     @Test
