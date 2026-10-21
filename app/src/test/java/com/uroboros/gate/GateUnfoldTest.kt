@@ -30,8 +30,12 @@ class GateUnfoldTest {
         exact = emptyMap(), words = words,
     )
 
+    /** Доверенность агента Бориса за Бориса, подтверждённая владельцем. */
+    private val proxy = GateProxy(agentB, boris, GateProxy.Kind.PERSON, confirmedMs = 1_760_000_000_000L, untilMs = null, revokedMs = null)
+    private val forBoris = GateWho.Who.ForPerson(proxy)
+
     private fun unfold(words: String) =
-        GateUnfold.unfold(packet(words), "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
+        GateUnfold.unfold(packet(words), forBoris, "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
 
     private fun text(words: String) = unfold(words).text
 
@@ -144,21 +148,21 @@ class GateUnfoldTest {
 
     @Test
     fun `нет имени собеседника — развёртки нет`() {
-        val r = GateUnfold.unfold(packet("я работаю"), null, "Антон", TestVerbs.lemmas, TestVerbs.table)
+        val r = GateUnfold.unfold(packet("я работаю"), forBoris, null, "Антон", TestVerbs.lemmas, TestVerbs.table)
         assertEquals("я работаю", r.text)
         assertTrue(r.off!!, "имя" in r.off!!)
     }
 
     @Test
     fun `словарь не загружен — развёртки нет`() {
-        val r = GateUnfold.unfold(packet("я работаю"), "Борис", "Антон", null, TestVerbs.table)
+        val r = GateUnfold.unfold(packet("я работаю"), forBoris, "Борис", "Антон", null, TestVerbs.table)
         assertEquals("я работаю", r.text)
         assertTrue(r.off != null)
     }
 
     @Test
     fun `говорит сам агент — развёртки нет`() {
-        val r = GateUnfold.unfold(packet("я посчитал расходы", saidBy = agentB), "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
+        val r = GateUnfold.unfold(packet("я посчитал расходы", saidBy = agentB), forBoris, "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
         assertEquals("я посчитал расходы", r.text)
         assertTrue(r.off!!, "агент" in r.off!!)
     }
@@ -167,7 +171,7 @@ class GateUnfoldTest {
     fun `пакет после развёртки не меняется`() {
         val p = packet("я работаю по субботам")
         val copy = p.copy()
-        GateUnfold.unfold(p, "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
+        GateUnfold.unfold(p, forBoris, "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
         assertEquals(copy, p)
         assertEquals("я работаю по субботам", p.words)
     }
@@ -179,7 +183,7 @@ class GateUnfoldTest {
         val line = GateUnfold.meterLine(unfold("я работаю. я пою в хоре."))
         assertTrue(line, "взято 1 из 2" in line)
         assertTrue(line, "как сказано 1" in line && "поить" in line)
-        val off = GateUnfold.meterLine(GateUnfold.unfold(packet("я"), null, "Антон", TestVerbs.lemmas, TestVerbs.table))
+        val off = GateUnfold.meterLine(GateUnfold.unfold(packet("я"), forBoris, null, "Антон", TestVerbs.lemmas, TestVerbs.table))
         assertTrue(off, "развёртки нет" in off)
     }
 
@@ -187,14 +191,14 @@ class GateUnfoldTest {
     fun `строка прибора говорит, откуда падежи имён`() {
         val line = GateUnfold.meterLine(unfold("я работаю."))
         assertTrue(line, "Борис — по словарю" in line && "Антон — по словарю" in line)
-        val odd = GateUnfold.meterLine(GateUnfold.unfold(packet("я работаю."), "Кэп", "Мишель", TestVerbs.lemmas, TestVerbs.table))
+        val odd = GateUnfold.meterLine(GateUnfold.unfold(packet("я работаю."), forBoris, "Кэп", "Мишель", TestVerbs.lemmas, TestVerbs.table))
         assertTrue(odd, "Кэп — по букве — нет в словаре" in odd)
         assertTrue(odd, "Мишель — по букве — в словаре склоняется двояко" in odd)
     }
 
     @Test
     fun `имя с беглой гласной склоняется по словарю`() {
-        val r = GateUnfold.unfold(packet("у меня сломалась машина"), "Павел", "Антон", TestVerbs.lemmas, TestVerbs.table)
+        val r = GateUnfold.unfold(packet("у меня сломалась машина"), forBoris, "Павел", "Антон", TestVerbs.lemmas, TestVerbs.table)
         assertEquals("у Павла сломалась машина", r.text)
     }
 
@@ -204,5 +208,42 @@ class GateUnfoldTest {
         assertTrue(PersonForm.SECOND_PRONOUNS.containsAll(GateUnfold.SECOND.keys))
         assertFalse(GateUnfold.FIRST.keys.any { it in PersonForm.SECOND_PRONOUNS })
         assertNull(GateUnfold.FIRST["мой"])
+    }
+
+    // --- Только при «за человека» ---
+
+    private fun offWith(who: GateWho.Who): GateUnfold.Result {
+        val r = GateUnfold.unfold(packet("я в отпуске"), who, "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
+        assertEquals("я в отпуске", r.text)
+        return r
+    }
+
+    @Test
+    fun `без доверенности — развёртки нет, причина названа`() {
+        val r = offWith(GateWho.Who.Unconfirmed(boris, GateWho.Why.NO_PROXY, null, emptyList()))
+        assertTrue(r.off!!, r.off!!.contains("не подтверждено") && r.off!!.contains("доверенности нет"))
+        assertTrue(GateUnfold.meterLine(r).contains("слова как сказаны"))
+    }
+
+    @Test
+    fun `тревога, чат, сам за себя, не поверил — развёртки нет`() {
+        assertTrue(offWith(GateWho.Who.Unconfirmed(boris, GateWho.Why.NO_PROXY, null, listOf(PersonKey("tg:agent:222")))).off != null)
+        assertTrue(offWith(GateWho.Who.ForChat(proxy.copy(kind = GateProxy.Kind.CHAT))).off != null)
+        assertTrue(offWith(GateWho.Who.Self).off != null)
+        assertTrue(offWith(GateWho.Who.Refused(GateRefusal.HEARSAY, "чат не говорит")).off != null)
+    }
+
+    @Test
+    fun `доверенность за другого человека или другого агента — не про этот пакет`() {
+        val r = offWith(GateWho.Who.ForPerson(proxy.copy(principal = PersonKey("tg:user:777"))))
+        assertTrue(r.off!!, r.off!!.contains("не про этот пакет"))
+        assertTrue(offWith(GateWho.Who.ForPerson(proxy.copy(agent = PersonKey("tg:agent:222")))).off != null)
+    }
+
+    @Test
+    fun `с доверенностью — разворачивает`() {
+        val r = GateUnfold.unfold(packet("я в отпуске"), forBoris, "Борис", "Антон", TestVerbs.lemmas, TestVerbs.table)
+        assertNull(r.off)
+        assertEquals("Борис в отпуске", r.text)
     }
 }

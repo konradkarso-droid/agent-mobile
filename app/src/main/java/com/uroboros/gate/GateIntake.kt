@@ -16,6 +16,7 @@ enum class GateRefusal(val words: String) {
     HEARSAY("с третьих рук"),
     UNKNOWN_SCHEME("незнакомый канал ключа"),
     FLOOD("сверх предела потока"),
+    NOT_SENDER("отправитель не тот, что у канала"),
     NOT_FOR_ME("не мне"),
     STALE("устарел"),
     FROM_FUTURE("из будущего"),
@@ -27,15 +28,26 @@ enum class GateRefusal(val words: String) {
  *
  * Порядок проверок — от дешёвого к дорогому, и пакет молчит на первой же
  * несошедшейся: размер → форма и целость ([GateWire.read]) → схемы ключей →
- * предел потока → адресат → момент отправки → повтор.
+ * предел потока → отправитель → адресат → момент отправки → повтор.
+ *
+ * ОТПРАВИТЕЛЬ — ОТ КАНАЛА, А НЕ ИЗ ПАКЕТА. Ключ в теле ([GatePacket.from])
+ * вписывает сам отправитель, и вписать он может чей угодно — например, ключ
+ * настоящего агента Бориса, чтобы ему нашлась чужая доверенность ([GateWho]).
+ * Кто прислал на самом деле, знает только канал (в телеграме — номер аккаунта,
+ * с которого пришло сообщение); его ключ передаёт [receive] тот, кто
+ * подключает канал. Не совпал с ключом в теле — отказ. После этой проверки
+ * [GatePacket.from] значит то же, что ключ канала, и дальше ему можно верить
+ * как каналу — не больше.
  *
  * СХЕМЫ КЛЮЧЕЙ. Знакомы только схемы из [knownSchemes]. Ключ незнакомого
  * канала не принимается, а не «как-нибудь»: подлинность ключа даёт канал, и
  * канал, которого агент не знает, ничего не подтверждает. Схема экрана
  * («screen:») через врата не идёт: экран — не канал между агентами.
  *
- * ПРЕДЕЛ ПОТОКА считается по ключу отправителя ([GatePacket.from]) у пакетов,
- * прошедших форму, — и тех, что адресованы не мне: заваливать можно и ими.
+ * ПРЕДЕЛ ПОТОКА считается по ключу канала у пакетов, прошедших форму, — и тех,
+ * что адресованы не мне или вписали чужого отправителя: заваливать можно и
+ * ими. По ключу из тела считать нельзя: меняя его в каждом пакете, предел
+ * обошёл бы любой.
  * Пакет, у которого форма не сошлась, отправителя не имеет; от потока таких
  * защищает только предел размера. Отброшенное сверх предела не копится и не
  * откладывается — его не было.
@@ -59,7 +71,9 @@ enum class GateRefusal(val words: String) {
  * Запоминаются номера только принятых пакетов: отказанный (сверх предела
  * потока, не мне, устаревший) номера не занимает и может прийти снова.
  *
- * ЧЕГО НЕ УМЕЕТ: подлинность отправителя не проверяет (см. [GatePacket]);
+ * ЧЕГО НЕ УМЕЕТ: подлинность отправителя — не больше, чем у канала: ключу
+ * канала верит как есть (см. [GatePacket]); за кого отправитель говорит, не
+ * решает — это [GateWho];
  * оборванный пакет не складывает в буфер до прихода остатка; в память ничего
  * не кладёт; «принял» не отвечает — это дело канала. Счётчик потока и номера
  * принятых пакетов живут в памяти процесса: после перезапуска счётчик
@@ -116,8 +130,9 @@ class GateIntake(
     /** Ключ отправителя → номер принятого пакета → момент его отправки. */
     private val accepted = HashMap<String, HashMap<Long, Long>>()
 
+    /** [sender] — ключ того, от кого пакет пришёл, по словам канала (см. «отправитель» выше). */
     @Synchronized
-    fun receive(raw: ByteArray, nowMs: Long): Verdict {
+    fun receive(raw: ByteArray, sender: PersonKey, nowMs: Long): Verdict {
         if (raw.size > limits.maxBytes) {
             return Verdict.Refused(GateRefusal.TOO_BIG, "${raw.size} Б, предел ${limits.maxBytes}")
         }
@@ -126,16 +141,20 @@ class GateIntake(
             is GateWire.Read.Ok -> r.packet
         }
 
-        val keys = listOf(packet.from, packet.represents, packet.to, packet.saidBy) + packet.about
+        val keys = listOf(sender, packet.from, packet.represents, packet.to, packet.saidBy) + packet.about
         keys.firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let {
             return Verdict.Refused(GateRefusal.UNKNOWN_SCHEME, "«${GateWire.schemeOf(it)}» в ${it.id}")
         }
 
-        if (!countWithinLimit(packet.from.id, nowMs)) {
+        if (!countWithinLimit(sender.id, nowMs)) {
             return Verdict.Refused(
                 GateRefusal.FLOOD,
-                "от ${packet.from.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин",
+                "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин",
             )
+        }
+
+        if (packet.from != sender) {
+            return Verdict.Refused(GateRefusal.NOT_SENDER, "в пакете ${packet.from.id}, канал говорит ${sender.id}")
         }
 
         if (packet.to != me) return Verdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${packet.to.id}, я ${me.id}")
