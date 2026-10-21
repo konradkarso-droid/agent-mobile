@@ -1,0 +1,2 @@
+poruka 1 81 e511e02a
+{"voucher":"tg:user:123","for":"tg:user:333","to":"tg:user:789","withdraw":false}
