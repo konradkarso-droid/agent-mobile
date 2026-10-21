@@ -1,0 +1,2 @@
+kartochka 2 190 8b03cc92 73h4pf79Y6tbL39uQtTKsrVZy1LMFsNpy7eQIneL7VwhfLdrBByYto3XfLpqB2qDgZJF9t6gBOM0tTAUJKpxHA
+{"agent":"tg:user:123","fields":{"name":"Хоуп","repo":"https://github.com/example/agent","key":"BIB6S3hnYUv2Z1mnEHLFdmyxSMKYqA7qZ847GJ__JnSq5xKfTLfVVeoRs0iIhWC2VvvyeIsr3BMygKMllZv1SD4"}}

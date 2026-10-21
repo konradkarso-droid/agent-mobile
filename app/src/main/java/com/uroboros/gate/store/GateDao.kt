@@ -12,7 +12,7 @@ import androidx.room.Query
  *
  * ОБНОВЛЕНИЙ НЕТ, КРОМЕ ПОЛЕЙ КОНЦА (см. [GateRows]): подтверждение и отзыв
  * доверенности, подтверждение и снятие знакомства, конец показания карточки,
- * ответ на исходящий. Каждое пишется только в пустое поле (`IS NULL`): второй
+ * ответ на исходящий, доверие и конец ключа подписи. Каждое пишется только в пустое поле (`IS NULL`): второй
  * отзыв не сдвигает момент первого. Исключение одно — «какую карточку я
  * последней отправил агенту»: это указатель, а не история, и он заменяется.
  */
@@ -96,6 +96,20 @@ interface GateDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun putCardSent(row: GateCardSentRow)
+
+    // --- Ключи подписи ---
+
+    @Query("SELECT * FROM gate_sign_keys ORDER BY id")
+    fun signKeys(): List<GateSignKeyRow>
+
+    @Insert
+    fun insertSignKey(row: GateSignKeyRow): Long
+
+    @Query("UPDATE gate_sign_keys SET trustedMs = :ms WHERE agent = :agent AND signKey = :key AND trustedMs IS NULL AND endedMs IS NULL")
+    fun trustSignKey(agent: String, key: String, ms: Long): Int
+
+    @Query("UPDATE gate_sign_keys SET endedMs = :ms WHERE agent = :agent AND signKey = :key AND endedMs IS NULL")
+    fun endSignKey(agent: String, key: String, ms: Long): Int
 
     // --- Исходящие ---
 

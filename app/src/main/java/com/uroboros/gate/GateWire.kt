@@ -41,23 +41,42 @@ import java.util.zip.CRC32
  * своим знаком (см. [readCard], [readVouch], [readAck]); какая форма пришла,
  * говорит [formOf].
  *
+ * ПОДПИСЬ — ПЯТЫМ СЛОВОМ ШАПКИ. У каждой формы две версии: без подписи
+ * (четыре слова) и с подписью (пять слов, версия на единицу больше). Тело у
+ * обеих одинаковое. Подписанная шапка карточки может нести шестое слово —
+ * подпись прежним ключом при его смене ([GateKeys]). Как подписывается и что
+ * подписано, — [GateSign]; верна ли подпись и чей это ключ, решают
+ * [GateIntake] и [GateKeys] — здесь только форма: подпись нужной длины из
+ * знаков base64url.
+ *
  * Здесь проверяется форма. Чья это схема ключа, мне ли пакет, не слишком ли
  * часто пишет отправитель и не повтор ли это, решает [GateIntake].
  */
 object GateWire {
 
+    /** Версия пакета слов без подписи; с подписью — [SIGNED_VERSION]. */
     const val VERSION = 2
+    const val SIGNED_VERSION = 3
 
     private const val MAGIC = "trafaret"
 
-    /** Объявленное число, не подобранное: шапка — четыре коротких слова. */
-    private const val MAX_HEADER = 64
+    /**
+     * Объявленное число, не подобранное: четыре коротких слова и две подписи
+     * по [GateSign.SIG_CHARS] знаков с запасом.
+     */
+    private const val MAX_HEADER = 200
+
+    /**
+     * Подпись формы: [sig] — подпись её ключом, [prevSig] — подпись прежним
+     * ключом при его смене (только у карточки), [data] — подписанные байты.
+     */
+    class Seal(val sig: String, val prevSig: String?, val data: ByteArray)
 
     /** Объявленное число, не подобранное. */
     const val MAX_KEY_LENGTH = 128
 
     sealed class Read {
-        data class Ok(val packet: GatePacket) : Read()
+        data class Ok(val packet: GatePacket, val seal: Seal? = null) : Read()
         data class Fail(val refusal: GateRefusal, val detail: String) : Read()
     }
 
@@ -79,10 +98,10 @@ object GateWire {
         return header + body
     }
 
-    fun read(raw: ByteArray): Read = when (val f = frame(raw, MAGIC, VERSION, GateRefusal.NOT_A_PACKET, "трафарета")) {
+    fun read(raw: ByteArray): Read = when (val f = frame(raw, Form.PACKET, GateRefusal.NOT_A_PACKET, "трафарета")) {
         is Frame.Fail -> Read.Fail(f.refusal, f.detail)
         is Frame.Ok -> try {
-            Read.Ok(fromJson(f.json))
+            Read.Ok(fromJson(f.json), f.seal)
         } catch (e: Refused) {
             fail(e.refusal, e.detail)
         }
@@ -103,13 +122,18 @@ object GateWire {
      * Тело строгое, как у пакета: поля — только из [GateCard.Field], каждое не
      * длиннее своего предела; незнакомое поле — отказ. Что карточка значит и
      * как хранится, — [GateCard] и [GateCards].
+     *
+     * Ключ подписи (`key`) — только в подписанной карточке, и там он
+     * обязателен: подпись карточки проверяется этим же ключом. Неподписанная
+     * карточка с ключом — неверная форма: ключ без подписи никто не доказал.
      */
     const val CARD_VERSION = 1
+    const val CARD_SIGNED_VERSION = 2
 
     private const val CARD_MAGIC = "kartochka"
 
     sealed class CardRead {
-        data class Ok(val card: GateCard) : CardRead()
+        data class Ok(val card: GateCard, val seal: Seal? = null) : CardRead()
         data class Fail(val refusal: GateRefusal, val detail: String) : CardRead()
     }
 
@@ -122,10 +146,15 @@ object GateWire {
         return "$CARD_MAGIC $CARD_VERSION ${body.size} ${crcHex(body)}\n".toByteArray(Charsets.US_ASCII) + body
     }
 
-    fun readCard(raw: ByteArray): CardRead = when (val f = frame(raw, CARD_MAGIC, CARD_VERSION, GateRefusal.NOT_A_CARD, "карточки")) {
+    fun readCard(raw: ByteArray): CardRead = when (val f = frame(raw, Form.CARD, GateRefusal.NOT_A_CARD, "карточки")) {
         is Frame.Fail -> CardRead.Fail(f.refusal, f.detail)
         is Frame.Ok -> try {
-            CardRead.Ok(cardFromJson(f.json))
+            val card = cardFromJson(f.json)
+            val key = card.fields[GateCard.Field.KEY]
+            if (f.seal == null && key != null) throw Refused(GateRefusal.MALFORMED, "ключ подписи в карточке без подписи")
+            if (f.seal != null && key == null) throw Refused(GateRefusal.MALFORMED, "подписанная карточка без ключа подписи")
+            if (key != null && GateSign.decodeKey(key) == null) throw Refused(GateRefusal.MALFORMED, "fields.key — не ключ P-256")
+            CardRead.Ok(card, f.seal)
         } catch (e: Refused) {
             CardRead.Fail(e.refusal, e.detail)
         }
@@ -164,11 +193,12 @@ object GateWire {
      * Что поручительство значит, — [GateVouches].
      */
     const val VOUCH_VERSION = 1
+    const val VOUCH_SIGNED_VERSION = 2
 
     private const val VOUCH_MAGIC = "poruka"
 
     sealed class VouchRead {
-        data class Ok(val vouch: GateVouch) : VouchRead()
+        data class Ok(val vouch: GateVouch, val seal: Seal? = null) : VouchRead()
         data class Fail(val refusal: GateRefusal, val detail: String) : VouchRead()
     }
 
@@ -186,7 +216,7 @@ object GateWire {
         return "$VOUCH_MAGIC $VOUCH_VERSION ${body.size} ${crcHex(body)}\n".toByteArray(Charsets.US_ASCII) + body
     }
 
-    fun readVouch(raw: ByteArray): VouchRead = when (val f = frame(raw, VOUCH_MAGIC, VOUCH_VERSION, GateRefusal.NOT_A_VOUCH, "поручительства")) {
+    fun readVouch(raw: ByteArray): VouchRead = when (val f = frame(raw, Form.VOUCH, GateRefusal.NOT_A_VOUCH, "поручительства")) {
         is Frame.Fail -> VouchRead.Fail(f.refusal, f.detail)
         is Frame.Ok -> try {
             val body = obj(f.json, "тело")
@@ -200,6 +230,7 @@ object GateWire {
                     to = key(body["to"], "to", GateRefusal.NO_KEY),
                     withdraw = bool(body.getValue("withdraw"), "withdraw"),
                 ),
+                f.seal,
             )
         } catch (e: Refused) {
             VouchRead.Fail(e.refusal, e.detail)
@@ -222,11 +253,12 @@ object GateWire {
      * ответ; `sent` раньше `got` — порча. Что всё это значит, — [GateAck].
      */
     const val ACK_VERSION = 1
+    const val ACK_SIGNED_VERSION = 2
 
     private const val ACK_MAGIC = "prinyal"
 
     sealed class AckRead {
-        data class Ok(val ack: GateAck) : AckRead()
+        data class Ok(val ack: GateAck, val seal: Seal? = null) : AckRead()
         data class Fail(val refusal: GateRefusal, val detail: String) : AckRead()
     }
 
@@ -246,7 +278,7 @@ object GateWire {
         return "$ACK_MAGIC $ACK_VERSION ${body.size} ${crcHex(body)}\n".toByteArray(Charsets.US_ASCII) + body
     }
 
-    fun readAck(raw: ByteArray): AckRead = when (val f = frame(raw, ACK_MAGIC, ACK_VERSION, GateRefusal.NOT_AN_ACK, "ответа «принял»")) {
+    fun readAck(raw: ByteArray): AckRead = when (val f = frame(raw, Form.ACK, GateRefusal.NOT_AN_ACK, "ответа «принял»")) {
         is Frame.Fail -> AckRead.Fail(f.refusal, f.detail)
         is Frame.Ok -> try {
             val body = obj(f.json, "тело")
@@ -274,6 +306,7 @@ object GateWire {
                     gotMs = got,
                     sentMs = sent,
                 ),
+                f.seal,
             )
         } catch (e: Refused) {
             AckRead.Fail(e.refusal, e.detail)
@@ -282,9 +315,12 @@ object GateWire {
 
     // --- Какая форма пришла ---
 
-    /** Формы врат по знаку в шапке. */
-    enum class Form(val magic: String) {
-        PACKET(MAGIC), CARD(CARD_MAGIC), VOUCH(VOUCH_MAGIC), ACK(ACK_MAGIC),
+    /** Формы врат по знаку в шапке; [unsigned] и [signed] — их версии без подписи и с подписью. */
+    enum class Form(val magic: String, val unsigned: Int, val signed: Int) {
+        PACKET(MAGIC, VERSION, SIGNED_VERSION),
+        CARD(CARD_MAGIC, CARD_VERSION, CARD_SIGNED_VERSION),
+        VOUCH(VOUCH_MAGIC, VOUCH_VERSION, VOUCH_SIGNED_VERSION),
+        ACK(ACK_MAGIC, ACK_VERSION, ACK_SIGNED_VERSION),
     }
 
     /**
@@ -300,7 +336,7 @@ object GateWire {
     // --- Шапка и целость: общие для всех форм ---
 
     private sealed class Frame {
-        class Ok(val json: GateJson.Value) : Frame()
+        class Ok(val json: GateJson.Value, val seal: Seal?) : Frame()
         class Fail(val refusal: GateRefusal, val detail: String) : Frame()
     }
 
@@ -309,14 +345,22 @@ object GateWire {
      * этого объекта). [notThis] — отказ, когда шапка не той формы; [whose] —
      * чья шапка ждалась, для строки отказа.
      */
-    private fun frame(raw: ByteArray, magic: String, expected: Int, notThis: GateRefusal, whose: String): Frame {
+    private fun frame(raw: ByteArray, form: Form, notThis: GateRefusal, whose: String): Frame {
         fun no(r: GateRefusal, d: String) = Frame.Fail(r, d)
         val nl = (0 until minOf(raw.size, MAX_HEADER)).firstOrNull { raw[it] == '\n'.code.toByte() }
             ?: return no(notThis, "нет шапки")
         val parts = String(raw, 0, nl, Charsets.US_ASCII).split(' ')
-        if (parts.size != 4 || parts[0] != magic) return no(notThis, "шапка не $whose")
+        if (parts.size < 4 || parts[0] != form.magic) return no(notThis, "шапка не $whose")
         val version = parts[1].toIntOrNull() ?: return no(notThis, "версия не числом")
-        if (version != expected) return no(GateRefusal.FOREIGN_VERSION, "версия $version, у меня $expected")
+        if (version != form.unsigned && version != form.signed) {
+            return no(GateRefusal.FOREIGN_VERSION, "версия $version, у меня ${form.unsigned} и ${form.signed}")
+        }
+        val words = if (version == form.unsigned) setOf(4) else if (form == Form.CARD) setOf(5, 6) else setOf(5)
+        if (parts.size !in words) return no(notThis, "в шапке версии $version слов ${parts.size}")
+        val sigs = parts.drop(4)
+        if (sigs.any { it.length != GateSign.SIG_CHARS || GateSign.unb64(it)?.size != 64 }) {
+            return no(notThis, "подпись не ${GateSign.SIG_CHARS} знаков base64url")
+        }
         val length = parts[2].toIntOrNull()?.takeIf { it >= 0 && parts[2].all { c -> c in '0'..'9' } }
             ?: return no(notThis, "длина не числом")
         val crc = parts[3].takeIf { it.length == 8 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
@@ -336,8 +380,9 @@ object GateWire {
         } catch (e: CharacterCodingException) {
             return no(GateRefusal.MALFORMED, "тело не UTF-8")
         }
+        val seal = if (sigs.isEmpty()) null else Seal(sigs[0], sigs.getOrNull(1), GateSign.signedBytes(parts.take(4).joinToString(" "), body))
         return try {
-            Frame.Ok(GateJson.parse(text))
+            Frame.Ok(GateJson.parse(text), seal)
         } catch (e: GateJson.Malformed) {
             no(GateRefusal.MALFORMED, "JSON: ${e.message}")
         }

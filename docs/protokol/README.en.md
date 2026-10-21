@@ -28,16 +28,28 @@ If the two versions ever disagree, the Russian one and the code (`app/src/main/j
 Every form is one header line, a line feed (`\n`, byte 0x0A) and a body:
 
 ```
-<mark> <version> <body length in bytes> <CRC32 of body>\n<body>
+<mark> <version> <body length in bytes> <CRC32 of body> [<signature> [<signature by the previous key>]]\n<body>
 ```
 
-- **Header** — ASCII, four words separated by single spaces, at most 64 bytes including `\n`.
+- **Header** — ASCII, words separated by single spaces, at most 200 bytes including `\n`. Unsigned — four words, signed — five (six for a card when its key changes), § 2a.
 - **Mark** — which form this is: `trafaret`, `kartochka`, `poruka`, `prinyal` (§ 4).
 - **Version** — an integer. A foreign version is not read at all: its fields may mean something else.
 - **Length** — body length **in bytes** (not characters), decimal.
 - **CRC32** — the standard CRC-32 of the body (as `zlib.crc32` in Python, `java.util.zip.CRC32`), **8 lowercase** hex digits.
 - **Body** — UTF-8, exactly `length` bytes; nothing after it, not even a line feed.
-- The checksum catches accidental damage, **not forgery**. Only the channel gives authenticity.
+- The checksum catches accidental damage, **not forgery**. The signature guards against forgery (§ 2a).
+
+## 2a. Signature
+
+Every form has two versions: **unsigned** (four header words) and **signed** (five words, version one higher, § 10). The body is the same.
+
+- **Algorithm** — ECDSA on curve P-256 (secp256r1) with SHA-256.
+- **Signature** — the fifth header word: r and s, 32 bytes each, back to back (not DER), base64url without `=` — exactly 86 characters.
+- **What is signed** — the first four header words joined by spaces, `\n` and the body, byte for byte. The form mark and version are part of what is signed: a signature cannot be moved from one form to another.
+- **Public key** — an uncompressed curve point (65 bytes: `04`, x, y), base64url without `=` — 87 characters. It travels in the agent's card (`fields.key`, § 4.2); the card is signed by that same key.
+- **Trust on first use.** The first signed card from a channel key sets the agent's key. After that the receiver **refuses** this agent's forms without a signature ("unsigned, but the agent's key is known") and with a signature by another key ("wrong signature"). While the agent's key is unknown, unsigned forms are accepted.
+- **Key change.** A new key arrives in a new card. If the same card is also signed by the **previous key** — as the sixth header word, over the same bytes — the key changes without questions. Without the previous key's signature the receiver raises an alarm: the old key stays in force, the new one waits for the receiver's owner.
+- **Why.** The channel knows who sent a message only by the bot token. The signing key does not depend on the token: a double with a stolen token cannot sign. With us the private key lives in the Android keystore and never leaves the phone.
 
 ## 3. Body: narrow strict JSON
 
@@ -53,7 +65,7 @@ Key order does not matter. We write the body without spaces, keys in the order o
 
 ## 4. Forms
 
-### 4.1. `trafaret 2` — words packet
+### 4.1. `trafaret 2` / `trafaret 3` — words packet
 
 Someone said something; an agent passes it on to another agent.
 
@@ -76,9 +88,9 @@ Someone said something; an agent passes it on to another agent.
 | `exact` | exact values that bypass the model: time, number, link | object "name → string" |
 | `words` | the words themselves, as said | non-empty string |
 
-Why: pronouns are not passed on — through two agents "I" and "you" get flipped twice, and models get confused. About whom goes as keys, time as a moment and a zone; "the other day" is made by the receiver. Example — `primery/paket.txt`.
+Why: pronouns are not passed on — through two agents "I" and "you" get flipped twice, and models get confused. About whom goes as keys, time as a moment and a zone; "the other day" is made by the receiver. Examples — `primery/paket.txt`, signed — `primery/podpis_paket.txt`.
 
-### 4.2. `kartochka 1` — agent card
+### 4.2. `kartochka 1` / `kartochka 2` — agent card
 
 What the agent says about itself — the same to everyone.
 
@@ -89,10 +101,11 @@ What the agent says about itself — the same to everyone.
 | `fields.name` | what it calls itself | up to 64 characters |
 | `fields.repo` | code repository | up to 200 characters |
 | `fields.about` | about itself | up to 280 characters |
+| `fields.key` | public signing key (§ 2a) | **only** in a signed card, and required there; 87 characters |
 
-There are no other fields. **No fields about the person** (owner's name, phone) and **no dates** — everyone sees the card. Which is newer is decided by the moment the receiver got it. Example — `primery/kartochka.txt`.
+There are no other fields. **No fields about the person** (owner's name, phone) and **no dates** — everyone sees the card. Which is newer is decided by the moment the receiver got it. Examples — `primery/kartochka.txt`, signed — `primery/podpis_kartochka.txt`.
 
-### 4.3. `poruka 1` — vouching
+### 4.3. `poruka 1` / `poruka 2` — vouching
 
 "`voucher` vouches for `for` before `to`". Given not to everyone but to whom it was decided to show it: "my owner knows this agent" reveals a circle of acquaintances.
 
@@ -105,7 +118,7 @@ There are no other fields. **No fields about the person** (owner's name, phone) 
 
 With us, vouching switches nothing on by itself: it is a line for the owner; only vouchers the owner knows personally count, and two are needed. Example — `primery/poruka.txt`.
 
-### 4.4. `prinyal 1` — "received"
+### 4.4. `prinyal 1` / `prinyal 2` — "received"
 
 The receiver's answer to a words packet (only to `trafaret`).
 
@@ -131,7 +144,7 @@ Example — `primery/prinyal.txt`.
 | addressed to someone else | `not_for_me` |
 | stale | `stale` |
 | from the future | `from_future` — the sender's clock is most likely fast |
-| unreadable, sender is not the one the channel says, over the flow limit | **do not answer** |
+| unreadable, sender is not the one the channel says, wrong or missing signature, over the flow limit | **do not answer** |
 
 - **Nobody answers "received".** An answer to an answer is the first loop between two agents.
 - Cards and vouching get no "received" — they have no number.
@@ -149,9 +162,10 @@ The receiver checks in order and goes silent at the first one that fails. The wo
 5. **Body** — not UTF-8, not narrow JSON, a field missing, an unknown field, a wrong value.
 6. **Schemes of the keys in the body.**
 7. **Sender** — the key in the packet is not the one the channel says: "sender is not the one the channel says".
-8. **Addressee** — not me.
-9. **Sending moment** (words packet only) — `sent.ms` older than 7 days by the receiver's clock: "stale"; later than its "now" by more than a day: "from the future".
-10. **Repeat** (words packet only) — the pair "sender key + number" was already accepted within the last 7 days.
+8. **Signature** (§ 2a) — the agent's key is known but there is no signature: "unsigned, but the agent's key is known"; a signature by another key: "wrong signature". A card is checked with the key inside it.
+9. **Addressee** — not me.
+10. **Sending moment** (words packet only) — `sent.ms` older than 7 days by the receiver's clock: "stale"; later than its "now" by more than a day: "from the future".
+11. **Repeat** (words packet only) — the pair "sender key + number" was already accepted within the last 7 days.
 
 Passing the gate is not trust yet. Next the receiver decides "who is this": does the agent speak for whoever it named in `from.represents`. With us, "for a person" is only by a power of attorney that the receiver's owner confirmed on their own screen; without it the words go as words of an unfamiliar agent.
 
@@ -163,7 +177,8 @@ Passing the gate is not trust yet. Next the receiver decides "who is this": does
 
 ## 8. What the protocol does not give
 
-- **No signatures.** Only the channel knows who sent it. Whoever holds the bot token is that agent: others cannot tell a double running on the same token. Create the agent's bot from a separate Telegram account and turn on a cloud password there: the owner of the account that created a bot can get its token from @BotFather.
+- **No encryption.** Telegram sees the contents of packets.
+- **The signature does not catch a takeover before the first meeting**: the first card sets the key. Create the agent's bot from a separate Telegram account and turn on a cloud password there: the owner of the account that created a bot can get its token from @BotFather.
 - **Truth is not checked.** The form carries who said it, not whether it is right.
 - **Rights are not passed.** No field gives rights in another agent; only that agent's own code does.
 - **Meaning between different models is not carried exactly** — only the fields are exact.
@@ -179,11 +194,31 @@ import json, zlib
 
 raw = open("paket.txt", "rb").read()
 head, body = raw.split(b"\n", 1)
-magic, version, length, crc = head.decode("ascii").split(" ")
+words = head.decode("ascii").split(" ")
+magic, version, length, crc = words[:4]
 assert len(body) == int(length), "cut off or extra bytes after the body"
 assert format(zlib.crc32(body), "08x") == crc, "checksum mismatch"
 print(magic, version, json.loads(body))
 ```
+
+Check the signature (the `cryptography` library):
+
+```python
+import base64
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+def unb64(s):
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+signed = " ".join(words[:4]).encode("ascii") + b"\n" + body
+key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), unb64(key_b64))  # key_b64 — fields.key from the card
+raw_sig = unb64(words[4])
+der = utils.encode_dss_signature(int.from_bytes(raw_sig[:32], "big"), int.from_bytes(raw_sig[32:], "big"))
+key.verify(der, signed, ec.ECDSA(hashes.SHA256()))  # mismatch — InvalidSignature
+```
+
+To sign: sign `signed` with your key; `utils.decode_dss_signature` splits the signature into r and s; each is 32 bytes, back to back, in base64url without `=`.
 
 Build the body the same way we do: `json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")`.
 
@@ -191,11 +226,15 @@ Build the body the same way we do: `json.dumps(obj, ensure_ascii=False, separato
 
 | Mark | Version | What |
 |---|---|---|
-| `trafaret` | 2 | words packet; since version 2 — number and sending moment (`sent`) |
-| `kartochka` | 1 | agent card |
-| `poruka` | 1 | vouching |
-| `prinyal` | 1 | "received" answer |
+| `trafaret` | 2 | words packet, unsigned; since version 2 — number and sending moment (`sent`) |
+| `trafaret` | 3 | the same, signed |
+| `kartochka` | 1 | agent card, unsigned |
+| `kartochka` | 2 | the same, signed and with a key (`fields.key`) |
+| `poruka` | 1 | vouching, unsigned |
+| `poruka` | 2 | the same, signed |
+| `prinyal` | 1 | "received" answer, unsigned |
+| `prinyal` | 2 | the same, signed |
 
 When the meaning or the set of fields changes, the version goes up. An agent that does not know the version does not read the packet and refuses it as "foreign version".
 
-This agent's code: `app/src/main/java/com/uroboros/gate/` — `GateWire` (frame and forms), `GateIntake` (receiving), `GateAck`, `GateOutbox`, `GateClock`, `GateTelegram`.
+This agent's code: `app/src/main/java/com/uroboros/gate/` — `GateWire` (frame and forms), `GateIntake` (receiving), `GateSign` (signature), `GateKeys` (whose key), `GateAck`, `GateOutbox`, `GateClock`, `GateTelegram`.

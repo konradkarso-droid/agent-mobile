@@ -24,6 +24,8 @@ enum class GateRefusal(val words: String) {
     STALE("устарел"),
     FROM_FUTURE("из будущего"),
     REPEAT("повтор"),
+    UNSIGNED("без подписи, а ключ агента известен"),
+    BAD_SIGNATURE("подпись не та"),
 }
 
 /**
@@ -31,8 +33,8 @@ enum class GateRefusal(val words: String) {
  *
  * Порядок проверок — от дешёвого к дорогому, и пакет молчит на первой же
  * несошедшейся: размер → схема ключа канала → предел потока → форма и целость
- * ([GateWire.read]) → схемы ключей в теле → отправитель → адресат → момент
- * отправки → повтор.
+ * ([GateWire.read]) → схемы ключей в теле → отправитель → подпись → адресат →
+ * момент отправки → повтор.
  *
  * ОТПРАВИТЕЛЬ — ОТ КАНАЛА, А НЕ ИЗ ПАКЕТА. Ключ в теле ([GatePacket.from])
  * вписывает сам отправитель, и вписать он может чей угодно — например, ключ
@@ -85,6 +87,13 @@ enum class GateRefusal(val words: String) {
  * поручительство даётся тому, кому его решили показать. Поручитель — только
  * отправитель по каналу.
  *
+ * ПОДПИСЬ проверяется сразу после отправителя: подпись — его. Ключ агента —
+ * из [keys] (что он значит и откуда берётся, — [GateKeys]). Ключ известен —
+ * форма без подписи или с чужой подписью отказывается, и «принял» на неё не
+ * отвечается: прислать её мог двойник с украденным токеном. Ключ не известен
+ * — форма идёт «без подписи». Карточка проверяется своим же ключом;
+ * смену ключа решает [GateKeys.takeCard], а не врата.
+ *
  * «ПРИНЯЛ» ([receiveAck]) — так же, как поручительство: отвечает только тот,
  * кому пакет слали, и только мне. Что «принял» значит и на какие отказы он
  * отвечается, — [GateAck].
@@ -111,6 +120,7 @@ class GateIntake(
     private val limits: Limits = Limits.DECLARED,
     private val knownSchemes: Set<String> = setOf("tg"),
     private val numbers: GateNumbers = GateNumbers.InMemory(),
+    private val keys: () -> List<GateKeyRecord> = { emptyList() },
 ) {
 
     data class Limits(
@@ -138,7 +148,8 @@ class GateIntake(
     }
 
     sealed class Verdict {
-        data class Accepted(val packet: GatePacket) : Verdict()
+        /** [sign] — что с подписью: верна или «без подписи» ([GateKeys.Check]). */
+        data class Accepted(val packet: GatePacket, val sign: GateKeys.Check = GateKeys.Check.Unsigned) : Verdict()
         /**
          * [packet] — пакет, который прочитан и прислан тем, кто в нём назван
          * отправителем, но не принят (не мне, устарел, из будущего, повтор): на
@@ -152,7 +163,8 @@ class GateIntake(
     }
 
     sealed class CardVerdict {
-        data class Accepted(val card: GateCard) : CardVerdict()
+        /** [seal] — подпись карточки; ключ из неё принимает [GateKeys.takeCard]. */
+        data class Accepted(val card: GateCard, val seal: GateWire.Seal? = null) : CardVerdict()
         data class Refused(val refusal: GateRefusal, val detail: String) : CardVerdict() {
             /** Строка для прибора. */
             val words: String get() = "Карточка: не принята — ${refusal.words}: $detail"
@@ -160,7 +172,7 @@ class GateIntake(
     }
 
     sealed class VouchVerdict {
-        data class Accepted(val vouch: GateVouch) : VouchVerdict()
+        data class Accepted(val vouch: GateVouch, val sign: GateKeys.Check = GateKeys.Check.Unsigned) : VouchVerdict()
         data class Refused(val refusal: GateRefusal, val detail: String) : VouchVerdict() {
             /** Строка для прибора. */
             val words: String get() = "Поручительство: не принято — ${refusal.words}: $detail"
@@ -168,7 +180,7 @@ class GateIntake(
     }
 
     sealed class AckVerdict {
-        data class Accepted(val ack: GateAck) : AckVerdict()
+        data class Accepted(val ack: GateAck, val sign: GateKeys.Check = GateKeys.Check.Unsigned) : AckVerdict()
         data class Refused(val refusal: GateRefusal, val detail: String) : AckVerdict() {
             /** Строка для прибора. */
             val words: String get() = "«Принял»: не принят — ${refusal.words}: $detail"
@@ -183,10 +195,11 @@ class GateIntake(
     @Synchronized
     fun receive(raw: ByteArray, sender: PersonKey, nowMs: Long): Verdict {
         entry(raw, sender, nowMs)?.let { return Verdict.Refused(it.first, it.second) }
-        val packet = when (val r = GateWire.read(raw)) {
+        val read = when (val r = GateWire.read(raw)) {
             is GateWire.Read.Fail -> return Verdict.Refused(r.refusal, r.detail)
-            is GateWire.Read.Ok -> r.packet
+            is GateWire.Read.Ok -> r
         }
+        val packet = read.packet
 
         val keys = listOf(packet.from, packet.represents, packet.to, packet.saidBy) + packet.about
         unknownScheme(keys)?.let { return Verdict.Refused(GateRefusal.UNKNOWN_SCHEME, it) }
@@ -194,6 +207,8 @@ class GateIntake(
         if (packet.from != sender) {
             return Verdict.Refused(GateRefusal.NOT_SENDER, "в пакете ${packet.from.id}, канал говорит ${sender.id}")
         }
+        val sign = GateKeys.check(keys(), sender, read.seal)
+        if (sign is GateKeys.Check.Refused) return Verdict.Refused(sign.refusal, sign.detail)
 
         if (packet.to != me) return Verdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${packet.to.id}, я ${me.id}", packet)
 
@@ -214,56 +229,71 @@ class GateIntake(
             )
         }
         numbers.put(packet.from.id, packet.number, packet.sentMs)
-        return Verdict.Accepted(packet)
+        return Verdict.Accepted(packet, sign)
     }
 
     /** [sender] — ключ того, от кого карточка пришла, по словам канала. Карточка агента — только с его ключа. */
     @Synchronized
     fun receiveCard(raw: ByteArray, sender: PersonKey, nowMs: Long): CardVerdict {
         entry(raw, sender, nowMs)?.let { return CardVerdict.Refused(it.first, it.second) }
-        val card = when (val r = GateWire.readCard(raw)) {
+        val read = when (val r = GateWire.readCard(raw)) {
             is GateWire.CardRead.Fail -> return CardVerdict.Refused(r.refusal, r.detail)
-            is GateWire.CardRead.Ok -> r.card
+            is GateWire.CardRead.Ok -> r
         }
+        val card = read.card
         unknownScheme(listOf(card.agent))?.let { return CardVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, it) }
         if (card.agent != sender) {
             return CardVerdict.Refused(GateRefusal.NOT_SENDER, "в карточке ${card.agent.id}, канал говорит ${sender.id}")
         }
-        return CardVerdict.Accepted(card)
+        val seal = read.seal
+        if (seal == null) {
+            GateKeys.current(keys(), sender)?.let {
+                return CardVerdict.Refused(GateRefusal.UNSIGNED, "ключ агента уже известен (${it.key.take(8)}…)")
+            }
+        } else if (!GateSign.verify(card.fields.getValue(GateCard.Field.KEY), seal.data, seal.sig)) {
+            return CardVerdict.Refused(GateRefusal.BAD_SIGNATURE, "карточка подписана не своим ключом")
+        }
+        return CardVerdict.Accepted(card, seal)
     }
 
     /** [sender] — ключ того, от кого поручительство пришло, по словам канала. Поручитель — только он. */
     @Synchronized
     fun receiveVouch(raw: ByteArray, sender: PersonKey, nowMs: Long): VouchVerdict {
         entry(raw, sender, nowMs)?.let { return VouchVerdict.Refused(it.first, it.second) }
-        val vouch = when (val r = GateWire.readVouch(raw)) {
+        val read = when (val r = GateWire.readVouch(raw)) {
             is GateWire.VouchRead.Fail -> return VouchVerdict.Refused(r.refusal, r.detail)
-            is GateWire.VouchRead.Ok -> r.vouch
+            is GateWire.VouchRead.Ok -> r
         }
+        val vouch = read.vouch
         unknownScheme(listOf(vouch.voucher, vouch.agent, vouch.to))?.let {
             return VouchVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, it)
         }
         if (vouch.voucher != sender) {
             return VouchVerdict.Refused(GateRefusal.NOT_SENDER, "поручитель ${vouch.voucher.id}, канал говорит ${sender.id}")
         }
+        val sign = GateKeys.check(keys(), sender, read.seal)
+        if (sign is GateKeys.Check.Refused) return VouchVerdict.Refused(sign.refusal, sign.detail)
         if (vouch.to != me) return VouchVerdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${vouch.to.id}, я ${me.id}")
-        return VouchVerdict.Accepted(vouch)
+        return VouchVerdict.Accepted(vouch, sign)
     }
 
     /** [sender] — ключ того, от кого «принял» пришёл, по словам канала. Отвечает только он. */
     @Synchronized
     fun receiveAck(raw: ByteArray, sender: PersonKey, nowMs: Long): AckVerdict {
         entry(raw, sender, nowMs)?.let { return AckVerdict.Refused(it.first, it.second) }
-        val ack = when (val r = GateWire.readAck(raw)) {
+        val read = when (val r = GateWire.readAck(raw)) {
             is GateWire.AckRead.Fail -> return AckVerdict.Refused(r.refusal, r.detail)
-            is GateWire.AckRead.Ok -> r.ack
+            is GateWire.AckRead.Ok -> r
         }
+        val ack = read.ack
         unknownScheme(listOf(ack.from, ack.to))?.let { return AckVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, it) }
         if (ack.from != sender) {
             return AckVerdict.Refused(GateRefusal.NOT_SENDER, "отвечает ${ack.from.id}, канал говорит ${sender.id}")
         }
+        val sign = GateKeys.check(keys(), sender, read.seal)
+        if (sign is GateKeys.Check.Refused) return AckVerdict.Refused(sign.refusal, sign.detail)
         if (ack.to != me) return AckVerdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${ack.to.id}, я ${me.id}")
-        return AckVerdict.Accepted(ack)
+        return AckVerdict.Accepted(ack, sign)
     }
 
     /**

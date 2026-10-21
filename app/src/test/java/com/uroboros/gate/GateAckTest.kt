@@ -85,7 +85,7 @@ class GateAckTest {
 
     @Test
     fun `чужая версия принял — не читается`() {
-        assertEquals(GateRefusal.FOREIGN_VERSION, readFail(wrap(ackBody, version = GateWire.ACK_VERSION + 1)))
+        assertEquals(GateRefusal.FOREIGN_VERSION, readFail(wrap(ackBody, version = GateWire.ACK_SIGNED_VERSION + 1)))
     }
 
     @Test

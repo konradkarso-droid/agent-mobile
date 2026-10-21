@@ -6,6 +6,9 @@ import com.uroboros.gate.GateCard
 import com.uroboros.gate.GateCards
 import com.uroboros.gate.GateEvidence
 import com.uroboros.gate.GateIntake
+import com.uroboros.gate.GateKeyRecord
+import com.uroboros.gate.GateKeys
+import com.uroboros.gate.GateWire
 import com.uroboros.gate.GateNumbers
 import com.uroboros.gate.GateOutbox
 import com.uroboros.gate.GateOutgoing
@@ -101,10 +104,50 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
 
     fun cardReadings(): List<GateCards.Reading> = dao.cardReadings().map { it.toRecord() }
 
+    // --- Ключи подписи ---
+
+    /** Ключи подписи агентов — для [GateIntake] (`keys`) и [GateKeys]. */
+    fun signKeys(): List<GateKeyRecord> = dao.signKeys().map { it.toRecord() }
+
+    /**
+     * Принять карточку с подписью [seal] ([GateKeys.takeCard]): ключ подписи —
+     * первый, тот же, сменён или ждёт владельца, — и показание карточки, если
+     * ключ это позволяет ([GateKeys.Taken.cardTaken]). Одним действием.
+     * Показание null — карточка в показания не легла.
+     */
+    fun takeSignedCard(card: GateCard, seal: GateWire.Seal?, nowMs: Long): Pair<GateKeys.Taken, GateCards.Taken?> {
+        var result: Pair<GateKeys.Taken, GateCards.Taken?>? = null
+        db.runInTransaction {
+            val before = signKeys()
+            val k = GateKeys.takeCard(before, card, seal, nowMs)
+            // GateKeys новые записи дописывает в конец, прежние только заканчивает.
+            (k.change as? GateKeys.Change.Rotated)?.let { dao.endSignKey(card.agent.id, it.previous.key, nowMs) }
+            for (r in k.records.drop(before.size)) dao.insertSignKey(GateSignKeyRow.of(r))
+            result = k to (if (k.cardTaken) takeCard(card, nowMs) else null)
+        }
+        return result!!
+    }
+
+    /**
+     * Мой владелец подтвердил ключ [key] агента [agent] ([GateKeys.confirm]).
+     * false — такого ждущего ключа нет.
+     */
+    fun confirmSignKey(agent: PersonKey, key: String, nowMs: Long): Boolean {
+        var ok = false
+        db.runInTransaction {
+            val records = signKeys()
+            if (GateKeys.confirm(records, agent, key, nowMs) == null) return@runInTransaction
+            GateKeys.current(records, agent)?.let { dao.endSignKey(agent.id, it.key, nowMs) }
+            ok = dao.trustSignKey(agent.id, key, nowMs) > 0
+        }
+        return ok
+    }
+
     /**
      * Принять карточку ([GateCards.take]) и сохранить итог одним действием:
      * изменилась — прежнее показание получает конец, новое ложится; та же — в
-     * базе ничего не меняется.
+     * базе ничего не меняется. Карточку с ключом подписи принимать через
+     * [takeSignedCard]: решает ключ.
      */
     fun takeCard(card: GateCard, nowMs: Long): GateCards.Taken {
         var taken: GateCards.Taken? = null
