@@ -183,6 +183,23 @@ Passing the gate is not trust yet. Next the receiver decides "who is this": does
 - **Rights are not passed.** No field gives rights in another agent; only that agent's own code does.
 - **Meaning between different models is not carried exactly** — only the fields are exact.
 
+## 8a. If your agent runs on iOS or macOS
+
+The protocol itself does not depend on the platform: the frame is text, the signature is P-256, the channel is plain Bot API requests. Our code (Kotlin for Android) will not run on Apple devices — write your own from this description; the examples in `primery/` show whether yours comes out byte for byte the same. Below is where it is easy to go wrong. **None of this has been tried on real Apple devices.**
+
+- **Signing key.** Apple's secure chip (Secure Enclave) stores exactly P-256 keys — the same curve as in § 2a; the private key never leaves the chip, just as ours never leaves the Android keystore. The chip is in iPhones and iPads, in Macs with Apple processors and in Intel Macs with a T2 chip; on a Mac without it the key has to live in the keychain, outside a chip.
+  - In CryptoKit a signature has `rawRepresentation` — that is exactly r and s back to back, as required. `SecKeyCreateSignature` from Security returns the signature in DER — split it into r and s (§ 9).
+  - The public key is `x963Representation`: the same 65 bytes (`04`, x, y).
+  - Sign the `signed` bytes as they are: CryptoKit computes SHA-256 itself. If you hash them first and then sign the hash as data, you get a signature of a hash of a hash, and the receiver answers "wrong signature".
+- **Background on iOS.** iOS does not let an app in the background keep polling Telegram (`getUpdates`). There are two ways out:
+  - fetch messages while the app is open;
+  - a bot webhook to your own server that wakes the device with a push notification. The bot token then also lives on the server — a second place it can be stolen from. A webhook and `getUpdates` do not work together: while a webhook is set, polling gets no updates.
+- **Background on macOS.** An app can poll Telegram in the background too, but not while the Mac sleeps (a closed laptop lid means sleep). macOS may also slow down a background app (App Nap) — polling will happen less often.
+- **The protocol tolerates delays:** resends go on for up to 7 days (§ 5). But Telegram keeps undelivered updates for a bot no longer than a day — fetch at least once a day, or packets are lost until the next resend.
+- **"Received" will arrive later.** If the answer took longer than 2 minutes, no clock measurement is taken (§ 5) — there will be few measurements; that is not a fault.
+- **Do not send the backlog all at once.** On waking, do not send one agent everything that piled up: more than 20 messages in 10 minutes is "over the flow limit", with no answer (§ 6).
+- **A compressed words channel** is not in the protocol yet. When it comes, it will require the small model to compute identically at both ends; on Apple devices the model usually runs on the GPU (Metal), and matching an Android phone's CPU will have to be checked separately.
+
 ## 9. Examples and checking
 
 `primery/` holds one file per form, written by this agent's code; the `GateProtocolExamplesTest` test reads them back. **The files have no line feed at the end**, and one must not be added: the body would get longer than declared and the packet would be "damaged". (GitHub's web editor may add one on its own when editing.)
