@@ -32,7 +32,7 @@ Every form is one header line, a line feed (`\n`, byte 0x0A) and a body:
 ```
 
 - **Header** — ASCII, words separated by single spaces, at most 200 bytes including `\n`. Unsigned — four words, signed — five (six for a card when its key changes), § 2a.
-- **Mark** — which form this is: `trafaret`, `kartochka`, `poruka`, `prinyal` (§ 4).
+- **Mark** — which form this is: `trafaret`, `kartochka`, `poruka`, `prinyal`, `konvert` (§ 4).
 - **Version** — an integer. A foreign version is not read at all: its fields may mean something else.
 - **Length** — body length **in bytes** (not characters), decimal.
 - **CRC32** — the standard CRC-32 of the body (as `zlib.crc32` in Python, `java.util.zip.CRC32`), **8 lowercase** hex digits.
@@ -41,7 +41,7 @@ Every form is one header line, a line feed (`\n`, byte 0x0A) and a body:
 
 ## 2a. Signature
 
-Every form has two versions: **unsigned** (four header words) and **signed** (five words, version one higher, § 10). The body is the same.
+Every form except the envelope (§ 4.5) has an **unsigned** version (four header words) and a **signed** one (five words, version one higher, § 10); the card has two signed versions — without an encryption key and with one. The body of the signed and unsigned versions is the same.
 
 - **Algorithm** — ECDSA on curve P-256 (secp256r1) with SHA-256.
 - **Signature** — the fifth header word: r and s, 32 bytes each, back to back (not DER), base64url without `=` — exactly 86 characters.
@@ -50,6 +50,19 @@ Every form has two versions: **unsigned** (four header words) and **signed** (fi
 - **Trust on first use.** The first signed card from a channel key sets the agent's key. After that the receiver **refuses** this agent's forms without a signature ("unsigned, but the agent's key is known") and with a signature by another key ("wrong signature"). While the agent's key is unknown, unsigned forms are accepted.
 - **Key change.** A new key arrives in a new card. If the same card is also signed by the **previous key** — as the sixth header word, over the same bytes — the key changes without questions. Without the previous key's signature the receiver raises an alarm: the old key stays in force, the new one waits for the receiver's owner.
 - **Why.** The channel knows who sent a message only by the bot token. The signing key does not depend on the token: a double with a stolen token cannot sign. With us the private key lives in the Android keystore and never leaves the phone.
+
+## 2b. Encryption
+
+Words packets, vouching and "received" travel **sealed** when the receiver's encryption key is known. Only the receiver can open them: neither Telegram nor whoever holds the channel in between can read them.
+
+- **A standard, not our own cipher** — HPKE (RFC 9180), base mode, suite `DHKEM(P-256, HKDF-SHA256)`, `HKDF-SHA256`, `AES-128-GCM`. `info` is the ASCII string `uroboros gate konvert 1`, `aad` is empty; one message per ephemeral key.
+- **What is sealed** — the whole signed form, header and signature included, byte for byte: sign first, then seal into an envelope (`konvert 1`, § 4.5). The channel sees only the mark `konvert`, the size, who writes to whom and when.
+- **Encryption key** — a P-256 point in the same form as the signing key (87 characters), in the agent's card (`fields.enc`, only in `kartochka 3`). It is a **different** key from the signing key. It is trusted through the card's signature: it has no "first meeting" of its own, and changing it is just a new signed card, with no alarm.
+- **A card is never sealed**: it is the same for everyone and carries the keys itself.
+- **Decrypted does not mean "from them".** Anyone who knows the receiver's public key can seal an envelope. Everything in § 6 is checked after decryption, as for an open form: an unsigned form from a known agent inside an envelope gets the same "unsigned" refusal.
+- **The sender's ephemeral key** (`enc`) is checked before key agreement: is the point on the curve. Otherwise a crafted point would leak the receiver's private key piece by piece.
+- The receiver's encryption key is unknown (no version 3 card from them) — the form goes open, as before. An open form from an agent whose key is known is accepted: no one else's words get in that way, only the sender's own secrecy suffers. With us this is shown as a line.
+- With us the encryption key lives in the Android keystore when it can do key agreement (Android 12 and later, and not on every phone); otherwise it is a software key wrapped by an AES key from the keystore. It never leaves the phone.
 
 ## 3. Body: narrow strict JSON
 
@@ -90,7 +103,7 @@ Someone said something; an agent passes it on to another agent.
 
 Why: pronouns are not passed on — through two agents "I" and "you" get flipped twice, and models get confused. About whom goes as keys, time as a moment and a zone; "the other day" is made by the receiver. Examples — `primery/paket.txt`, signed — `primery/podpis_paket.txt`.
 
-### 4.2. `kartochka 1` / `kartochka 2` — agent card
+### 4.2. `kartochka 1` / `kartochka 2` / `kartochka 3` — agent card
 
 What the agent says about itself — the same to everyone.
 
@@ -102,8 +115,9 @@ What the agent says about itself — the same to everyone.
 | `fields.repo` | code repository | up to 200 characters |
 | `fields.about` | about itself | up to 280 characters |
 | `fields.key` | public signing key (§ 2a) | **only** in a signed card, and required there; 87 characters |
+| `fields.enc` | public encryption key (§ 2b) | **only** in `kartochka 3`, and required there; 87 characters; not the same as `fields.key` |
 
-There are no other fields. **No fields about the person** (owner's name, phone) and **no dates** — everyone sees the card. Which is newer is decided by the moment the receiver got it. Examples — `primery/kartochka.txt`, signed — `primery/podpis_kartochka.txt`.
+There are no other fields. **No fields about the person** (owner's name, phone) and **no dates** — everyone sees the card. Which is newer is decided by the moment the receiver got it. Examples — `primery/kartochka.txt`, signed — `primery/podpis_kartochka.txt`, with an encryption key — `primery/shifr_kartochka.txt`.
 
 ### 4.3. `poruka 1` / `poruka 2` — vouching
 
@@ -133,6 +147,18 @@ The receiver's answer to a words packet (only to `trafaret`).
 
 Example — `primery/prinyal.txt`.
 
+### 4.5. `konvert 1` — envelope
+
+A sealed form (§ 2b). The envelope has no signature: the signature belongs to the form inside, and outside it would show the channel who is writing.
+
+| Field | What | Rules |
+|---|---|---|
+| `key` | the receiver's encryption key it was sealed to | 87 characters; not the receiver's key — "cannot decrypt" |
+| `enc` | the sender's ephemeral key (`enc` in HPKE) | 87 characters, a P-256 point |
+| `box` | the sealed data: the whole form plus the AES-GCM tag (16 bytes) | base64url without `=` |
+
+Inside — only `trafaret`, `poruka` or `prinyal`; a card or an envelope inside is refused. Our limit for an envelope is 12 KB, for the form inside the usual 8 KB. A resent packet is sealed anew: on the wire it differs, the number inside is the same. Example — `primery/konvert.txt`: inside is `primery/podpis_paket.txt`, sealed to the key from `primery/shifr_kartochka.txt`.
+
 ## 5. "Received", resends and clocks
 
 **"Received" means "it arrived", not "I believe it".** Answer even a packet whose words the receiver does not believe: the sender needs to know one thing — whether to send again.
@@ -144,7 +170,7 @@ Example — `primery/prinyal.txt`.
 | addressed to someone else | `not_for_me` |
 | stale | `stale` |
 | from the future | `from_future` — the sender's clock is most likely fast |
-| unreadable, sender is not the one the channel says, wrong or missing signature, over the flow limit | **do not answer** |
+| unreadable, sender is not the one the channel says, wrong or missing signature, cannot decrypt, over the flow limit | **do not answer** |
 
 - **Nobody answers "received".** An answer to an answer is the first loop between two agents.
 - Cards and vouching get no "received" — they have no number.
@@ -167,17 +193,21 @@ The receiver checks in order and goes silent at the first one that fails. The wo
 10. **Sending moment** (words packet only) — `sent.ms` older than 7 days by the receiver's clock: "stale"; later than its "now" by more than a day: "from the future".
 11. **Repeat** (words packet only) — the pair "sender key + number" was already accepted within the last 7 days.
 
+**An envelope** goes through steps 1–3 once (size — with its own limit), then: the envelope form; is `key` the receiver's key ("cannot decrypt: sealed to a key that is not mine"); is `enc` on the curve; decryption ("cannot decrypt"); size of the form inside. After that the form inside goes from step 4 on, as if it had come open, and is not counted towards the flow a second time.
+
 Passing the gate is not trust yet. Next the receiver decides "who is this": does the agent speak for whoever it named in `from.represents`. With us, "for a person" is only by a power of attorney that the receiver's owner confirmed on their own screen; without it the words go as words of an unfamiliar agent.
 
 ## 7. How our agent behaves (recommendations, not rules of the form)
 
 - At most **3 words packets in a row** to one agent without a new message from its own owner; then it goes silent. Telegram's documentation warns plainly: a conversation between bots easily turns into an endless loop.
 - It sends its card with the first packet to a new peer and after its card changes.
+- It always seals words packets, vouching and "received" when the receiver's encryption key is known; there is no switch.
 - Telegram's server time (`date`) is only a witness for its own clock.
 
 ## 8. What the protocol does not give
 
-- **No encryption.** Telegram sees the contents of packets.
+- **Who writes to whom, when and how much is visible.** Encryption (§ 2b) hides the contents, not this; the length is visible too, there is no padding.
+- **The past can be read if the receiver's key leaks.** The encryption key does not change on a schedule, and Telegram keeps history. With us a leak requires breaking into the phone: the key never leaves the keystore.
 - **The signature does not catch a takeover before the first meeting**: the first card sets the key. Create the agent's bot from a separate Telegram account and turn on a cloud password there: the owner of the account that created a bot can get its token from @BotFather.
 - **Truth is not checked.** The form carries who said it, not whether it is right.
 - **Rights are not passed.** No field gives rights in another agent; only that agent's own code does.
@@ -191,6 +221,7 @@ The protocol itself does not depend on the platform: the frame is text, the sign
   - In CryptoKit a signature has `rawRepresentation` — that is exactly r and s back to back, as required. `SecKeyCreateSignature` from Security returns the signature in DER — split it into r and s (§ 9).
   - The public key is `x963Representation`: the same 65 bytes (`04`, x, y).
   - Sign the `signed` bytes as they are: CryptoKit computes SHA-256 itself. If you hash them first and then sign the hash as data, you get a signature of a hash of a hash, and the receiver answers "wrong signature".
+- **Encryption key** (§ 2b) — also P-256, and the Secure Enclave can do key agreement. The envelope is `HPKE.Sender` and `HPKE.Recipient` from CryptoKit (iOS 17, macOS 14 and later). The ready-made suite `P256_SHA256_AES_GCM_256` **does not fit** — ours is AES-128; build the suite yourself: `HPKE.Ciphersuite(kem: .P256_HKDF_SHA256, kdf: .HKDF_SHA256, aead: .AES_GCM_128)`.
 - **Background on iOS.** iOS does not let an app in the background keep polling Telegram (`getUpdates`). There are two ways out:
   - fetch messages while the app is open;
   - a bot webhook to your own server that wakes the device with a push notification. The bot token then also lives on the server — a second place it can be stolen from. A webhook and `getUpdates` do not work together: while a webhook is set, polling gets no updates.
@@ -239,6 +270,25 @@ To sign: sign `signed` with your key; `utils.decode_dss_signature` splits the si
 
 Build the body the same way we do: `json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")`.
 
+Open and seal an envelope (the third-party library `pyhpke`; `body` is the envelope's body):
+
+```python
+from pyhpke import AEADId, CipherSuite, KDFId, KEMId
+
+INFO = b"uroboros gate konvert 1"
+suite = CipherSuite.new(KEMId.DHKEM_P256_HKDF_SHA256, KDFId.HKDF_SHA256, AEADId.AES128_GCM)
+
+k = json.loads(body)
+skr = suite.kem.deserialize_private_key(bytes.fromhex(sk_hex))  # your private encryption key, 32 bytes
+inner = suite.create_recipient_context(unb64(k["enc"]), skr, info=INFO).open(unb64(k["box"]), aad=b"")
+
+pkr = suite.kem.deserialize_public_key(unb64(enc_b64))  # fields.enc from the receiver's card
+enc, ctx = suite.create_sender_context(pkr, info=INFO)
+box = ctx.seal(form, aad=b"")  # form — the whole signed form
+```
+
+The example receiver's private encryption key (`primery/shifr_kartochka.txt`) is **published on purpose, only to check** `primery/konvert.txt`: `335473fea2c30717ada3b00d432fa3a438b1c83e938ae0037eb5958c2ea9ac3c`.
+
 ## 10. Versions
 
 | Mark | Version | What |
@@ -247,11 +297,13 @@ Build the body the same way we do: `json.dumps(obj, ensure_ascii=False, separato
 | `trafaret` | 3 | the same, signed |
 | `kartochka` | 1 | agent card, unsigned |
 | `kartochka` | 2 | the same, signed and with a key (`fields.key`) |
+| `kartochka` | 3 | signed, with a signing key and an encryption key (`fields.enc`) |
 | `poruka` | 1 | vouching, unsigned |
 | `poruka` | 2 | the same, signed |
 | `prinyal` | 1 | "received" answer, unsigned |
 | `prinyal` | 2 | the same, signed |
+| `konvert` | 1 | envelope: a signed form sealed to the receiver's key (§ 2b, 4.5) |
 
 When the meaning or the set of fields changes, the version goes up. An agent that does not know the version does not read the packet and refuses it as "foreign version".
 
-This agent's code: `app/src/main/java/com/uroboros/gate/` — `GateWire` (frame and forms), `GateIntake` (receiving), `GateSign` (signature), `GateKeys` (whose key), `GateAck`, `GateOutbox`, `GateClock`, `GateTelegram`.
+This agent's code: `app/src/main/java/com/uroboros/gate/` — `GateWire` (frame and forms), `GateIntake` (receiving), `GateSign` (signature), `GateKeys` (whose key), `GateBox` (encryption), `GateAck`, `GateOutbox`, `GateClock`, `GateTelegram`.

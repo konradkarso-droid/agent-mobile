@@ -63,6 +63,7 @@ class GateRowsTest {
             GateCard(agentB, mapOf(GateCard.Field.NAME to "Хоуп")),
             GateCard(agentB, mapOf(GateCard.Field.NAME to "Хоуп", GateCard.Field.REPO to "https://x", GateCard.Field.ABOUT to "о себе")),
             GateCard(agentB, mapOf(GateCard.Field.NAME to "Хоуп", GateCard.Field.KEY to "k".repeat(87))),
+            GateCard(agentB, mapOf(GateCard.Field.NAME to "Хоуп", GateCard.Field.KEY to "k".repeat(87), GateCard.Field.ENC to "e".repeat(87))),
         )
         for (c in cards) for (ended in listOf(null, now + 9)) {
             val r = GateCards.Reading(c, now, ended)

@@ -37,13 +37,14 @@ import java.util.zip.CRC32
  * числа как дробные и точны только до 2^53: два разных номера у них читались бы
  * одним, и второй пакет отсеялся бы как повтор.
  *
- * Карточка агента, поручительство и «принял» идут той же шапкой, каждое со
- * своим знаком (см. [readCard], [readVouch], [readAck]); какая форма пришла,
- * говорит [formOf].
+ * Карточка агента, поручительство, «принял» и конверт идут той же шапкой,
+ * каждое со своим знаком (см. [readCard], [readVouch], [readAck],
+ * [readKonvert]); какая форма пришла, говорит [formOf].
  *
- * ПОДПИСЬ — ПЯТЫМ СЛОВОМ ШАПКИ. У каждой формы две версии: без подписи
- * (четыре слова) и с подписью (пять слов, версия на единицу больше). Тело у
- * обеих одинаковое. Подписанная шапка карточки может нести шестое слово —
+ * ПОДПИСЬ — ПЯТЫМ СЛОВОМ ШАПКИ. У каждой формы, кроме конверта, версия без
+ * подписи (четыре слова) и с подписью (пять слов, версия на единицу больше);
+ * у карточки подписанных версий две — с ключом шифрования и без. Тело у
+ * подписанной и неподписанной одинаковое. Подписанная шапка карточки может нести шестое слово —
  * подпись прежним ключом при его смене ([GateKeys]). Как подписывается и что
  * подписано, — [GateSign]; верна ли подпись и чей это ключ, решают
  * [GateIntake] и [GateKeys] — здесь только форма: подпись нужной длины из
@@ -126,9 +127,16 @@ object GateWire {
      * Ключ подписи (`key`) — только в подписанной карточке, и там он
      * обязателен: подпись карточки проверяется этим же ключом. Неподписанная
      * карточка с ключом — неверная форма: ключ без подписи никто не доказал.
+     *
+     * Ключ шифрования (`enc`, [GateBox]) — только в карточке версии
+     * [CARD_ENC_VERSION], и там он обязателен. Отдельной версией, а не
+     * необязательным полем версии 2: прежний читатель отказал бы незнакомому
+     * полю, не поняв, почему. Ключу шифрования верят ровно настолько, насколько
+     * подписи карточки: своего «доверия при первой встрече» у него нет.
      */
     const val CARD_VERSION = 1
     const val CARD_SIGNED_VERSION = 2
+    const val CARD_ENC_VERSION = 3
 
     private const val CARD_MAGIC = "kartochka"
 
@@ -151,9 +159,16 @@ object GateWire {
         is Frame.Ok -> try {
             val card = cardFromJson(f.json)
             val key = card.fields[GateCard.Field.KEY]
+            val enc = card.fields[GateCard.Field.ENC]
             if (f.seal == null && key != null) throw Refused(GateRefusal.MALFORMED, "ключ подписи в карточке без подписи")
             if (f.seal != null && key == null) throw Refused(GateRefusal.MALFORMED, "подписанная карточка без ключа подписи")
             if (key != null && GateSign.decodeKey(key) == null) throw Refused(GateRefusal.MALFORMED, "fields.key — не ключ P-256")
+            if (f.version != CARD_ENC_VERSION && enc != null) {
+                throw Refused(GateRefusal.MALFORMED, "ключ шифрования — только в карточке версии $CARD_ENC_VERSION")
+            }
+            if (f.version == CARD_ENC_VERSION && enc == null) throw Refused(GateRefusal.MALFORMED, "карточка версии $CARD_ENC_VERSION без ключа шифрования")
+            if (enc != null && GateSign.decodeKey(enc) == null) throw Refused(GateRefusal.MALFORMED, "fields.enc — не ключ P-256")
+            if (enc != null && enc == key) throw Refused(GateRefusal.MALFORMED, "ключ шифрования тот же, что ключ подписи")
             CardRead.Ok(card, f.seal)
         } catch (e: Refused) {
             CardRead.Fail(e.refusal, e.detail)
@@ -313,14 +328,92 @@ object GateWire {
         }
     }
 
+    // --- Конверт ---
+
+    /**
+     * Конверт — подписанная форма, закрытая ключом получателя ([GateBox]):
+     *
+     * ```
+     * konvert 1 <длина тела в байтах> <CRC32 тела>\n
+     * {"key":"<ключ шифрования получателя>","enc":"<одноразовый ключ>","box":"<закрытое>"}
+     * ```
+     *
+     * Все три — base64url без `=`; `key` и `enc` — по [GateSign.KEY_CHARS]
+     * знаков. Здесь проверяется только форма: точка ли `enc` на кривой и
+     * открывается ли `box`, решают [GateIntake] и [GateBox]. Подписи у конверта
+     * нет: подпись — у формы внутри, а снаружи она открыла бы каналу, кто пишет.
+     */
+    const val KONVERT_VERSION = 1
+
+    private const val KONVERT_MAGIC = "konvert"
+
+    sealed class KonvertRead {
+        data class Ok(val konvert: GateBox.Konvert) : KonvertRead()
+        data class Fail(val refusal: GateRefusal, val detail: String) : KonvertRead()
+    }
+
+    fun writeKonvert(k: GateBox.Konvert): ByteArray {
+        val body = GateJson.write(
+            GateJson.Value.Obj(
+                linkedMapOf(
+                    "key" to GateJson.Value.Str(k.key),
+                    "enc" to GateJson.Value.Str(k.enc),
+                    "box" to GateJson.Value.Str(GateSign.b64(k.box)),
+                ),
+            ),
+        ).toByteArray(Charsets.UTF_8)
+        return "$KONVERT_MAGIC $KONVERT_VERSION ${body.size} ${crcHex(body)}\n".toByteArray(Charsets.US_ASCII) + body
+    }
+
+    fun readKonvert(raw: ByteArray): KonvertRead = when (val f = frame(raw, Form.KONVERT, GateRefusal.NOT_A_KONVERT, "конверта")) {
+        is Frame.Fail -> KonvertRead.Fail(f.refusal, f.detail)
+        is Frame.Ok -> try {
+            val body = obj(f.json, "тело")
+            exactFields(body, listOf("key", "enc", "box"), "тело")
+            fun keyText(name: String): String {
+                val s = str(body.getValue(name), name)
+                if (s.length != GateSign.KEY_CHARS || GateSign.unb64(s)?.size != 65) {
+                    throw Refused(GateRefusal.MALFORMED, "$name не ${GateSign.KEY_CHARS} знаков base64url")
+                }
+                return s
+            }
+            val key = keyText("key")
+            val enc = keyText("enc")
+            val box = GateSign.unb64(str(body.getValue("box"), "box"))?.takeIf { it.size >= GateBox.MIN_BOX_BYTES }
+                ?: throw Refused(GateRefusal.MALFORMED, "box не base64url или короче ${GateBox.MIN_BOX_BYTES} Б")
+            KonvertRead.Ok(GateBox.Konvert(key, enc, box))
+        } catch (e: Refused) {
+            KonvertRead.Fail(e.refusal, e.detail)
+        }
+    }
+
     // --- Какая форма пришла ---
 
-    /** Формы врат по знаку в шапке; [unsigned] и [signed] — их версии без подписи и с подписью. */
-    enum class Form(val magic: String, val unsigned: Int, val signed: Int) {
-        PACKET(MAGIC, VERSION, SIGNED_VERSION),
-        CARD(CARD_MAGIC, CARD_VERSION, CARD_SIGNED_VERSION),
-        VOUCH(VOUCH_MAGIC, VOUCH_VERSION, VOUCH_SIGNED_VERSION),
-        ACK(ACK_MAGIC, ACK_VERSION, ACK_SIGNED_VERSION),
+    /**
+     * Формы врат по знаку в шапке; [unsigned] — версия без подписи, [signed] —
+     * версии с подписью (пусто — форма не подписывается: конверт).
+     */
+    enum class Form(val magic: String, val unsigned: Int, val signed: List<Int>) {
+        PACKET(MAGIC, VERSION, listOf(SIGNED_VERSION)),
+        CARD(CARD_MAGIC, CARD_VERSION, listOf(CARD_SIGNED_VERSION, CARD_ENC_VERSION)),
+        VOUCH(VOUCH_MAGIC, VOUCH_VERSION, listOf(VOUCH_SIGNED_VERSION)),
+        ACK(ACK_MAGIC, ACK_VERSION, listOf(ACK_SIGNED_VERSION)),
+        KONVERT(KONVERT_MAGIC, KONVERT_VERSION, emptyList()),
+    }
+
+    /**
+     * Версия, которую получает форма [form] с телом [body] при подписи: у
+     * карточки с ключом шифрования — [CARD_ENC_VERSION], у остальных — их
+     * единственная подписанная.
+     */
+    fun signedVersion(form: Form, body: ByteArray): Int {
+        if (form != Form.CARD) return form.signed.single()
+        val fields = try {
+            ((GateJson.parse(String(body, Charsets.UTF_8)) as? GateJson.Value.Obj)?.fields?.get("fields") as? GateJson.Value.Obj)?.fields
+        } catch (e: GateJson.Malformed) {
+            null
+        }
+        return if (fields?.containsKey(GateCard.Field.ENC.wire) == true) CARD_ENC_VERSION else CARD_SIGNED_VERSION
     }
 
     /**
@@ -336,7 +429,7 @@ object GateWire {
     // --- Шапка и целость: общие для всех форм ---
 
     private sealed class Frame {
-        class Ok(val json: GateJson.Value, val seal: Seal?) : Frame()
+        class Ok(val json: GateJson.Value, val seal: Seal?, val version: Int) : Frame()
         class Fail(val refusal: GateRefusal, val detail: String) : Frame()
     }
 
@@ -352,8 +445,8 @@ object GateWire {
         val parts = String(raw, 0, nl, Charsets.US_ASCII).split(' ')
         if (parts.size < 4 || parts[0] != form.magic) return no(notThis, "шапка не $whose")
         val version = parts[1].toIntOrNull() ?: return no(notThis, "версия не числом")
-        if (version != form.unsigned && version != form.signed) {
-            return no(GateRefusal.FOREIGN_VERSION, "версия $version, у меня ${form.unsigned} и ${form.signed}")
+        if (version != form.unsigned && version !in form.signed) {
+            return no(GateRefusal.FOREIGN_VERSION, "версия $version, у меня ${(listOf(form.unsigned) + form.signed).joinToString(", ")}")
         }
         val words = if (version == form.unsigned) setOf(4) else if (form == Form.CARD) setOf(5, 6) else setOf(5)
         if (parts.size !in words) return no(notThis, "в шапке версии $version слов ${parts.size}")
@@ -382,7 +475,7 @@ object GateWire {
         }
         val seal = if (sigs.isEmpty()) null else Seal(sigs[0], sigs.getOrNull(1), GateSign.signedBytes(parts.take(4).joinToString(" "), body))
         return try {
-            Frame.Ok(GateJson.parse(text), seal)
+            Frame.Ok(GateJson.parse(text), seal, version)
         } catch (e: GateJson.Malformed) {
             no(GateRefusal.MALFORMED, "JSON: ${e.message}")
         }

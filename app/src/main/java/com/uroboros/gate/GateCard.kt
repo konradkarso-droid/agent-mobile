@@ -43,6 +43,14 @@ data class GateCard(val agent: PersonKey, val fields: Map<Field, String>) {
          * ([GateWire.readCard]). Длина задана видом ключа, а не объявлена.
          */
         KEY("key", "ключ подписи", GateSign.KEY_CHARS),
+
+        /**
+         * Открытый ключ шифрования ([GateBox]) — только в карточке версии
+         * [GateWire.CARD_ENC_VERSION]. Другой ключ, чем [KEY]: один ключ на
+         * подпись и согласование — известный класс атак, а смена ключа
+         * шифрования стала бы сменой личности.
+         */
+        ENC("enc", "ключ шифрования", GateSign.KEY_CHARS),
     }
 
     /**
@@ -189,8 +197,8 @@ object GateCards {
     fun meterNone(agent: PersonKey, nameOf: (PersonKey) -> String?): String =
         "Карточка: ${name(agent, nameOf)} — карточки нет"
 
-    /** Ключ подписи в строке — первыми 8 знаками: целиком его глазами не сверить. */
-    private fun shown(f: GateCard.Field, v: String) = if (f == GateCard.Field.KEY) v.take(8) + "…" else v
+    /** Ключи в строке — первыми 8 знаками: целиком их глазами не сверить. */
+    private fun shown(f: GateCard.Field, v: String) = if (f == GateCard.Field.KEY || f == GateCard.Field.ENC) v.take(8) + "…" else v
 
     private fun name(k: PersonKey, nameOf: (PersonKey) -> String?) = nameOf(k)?.takeIf { it.isNotBlank() } ?: k.id
 }
