@@ -37,8 +37,9 @@ import java.util.zip.CRC32
  * числа как дробные и точны только до 2^53: два разных номера у них читались бы
  * одним, и второй пакет отсеялся бы как повтор.
  *
- * Карточка агента и поручительство идут той же шапкой, каждое со своим знаком
- * (см. [readCard], [readVouch]).
+ * Карточка агента, поручительство и «принял» идут той же шапкой, каждое со
+ * своим знаком (см. [readCard], [readVouch], [readAck]); какая форма пришла,
+ * говорит [formOf].
  *
  * Здесь проверяется форма. Чья это схема ключа, мне ли пакет, не слишком ли
  * часто пишет отправитель и не повтор ли это, решает [GateIntake].
@@ -205,6 +206,97 @@ object GateWire {
         }
     }
 
+    // --- «Принял» ---
+
+    /**
+     * «Принял» — ответ получателя на пакет слов, своя форма со своим знаком:
+     *
+     * ```
+     * prinyal <версия> <длина тела в байтах> <CRC32 тела>\n
+     * {"from":"tg:user:789","to":"tg:user:123","number":"123456789abcdef0","result":"accepted","got":…,"sent":…}
+     * ```
+     *
+     * [GateAck.from] — кто отвечает (получатель пакета), [GateAck.to] — кому
+     * (отправитель пакета), `number` — номер пакета, как он пришёл. `got` и
+     * `sent` — моменты по часам отвечающего: когда пакет пришёл и когда ушёл
+     * ответ; `sent` раньше `got` — порча. Что всё это значит, — [GateAck].
+     */
+    const val ACK_VERSION = 1
+
+    private const val ACK_MAGIC = "prinyal"
+
+    sealed class AckRead {
+        data class Ok(val ack: GateAck) : AckRead()
+        data class Fail(val refusal: GateRefusal, val detail: String) : AckRead()
+    }
+
+    fun writeAck(a: GateAck): ByteArray {
+        val body = GateJson.write(
+            GateJson.Value.Obj(
+                linkedMapOf(
+                    "from" to GateJson.Value.Str(a.from.id),
+                    "to" to GateJson.Value.Str(a.to.id),
+                    "number" to GateJson.Value.Str(numberHex(a.number)),
+                    "result" to GateJson.Value.Str(a.result.wire),
+                    "got" to GateJson.Value.Num(a.gotMs),
+                    "sent" to GateJson.Value.Num(a.sentMs),
+                ),
+            ),
+        ).toByteArray(Charsets.UTF_8)
+        return "$ACK_MAGIC $ACK_VERSION ${body.size} ${crcHex(body)}\n".toByteArray(Charsets.US_ASCII) + body
+    }
+
+    fun readAck(raw: ByteArray): AckRead = when (val f = frame(raw, ACK_MAGIC, ACK_VERSION, GateRefusal.NOT_AN_ACK, "ответа «принял»")) {
+        is Frame.Fail -> AckRead.Fail(f.refusal, f.detail)
+        is Frame.Ok -> try {
+            val body = obj(f.json, "тело")
+            exactFields(body, listOf("from", "to", "number", "result", "got", "sent"), "тело") {
+                when (it) {
+                    "from" -> GateRefusal.NO_ORIGIN
+                    "to" -> GateRefusal.NO_KEY
+                    else -> GateRefusal.MALFORMED
+                }
+            }
+            val number = number(body.getValue("number"), "number")
+            val wire = str(body.getValue("result"), "result")
+            val result = GateAck.Result.values().firstOrNull { it.wire == wire }
+                ?: throw Refused(GateRefusal.MALFORMED, "result: незнакомое «$wire»")
+            val got = positive(body.getValue("got"), "got")
+            val sent = positive(body.getValue("sent"), "sent")
+            // Оба момента — по одним часам, отвечающего; ответ раньше прихода — порча.
+            if (sent < got) throw Refused(GateRefusal.MALFORMED, "ответ ушёл раньше, чем пакет пришёл")
+            AckRead.Ok(
+                GateAck(
+                    from = key(body["from"], "from", GateRefusal.NO_ORIGIN),
+                    to = key(body["to"], "to", GateRefusal.NO_KEY),
+                    number = number,
+                    result = result,
+                    gotMs = got,
+                    sentMs = sent,
+                ),
+            )
+        } catch (e: Refused) {
+            AckRead.Fail(e.refusal, e.detail)
+        }
+    }
+
+    // --- Какая форма пришла ---
+
+    /** Формы врат по знаку в шапке. */
+    enum class Form(val magic: String) {
+        PACKET(MAGIC), CARD(CARD_MAGIC), VOUCH(VOUCH_MAGIC), ACK(ACK_MAGIC),
+    }
+
+    /**
+     * Форма по первому слову шапки; null — не форма врат. Только узнаёт, куда
+     * нести: целость, версию и тело проверяет приём своей формы.
+     */
+    fun formOf(raw: ByteArray): Form? {
+        val end = (0 until minOf(raw.size, MAX_HEADER)).firstOrNull { raw[it] == ' '.code.toByte() } ?: return null
+        val magic = String(raw, 0, end, Charsets.US_ASCII)
+        return Form.values().firstOrNull { it.magic == magic }
+    }
+
     // --- Шапка и целость: общие для всех форм ---
 
     private sealed class Frame {
@@ -311,12 +403,8 @@ object GateWire {
 
         val sentObj = obj(body.getValue("sent"), "sent")
         exactFields(sentObj, listOf("number", "ms"), "sent")
-        val number = str(sentObj.getValue("number"), "sent.number")
-            .takeIf { it.length == 16 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
-            ?.let { java.lang.Long.parseUnsignedLong(it, 16) }
-            ?: throw Refused(GateRefusal.MALFORMED, "sent.number не 16 знаков hex")
-        val sentMs = (sentObj.getValue("ms") as? GateJson.Value.Num)?.n?.takeIf { it > 0 }
-            ?: throw Refused(GateRefusal.MALFORMED, "sent.ms не положительное целое")
+        val number = number(sentObj.getValue("number"), "sent.number")
+        val sentMs = positive(sentObj.getValue("ms"), "sent.ms")
 
         val place = enumOf(str(body.getValue("place"), "place"), "place") { Place.valueOf(it) }
         if (place == Place.SCREEN) throw Refused(GateRefusal.MALFORMED, "экран через врата не идёт")
@@ -334,8 +422,7 @@ object GateWire {
 
         val atObj = obj(body.getValue("at"), "at")
         exactFields(atObj, listOf("ms", "zone"), "at")
-        val atMs = (atObj.getValue("ms") as? GateJson.Value.Num)?.n?.takeIf { it > 0 }
-            ?: throw Refused(GateRefusal.MALFORMED, "at.ms не положительное целое")
+        val atMs = positive(atObj.getValue("ms"), "at.ms")
         val zone = str(atObj.getValue("zone"), "at.zone")
         try {
             java.time.ZoneId.of(zone)
@@ -378,6 +465,15 @@ object GateWire {
 
     private fun str(v: GateJson.Value, where: String): String =
         (v as? GateJson.Value.Str)?.s ?: throw Refused(GateRefusal.MALFORMED, "$where не строка")
+
+    /** Номер пакета: 16 строчных знаков hex (почему строкой — в начале этого объекта). */
+    private fun number(v: GateJson.Value, where: String): Long =
+        str(v, where).takeIf { it.length == 16 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
+            ?.let { java.lang.Long.parseUnsignedLong(it, 16) }
+            ?: throw Refused(GateRefusal.MALFORMED, "$where не 16 знаков hex")
+
+    private fun positive(v: GateJson.Value, where: String): Long =
+        (v as? GateJson.Value.Num)?.n?.takeIf { it > 0 } ?: throw Refused(GateRefusal.MALFORMED, "$where не положительное целое")
 
     private fun bool(v: GateJson.Value, where: String): Boolean =
         (v as? GateJson.Value.Bool)?.b ?: throw Refused(GateRefusal.MALFORMED, "$where не да/нет")

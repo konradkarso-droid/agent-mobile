@@ -293,6 +293,37 @@ class GateIntakeTest {
     }
 
     @Test
+    fun `нечитаемое от одного ключа тоже идёт в счёт потока`() {
+        val intake = intake()
+        repeat(GateIntake.Limits.DECLARED.perWindow) {
+            assertEquals(GateRefusal.NOT_A_PACKET, (intake.receive("мусор $it".toByteArray(), agentB, now) as GateIntake.Verdict.Refused).refusal)
+        }
+        assertEquals(GateRefusal.FLOOD, (intake.receive("мусор".toByteArray(), agentB, now) as GateIntake.Verdict.Refused).refusal)
+        assertEquals(GateRefusal.FLOOD, refusal(GateWire.write(good), intake))
+        // Другого агента чужой мусор не задел.
+        val other = good.copy(from = PersonKey("tg:agent:321"))
+        assertTrue(intake.receive(GateWire.write(other), now) is GateIntake.Verdict.Accepted)
+    }
+
+    @Test
+    fun `больше предела размера в счёт потока не идёт`() {
+        val intake = intake()
+        val big = GateWire.write(good.copy(words = "а".repeat(5000)))
+        repeat(GateIntake.Limits.DECLARED.perWindow + 5) { assertEquals(GateRefusal.TOO_BIG, refusal(big, intake)) }
+        assertTrue(intake.receive(GateWire.write(good), now) is GateIntake.Verdict.Accepted)
+    }
+
+    @Test
+    fun `карточка, поручительство и пакет одного ключа — один счёт потока`() {
+        val intake = intake()
+        repeat(GateIntake.Limits.DECLARED.perWindow / 2) {
+            intake.receiveCard(GateWire.writeCard(GateCard(agentB, emptyMap())), agentB, now)
+            intake.receiveVouch(GateWire.writeVouch(GateVouch(agentB, humanB, me, false)), agentB, now)
+        }
+        assertEquals(GateRefusal.FLOOD, refusal(GateWire.write(good), intake))
+    }
+
+    @Test
     fun `отказ виден строкой для прибора`() {
         val v = intake().receive(GateWire.write(good.copy(to = PersonKey("tg:agent:555"))), now) as GateIntake.Verdict.Refused
         assertEquals("не принят — не мне: кому tg:agent:555, я tg:agent:789", v.words)
