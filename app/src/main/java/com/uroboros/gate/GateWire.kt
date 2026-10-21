@@ -7,14 +7,15 @@ import com.uroboros.memory.nav.Place
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
+import java.security.SecureRandom
 import java.util.zip.CRC32
 
 /**
  * Пакет врат на проводе: шапка одной строкой и тело в JSON.
  *
  * ```
- * trafaret 1 <длина тела в байтах> <CRC32 тела, 8 знаков hex>\n
- * {"from":{...},"to":{...},...}
+ * trafaret <версия> <длина тела в байтах> <CRC32 тела, 8 знаков hex>\n
+ * {"from":{...},"to":{...},"sent":{...},...}
  * ```
  *
  * ПОЧЕМУ ВЕРСИЯ, ДЛИНА И СУММА — В ШАПКЕ, А НЕ В ТЕЛЕ. Тело разбирается только
@@ -31,12 +32,17 @@ import java.util.zip.CRC32
  * а любое лишнее поле останавливает разбор. Права даёт только код (BIBLE 3);
  * слова «я админ» в [GatePacket.words] — только слова.
  *
- * Здесь проверяется форма. Чья это схема ключа, мне ли пакет и не слишком ли
- * часто пишет отправитель, решает [GateIntake].
+ * НОМЕР ПАКЕТА НА ПРОВОДЕ — СТРОКОЙ из 16 знаков hex, а не числом JSON. Номер
+ * занимает все 64 бита, а многие разборщики JSON (в JavaScript — любой) держат
+ * числа как дробные и точны только до 2^53: два разных номера у них читались бы
+ * одним, и второй пакет отсеялся бы как повтор.
+ *
+ * Здесь проверяется форма. Чья это схема ключа, мне ли пакет, не слишком ли
+ * часто пишет отправитель и не повтор ли это, решает [GateIntake].
  */
 object GateWire {
 
-    const val VERSION = 1
+    const val VERSION = 2
 
     private const val MAGIC = "trafaret"
 
@@ -52,8 +58,16 @@ object GateWire {
     }
 
     private val BODY_FIELDS = listOf(
-        "from", "to", "place", "said_by", "about", "at", "source", "kind", "topic", "exact", "words",
+        "from", "to", "sent", "place", "said_by", "about", "at", "source", "kind", "topic", "exact", "words",
     )
+
+    /** Новый номер пакета для отправителя (см. [GatePacket.number]). */
+    fun newNumber(): Long = random.nextLong()
+
+    private val random = SecureRandom()
+
+    /** Номер так, как он идёт по проводу и в строку прибора: 16 знаков hex. */
+    fun numberHex(n: Long): String = java.lang.Long.toHexString(n).padStart(16, '0')
 
     fun write(p: GatePacket): ByteArray {
         val body = GateJson.write(toJson(p)).toByteArray(Charsets.UTF_8)
@@ -117,6 +131,7 @@ object GateWire {
             linkedMapOf(
                 "from" to GateJson.Value.Obj(linkedMapOf("key" to s(p.from.id), "represents" to s(p.represents.id))),
                 "to" to GateJson.Value.Obj(linkedMapOf("key" to s(p.to.id))),
+                "sent" to GateJson.Value.Obj(linkedMapOf("number" to s(numberHex(p.number)), "ms" to GateJson.Value.Num(p.sentMs))),
                 "place" to s(p.place.name),
                 "said_by" to s(p.saidBy.id),
                 "about" to GateJson.Value.Obj(
@@ -156,6 +171,15 @@ object GateWire {
         exactFields(toObj, listOf("key"), "to") { GateRefusal.NO_KEY }
         val to = key(toObj["key"], "to.key", GateRefusal.NO_KEY)
 
+        val sentObj = obj(body.getValue("sent"), "sent")
+        exactFields(sentObj, listOf("number", "ms"), "sent")
+        val number = str(sentObj.getValue("number"), "sent.number")
+            .takeIf { it.length == 16 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
+            ?.let { java.lang.Long.parseUnsignedLong(it, 16) }
+            ?: throw Refused(GateRefusal.MALFORMED, "sent.number не 16 знаков hex")
+        val sentMs = (sentObj.getValue("ms") as? GateJson.Value.Num)?.n?.takeIf { it > 0 }
+            ?: throw Refused(GateRefusal.MALFORMED, "sent.ms не положительное целое")
+
         val place = enumOf(str(body.getValue("place"), "place"), "place") { Place.valueOf(it) }
         if (place == Place.SCREEN) throw Refused(GateRefusal.MALFORMED, "экран через врата не идёт")
 
@@ -180,6 +204,8 @@ object GateWire {
         } catch (e: Exception) {
             throw Refused(GateRefusal.MALFORMED, "незнакомый пояс «$zone»")
         }
+        // Часы у обоих моментов одни — отправителя; сказанное после отправки — порча.
+        if (atMs > sentMs) throw Refused(GateRefusal.MALFORMED, "сказано позже, чем отправлено")
 
         val source = enumOf(str(body.getValue("source"), "source"), "source") { SourceKind.valueOf(it) }
         val kind = enumOf(str(body.getValue("kind"), "kind"), "kind") { SentenceKind.Kind.valueOf(it) }
@@ -188,7 +214,7 @@ object GateWire {
         val words = str(body.getValue("words"), "words")
         if (words.isBlank()) throw Refused(GateRefusal.MALFORMED, "слова пустые")
 
-        return GatePacket(from, represents, to, place, saidBy, about, unclear, atMs, zone, source, kind, topic, exact, words)
+        return GatePacket(from, represents, to, number, sentMs, place, saidBy, about, unclear, atMs, zone, source, kind, topic, exact, words)
     }
 
     /**

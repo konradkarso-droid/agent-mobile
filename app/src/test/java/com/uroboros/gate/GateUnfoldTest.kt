@@ -23,7 +23,8 @@ class GateUnfoldTest {
     private val me = PersonKey("tg:agent:789")
 
     private fun packet(words: String, saidBy: PersonKey = boris) = GatePacket(
-        from = agentB, represents = boris, to = me, place = Place.DIRECT, saidBy = saidBy,
+        from = agentB, represents = boris, to = me, number = 1L, sentMs = 1_760_947_200_000L,
+        place = Place.DIRECT, saidBy = saidBy,
         about = emptyList(), aboutUnclear = false, atMs = 1_760_947_200_000L, zone = "Europe/Moscow",
         source = SourceKind.USER_STATED, kind = SentenceKind.Kind.STATEMENT, topic = emptyList(),
         exact = emptyMap(), words = words,
