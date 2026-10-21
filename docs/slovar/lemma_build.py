@@ -8,12 +8,18 @@ import pymorphy3
 KEEP = {'NOUN', 'ADJF', 'ADJS', 'COMP', 'VERB', 'INFN', 'PRTF', 'PRTS', 'GRND', 'NUMR', 'ADVB', 'NPRO', 'PRED',
         'PREP', 'CONJ', 'PRCL', 'INTJ', '1per', '2per', '3per', 'sing', 'plur', 'Name', 'Surn', 'Patr', 'Geox',
         'impr', 'past', 'pres', 'futr', 'incl', 'Apro', 'Prnt', 'Ques'}
+# Только у имён (пометка Name) — падеж и род: по ним строятся формы имени
+# собеседника (LemmaDictionary.nameForms). У остальных слов падежа нет: он
+# умножил бы образцы, а потребителям не нужен.
+NAME_KEEP = {'nomn', 'gent', 'datv', 'accs', 'ablt', 'loct', 'masc', 'femn', 'ms-f'}
 PREF = ['наи', 'по']
 WORD = re.compile('[а-я-]+')
 
 
 def red(tag):
-    return ','.join(sorted(set(g for g in str(tag).replace(' ', ',').split(',') if g in KEEP)))
+    gs = set(str(tag).replace(' ', ',').split(','))
+    keep = KEEP | NAME_KEEP if 'Name' in gs else KEEP
+    return ','.join(sorted(g for g in gs if g in keep))
 
 
 def lcp(a, b):

@@ -183,6 +183,21 @@ class GateUnfoldTest {
     }
 
     @Test
+    fun `строка прибора говорит, откуда падежи имён`() {
+        val line = GateUnfold.meterLine(unfold("я работаю."))
+        assertTrue(line, "Борис — по словарю" in line && "Антон — по словарю" in line)
+        val odd = GateUnfold.meterLine(GateUnfold.unfold(packet("я работаю."), "Кэп", "Мишель", TestVerbs.lemmas, TestVerbs.table))
+        assertTrue(odd, "Кэп — по букве — нет в словаре" in odd)
+        assertTrue(odd, "Мишель — по букве — в словаре склоняется двояко" in odd)
+    }
+
+    @Test
+    fun `имя с беглой гласной склоняется по словарю`() {
+        val r = GateUnfold.unfold(packet("у меня сломалась машина"), "Павел", "Антон", TestVerbs.lemmas, TestVerbs.table)
+        assertEquals("у Павла сломалась машина", r.text)
+    }
+
+    @Test
     fun `местоимения — те же, что у определителя лица`() {
         assertTrue(PersonForm.FIRST_PRONOUNS.containsAll(GateUnfold.FIRST.keys))
         assertTrue(PersonForm.SECOND_PRONOUNS.containsAll(GateUnfold.SECOND.keys))

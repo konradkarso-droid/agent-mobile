@@ -83,6 +83,31 @@ class LemmaDictionaryTest {
     }
 
     @Test
+    fun `у имени падеж и род, у прочих слов падежа нет`() {
+        assertTrue(dictionary.analyze("Павла").any { it.lemma == "павел" && "gent" in it.tags && "masc" in it.tags })
+        assertTrue(dictionary.analyze("стола").none { t -> t.tags.any { it in setOf("gent", "accs", "masc") } })
+        assertTrue(dictionary.analyze("машину").none { "accs" in it.tags })
+    }
+
+    @Test
+    fun `формы имени по начальной`() {
+        val p = dictionary.nameForms("Павел").single()
+        assertEquals("masc", p.gender)
+        assertEquals(listOf("павла"), p.forms["gent"])
+        assertEquals(setOf("машей", "машею"), dictionary.nameForms("маша").single().forms["ablt"]!!.toSet())
+        // Только имя, не нарицательный омоним: у «любовь» одна лексема-имя.
+        assertEquals(listOf("любови"), dictionary.nameForms("любовь").single().forms["gent"])
+        assertEquals(2, dictionary.nameForms("мишель").size)
+    }
+
+    @Test
+    fun `формы имени молчат — не имя, не начальная форма, незнакомое`() {
+        for (w in listOf("стол", "павла", "кэп", "hope", "", "мама")) {
+            assertTrue("«$w» не должно давать форм имени", dictionary.nameForms(w).isEmpty())
+        }
+    }
+
+    @Test
     fun `кусок слова — не слово`() {
         assertFalse(dictionary.knows("рубанк"))
         assertFalse(dictionary.knows("людьм"))
