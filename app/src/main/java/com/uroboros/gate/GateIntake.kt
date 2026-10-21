@@ -8,6 +8,7 @@ enum class GateRefusal(val words: String) {
     NOT_A_PACKET("не пакет трафарета"),
     NOT_A_CARD("не карточка"),
     NOT_A_VOUCH("не поручительство"),
+    NOT_AN_ACK("не ответ «принял»"),
     FOREIGN_VERSION("чужая версия трафарета"),
     INCOMPLETE("оборван"),
     DAMAGED("испорчен"),
@@ -29,8 +30,9 @@ enum class GateRefusal(val words: String) {
  * Приём пакета врат: принять или не принять, и если нет — почему.
  *
  * Порядок проверок — от дешёвого к дорогому, и пакет молчит на первой же
- * несошедшейся: размер → форма и целость ([GateWire.read]) → схемы ключей →
- * предел потока → отправитель → адресат → момент отправки → повтор.
+ * несошедшейся: размер → схема ключа канала → предел потока → форма и целость
+ * ([GateWire.read]) → схемы ключей в теле → отправитель → адресат → момент
+ * отправки → повтор.
  *
  * ОТПРАВИТЕЛЬ — ОТ КАНАЛА, А НЕ ИЗ ПАКЕТА. Ключ в теле ([GatePacket.from])
  * вписывает сам отправитель, и вписать он может чей угодно — например, ключ
@@ -46,13 +48,13 @@ enum class GateRefusal(val words: String) {
  * канал, которого агент не знает, ничего не подтверждает. Схема экрана
  * («screen:») через врата не идёт: экран — не канал между агентами.
  *
- * ПРЕДЕЛ ПОТОКА считается по ключу канала у пакетов, прошедших форму, — и тех,
- * что адресованы не мне или вписали чужого отправителя: заваливать можно и
- * ими. По ключу из тела считать нельзя: меняя его в каждом пакете, предел
- * обошёл бы любой.
- * Пакет, у которого форма не сошлась, отправителя не имеет; от потока таких
- * защищает только предел размера. Отброшенное сверх предела не копится и не
- * откладывается — его не было.
+ * ПРЕДЕЛ ПОТОКА считается по ключу канала ДО РАЗБОРА ФОРМЫ: ключ даёт канал, а
+ * не пакет, поэтому он известен и у пакета, который не читается. Заваливать
+ * можно чем угодно — мусором, пакетами не мне, пакетами с чужим отправителем,
+ * — и всё это идёт в счёт. По ключу из тела считать нельзя: меняя его в каждом
+ * пакете, предел обошёл бы любой. Отброшенное сверх предела не копится и не
+ * откладывается — его не было. Пакет больше предела размера в счёт не идёт:
+ * он отбрасывается раньше, не читаясь.
  *
  * ПОВТОРЫ. Пакет может потеряться в пути: канал держит недоставленное
  * ограниченное время (Telegram — сутки), телефон получателя бывает выключен.
@@ -73,9 +75,9 @@ enum class GateRefusal(val words: String) {
  * Запоминаются номера только принятых пакетов: отказанный (сверх предела
  * потока, не мне, устаревший) номера не занимает и может прийти снова.
  *
- * КАРТОЧКА АГЕНТА ([receiveCard]) идёт через те же врата: размер → форма →
- * схемы ключей → предел потока → отправитель. Счёт потока у карточек и пакетов
- * одного ключа общий: заваливать можно и тем, и другим. Адресата, момента и
+ * КАРТОЧКА АГЕНТА ([receiveCard]) идёт через те же врата: размер → схема ключа
+ * канала → предел потока → форма → схемы ключей → отправитель. Счёт потока у
+ * всех форм одного ключа общий: заваливать можно любой. Адресата, момента и
  * номера у карточки нет: она одна для всех, что новее — решает момент приёма
  * ([GateCards]), а повтор той же карточки ничего не меняет.
  *
@@ -83,12 +85,16 @@ enum class GateRefusal(val words: String) {
  * поручительство даётся тому, кому его решили показать. Поручитель — только
  * отправитель по каналу.
  *
+ * «ПРИНЯЛ» ([receiveAck]) — так же, как поручительство: отвечает только тот,
+ * кому пакет слали, и только мне. Что «принял» значит и на какие отказы он
+ * отвечается, — [GateAck].
+ *
  * ЧЕГО НЕ УМЕЕТ: подлинность отправителя — не больше, чем у канала: ключу
  * канала верит как есть (см. [GatePacket]); за кого отправитель говорит, не
  * решает — это [GateWho];
  * оборванный пакет не складывает в буфер до прихода остатка; в память ничего
- * не кладёт; «принял» не отвечает — это дело канала. Счётчик потока и номера
- * принятых пакетов живут в памяти процесса: после перезапуска счётчик
+ * не кладёт; «принял» сам не отправляет — его собирает [GateAcks.answer], а
+ * шлёт канал. Счётчик потока и номера принятых пакетов живут в памяти процесса: после перезапуска счётчик
  * начинается с нуля, а повтор пакета, принятого до перезапуска, пройдёт ещё
  * раз. Хранить номера между перезапусками может только таблица, а её нет.
  * Если часы получателя перевели назад после того, как номер забыт, повтор
@@ -130,7 +136,13 @@ class GateIntake(
 
     sealed class Verdict {
         data class Accepted(val packet: GatePacket) : Verdict()
-        data class Refused(val refusal: GateRefusal, val detail: String) : Verdict() {
+        /**
+         * [packet] — пакет, который прочитан и прислан тем, кто в нём назван
+         * отправителем, но не принят (не мне, устарел, из будущего, повтор): на
+         * такой отказ можно ответить ([GateAcks.answer]). Для остальных отказов —
+         * null: отвечать некому или нечего.
+         */
+        data class Refused(val refusal: GateRefusal, val detail: String, val packet: GatePacket? = null) : Verdict() {
             /** Строка для прибора. */
             val words: String get() = "не принят — ${refusal.words}: $detail"
         }
@@ -152,7 +164,15 @@ class GateIntake(
         }
     }
 
-    /** Ключ отправителя → моменты принятых к счёту пакетов, карточек и поручительств в окне [Limits.windowMs]. */
+    sealed class AckVerdict {
+        data class Accepted(val ack: GateAck) : AckVerdict()
+        data class Refused(val refusal: GateRefusal, val detail: String) : AckVerdict() {
+            /** Строка для прибора. */
+            val words: String get() = "«Принял»: не принят — ${refusal.words}: $detail"
+        }
+    }
+
+    /** Ключ отправителя → моменты засчитанных сообщений всех форм в окне [Limits.windowMs]. */
     private val recent = HashMap<String, ArrayDeque<Long>>()
 
     /** Ключ отправителя → номер принятого пакета → момент его отправки. */
@@ -161,38 +181,27 @@ class GateIntake(
     /** [sender] — ключ того, от кого пакет пришёл, по словам канала (см. «отправитель» выше). */
     @Synchronized
     fun receive(raw: ByteArray, sender: PersonKey, nowMs: Long): Verdict {
-        if (raw.size > limits.maxBytes) {
-            return Verdict.Refused(GateRefusal.TOO_BIG, "${raw.size} Б, предел ${limits.maxBytes}")
-        }
+        entry(raw, sender, nowMs)?.let { return Verdict.Refused(it.first, it.second) }
         val packet = when (val r = GateWire.read(raw)) {
             is GateWire.Read.Fail -> return Verdict.Refused(r.refusal, r.detail)
             is GateWire.Read.Ok -> r.packet
         }
 
-        val keys = listOf(sender, packet.from, packet.represents, packet.to, packet.saidBy) + packet.about
-        keys.firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let {
-            return Verdict.Refused(GateRefusal.UNKNOWN_SCHEME, "«${GateWire.schemeOf(it)}» в ${it.id}")
-        }
-
-        if (!countWithinLimit(sender.id, nowMs)) {
-            return Verdict.Refused(
-                GateRefusal.FLOOD,
-                "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин",
-            )
-        }
+        val keys = listOf(packet.from, packet.represents, packet.to, packet.saidBy) + packet.about
+        unknownScheme(keys)?.let { return Verdict.Refused(GateRefusal.UNKNOWN_SCHEME, it) }
 
         if (packet.from != sender) {
             return Verdict.Refused(GateRefusal.NOT_SENDER, "в пакете ${packet.from.id}, канал говорит ${sender.id}")
         }
 
-        if (packet.to != me) return Verdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${packet.to.id}, я ${me.id}")
+        if (packet.to != me) return Verdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${packet.to.id}, я ${me.id}", packet)
 
         val age = nowMs - packet.sentMs
         if (age >= limits.repeatWindowMs) {
-            return Verdict.Refused(GateRefusal.STALE, "отправлен ${span(age)} назад, срок ${span(limits.repeatWindowMs)}")
+            return Verdict.Refused(GateRefusal.STALE, "отправлен ${spanWords(age)} назад, срок ${spanWords(limits.repeatWindowMs)}", packet)
         }
         if (-age > limits.futureMs) {
-            return Verdict.Refused(GateRefusal.FROM_FUTURE, "отправлен на ${span(-age)} позже моего «сейчас»")
+            return Verdict.Refused(GateRefusal.FROM_FUTURE, "отправлен на ${spanWords(-age)} позже моего «сейчас»", packet)
         }
 
         forgetOld(nowMs)
@@ -201,6 +210,7 @@ class GateIntake(
             return Verdict.Refused(
                 GateRefusal.REPEAT,
                 "номер ${GateWire.numberHex(packet.number)} от ${packet.from.id} уже принят",
+                packet,
             )
         }
         numbers[packet.number] = packet.sentMs
@@ -210,22 +220,12 @@ class GateIntake(
     /** [sender] — ключ того, от кого карточка пришла, по словам канала. Карточка агента — только с его ключа. */
     @Synchronized
     fun receiveCard(raw: ByteArray, sender: PersonKey, nowMs: Long): CardVerdict {
-        if (raw.size > limits.maxBytes) {
-            return CardVerdict.Refused(GateRefusal.TOO_BIG, "${raw.size} Б, предел ${limits.maxBytes}")
-        }
+        entry(raw, sender, nowMs)?.let { return CardVerdict.Refused(it.first, it.second) }
         val card = when (val r = GateWire.readCard(raw)) {
             is GateWire.CardRead.Fail -> return CardVerdict.Refused(r.refusal, r.detail)
             is GateWire.CardRead.Ok -> r.card
         }
-        listOf(sender, card.agent).firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let {
-            return CardVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, "«${GateWire.schemeOf(it)}» в ${it.id}")
-        }
-        if (!countWithinLimit(sender.id, nowMs)) {
-            return CardVerdict.Refused(
-                GateRefusal.FLOOD,
-                "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин",
-            )
-        }
+        unknownScheme(listOf(card.agent))?.let { return CardVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, it) }
         if (card.agent != sender) {
             return CardVerdict.Refused(GateRefusal.NOT_SENDER, "в карточке ${card.agent.id}, канал говорит ${sender.id}")
         }
@@ -235,21 +235,13 @@ class GateIntake(
     /** [sender] — ключ того, от кого поручительство пришло, по словам канала. Поручитель — только он. */
     @Synchronized
     fun receiveVouch(raw: ByteArray, sender: PersonKey, nowMs: Long): VouchVerdict {
-        if (raw.size > limits.maxBytes) {
-            return VouchVerdict.Refused(GateRefusal.TOO_BIG, "${raw.size} Б, предел ${limits.maxBytes}")
-        }
+        entry(raw, sender, nowMs)?.let { return VouchVerdict.Refused(it.first, it.second) }
         val vouch = when (val r = GateWire.readVouch(raw)) {
             is GateWire.VouchRead.Fail -> return VouchVerdict.Refused(r.refusal, r.detail)
             is GateWire.VouchRead.Ok -> r.vouch
         }
-        listOf(sender, vouch.voucher, vouch.agent, vouch.to).firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let {
-            return VouchVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, "«${GateWire.schemeOf(it)}» в ${it.id}")
-        }
-        if (!countWithinLimit(sender.id, nowMs)) {
-            return VouchVerdict.Refused(
-                GateRefusal.FLOOD,
-                "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин",
-            )
+        unknownScheme(listOf(vouch.voucher, vouch.agent, vouch.to))?.let {
+            return VouchVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, it)
         }
         if (vouch.voucher != sender) {
             return VouchVerdict.Refused(GateRefusal.NOT_SENDER, "поручитель ${vouch.voucher.id}, канал говорит ${sender.id}")
@@ -257,6 +249,39 @@ class GateIntake(
         if (vouch.to != me) return VouchVerdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${vouch.to.id}, я ${me.id}")
         return VouchVerdict.Accepted(vouch)
     }
+
+    /** [sender] — ключ того, от кого «принял» пришёл, по словам канала. Отвечает только он. */
+    @Synchronized
+    fun receiveAck(raw: ByteArray, sender: PersonKey, nowMs: Long): AckVerdict {
+        entry(raw, sender, nowMs)?.let { return AckVerdict.Refused(it.first, it.second) }
+        val ack = when (val r = GateWire.readAck(raw)) {
+            is GateWire.AckRead.Fail -> return AckVerdict.Refused(r.refusal, r.detail)
+            is GateWire.AckRead.Ok -> r.ack
+        }
+        unknownScheme(listOf(ack.from, ack.to))?.let { return AckVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, it) }
+        if (ack.from != sender) {
+            return AckVerdict.Refused(GateRefusal.NOT_SENDER, "отвечает ${ack.from.id}, канал говорит ${sender.id}")
+        }
+        if (ack.to != me) return AckVerdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${ack.to.id}, я ${me.id}")
+        return AckVerdict.Accepted(ack)
+    }
+
+    /**
+     * Общий вход всех форм, до разбора: размер → схема ключа канала → предел
+     * потока. null — пропустить к разбору; иначе причина и подробность отказа.
+     */
+    private fun entry(raw: ByteArray, sender: PersonKey, nowMs: Long): Pair<GateRefusal, String>? {
+        if (raw.size > limits.maxBytes) return GateRefusal.TOO_BIG to "${raw.size} Б, предел ${limits.maxBytes}"
+        unknownScheme(listOf(sender))?.let { return GateRefusal.UNKNOWN_SCHEME to it }
+        if (!countWithinLimit(sender.id, nowMs)) {
+            return GateRefusal.FLOOD to "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин"
+        }
+        return null
+    }
+
+    /** Подробность отказа «незнакомый канал ключа» для первого ключа незнакомой схемы; null — все знакомы. */
+    private fun unknownScheme(keys: List<PersonKey>): String? =
+        keys.firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let { "«${GateWire.schemeOf(it)}» в ${it.id}" }
 
     /** Забыть номера, отправленные [Limits.repeatWindowMs] назад и раньше: такой пакет теперь отказывается как «устарел». */
     private fun forgetOld(nowMs: Long) {
@@ -266,12 +291,6 @@ class GateIntake(
             numbers.values.removeIf { sentMs -> nowMs - sentMs >= limits.repeatWindowMs }
             if (numbers.isEmpty()) senders.remove()
         }
-    }
-
-    private fun span(ms: Long): String = when {
-        ms >= DAY_MS -> "${ms / DAY_MS} сут"
-        ms >= 3_600_000L -> "${ms / 3_600_000L} ч"
-        else -> "${ms / 60_000L} мин"
     }
 
     /**
@@ -293,4 +312,12 @@ class GateIntake(
     }
 }
 
-private const val DAY_MS = 24 * 60 * 60 * 1000L
+internal const val DAY_MS = 24 * 60 * 60 * 1000L
+
+/** Длительность словами для строк прибора врат, с округлением вниз: «8 сут», «3 ч», «4 мин», «20 с». */
+internal fun spanWords(ms: Long): String = when {
+    ms >= DAY_MS -> "${ms / DAY_MS} сут"
+    ms >= 3_600_000L -> "${ms / 3_600_000L} ч"
+    ms >= 60_000L -> "${ms / 60_000L} мин"
+    else -> "${ms / 1000L} с"
+}
