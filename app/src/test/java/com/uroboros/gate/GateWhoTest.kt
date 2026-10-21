@@ -126,11 +126,11 @@ class GateWhoTest {
     }
 
     @Test
-    fun `срок не указан — год от подтверждения`() {
-        val p = proxy(confirmedMs = now - GateWho.UNDATED_TERM_MS)
-        assertEquals(GateWho.Why.EXPIRED, why(proxies = listOf(p)))
-        assertTrue(who(proxies = listOf(p), at = now - 1).who is GateWho.Who.ForPerson)
-        assertTrue(line(who(proxies = listOf(proxy()))).contains("срок не указан — год"))
+    fun `срок не указан — действует до отзыва, хоть через десять лет`() {
+        val p = proxy(confirmedMs = now - 3650 * day)
+        assertTrue(who(proxies = listOf(p)).who is GateWho.Who.ForPerson)
+        assertTrue(line(who(proxies = listOf(p))).contains("без срока, до отзыва"))
+        assertEquals(GateWho.Why.REVOKED, why(proxies = listOf(p.copy(revokedMs = now - 1))))
     }
 
     @Test

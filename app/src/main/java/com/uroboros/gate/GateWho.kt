@@ -27,16 +27,19 @@ data class GateProxy(
     val kind: Kind,
     /** Когда мой владелец подтвердил; null — ещё не подтвердил. С этого момента и действует. */
     val confirmedMs: Long?,
-    /** До какого момента; null — срок не указан, тогда [GateWho.UNDATED_TERM_MS] от подтверждения. */
+    /**
+     * До какого момента; null — срок не указан, и доверенность действует до
+     * отзыва. Сознательно: доверенность у агента кончается обычно не по
+     * дате, а отзывом — бота удалили из чата, человек сказал «больше не мой
+     * агент». Цена — забытая доверенность сама не кончается; виден только её
+     * возраст в строке прибора.
+     */
     val untilMs: Long?,
     /** Когда отозвана; null — не отзывалась. */
     val revokedMs: Long?,
 ) {
     /** За кого: человек или чат. Решает запись, а не вид ключа: вид ключа задаёт канал. */
     enum class Kind { PERSON, CHAT }
-
-    /** Конец срока: указанный или по умолчанию; null — не подтверждена. */
-    val endMs: Long? get() = untilMs ?: confirmedMs?.let { it + GateWho.UNDATED_TERM_MS }
 }
 
 /**
@@ -84,14 +87,6 @@ data class GateProxy(
  * Чистый объект: ни сети, ни базы, ни Android.
  */
 object GateWho {
-
-    /**
-     * Срок доверенности, где он не указан: год от подтверждения. Объявленное
-     * число, не подобранное, — как у доверенности без срока по ГК РФ (ст. 186):
-     * забытая доверенность сама кончается, а не действует вечно. Срок можно
-     * указать любой ([GateProxy.untilMs]).
-     */
-    const val UNDATED_TERM_MS = 365 * 24 * 60 * 60 * 1000L
 
     /** Почему «за кого» не подтверждено. */
     enum class Why(val words: String) {
@@ -180,7 +175,7 @@ object GateWho {
         val confirmed = p.confirmedMs ?: return Why.PENDING
         if (p.revokedMs != null && nowMs >= p.revokedMs) return Why.REVOKED
         if (nowMs < confirmed) return Why.NOT_STARTED
-        if (nowMs >= p.endMs!!) return Why.EXPIRED
+        if (p.untilMs != null && nowMs >= p.untilMs) return Why.EXPIRED
         return null
     }
 
@@ -193,8 +188,8 @@ object GateWho {
         val day = DateTimeFormatter.ofPattern("dd.MM.yyyy").withZone(zone)
         fun date(ms: Long) = day.format(Instant.ofEpochMilli(ms))
         fun term(p: GateProxy) =
-            "подтверждена ${date(p.confirmedMs!!)}, до ${date(p.endMs!!)}" +
-                if (p.untilMs == null) " (срок не указан — год)" else ""
+            "подтверждена ${date(p.confirmedMs!!)}, " +
+                if (p.untilMs == null) "без срока, до отзыва" else "до ${date(p.untilMs)}"
 
         val line = when (val w = r.who) {
             Who.Self -> "Врата: ${name(r.from)} — агент сам за себя"
@@ -202,7 +197,7 @@ object GateWho {
             is Who.ForChat -> "Врата: за чат — ${name(w.proxy.principal)} (доверенность ${term(w.proxy)})"
             is Who.Unconfirmed -> {
                 val detail = when (w.why) {
-                    Why.EXPIRED -> "${w.why.words} ${date(w.proxy!!.endMs!!)}"
+                    Why.EXPIRED -> "${w.why.words} ${date(w.proxy!!.untilMs!!)}"
                     Why.REVOKED -> "${w.why.words} ${date(w.proxy!!.revokedMs!!)}"
                     Why.NOT_STARTED -> "${w.why.words}, с ${date(w.proxy!!.confirmedMs!!)}"
                     Why.OTHER_PRINCIPAL -> "доверенность — на другого: ${name(w.proxy!!.principal)}"
