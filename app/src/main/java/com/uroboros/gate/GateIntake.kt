@@ -7,6 +7,7 @@ enum class GateRefusal(val words: String) {
     TOO_BIG("больше предела размера"),
     NOT_A_PACKET("не пакет трафарета"),
     NOT_A_CARD("не карточка"),
+    NOT_A_VOUCH("не поручительство"),
     FOREIGN_VERSION("чужая версия трафарета"),
     INCOMPLETE("оборван"),
     DAMAGED("испорчен"),
@@ -78,6 +79,10 @@ enum class GateRefusal(val words: String) {
  * номера у карточки нет: она одна для всех, что новее — решает момент приёма
  * ([GateCards]), а повтор той же карточки ничего не меняет.
  *
+ * ПОРУЧИТЕЛЬСТВО ([receiveVouch]) — так же, как карточка, и ещё адресат:
+ * поручительство даётся тому, кому его решили показать. Поручитель — только
+ * отправитель по каналу.
+ *
  * ЧЕГО НЕ УМЕЕТ: подлинность отправителя — не больше, чем у канала: ключу
  * канала верит как есть (см. [GatePacket]); за кого отправитель говорит, не
  * решает — это [GateWho];
@@ -139,7 +144,15 @@ class GateIntake(
         }
     }
 
-    /** Ключ отправителя → моменты принятых к счёту пакетов и карточек в окне [Limits.windowMs]. */
+    sealed class VouchVerdict {
+        data class Accepted(val vouch: GateVouch) : VouchVerdict()
+        data class Refused(val refusal: GateRefusal, val detail: String) : VouchVerdict() {
+            /** Строка для прибора. */
+            val words: String get() = "Поручительство: не принято — ${refusal.words}: $detail"
+        }
+    }
+
+    /** Ключ отправителя → моменты принятых к счёту пакетов, карточек и поручительств в окне [Limits.windowMs]. */
     private val recent = HashMap<String, ArrayDeque<Long>>()
 
     /** Ключ отправителя → номер принятого пакета → момент его отправки. */
@@ -217,6 +230,32 @@ class GateIntake(
             return CardVerdict.Refused(GateRefusal.NOT_SENDER, "в карточке ${card.agent.id}, канал говорит ${sender.id}")
         }
         return CardVerdict.Accepted(card)
+    }
+
+    /** [sender] — ключ того, от кого поручительство пришло, по словам канала. Поручитель — только он. */
+    @Synchronized
+    fun receiveVouch(raw: ByteArray, sender: PersonKey, nowMs: Long): VouchVerdict {
+        if (raw.size > limits.maxBytes) {
+            return VouchVerdict.Refused(GateRefusal.TOO_BIG, "${raw.size} Б, предел ${limits.maxBytes}")
+        }
+        val vouch = when (val r = GateWire.readVouch(raw)) {
+            is GateWire.VouchRead.Fail -> return VouchVerdict.Refused(r.refusal, r.detail)
+            is GateWire.VouchRead.Ok -> r.vouch
+        }
+        listOf(sender, vouch.voucher, vouch.agent, vouch.to).firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let {
+            return VouchVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, "«${GateWire.schemeOf(it)}» в ${it.id}")
+        }
+        if (!countWithinLimit(sender.id, nowMs)) {
+            return VouchVerdict.Refused(
+                GateRefusal.FLOOD,
+                "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин",
+            )
+        }
+        if (vouch.voucher != sender) {
+            return VouchVerdict.Refused(GateRefusal.NOT_SENDER, "поручитель ${vouch.voucher.id}, канал говорит ${sender.id}")
+        }
+        if (vouch.to != me) return VouchVerdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${vouch.to.id}, я ${me.id}")
+        return VouchVerdict.Accepted(vouch)
     }
 
     /** Забыть номера, отправленные [Limits.repeatWindowMs] назад и раньше: такой пакет теперь отказывается как «устарел». */

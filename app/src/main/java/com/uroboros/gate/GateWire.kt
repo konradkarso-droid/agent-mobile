@@ -37,7 +37,8 @@ import java.util.zip.CRC32
  * числа как дробные и точны только до 2^53: два разных номера у них читались бы
  * одним, и второй пакет отсеялся бы как повтор.
  *
- * Карточка агента идёт той же шапкой со своим знаком (см. [readCard]).
+ * Карточка агента и поручительство идут той же шапкой, каждое со своим знаком
+ * (см. [readCard], [readVouch]).
  *
  * Здесь проверяется форма. Чья это схема ключа, мне ли пакет, не слишком ли
  * часто пишет отправитель и не повтор ли это, решает [GateIntake].
@@ -146,7 +147,65 @@ object GateWire {
         return GateCard(agent, fields)
     }
 
-    // --- Шапка и целость: общие для пакета и карточки ---
+    // --- Поручительство ---
+
+    /**
+     * Поручительство — тоже своя форма, со своим знаком в шапке:
+     *
+     * ```
+     * poruka <версия> <длина тела в байтах> <CRC32 тела>\n
+     * {"voucher":"tg:bot:555","for":"tg:bot:333","to":"tg:agent:789","withdraw":false}
+     * ```
+     *
+     * «[voucher] ручается за [for] перед [to]»; `withdraw` — поручительство
+     * снимается. Адресат есть, потому что поручительство не рассылается всем:
+     * «мой владелец знает этого агента» раскрывает круг знакомств поручителя.
+     * Что поручительство значит, — [GateVouches].
+     */
+    const val VOUCH_VERSION = 1
+
+    private const val VOUCH_MAGIC = "poruka"
+
+    sealed class VouchRead {
+        data class Ok(val vouch: GateVouch) : VouchRead()
+        data class Fail(val refusal: GateRefusal, val detail: String) : VouchRead()
+    }
+
+    fun writeVouch(v: GateVouch): ByteArray {
+        val body = GateJson.write(
+            GateJson.Value.Obj(
+                linkedMapOf(
+                    "voucher" to GateJson.Value.Str(v.voucher.id),
+                    "for" to GateJson.Value.Str(v.agent.id),
+                    "to" to GateJson.Value.Str(v.to.id),
+                    "withdraw" to GateJson.Value.Bool(v.withdraw),
+                ),
+            ),
+        ).toByteArray(Charsets.UTF_8)
+        return "$VOUCH_MAGIC $VOUCH_VERSION ${body.size} ${crcHex(body)}\n".toByteArray(Charsets.US_ASCII) + body
+    }
+
+    fun readVouch(raw: ByteArray): VouchRead = when (val f = frame(raw, VOUCH_MAGIC, VOUCH_VERSION, GateRefusal.NOT_A_VOUCH, "поручительства")) {
+        is Frame.Fail -> VouchRead.Fail(f.refusal, f.detail)
+        is Frame.Ok -> try {
+            val body = obj(f.json, "тело")
+            exactFields(body, listOf("voucher", "for", "to", "withdraw"), "тело") {
+                if (it == "voucher") GateRefusal.NO_ORIGIN else if (it == "withdraw") GateRefusal.MALFORMED else GateRefusal.NO_KEY
+            }
+            VouchRead.Ok(
+                GateVouch(
+                    voucher = key(body["voucher"], "voucher", GateRefusal.NO_ORIGIN),
+                    agent = key(body["for"], "for", GateRefusal.NO_KEY),
+                    to = key(body["to"], "to", GateRefusal.NO_KEY),
+                    withdraw = bool(body.getValue("withdraw"), "withdraw"),
+                ),
+            )
+        } catch (e: Refused) {
+            VouchRead.Fail(e.refusal, e.detail)
+        }
+    }
+
+    // --- Шапка и целость: общие для всех форм ---
 
     private sealed class Frame {
         class Ok(val json: GateJson.Value) : Frame()
