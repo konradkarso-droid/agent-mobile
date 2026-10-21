@@ -37,6 +37,8 @@ import java.util.zip.CRC32
  * числа как дробные и точны только до 2^53: два разных номера у них читались бы
  * одним, и второй пакет отсеялся бы как повтор.
  *
+ * Карточка агента идёт той же шапкой со своим знаком (см. [readCard]).
+ *
  * Здесь проверяется форма. Чья это схема ключа, мне ли пакет, не слишком ли
  * часто пишет отправитель и не повтор ли это, решает [GateIntake].
  */
@@ -75,23 +77,105 @@ object GateWire {
         return header + body
     }
 
-    fun read(raw: ByteArray): Read {
+    fun read(raw: ByteArray): Read = when (val f = frame(raw, MAGIC, VERSION, GateRefusal.NOT_A_PACKET, "трафарета")) {
+        is Frame.Fail -> Read.Fail(f.refusal, f.detail)
+        is Frame.Ok -> try {
+            Read.Ok(fromJson(f.json))
+        } catch (e: Refused) {
+            fail(e.refusal, e.detail)
+        }
+    }
+
+    // --- Карточка агента ---
+
+    /**
+     * Карточка — своя форма со своим знаком в шапке, а не поля пакета слов:
+     * иначе точное поле «repo» в обычной реплике переписывало бы паспорт.
+     * Пакет слов карточкой не читается, карточка — пакетом слов.
+     *
+     * ```
+     * kartochka <версия> <длина тела в байтах> <CRC32 тела>\n
+     * {"agent":"tg:bot:111","fields":{"name":"Хоуп","repo":"https://…"}}
+     * ```
+     *
+     * Тело строгое, как у пакета: поля — только из [GateCard.Field], каждое не
+     * длиннее своего предела; незнакомое поле — отказ. Что карточка значит и
+     * как хранится, — [GateCard] и [GateCards].
+     */
+    const val CARD_VERSION = 1
+
+    private const val CARD_MAGIC = "kartochka"
+
+    sealed class CardRead {
+        data class Ok(val card: GateCard) : CardRead()
+        data class Fail(val refusal: GateRefusal, val detail: String) : CardRead()
+    }
+
+    fun writeCard(c: GateCard): ByteArray {
+        val fields = LinkedHashMap<String, GateJson.Value>()
+        for ((f, v) in c.fields) fields[f.wire] = GateJson.Value.Str(v)
+        val body = GateJson.write(
+            GateJson.Value.Obj(linkedMapOf("agent" to GateJson.Value.Str(c.agent.id), "fields" to GateJson.Value.Obj(fields))),
+        ).toByteArray(Charsets.UTF_8)
+        return "$CARD_MAGIC $CARD_VERSION ${body.size} ${crcHex(body)}\n".toByteArray(Charsets.US_ASCII) + body
+    }
+
+    fun readCard(raw: ByteArray): CardRead = when (val f = frame(raw, CARD_MAGIC, CARD_VERSION, GateRefusal.NOT_A_CARD, "карточки")) {
+        is Frame.Fail -> CardRead.Fail(f.refusal, f.detail)
+        is Frame.Ok -> try {
+            CardRead.Ok(cardFromJson(f.json))
+        } catch (e: Refused) {
+            CardRead.Fail(e.refusal, e.detail)
+        }
+    }
+
+    private fun cardFromJson(v: GateJson.Value): GateCard {
+        val body = obj(v, "тело")
+        exactFields(body, listOf("agent", "fields"), "тело") { if (it == "agent") GateRefusal.NO_ORIGIN else GateRefusal.MALFORMED }
+        val agent = key(body["agent"], "agent", GateRefusal.NO_ORIGIN)
+        val raw = obj(body.getValue("fields"), "fields")
+        val byWire = GateCard.Field.values().associateBy { it.wire }
+        val fields = LinkedHashMap<GateCard.Field, String>()
+        for ((name, item) in raw) {
+            val f = byWire[name] ?: throw Refused(GateRefusal.UNKNOWN_FIELD, "незнакомое поле «$name» в fields")
+            val s = str(item, "fields.$name")
+            if (s.isBlank()) throw Refused(GateRefusal.MALFORMED, "fields.$name пустое")
+            if (s.length > f.maxLength) throw Refused(GateRefusal.MALFORMED, "fields.$name длиннее ${f.maxLength} знаков")
+            fields[f] = s
+        }
+        return GateCard(agent, fields)
+    }
+
+    // --- Шапка и целость: общие для пакета и карточки ---
+
+    private sealed class Frame {
+        class Ok(val json: GateJson.Value) : Frame()
+        class Fail(val refusal: GateRefusal, val detail: String) : Frame()
+    }
+
+    /**
+     * Шапка, длина, сумма, UTF-8 и JSON — в этом порядке (почему — в начале
+     * этого объекта). [notThis] — отказ, когда шапка не той формы; [whose] —
+     * чья шапка ждалась, для строки отказа.
+     */
+    private fun frame(raw: ByteArray, magic: String, expected: Int, notThis: GateRefusal, whose: String): Frame {
+        fun no(r: GateRefusal, d: String) = Frame.Fail(r, d)
         val nl = (0 until minOf(raw.size, MAX_HEADER)).firstOrNull { raw[it] == '\n'.code.toByte() }
-            ?: return fail(GateRefusal.NOT_A_PACKET, "нет шапки")
+            ?: return no(notThis, "нет шапки")
         val parts = String(raw, 0, nl, Charsets.US_ASCII).split(' ')
-        if (parts.size != 4 || parts[0] != MAGIC) return fail(GateRefusal.NOT_A_PACKET, "шапка не трафарета")
-        val version = parts[1].toIntOrNull() ?: return fail(GateRefusal.NOT_A_PACKET, "версия не числом")
-        if (version != VERSION) return fail(GateRefusal.FOREIGN_VERSION, "версия $version, у меня $VERSION")
+        if (parts.size != 4 || parts[0] != magic) return no(notThis, "шапка не $whose")
+        val version = parts[1].toIntOrNull() ?: return no(notThis, "версия не числом")
+        if (version != expected) return no(GateRefusal.FOREIGN_VERSION, "версия $version, у меня $expected")
         val length = parts[2].toIntOrNull()?.takeIf { it >= 0 && parts[2].all { c -> c in '0'..'9' } }
-            ?: return fail(GateRefusal.NOT_A_PACKET, "длина не числом")
+            ?: return no(notThis, "длина не числом")
         val crc = parts[3].takeIf { it.length == 8 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
-            ?: return fail(GateRefusal.NOT_A_PACKET, "сумма не 8 знаков hex")
+            ?: return no(notThis, "сумма не 8 знаков hex")
 
         val got = raw.size - nl - 1
-        if (got < length) return fail(GateRefusal.INCOMPLETE, "пришло $got Б из $length")
-        if (got > length) return fail(GateRefusal.DAMAGED, "лишние ${got - length} Б после тела")
+        if (got < length) return no(GateRefusal.INCOMPLETE, "пришло $got Б из $length")
+        if (got > length) return no(GateRefusal.DAMAGED, "лишние ${got - length} Б после тела")
         val body = raw.copyOfRange(nl + 1, raw.size)
-        if (crcHex(body) != crc) return fail(GateRefusal.DAMAGED, "сумма не сошлась")
+        if (crcHex(body) != crc) return no(GateRefusal.DAMAGED, "сумма не сошлась")
 
         val text = try {
             Charsets.UTF_8.newDecoder()
@@ -99,17 +183,12 @@ object GateWire {
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(body)).toString()
         } catch (e: CharacterCodingException) {
-            return fail(GateRefusal.MALFORMED, "тело не UTF-8")
-        }
-        val json = try {
-            GateJson.parse(text)
-        } catch (e: GateJson.Malformed) {
-            return fail(GateRefusal.MALFORMED, "JSON: ${e.message}")
+            return no(GateRefusal.MALFORMED, "тело не UTF-8")
         }
         return try {
-            Read.Ok(fromJson(json))
-        } catch (e: Refused) {
-            fail(e.refusal, e.detail)
+            Frame.Ok(GateJson.parse(text))
+        } catch (e: GateJson.Malformed) {
+            no(GateRefusal.MALFORMED, "JSON: ${e.message}")
         }
     }
 
