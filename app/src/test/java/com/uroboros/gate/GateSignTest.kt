@@ -67,7 +67,10 @@ class GateSignTest {
 
     @Test
     fun `не ключ — не читается`() {
-        for (s in listOf("", "abc", signer.publicKey.dropLast(1), "A" + signer.publicKey.drop(1), signer.publicKey.replace('A', '+'))) {
+        // Порча не зависит от того, какие знаки выпали в случайном ключе: последний
+        // знак — «+», которого нет в base64url; первый — «A», а первый байт ключа
+        // всегда 0x04, и в base64url он начинается с «B».
+        for (s in listOf("", "abc", signer.publicKey.dropLast(1), "A" + signer.publicKey.drop(1), signer.publicKey.dropLast(1) + "+")) {
             assertNull(s, GateSign.decodeKey(s))
         }
     }
