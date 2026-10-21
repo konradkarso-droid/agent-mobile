@@ -354,6 +354,27 @@ class GateIntakeTest {
     }
 
     @Test
+    fun `номер, принятый до перезапуска, — повтор, если хранилище номеров то же`() {
+        val numbers = GateNumbers.InMemory()
+        val raw = GateWire.write(good)
+        assertTrue(GateIntake(me, numbers = numbers).receive(raw, now) is GateIntake.Verdict.Accepted)
+        // «Перезапуск»: новые врата, хранилище прежнее.
+        assertEquals(GateRefusal.REPEAT, refusal(raw, GateIntake(me, numbers = numbers)))
+        // Без хранилища — тот же пакет прошёл бы снова.
+        assertTrue(GateIntake(me).receive(raw, now) is GateIntake.Verdict.Accepted)
+    }
+
+    @Test
+    fun `хранилище забывает номера старше срока и только их`() {
+        val numbers = GateNumbers.InMemory()
+        numbers.put(agentB.id, 1L, now - 7 * day)
+        numbers.put(agentB.id, 2L, now - 7 * day + 1)
+        numbers.forgetSentUpTo(now - 7 * day)
+        assertTrue(!numbers.contains(agentB.id, 1L))
+        assertTrue(numbers.contains(agentB.id, 2L))
+    }
+
+    @Test
     fun `тот же номер от другого агента — принят`() {
         val intake = intake()
         assertTrue(intake.receive(GateWire.write(good), now) is GateIntake.Verdict.Accepted)
