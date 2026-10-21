@@ -1,0 +1,2 @@
+prinyal 1 130 eb4f1918
+{"from":"tg:user:789","to":"tg:user:123","number":"123456789abcdef0","result":"accepted","got":1760947265000,"sent":1760947266000}

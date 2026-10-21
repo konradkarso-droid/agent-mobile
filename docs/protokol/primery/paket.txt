@@ -1,0 +1,2 @@
+trafaret 2 505 d36aa9bf
+{"from":{"key":"tg:user:123","represents":"tg:user:456"},"to":{"key":"tg:user:789"},"sent":{"number":"123456789abcdef0","ms":1760947260000},"place":"DIRECT","said_by":"tg:user:456","about":{"persons":["tg:user:456"],"unclear":false},"at":{"ms":1760947200000,"zone":"Europe/Moscow"},"source":"USER_STATED","kind":"STATEMENT","topic":["суббота","фехтование"],"exact":{"time":"10:00"},"words":"по субботам в 10 утра у меня тренировка по фехтованию"}
