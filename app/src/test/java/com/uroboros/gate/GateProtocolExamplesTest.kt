@@ -72,15 +72,14 @@ class GateProtocolExamplesTest {
     }
 
     @Test
-    fun `версии в описании — те же, что в коде`() {
-        val doc = File("../docs/protokol/README.md").readText()
-        for ((magic, version) in listOf(
+    fun `версии в описании — те же, что в коде, в обеих версиях описания`() {
+        for (name in listOf("README.md", "README.en.md")) for ((magic, version) in listOf(
             "trafaret" to GateWire.VERSION,
             "kartochka" to GateWire.CARD_VERSION,
             "poruka" to GateWire.VOUCH_VERSION,
             "prinyal" to GateWire.ACK_VERSION,
         )) {
-            assertTrue("в описании нет «$magic $version»", doc.contains("`$magic $version`"))
+            assertTrue("в $name нет «$magic $version»", File("../docs/protokol/$name").readText().contains("`$magic $version`"))
         }
     }
 }
