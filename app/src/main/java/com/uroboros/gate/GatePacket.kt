@@ -47,7 +47,7 @@ import com.uroboros.memory.nav.Place
 data class GatePacket(
     /** Какой агент прислал. */
     val from: PersonKey,
-    /** За какого человека этот агент говорит. */
+    /** За кого этот агент говорит — человека или чат. Заявление; верно ли оно, решает [GateWho]. */
     val represents: PersonKey,
     /** Кому пакет. */
     val to: PersonKey,

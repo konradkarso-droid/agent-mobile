@@ -48,6 +48,16 @@ class GateIntakeTest {
 
     private fun intake() = GateIntake(me)
 
+    /**
+     * Честный канал: ключ канала равен ключу в теле. Пакет, который не читается,
+     * приходит будто от агента Бориса. Подменённого отправителя проверяют
+     * тесты с явным ключом канала.
+     */
+    private fun GateIntake.receive(raw: ByteArray, nowMs: Long): GateIntake.Verdict {
+        val sender = (GateWire.read(raw) as? GateWire.Read.Ok)?.packet?.from ?: agentB
+        return receive(raw, sender, nowMs)
+    }
+
     /** Тот же пакет под другим номером — новый пакет, а не повтор. */
     private fun numbered(n: Int) = GateWire.write(good.copy(number = n.toLong()))
 
@@ -400,5 +410,51 @@ class GateIntakeTest {
         val old = now - 8 * day
         val v = intake().receive(GateWire.write(good.copy(sentMs = old, atMs = old)), now) as GateIntake.Verdict.Refused
         assertEquals("не принят — устарел: отправлен 8 сут назад, срок 7 сут", v.words)
+    }
+
+    // --- Отправитель — от канала ---
+
+    private val stranger = PersonKey("tg:agent:666")
+
+    @Test
+    fun `канал говорит другой ключ — отправитель не тот, что у канала`() {
+        val v = intake().receive(GateWire.write(good), stranger, now) as GateIntake.Verdict.Refused
+        assertEquals(GateRefusal.NOT_SENDER, v.refusal)
+        assertTrue(v.words, v.words.contains(agentB.id) && v.words.contains(stranger.id))
+    }
+
+    @Test
+    fun `ключ канала совпал — принят`() {
+        assertEquals(GateIntake.Verdict.Accepted(good), intake().receive(GateWire.write(good), agentB, now))
+    }
+
+    @Test
+    fun `меняя ключ в теле, предел потока не обойти — счёт по ключу канала`() {
+        val intake = intake()
+        repeat(GateIntake.Limits.DECLARED.perWindow) {
+            val forged = good.copy(from = PersonKey("tg:agent:${1000 + it}"), number = it.toLong())
+            intake.receive(GateWire.write(forged), stranger, now)
+        }
+        val own = good.copy(from = stranger, number = 999L)
+        assertEquals(
+            GateRefusal.FLOOD,
+            (intake.receive(GateWire.write(own), stranger, now) as GateIntake.Verdict.Refused).refusal,
+        )
+        // Настоящего агента Бориса чужой поток не задел.
+        assertTrue(intake.receive(GateWire.write(good), agentB, now) is GateIntake.Verdict.Accepted)
+    }
+
+    @Test
+    fun `подменённый пакет номера не занимает — тот же пакет от настоящего отправителя принят`() {
+        val intake = intake()
+        val raw = GateWire.write(good)
+        assertEquals(GateRefusal.NOT_SENDER, (intake.receive(raw, stranger, now) as GateIntake.Verdict.Refused).refusal)
+        assertEquals(GateIntake.Verdict.Accepted(good), intake.receive(raw, agentB, now))
+    }
+
+    @Test
+    fun `ключ канала незнакомой схемы — незнакомый канал`() {
+        val v = intake().receive(GateWire.write(good), PersonKey("mail:boris@example.org"), now) as GateIntake.Verdict.Refused
+        assertEquals(GateRefusal.UNKNOWN_SCHEME, v.refusal)
     }
 }

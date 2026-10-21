@@ -26,6 +26,10 @@ import com.uroboros.util.TextFold
  *  - говорит человек, за которого агент ([GatePacket.saidBy] равен
  *    [GatePacket.represents], а не [GatePacket.from]). Сам агент «я» — не
  *    разобрано;
+ *  - агент говорит за этого человека по действующей доверенности: итог «кто
+ *    это» ([GateWho]) — «за человека», и он про этот же пакет. Почему —
+ *    см. [GateWho]. Итог — обязательный вход, а не проверка внутри: вызов,
+ *    который о ней забыл, не соберётся;
  *  - имя сказавшего знает получатель — из своего знания о собеседнике, НЕ из
  *    пакета. Имя в пакете — только слова: иначе чужой агент назовётся «Антоном»;
  *  - словарь начальных форм и таблица глаголов загружены.
@@ -105,11 +109,13 @@ object GateUnfold {
     )
 
     /**
+     * [who] — итог [GateWho.of] для этого пакета;
      * [speakerName] — как получатель сам зовёт сказавшего (null — не знает);
      * [listenerName] — кому получатель перескажет, одним словом.
      */
     fun unfold(
         packet: GatePacket,
+        who: GateWho.Who,
         speakerName: String?,
         listenerName: String,
         dictionary: LemmaDictionary?,
@@ -118,6 +124,16 @@ object GateUnfold {
         val words = packet.words
         fun off(why: String) = Result(words, why, 0, 0, emptyList())
         if (packet.saidBy == packet.from) return off("говорит сам агент — для этого развёртка не разобрана")
+        when (who) {
+            is GateWho.Who.ForPerson ->
+                if (who.proxy.agent != packet.from || who.proxy.principal != packet.represents) {
+                    return off("итог «кто это» — не про этот пакет")
+                }
+            is GateWho.Who.Unconfirmed -> return off("за кого — не подтверждено (${packet.represents.id}: ${who.why.words})")
+            is GateWho.Who.ForChat -> return off("агент говорит за чат")
+            GateWho.Who.Self -> return off("агент говорит сам за себя")
+            is GateWho.Who.Refused -> return off("пакету не поверил — ${who.refusal.words}")
+        }
         if (packet.saidBy != packet.represents) return off("сказал не тот, за кого говорит агент")
         if (speakerName.isNullOrBlank()) return off("имя собеседника не известно")
         if (dictionary == null || table == null) return off("словарь или таблица глаголов не загружены")
