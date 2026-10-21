@@ -15,11 +15,14 @@ class GateIntakeTest {
     private val agentB = PersonKey("tg:agent:123")
     private val humanB = PersonKey("tg:user:456")
     private val now = 1_760_947_200_000L
+    private val day = 24 * 60 * 60 * 1000L
 
     private val good = GatePacket(
         from = agentB,
         represents = humanB,
         to = me,
+        number = 0x1234_5678_9abc_def0L,
+        sentMs = now,
         place = Place.DIRECT,
         saidBy = humanB,
         about = listOf(humanB),
@@ -44,6 +47,9 @@ class GateIntakeTest {
     }
 
     private fun intake() = GateIntake(me)
+
+    /** Тот же пакет под другим номером — новый пакет, а не повтор. */
+    private fun numbered(n: Int) = GateWire.write(good.copy(number = n.toLong()))
 
     private fun refusal(raw: ByteArray, intake: GateIntake = intake()): GateRefusal {
         val v = intake.receive(raw, now)
@@ -127,8 +133,14 @@ class GateIntakeTest {
 
     @Test
     fun `чужая версия — не разбирается вовсе, даже с мусором вместо тела`() {
-        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap(goodBody, version = 2)))
-        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap("это не JSON", version = 2)))
+        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap(goodBody, version = 3)))
+        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap("это не JSON", version = 3)))
+    }
+
+    @Test
+    fun `прежняя версия без номера — чужая версия`() {
+        val old = goodBody.replace(",\"sent\":{\"number\":\"123456789abcdef0\",\"ms\":$now}", "")
+        assertEquals(GateRefusal.FOREIGN_VERSION, refusal(wrap(old, version = 1)))
     }
 
     @Test
@@ -216,7 +228,7 @@ class GateIntakeTest {
     fun `тело не UTF-8 — неверная форма`() {
         val b = byteArrayOf(0xC3.toByte(), 0x28)
         val c = CRC32().also { it.update(b) }
-        val raw = "trafaret 1 2 ${String.format("%08x", c.value)}\n".toByteArray() + b
+        val raw = "trafaret ${GateWire.VERSION} 2 ${String.format("%08x", c.value)}\n".toByteArray() + b
         assertEquals(GateRefusal.MALFORMED, refusal(raw))
     }
 
@@ -245,11 +257,10 @@ class GateIntakeTest {
     @Test
     fun `сверх предела потока от одного ключа — отброшен, другой ключ проходит`() {
         val intake = intake()
-        val raw = GateWire.write(good)
         repeat(GateIntake.Limits.DECLARED.perWindow) {
-            assertTrue(intake.receive(raw, now + it) is GateIntake.Verdict.Accepted)
+            assertTrue(intake.receive(numbered(it), now + it) is GateIntake.Verdict.Accepted)
         }
-        assertEquals(GateRefusal.FLOOD, (intake.receive(raw, now + 100) as GateIntake.Verdict.Refused).refusal)
+        assertEquals(GateRefusal.FLOOD, (intake.receive(numbered(100), now + 100) as GateIntake.Verdict.Refused).refusal)
 
         val other = good.copy(from = PersonKey("tg:agent:321"))
         assertTrue(intake.receive(GateWire.write(other), now + 101) is GateIntake.Verdict.Accepted)
@@ -258,10 +269,9 @@ class GateIntakeTest {
     @Test
     fun `после окна предел снова пускает`() {
         val intake = intake()
-        val raw = GateWire.write(good)
-        repeat(GateIntake.Limits.DECLARED.perWindow) { intake.receive(raw, now) }
+        repeat(GateIntake.Limits.DECLARED.perWindow) { intake.receive(numbered(it), now) }
         val later = now + GateIntake.Limits.DECLARED.windowMs
-        assertTrue(intake.receive(raw, later) is GateIntake.Verdict.Accepted)
+        assertTrue(intake.receive(numbered(100), later) is GateIntake.Verdict.Accepted)
     }
 
     @Test
@@ -276,5 +286,119 @@ class GateIntakeTest {
     fun `отказ виден строкой для прибора`() {
         val v = intake().receive(GateWire.write(good.copy(to = PersonKey("tg:agent:555"))), now) as GateIntake.Verdict.Refused
         assertEquals("не принят — не мне: кому tg:agent:555, я tg:agent:789", v.words)
+    }
+
+    // --- Номер пакета и повторы ---
+
+    @Test
+    fun `номер на проводе — строкой из 16 знаков hex, рядом момент отправки`() {
+        assertTrue(goodBody, goodBody.contains("\"sent\":{\"number\":\"123456789abcdef0\",\"ms\":$now}"))
+    }
+
+    @Test
+    fun `крайние номера доходят как отправлены`() {
+        for (n in listOf(0L, 1L, -1L, Long.MIN_VALUE, Long.MAX_VALUE)) {
+            val p = good.copy(number = n)
+            assertEquals(GateIntake.Verdict.Accepted(p), intake().receive(GateWire.write(p), now))
+        }
+    }
+
+    @Test
+    fun `повтор того же пакета — повтор, и через шесть суток тоже`() {
+        val intake = intake()
+        val raw = GateWire.write(good)
+        assertTrue(intake.receive(raw, now) is GateIntake.Verdict.Accepted)
+        assertEquals(GateRefusal.REPEAT, refusal(raw, intake))
+        assertEquals(GateRefusal.REPEAT, (intake.receive(raw, now + 6 * day) as GateIntake.Verdict.Refused).refusal)
+    }
+
+    @Test
+    fun `тот же номер от другого агента — принят`() {
+        val intake = intake()
+        assertTrue(intake.receive(GateWire.write(good), now) is GateIntake.Verdict.Accepted)
+        val other = good.copy(from = PersonKey("tg:agent:321"))
+        assertEquals(GateIntake.Verdict.Accepted(other), intake.receive(GateWire.write(other), now))
+    }
+
+    @Test
+    fun `другой номер с теми же словами — принят, слова повтором не считаются`() {
+        val intake = intake()
+        assertTrue(intake.receive(GateWire.write(good), now) is GateIntake.Verdict.Accepted)
+        val again = good.copy(number = 7L)
+        assertEquals(GateIntake.Verdict.Accepted(again), intake.receive(GateWire.write(again), now))
+    }
+
+    @Test
+    fun `повтор после срока — устарел, а не принят снова`() {
+        val intake = intake()
+        val raw = GateWire.write(good)
+        assertTrue(intake.receive(raw, now) is GateIntake.Verdict.Accepted)
+        val v = intake.receive(raw, now + 7 * day) as GateIntake.Verdict.Refused
+        assertEquals(GateRefusal.STALE, v.refusal)
+    }
+
+    @Test
+    fun `отправлен ровно семь суток назад — устарел, на миг позже — принят`() {
+        val old = now - 7 * day
+        assertEquals(GateRefusal.STALE, refusal(GateWire.write(good.copy(sentMs = old, atMs = old))))
+        val p = good.copy(sentMs = old + 1, atMs = old + 1)
+        assertEquals(GateIntake.Verdict.Accepted(p), intake().receive(GateWire.write(p), now))
+    }
+
+    @Test
+    fun `слова старше срока, отправленные сейчас, — приняты, срок считается от отправки`() {
+        val p = good.copy(atMs = now - 30 * day)
+        assertEquals(GateIntake.Verdict.Accepted(p), intake().receive(GateWire.write(p), now))
+    }
+
+    @Test
+    fun `из будущего больше суток — отказ, в пределах суток — принят`() {
+        val far = now + day + 1
+        assertEquals(GateRefusal.FROM_FUTURE, refusal(GateWire.write(good.copy(sentMs = far, atMs = far))))
+        val p = good.copy(sentMs = now + day, atMs = now + day)
+        assertEquals(GateIntake.Verdict.Accepted(p), intake().receive(GateWire.write(p), now))
+    }
+
+    @Test
+    fun `сказано позже, чем отправлено, — неверная форма`() {
+        assertEquals(GateRefusal.MALFORMED, refusal(GateWire.write(good.copy(atMs = now + 1))))
+    }
+
+    @Test
+    fun `номер не 16 строчных знаков hex или без отправки — неверная форма`() {
+        val number = "\"number\":\"123456789abcdef0\""
+        val upper = goodBody.replace(number, "\"number\":\"123456789ABCDEF0\"")
+        val short = goodBody.replace(number, "\"number\":\"23456789abcdef0\"")
+        val asNum = goodBody.replace(number, "\"number\":1311768467463790320")
+        val noSent = goodBody.replace(",\"sent\":{$number,\"ms\":$now}", "")
+        val noMs = goodBody.replace("$number,\"ms\":$now", number)
+        for (b in listOf(upper, short, asNum, noSent, noMs)) {
+            assertTrue(b, b != goodBody)
+            assertEquals(b, GateRefusal.MALFORMED, refusal(wrap(b)))
+        }
+    }
+
+    @Test
+    fun `отказанный по пределу потока номер не занимает — после окна тот же пакет принят`() {
+        val intake = intake()
+        repeat(GateIntake.Limits.DECLARED.perWindow) { intake.receive(numbered(it), now) }
+        assertEquals(GateRefusal.FLOOD, refusal(numbered(100), intake))
+        val later = now + GateIntake.Limits.DECLARED.windowMs
+        assertTrue(intake.receive(numbered(100), later) is GateIntake.Verdict.Accepted)
+    }
+
+    @Test
+    fun `повтор виден строкой для прибора`() {
+        val intake = intake()
+        intake.receive(GateWire.write(good), now)
+        val v = intake.receive(GateWire.write(good), now) as GateIntake.Verdict.Refused
+        assertEquals("не принят — повтор: номер 123456789abcdef0 от tg:agent:123 уже принят", v.words)
+    }
+
+    @Test
+    fun `устаревший виден строкой для прибора`() {
+        val old = now - 8 * day
+        val v = intake().receive(GateWire.write(good.copy(sentMs = old, atMs = old)), now) as GateIntake.Verdict.Refused
+        assertEquals("не принят — устарел: отправлен 8 сут назад, срок 7 сут", v.words)
     }
 }

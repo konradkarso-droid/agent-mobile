@@ -17,6 +17,9 @@ enum class GateRefusal(val words: String) {
     UNKNOWN_SCHEME("незнакомый канал ключа"),
     FLOOD("сверх предела потока"),
     NOT_FOR_ME("не мне"),
+    STALE("устарел"),
+    FROM_FUTURE("из будущего"),
+    REPEAT("повтор"),
 }
 
 /**
@@ -24,7 +27,7 @@ enum class GateRefusal(val words: String) {
  *
  * Порядок проверок — от дешёвого к дорогому, и пакет молчит на первой же
  * несошедшейся: размер → форма и целость ([GateWire.read]) → схемы ключей →
- * предел потока → адресат.
+ * предел потока → адресат → момент отправки → повтор.
  *
  * СХЕМЫ КЛЮЧЕЙ. Знакомы только схемы из [knownSchemes]. Ключ незнакомого
  * канала не принимается, а не «как-нибудь»: подлинность ключа даёт канал, и
@@ -37,10 +40,35 @@ enum class GateRefusal(val words: String) {
  * защищает только предел размера. Отброшенное сверх предела не копится и не
  * откладывается — его не было.
  *
+ * ПОВТОРЫ. Пакет может потеряться в пути: канал держит недоставленное
+ * ограниченное время (Telegram — сутки), телефон получателя бывает выключен.
+ * Поэтому отправитель шлёт пакет снова, пока не услышит «принял», и до
+ * получателя один пакет может дойти дважды. Повтор узнаётся по паре «ключ
+ * отправителя + номер» ([GatePacket.number]): номера принятых пакетов
+ * помнятся [Limits.repeatWindowMs] от момента отправки ([GatePacket.sentMs]).
+ * Чтобы забытый номер не прошёл заново, пакет, отправленный раньше этого
+ * срока, отказывается как «устарел», а отправленный позже моего «сейчас»
+ * больше чем на [Limits.futureMs] — как «из будущего»: иначе его номер
+ * помнился бы сколько угодно долго. Отказ «повтор» значит «уже принят», а не
+ * ошибку отправителя: на повтор тоже надо ответить «принял», иначе
+ * отправитель будет слать его снова.
+ *
+ * Номер — случайное число, а не счётчик: счётчик отправитель должен хранить,
+ * и после переустановки он начнётся с нуля — тогда все его новые пакеты
+ * получатель молча отсеял бы как повторы. Случайному числу хранить нечего.
+ * Запоминаются номера только принятых пакетов: отказанный (сверх предела
+ * потока, не мне, устаревший) номера не занимает и может прийти снова.
+ *
  * ЧЕГО НЕ УМЕЕТ: подлинность отправителя не проверяет (см. [GatePacket]);
  * оборванный пакет не складывает в буфер до прихода остатка; в память ничего
- * не кладёт. Счётчик потока живёт в памяти процесса и после перезапуска
- * начинается с нуля.
+ * не кладёт; «принял» не отвечает — это дело канала. Счётчик потока и номера
+ * принятых пакетов живут в памяти процесса: после перезапуска счётчик
+ * начинается с нуля, а повтор пакета, принятого до перезапуска, пройдёт ещё
+ * раз. Хранить номера между перезапусками может только таблица, а её нет.
+ * Если часы получателя перевели назад после того, как номер забыт, повтор
+ * тоже пройдёт. Номеров от одного ключа помнится не больше, чем пропускает
+ * предел потока за [Limits.repeatWindowMs] + [Limits.futureMs]; число ключей
+ * ограничивает только канал.
  *
  * @param me мой ключ: пакет с другим [GatePacket.to] — «не мне».
  */
@@ -50,10 +78,27 @@ class GateIntake(
     private val knownSchemes: Set<String> = setOf("tg"),
 ) {
 
-    data class Limits(val maxBytes: Int, val perWindow: Int, val windowMs: Long) {
+    data class Limits(
+        val maxBytes: Int,
+        val perWindow: Int,
+        val windowMs: Long,
+        val repeatWindowMs: Long,
+        val futureMs: Long,
+    ) {
         companion object {
-            /** Объявленные числа, не подобранные: 8 КБ на пакет, 20 пакетов за 10 минут от одного ключа. */
-            val DECLARED = Limits(maxBytes = 8 * 1024, perWindow = 20, windowMs = 10 * 60_000L)
+            /**
+             * Объявленные числа, не подобранные: 8 КБ на пакет, 20 пакетов за 10
+             * минут от одного ключа; номера помнятся 7 суток — с запасом против
+             * суток, что канал держит недоставленное, на выключенный телефон
+             * отправителя; часы отправителя могут спешить на сутки.
+             */
+            val DECLARED = Limits(
+                maxBytes = 8 * 1024,
+                perWindow = 20,
+                windowMs = 10 * 60_000L,
+                repeatWindowMs = 7 * DAY_MS,
+                futureMs = DAY_MS,
+            )
         }
     }
 
@@ -67,6 +112,9 @@ class GateIntake(
 
     /** Ключ отправителя → моменты принятых к счёту пакетов в окне [Limits.windowMs]. */
     private val recent = HashMap<String, ArrayDeque<Long>>()
+
+    /** Ключ отправителя → номер принятого пакета → момент его отправки. */
+    private val accepted = HashMap<String, HashMap<Long, Long>>()
 
     @Synchronized
     fun receive(raw: ByteArray, nowMs: Long): Verdict {
@@ -91,7 +139,41 @@ class GateIntake(
         }
 
         if (packet.to != me) return Verdict.Refused(GateRefusal.NOT_FOR_ME, "кому ${packet.to.id}, я ${me.id}")
+
+        val age = nowMs - packet.sentMs
+        if (age >= limits.repeatWindowMs) {
+            return Verdict.Refused(GateRefusal.STALE, "отправлен ${span(age)} назад, срок ${span(limits.repeatWindowMs)}")
+        }
+        if (-age > limits.futureMs) {
+            return Verdict.Refused(GateRefusal.FROM_FUTURE, "отправлен на ${span(-age)} позже моего «сейчас»")
+        }
+
+        forgetOld(nowMs)
+        val numbers = accepted.getOrPut(packet.from.id) { HashMap() }
+        if (packet.number in numbers) {
+            return Verdict.Refused(
+                GateRefusal.REPEAT,
+                "номер ${GateWire.numberHex(packet.number)} от ${packet.from.id} уже принят",
+            )
+        }
+        numbers[packet.number] = packet.sentMs
         return Verdict.Accepted(packet)
+    }
+
+    /** Забыть номера, отправленные [Limits.repeatWindowMs] назад и раньше: такой пакет теперь отказывается как «устарел». */
+    private fun forgetOld(nowMs: Long) {
+        val senders = accepted.entries.iterator()
+        while (senders.hasNext()) {
+            val numbers = senders.next().value
+            numbers.values.removeIf { sentMs -> nowMs - sentMs >= limits.repeatWindowMs }
+            if (numbers.isEmpty()) senders.remove()
+        }
+    }
+
+    private fun span(ms: Long): String = when {
+        ms >= DAY_MS -> "${ms / DAY_MS} сут"
+        ms >= 3_600_000L -> "${ms / 3_600_000L} ч"
+        else -> "${ms / 60_000L} мин"
     }
 
     /**
@@ -112,3 +194,5 @@ class GateIntake(
         return true
     }
 }
+
+private const val DAY_MS = 24 * 60 * 60 * 1000L
