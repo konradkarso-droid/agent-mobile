@@ -6,6 +6,7 @@ import com.uroboros.memory.nav.PersonKey
 enum class GateRefusal(val words: String) {
     TOO_BIG("больше предела размера"),
     NOT_A_PACKET("не пакет трафарета"),
+    NOT_A_CARD("не карточка"),
     FOREIGN_VERSION("чужая версия трафарета"),
     INCOMPLETE("оборван"),
     DAMAGED("испорчен"),
@@ -71,6 +72,12 @@ enum class GateRefusal(val words: String) {
  * Запоминаются номера только принятых пакетов: отказанный (сверх предела
  * потока, не мне, устаревший) номера не занимает и может прийти снова.
  *
+ * КАРТОЧКА АГЕНТА ([receiveCard]) идёт через те же врата: размер → форма →
+ * схемы ключей → предел потока → отправитель. Счёт потока у карточек и пакетов
+ * одного ключа общий: заваливать можно и тем, и другим. Адресата, момента и
+ * номера у карточки нет: она одна для всех, что новее — решает момент приёма
+ * ([GateCards]), а повтор той же карточки ничего не меняет.
+ *
  * ЧЕГО НЕ УМЕЕТ: подлинность отправителя — не больше, чем у канала: ключу
  * канала верит как есть (см. [GatePacket]); за кого отправитель говорит, не
  * решает — это [GateWho];
@@ -124,7 +131,15 @@ class GateIntake(
         }
     }
 
-    /** Ключ отправителя → моменты принятых к счёту пакетов в окне [Limits.windowMs]. */
+    sealed class CardVerdict {
+        data class Accepted(val card: GateCard) : CardVerdict()
+        data class Refused(val refusal: GateRefusal, val detail: String) : CardVerdict() {
+            /** Строка для прибора. */
+            val words: String get() = "Карточка: не принята — ${refusal.words}: $detail"
+        }
+    }
+
+    /** Ключ отправителя → моменты принятых к счёту пакетов и карточек в окне [Limits.windowMs]. */
     private val recent = HashMap<String, ArrayDeque<Long>>()
 
     /** Ключ отправителя → номер принятого пакета → момент его отправки. */
@@ -177,6 +192,31 @@ class GateIntake(
         }
         numbers[packet.number] = packet.sentMs
         return Verdict.Accepted(packet)
+    }
+
+    /** [sender] — ключ того, от кого карточка пришла, по словам канала. Карточка агента — только с его ключа. */
+    @Synchronized
+    fun receiveCard(raw: ByteArray, sender: PersonKey, nowMs: Long): CardVerdict {
+        if (raw.size > limits.maxBytes) {
+            return CardVerdict.Refused(GateRefusal.TOO_BIG, "${raw.size} Б, предел ${limits.maxBytes}")
+        }
+        val card = when (val r = GateWire.readCard(raw)) {
+            is GateWire.CardRead.Fail -> return CardVerdict.Refused(r.refusal, r.detail)
+            is GateWire.CardRead.Ok -> r.card
+        }
+        listOf(sender, card.agent).firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let {
+            return CardVerdict.Refused(GateRefusal.UNKNOWN_SCHEME, "«${GateWire.schemeOf(it)}» в ${it.id}")
+        }
+        if (!countWithinLimit(sender.id, nowMs)) {
+            return CardVerdict.Refused(
+                GateRefusal.FLOOD,
+                "от ${sender.id} больше ${limits.perWindow} за ${limits.windowMs / 60_000} мин",
+            )
+        }
+        if (card.agent != sender) {
+            return CardVerdict.Refused(GateRefusal.NOT_SENDER, "в карточке ${card.agent.id}, канал говорит ${sender.id}")
+        }
+        return CardVerdict.Accepted(card)
     }
 
     /** Забыть номера, отправленные [Limits.repeatWindowMs] назад и раньше: такой пакет теперь отказывается как «устарел». */
