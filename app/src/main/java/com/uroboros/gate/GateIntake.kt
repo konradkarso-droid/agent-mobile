@@ -94,9 +94,11 @@ enum class GateRefusal(val words: String) {
  * решает — это [GateWho];
  * оборванный пакет не складывает в буфер до прихода остатка; в память ничего
  * не кладёт; «принял» сам не отправляет — его собирает [GateAcks.answer], а
- * шлёт канал. Счётчик потока и номера принятых пакетов живут в памяти процесса: после перезапуска счётчик
- * начинается с нуля, а повтор пакета, принятого до перезапуска, пройдёт ещё
- * раз. Хранить номера между перезапусками может только таблица, а её нет.
+ * шлёт канал. Счётчик потока живёт в памяти процесса: после перезапуска он
+ * начинается с нуля (окно — минуты, а перезапустить агента снаружи нельзя).
+ * Номера принятых пакетов — в [GateNumbers]: переживают перезапуск, только
+ * если хранилище — база (`gate.store`); по умолчанию — память процесса, и
+ * тогда повтор пакета, принятого до перезапуска, пройдёт ещё раз.
  * Если часы получателя перевели назад после того, как номер забыт, повтор
  * тоже пройдёт. Номеров от одного ключа помнится не больше, чем пропускает
  * предел потока за [Limits.repeatWindowMs] + [Limits.futureMs]; число ключей
@@ -108,6 +110,7 @@ class GateIntake(
     private val me: PersonKey,
     private val limits: Limits = Limits.DECLARED,
     private val knownSchemes: Set<String> = setOf("tg"),
+    private val numbers: GateNumbers = GateNumbers.InMemory(),
 ) {
 
     data class Limits(
@@ -175,8 +178,6 @@ class GateIntake(
     /** Ключ отправителя → моменты засчитанных сообщений всех форм в окне [Limits.windowMs]. */
     private val recent = HashMap<String, ArrayDeque<Long>>()
 
-    /** Ключ отправителя → номер принятого пакета → момент его отправки. */
-    private val accepted = HashMap<String, HashMap<Long, Long>>()
 
     /** [sender] — ключ того, от кого пакет пришёл, по словам канала (см. «отправитель» выше). */
     @Synchronized
@@ -204,16 +205,15 @@ class GateIntake(
             return Verdict.Refused(GateRefusal.FROM_FUTURE, "отправлен на ${spanWords(-age)} позже моего «сейчас»", packet)
         }
 
-        forgetOld(nowMs)
-        val numbers = accepted.getOrPut(packet.from.id) { HashMap() }
-        if (packet.number in numbers) {
+        numbers.forgetSentUpTo(nowMs - limits.repeatWindowMs)
+        if (numbers.contains(packet.from.id, packet.number)) {
             return Verdict.Refused(
                 GateRefusal.REPEAT,
                 "номер ${GateWire.numberHex(packet.number)} от ${packet.from.id} уже принят",
                 packet,
             )
         }
-        numbers[packet.number] = packet.sentMs
+        numbers.put(packet.from.id, packet.number, packet.sentMs)
         return Verdict.Accepted(packet)
     }
 
@@ -283,16 +283,6 @@ class GateIntake(
     private fun unknownScheme(keys: List<PersonKey>): String? =
         keys.firstOrNull { GateWire.schemeOf(it) !in knownSchemes }?.let { "«${GateWire.schemeOf(it)}» в ${it.id}" }
 
-    /** Забыть номера, отправленные [Limits.repeatWindowMs] назад и раньше: такой пакет теперь отказывается как «устарел». */
-    private fun forgetOld(nowMs: Long) {
-        val senders = accepted.entries.iterator()
-        while (senders.hasNext()) {
-            val numbers = senders.next().value
-            numbers.values.removeIf { sentMs -> nowMs - sentMs >= limits.repeatWindowMs }
-            if (numbers.isEmpty()) senders.remove()
-        }
-    }
-
     /**
      * Засчитать пакет отправителя. false — предел окна уже набран: этот пакет
      * не засчитывается и отбрасывается. Моменты из будущего (часы перевели
@@ -309,6 +299,40 @@ class GateIntake(
         if (q.size >= limits.perWindow) return false
         q.addLast(nowMs)
         return true
+    }
+}
+
+/**
+ * Номера принятых пакетов: пара «ключ отправителя + номер» и момент отправки.
+ * Зачем помнить — [GateIntake], «повторы». Забывать можно номер, отправленный
+ * [GateIntake.Limits.repeatWindowMs] назад и раньше: такой пакет врата и так
+ * отказывают как «устарел».
+ */
+interface GateNumbers {
+    fun contains(sender: String, number: Long): Boolean
+    fun put(sender: String, number: Long, sentMs: Long)
+
+    /** Забыть номера пакетов, отправленных в [ms] и раньше. */
+    fun forgetSentUpTo(ms: Long)
+
+    /** В памяти процесса: после перезапуска пусто. */
+    class InMemory : GateNumbers {
+        private val bySender = HashMap<String, HashMap<Long, Long>>()
+
+        override fun contains(sender: String, number: Long) = bySender[sender]?.containsKey(number) == true
+
+        override fun put(sender: String, number: Long, sentMs: Long) {
+            bySender.getOrPut(sender) { HashMap() }[number] = sentMs
+        }
+
+        override fun forgetSentUpTo(ms: Long) {
+            val it = bySender.values.iterator()
+            while (it.hasNext()) {
+                val m = it.next()
+                m.values.removeIf { sentMs -> sentMs <= ms }
+                if (m.isEmpty()) it.remove()
+            }
+        }
     }
 }
 

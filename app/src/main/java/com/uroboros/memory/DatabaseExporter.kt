@@ -3,6 +3,7 @@ package com.uroboros.memory
 import android.content.ContentValues
 import android.content.Context
 import android.provider.MediaStore
+import com.uroboros.gate.store.GateDatabase
 import com.uroboros.llm.JournalDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -90,6 +91,16 @@ object DatabaseExporter {
             fileName = JournalDatabase.FILE_NAME,
             checkpoint = { context ->
                 JournalDatabase.getInstance(context)
+                    .openHelper.writableDatabase
+                    .query("PRAGMA wal_checkpoint(FULL)")
+                    .use { it.moveToFirst() }
+            }
+        ),
+        Source(
+            label = "врата",
+            fileName = GateDatabase.FILE_NAME,
+            checkpoint = { context ->
+                GateDatabase.getInstance(context)
                     .openHelper.writableDatabase
                     .query("PRAGMA wal_checkpoint(FULL)")
                     .use { it.moveToFirst() }
