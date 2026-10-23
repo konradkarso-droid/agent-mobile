@@ -153,9 +153,9 @@ object GateLink {
                 delay(5_000)
                 continue
             }
-            var s = session
-            if (s == null || s.token != token) {
-                s = try {
+            val held = session
+            val s: Session = if (held != null && held.token == token) held else {
+                val opened = try {
                     open(app, token, prefs)
                 } catch (e: Refused401) {
                     refusedToken = token
@@ -168,8 +168,9 @@ object GateLink {
                     delay(GateBotApi.pauseMs(failures))
                     continue
                 }
-                session = s
+                session = opened
                 cleanedAt = 0L
+                opened
             }
             val now = System.currentTimeMillis()
             if (now - cleanedAt >= CLEANUP_EVERY_MS) {
