@@ -375,6 +375,12 @@ static struct {
     std::string                   chunk_dir;
     std::string                   chunk_identity;
     bool                          splice_ready = false;
+    // Можно ли откатить обсчитанное к середине, отрезав хвост. У моделей с
+    // Mamba-слоями нельзя: их состояние — одна сводка всего прочитанного, без
+    // промежуточных точек. Им дисковый кэш стены пишется ровно по границе
+    // стены, и при любом расхождении ход откатывается к этому снимку — см.
+    // «Переиспользование обсчитанного» в nativeGenerateStreamMultiTurn.
+    bool                          tail_cut_ok = true;
 
     std::string system_prompt;
     std::string chat_template_override;
@@ -1474,13 +1480,29 @@ static bool try_restore_prompt_cache(const std::string & system_prompt,
     return false;
 }
 
-static void save_prompt_cache(const std::string & system_prompt,
+static bool save_prompt_cache(const std::string & system_prompt,
                                const std::vector<llama_token> & tokens, int n_tokens) {
-    if (g_state.prompt_cache_dir.empty() || system_prompt.empty()) return;
+    if (g_state.prompt_cache_dir.empty() || system_prompt.empty()) return false;
     std::string cache_path = g_state.prompt_cache_dir + "/prompt_" + hash_string(system_prompt) + ".cache";
     if (!llama_state_save_file(g_state.ctx, cache_path.c_str(), tokens.data(), n_tokens)) {
         LOGW("Failed to save prompt cache to %s", cache_path.c_str());
+        return false;
     }
+    return true;
+}
+
+// Прогресс обсчёта, разбитого на части: каждая часть сообщает свою долю 0…1,
+// наружу уходит доля всего запроса.
+struct scaled_progress_ctx {
+    eval_progress_fn fn;
+    void *           data;
+    float            base;
+    float            span;
+};
+
+static void scaled_progress(float progress, void * user_data) {
+    auto * s = (scaled_progress_ctx *)user_data;
+    if (s->fn) s->fn(s->base + progress * s->span, s->data);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -1642,7 +1664,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
     // не прибавляет. Моделям с Mamba-слоями — одна последовательность, как
     // прежде: склейка им не включается, а их состояние на каждую
     // последовательность своё.
-    g_state.splice_ready = !llama_model_is_recurrent(g_state.model) && !llama_model_is_hybrid(g_state.model);
+    g_state.tail_cut_ok = !llama_model_is_recurrent(g_state.model) && !llama_model_is_hybrid(g_state.model);
+    g_state.splice_ready = g_state.tail_cut_ok;
     if (g_state.splice_ready) {
         cparams.n_seq_max  = record_splice::SEQ_COUNT;
         cparams.kv_unified = true;
@@ -2466,23 +2489,47 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         return JNI_FALSE;
     }
 
-    // context reuse: find common prefix with previous prompt
+    /*
+     * Переиспользование обсчитанного. Начало запроса, совпавшее с прошлым
+     * обсчётом, второй раз не считается: лишнее после совпадения отрезается
+     * (`llama_memory_seq_rm`), и обсчёт идёт от места расхождения.
+     *
+     * У модели с Mamba-слоями отрезать можно только пустой хвост: её
+     * состояние — одна сводка всего прочитанного, к середине её не вернуть
+     * (`llama_memory_recurrent::seq_rm` отказывает при любом пересечении с
+     * последней позицией). Поэтому у неё переиспользование срабатывает, только
+     * когда новый запрос дописан к прошлому целиком (обычный следующий ход).
+     * Любое расхождение раньше конца — повтор вопроса, «Убрать ход», ответ,
+     * обрезанный стоп-строкой, ход после ночи — даёт отказ отката, и тогда
+     * ход откатывается к снимку стены на диске: стена берётся готовой,
+     * досчитывается всё после неё. Снимок для такой модели пишется ровно по
+     * границе стены (ниже, при обсчёте), иначе его тоже было бы не обрезать.
+     *
+     * ЧЕГО НЕ УМЕЕТ. Промежуточных снимков нет: при расхождении в конце
+     * длинной ленты у модели с Mamba-слоями досчитывается вся лента после
+     * стены. Снимок на каждый ход стоил бы ~160 МБ записи на диск за ход
+     * (объявленное число по размеру снимка стены, не мерено на ленте).
+     *
+     * Каждая ветка пишет в лог ровно одну итоговую строку о совпадении —
+     * их разбирает EngineLines.wallReuse на стороне приложения; отказ
+     * отката пишется отдельной строкой перед итоговой.
+     */
     llama_memory_t mem = llama_get_memory(g_state.ctx);
     int n_common = reusable_prefix(g_state.prev_prompt_tokens, tokens);
+    bool reused = false;
 
     if (n_common > 0 && n_common <= g_state.n_past) {
-        // remove stale tokens after the common prefix
-        bool removed = llama_memory_seq_rm(mem, 0, n_common, -1);
-        if (!removed) {
-            LOGW("Partial seq_rm failed, falling back to full clear");
-            llama_memory_clear(mem, true);
-            n_common = 0;
+        if (llama_memory_seq_rm(mem, 0, n_common, -1)) {
+            g_state.n_past = n_common;
+            reused = true;
+            LOGI("Context reuse: %d/%d tokens cached, %d new tokens to eval",
+                 n_common, (int)tokens.size(), (int)tokens.size() - n_common);
+        } else {
+            LOGI("Rollback refused: %d/%d tokens in common, %d computed",
+                 n_common, (int)tokens.size(), g_state.n_past);
         }
-        g_state.n_past = n_common;
-        LOGI("Context reuse: %d/%d tokens cached, %d new tokens to eval",
-             n_common, (int)tokens.size(), (int)tokens.size() - n_common);
-    } else {
-        // no usable prefix — try disk-backed prompt cache before full re-eval
+    }
+    if (!reused) {
         llama_memory_clear(mem, true);
         g_state.n_past = 0;
         n_common = 0;
@@ -2490,20 +2537,39 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         if (starts_with_wall) {
             auto sys_tokens = tokenize_string(g_state.system_prompt, true);
             if (try_restore_prompt_cache(g_state.system_prompt, sys_tokens)) {
-                n_common = reusable_prefix(g_state.prev_prompt_tokens, tokens);
-                if (n_common > 0 && n_common <= g_state.n_past) {
-                    llama_memory_seq_rm(mem, 0, n_common, -1);
-                    g_state.n_past = n_common;
+                int restored = g_state.n_past;
+                int disk_common = reusable_prefix(g_state.prev_prompt_tokens, tokens);
+                if (disk_common > 0 && disk_common <= g_state.n_past
+                        && llama_memory_seq_rm(mem, 0, disk_common, -1)) {
+                    g_state.n_past = disk_common;
+                    n_common = disk_common;
                     LOGI("Disk cache hit: reusing %d/%d tokens", n_common, (int)tokens.size());
                 } else {
+                    // Снимок не подошёл: начало запроса другое, либо снимок
+                    // длиннее совпадения, а отрезать его хвост модель не даёт
+                    // (снимок, записанный до разметки по границе стены).
+                    LOGI("Disk cache unusable: %d tokens restored, %d in common",
+                         restored, disk_common);
                     llama_memory_clear(mem, true);
                     g_state.n_past = 0;
-                    n_common = 0;
                 }
             }
         }
         if (n_common == 0) {
             LOGI("No context reuse, full re-eval of %d tokens", (int)tokens.size());
+        }
+    }
+    // Если ход у модели с Mamba-слоями считается с нуля, стена обсчитывается
+    // отдельно и сразу ложится на диск — см. «Переиспользование обсчитанного».
+    // Пусто — не нужно или не вышло (причина в логе).
+    std::vector<llama_token> wall_to_save;
+    if (!g_state.tail_cut_ok && starts_with_wall && g_state.n_past == 0 && !splice.use) {
+        auto wall = wall_tokens(g_state.system_prompt);
+        if (wall.empty() || wall.size() >= tokens.size()
+                || !std::equal(wall.begin(), wall.end(), tokens.begin())) {
+            LOGI("Wall snapshot not saved: wall cuts into tokens differently inside the request");
+        } else {
+            wall_to_save = std::move(wall);
         }
     }
 
@@ -2595,6 +2661,22 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         r["failed"] = stats.failed;
         r["unsplit"] = stats.unsplit;
         g_state.last_record_report = r.dump();
+    } else if (!wall_to_save.empty()) {
+        // Стена — отдельно и на диск, потом остальное (см. wall_to_save).
+        const size_t n_wall = wall_to_save.size();
+        const float wall_share = (float)n_wall / (float)new_tokens.size();
+        scaled_progress_ctx part1 = { jni_eval_progress, &mt_progress, 0.0f, wall_share };
+        scaled_progress_ctx part2 = { jni_eval_progress, &mt_progress, wall_share, 1.0f - wall_share };
+        std::vector<llama_token> rest(new_tokens.begin() + n_wall, new_tokens.end());
+        evaluated = eval_tokens(wall_to_save, g_state.n_past, scaled_progress, &part1);
+        if (evaluated) {
+            if (save_prompt_cache(g_state.system_prompt, wall_to_save, (int)n_wall)) {
+                LOGI("Wall snapshot saved: %d tokens", (int)n_wall);
+            } else {
+                LOGI("Wall snapshot not saved: write failed");
+            }
+            evaluated = eval_tokens(rest, g_state.n_past, scaled_progress, &part2);
+        }
     } else {
         evaluated = new_tokens.empty() || eval_tokens(new_tokens, g_state.n_past,
                                                       jni_eval_progress, &mt_progress);
@@ -2611,7 +2693,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     // try saving system prompt cache for future warm restarts
     // Только для запроса, начавшегося со стены, — см. starts_with_wall.
-    if (g_state.n_past > 0 && n_common == 0 && starts_with_wall) {
+    // Модели с Mamba-слоями снимок уже записан по границе стены выше: снимок
+    // всего запроса ей не обрезать, он бы не подошёл ни одному другому.
+    if (g_state.tail_cut_ok && g_state.n_past > 0 && n_common == 0 && starts_with_wall) {
         save_prompt_cache(g_state.system_prompt, tokens, g_state.n_past);
     }
 
