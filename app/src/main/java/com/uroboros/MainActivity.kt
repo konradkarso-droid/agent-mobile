@@ -4094,6 +4094,12 @@ class MainActivity : AppCompatActivity() {
         // человек. Место, освобождённое десятком строк метрик, уходит области
         // ответа: она и есть то, ради чего экран существует.
         setDetailsExpanded(prefs.getBoolean(KEY_DETAILS_EXPANDED, false))
+        // Долгое нажатие — экран врат (токен бота, связь с другими агентами):
+        // случайно не открыть, а главный экран ради него не меняется.
+        binding.buttonDetails.setOnLongClickListener {
+            startActivity(android.content.Intent(this, com.uroboros.gate.link.GateActivity::class.java))
+            true
+        }
         binding.buttonDetails.setOnClickListener {
             val expanding = binding.scrollDetails.visibility != View.VISIBLE
             setDetailsExpanded(expanding)

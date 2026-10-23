@@ -153,7 +153,11 @@ data class GateCardReadingRow(
 @Entity(tableName = "gate_card_sent")
 data class GateCardSentRow(@PrimaryKey val peer: String, val fingerprint: String, val sentMs: Long)
 
-/** Отправленный пакет слов ([com.uroboros.gate.GateOutgoing]) без попыток; ответ — пустой, пока его нет. */
+/**
+ * Отправленный пакет слов ([com.uroboros.gate.GateOutgoing]) без попыток; ответ — пустой, пока его нет.
+ * [form] — подписанная форма для повтора ([com.uroboros.gate.GatePost], «повтор»); у строк до версии 4
+ * базы её нет.
+ */
 @Entity(tableName = "gate_outgoing", primaryKeys = ["toKey", "number"])
 data class GateOutgoingRow(
     val toKey: String,
@@ -163,6 +167,7 @@ data class GateOutgoingRow(
     val ackGotMs: Long?,
     val ackSentMs: Long?,
     val ackedMs: Long?,
+    val form: ByteArray? = null,
 ) {
     /** Ответ, если он есть. Свой ключ в строке не хранится — «принял» в исходящих всегда мне ([me]). */
     fun ack(me: PersonKey): GateAck? = ackResult?.let {

@@ -13,6 +13,7 @@ import com.uroboros.gate.GateWire
 import com.uroboros.gate.GateNumbers
 import com.uroboros.gate.GateOutbox
 import com.uroboros.gate.GateOutgoing
+import com.uroboros.gate.GatePostStore
 import com.uroboros.gate.GateProxy
 import com.uroboros.gate.GateVouches
 import com.uroboros.memory.nav.PersonKey
@@ -38,7 +39,7 @@ import com.uroboros.memory.nav.PersonKey
  * коде их ещё нет; токен бота не хранит — ему место в хранилище ключей
  * Android. Обращения блокируют поток (см. [GateDao]).
  */
-class GateStore(private val db: GateDatabase, private val me: PersonKey) {
+class GateStore(private val db: GateDatabase, private val me: PersonKey) : GatePostStore {
 
     private val dao = db.gateDao()
 
@@ -97,7 +98,7 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
 
     fun vouches(): List<GateVouches.Record> = dao.vouches().map { it.toRecord() }
 
-    fun addVouch(r: GateVouches.Record) {
+    override fun addVouch(r: GateVouches.Record) {
         dao.insertVouch(GateVouchRow.of(r))
     }
 
@@ -106,7 +107,7 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
     fun cardReadings(): List<GateCards.Reading> = dao.cardReadings().map { it.toRecord() }
 
     /** Ключ шифрования [agent] из его нынешней карточки ([GateBox.encKeyOf]); null — писать открыто. */
-    fun encKeyOf(agent: PersonKey): String? = GateBox.encKeyOf(cardReadings(), agent)
+    override fun encKeyOf(agent: PersonKey): String? = GateBox.encKeyOf(cardReadings(), agent)
 
     // --- Ключи подписи ---
 
@@ -119,7 +120,7 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
      * ключ это позволяет ([GateKeys.Taken.cardTaken]). Одним действием.
      * Показание null — карточка в показания не легла.
      */
-    fun takeSignedCard(card: GateCard, seal: GateWire.Seal?, nowMs: Long): Pair<GateKeys.Taken, GateCards.Taken?> {
+    override fun takeSignedCard(card: GateCard, seal: GateWire.Seal?, nowMs: Long): Pair<GateKeys.Taken, GateCards.Taken?> {
         var result: Pair<GateKeys.Taken, GateCards.Taken?>? = null
         db.runInTransaction {
             val before = signKeys()
@@ -171,13 +172,13 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
     }
 
     /** Отпечаток моей карточки, последней отправленной [peer]; null — не отправлял. */
-    fun cardSentTo(peer: PersonKey): String? = dao.cardSent(peer.id)
+    override fun cardSentTo(peer: PersonKey): String? = dao.cardSent(peer.id)
 
-    fun markCardSent(peer: PersonKey, fingerprint: String, nowMs: Long) = dao.putCardSent(GateCardSentRow(peer.id, fingerprint, nowMs))
+    override fun markCardSent(peer: PersonKey, fingerprint: String, nowMs: Long) = dao.putCardSent(GateCardSentRow(peer.id, fingerprint, nowMs))
 
     // --- Исходящие ---
 
-    fun outbox(): List<GateOutgoing> {
+    override fun outbox(): List<GateOutgoing> {
         val attempts = dao.attempts().groupBy { it.toKey to it.number }
         return dao.outgoing().map { r ->
             val times = attempts[r.toKey to r.number]?.map { it.atMs } ?: listOf(r.firstMs)
@@ -185,19 +186,19 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
         }
     }
 
-    /** Первая отправка пакета [number] агенту [to]. */
-    fun sent(to: PersonKey, number: Long, nowMs: Long) {
+    /** Первая отправка пакета [number] агенту [to]; [form] — подписанная форма для повтора. */
+    override fun sent(to: PersonKey, number: Long, nowMs: Long, form: ByteArray) {
         db.runInTransaction {
-            dao.insertOutgoing(GateOutgoingRow(to.id, number, nowMs, null, null, null, null))
+            dao.insertOutgoing(GateOutgoingRow(to.id, number, nowMs, null, null, null, null, form))
             dao.insertAttempt(GateAttemptRow(to.id, number, nowMs))
         }
     }
 
     /** Повтор того же пакета ушёл сейчас. */
-    fun resent(to: PersonKey, number: Long, nowMs: Long) = dao.insertAttempt(GateAttemptRow(to.id, number, nowMs))
+    override fun resent(to: PersonKey, number: Long, nowMs: Long) = dao.insertAttempt(GateAttemptRow(to.id, number, nowMs))
 
     /** Принять «принял» ([GateOutbox.take]) и сохранить ответ, если он первый. */
-    fun takeAck(ack: GateAck, nowMs: Long): GateOutbox.Match {
+    override fun takeAck(ack: GateAck, nowMs: Long): GateOutbox.Match {
         var match: GateOutbox.Match = GateOutbox.Match.Unknown
         db.runInTransaction {
             val t = GateOutbox.take(outbox(), ack, nowMs)
@@ -208,6 +209,8 @@ class GateStore(private val db: GateDatabase, private val me: PersonKey) {
         }
         return match
     }
+
+    override fun formOf(to: PersonKey, number: Long): ByteArray? = dao.outgoingForm(to.id, number)
 
     // --- Уборка и прибор ---
 

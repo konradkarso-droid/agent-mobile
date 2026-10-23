@@ -116,6 +116,9 @@ interface GateDao {
     @Query("SELECT * FROM gate_outgoing ORDER BY firstMs")
     fun outgoing(): List<GateOutgoingRow>
 
+    @Query("SELECT form FROM gate_outgoing WHERE toKey = :toKey AND number = :number")
+    fun outgoingForm(toKey: String, number: Long): ByteArray?
+
     @Query("SELECT * FROM gate_outgoing_attempts ORDER BY atMs")
     fun attempts(): List<GateAttemptRow>
 
