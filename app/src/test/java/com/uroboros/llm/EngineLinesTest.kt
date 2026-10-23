@@ -87,4 +87,100 @@ class EngineLinesTest {
             EngineLines.engineMemory("I: Loading model: /x (ctx=8192)\nI: Model loaded (ctx=8192)"),
         )
     }
+
+    // Строки лога — из прогона библиотеки с моделью Falcon-H1 (Mamba-слои).
+    private fun request(vararg lines: String) =
+        listOf("I: Multi-turn prompt length: 2211 tokens, 11 stop seqs") + lines
+
+    @Test
+    fun `стена — откат отказан, взята с диска`() {
+        assertEquals(
+            "Откат к середине невозможен — у модели Mamba-слои (совпало 2210 из 2211, обсчитано 2263), " +
+                "ход идёт от снимка стены · Стена: взята с диска готовой (совпало 2186 из 2211, стена 2186)",
+            EngineLines.wallReuse(
+                request(
+                    "I: Rollback refused: 2210/2211 tokens in common, 2263 computed",
+                    "I: Prompt cache restored: 2186 tokens",
+                    "I: Disk cache hit: reusing 2186/2211 tokens",
+                ),
+                2186,
+            ),
+        )
+    }
+
+    @Test
+    fun `стена — с нуля, снимок стены записан`() {
+        assertEquals(
+            "Стена посчитана с нуля: готовой на диске не было (обсчитано 2211 токенов) · " +
+                "снимок стены записан на диск (2186 ток.)",
+            EngineLines.wallReuse(
+                request(
+                    "I: No context reuse, full re-eval of 2211 tokens",
+                    "I: System prompt: 2186 tokens (protected during shifts)",
+                    "I: Wall snapshot saved: 2186 tokens",
+                ),
+                2186,
+            ),
+        )
+    }
+
+    @Test
+    fun `стена — снимок на диске не подошёл`() {
+        assertEquals(
+            "Стена посчитана с нуля: снимок на диске не подошёл (в нём 2211 ток., совпало 2210; " +
+                "обсчитано 2211 токенов) · снимок стены записан на диск (2186 ток.)",
+            EngineLines.wallReuse(
+                request(
+                    "I: Prompt cache restored: 2211 tokens",
+                    "I: Disk cache unusable: 2211 tokens restored, 2210 in common",
+                    "I: No context reuse, full re-eval of 2211 tokens",
+                    "I: Wall snapshot saved: 2186 tokens",
+                ),
+                2186,
+            ),
+        )
+    }
+
+    @Test
+    fun `стена — снимок не записан, причина словами`() {
+        assertEquals(
+            "Стена посчитана с нуля: готовой на диске не было (обсчитано 2211 токенов) · " +
+                "снимок стены не записан: стена в запросе режется на токены иначе, чем отдельно",
+            EngineLines.wallReuse(
+                request(
+                    "I: No context reuse, full re-eval of 2211 tokens",
+                    "I: Wall snapshot not saved: wall cuts into tokens differently inside the request",
+                ),
+                2186,
+            ),
+        )
+    }
+
+    @Test
+    fun `стена — обычный ход молчит об откате и о снимке`() {
+        assertEquals(
+            "Стена: взята готовой из этого запуска (совпало 2223 из 2251, стена 2186)",
+            EngineLines.wallReuse(
+                request("I: Context reuse: 2223/2251 tokens cached, 28 new tokens to eval"),
+                2186,
+            ),
+        )
+    }
+
+    @Test
+    fun `стена — с диска меньше стены значит кэш испорчен`() {
+        assertEquals(
+            "КЭШ СТЕНЫ ИСПОРЧЕН: на диске чужое состояние, стена считается заново при каждом запуске " +
+                "(совпало 3 из 2211, стена 2186)",
+            EngineLines.wallReuse(request("I: Disk cache hit: reusing 3/2211 tokens"), 2186),
+        )
+    }
+
+    @Test
+    fun `стена — без итоговой строки движок не сообщил`() {
+        assertEquals(
+            "Стена: движок о совпадении не сообщил",
+            EngineLines.wallReuse(request("I: Prompt cache restored: 2186 tokens"), 2186),
+        )
+    }
 }

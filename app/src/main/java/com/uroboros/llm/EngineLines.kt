@@ -97,6 +97,116 @@ object EngineLines {
         return "Память движка: " + parts.joinToString(" · ") + " · итого ${total.toLong()} МБ"
     }
 
+    /**
+     * Взял ли движок стену готовой в одном запросе — одной фразой для экрана,
+     * с числами в скобках для сверки. [request] — строки лога движка от
+     * начала этого запроса («Multi-turn prompt length:») до конца лога;
+     * [wall] — длина стены в токенах, если движок её уже сообщал.
+     *
+     * ЗАЧЕМ. Строка «Кэш стены» говорит, что файл на диске ЕСТЬ, но не
+     * говорит, подошёл ли он. Испорченный кэш (в файле под именем стены
+     * лежит состояние запроса с другим началом) и исправный выглядят там
+     * одинаково. Здесь видно, сколько токенов запроса совпало с уже
+     * обсчитанным и откуда оно взялось — из памяти процесса или с диска.
+     *
+     * ИСХОДЫ различаются по тому, откуда совпадение:
+     * - с диска, не меньше стены — стена взята готовой;
+     * - с диска, МЕНЬШЕ стены — кэш испорчен. Это единственный исход, где
+     *   причина одна: файл назван по этой стене, а начинается не с неё;
+     * - из памяти процесса, не меньше стены — обычный ход;
+     * - из памяти процесса, меньше стены — перед этим к модели ходил запрос
+     *   с другим началом (разбор памяти) или стена сменилась на лету (совпало
+     *   начало до места правки, хвост новый), и стену пришлось досчитать. Кэш
+     *   при этом цел;
+     * - совпадения нет — готовой стены на диске не нашлось или снимок не
+     *   подошёл, стена посчитана с нуля. Нормально для первого запроса в
+     *   свежей папке.
+     * Перед исходом может стоять отказ отката: у модели с Mamba-слоями
+     * обсчитанное к середине не вернуть, и при любом расхождении раньше конца
+     * ход идёт от снимка стены на диске (почему — `gguf_lib.cpp`,
+     * «Переиспользование обсчитанного»). После исхода — записан ли снимок
+     * стены, если движок писал его в этом запросе.
+     *
+     * ОТКУДА ЧИСЛА. У каждого многоходового запроса в логе есть ровно одна
+     * итоговая строка о совпадении одного из трёх видов. Значит звать это
+     * можно ТОЛЬКО по свежему запросу, который точно дошёл до обсчёта: иначе
+     * будут показаны числа чужого запроса. Проверяет это вызывающий.
+     *
+     * ЧЕГО НЕ УМЕЕТ. Сравнение со стеной держится на том, что граница стены
+     * в полном запросе режется на токены так же, как стена отдельно. Если
+     * это однажды разойдётся на токен-другой, строка скажет «испорчен» при
+     * исправном кэше — то есть ошибётся в сторону ложной тревоги, а не
+     * пропуска. Проверяется это числами в скобках: при настоящей порче
+     * совпадает несколько токенов, а не почти вся стена. Если длины стены
+     * нет, сравнивать не с чем — тогда строка говорит только, откуда и
+     * сколько. Строки лога узнаются по нынешнему тексту в `gguf_lib.cpp`:
+     * правка текста там молча отключит строку здесь — она скажет «не
+     * сообщил», а не соврёт числом.
+     */
+    fun wallReuse(request: List<String>, wall: Int?): String {
+        val refused = request.firstNotNullOfOrNull { ROLLBACK_REFUSED.find(it) }?.let {
+            "Откат к середине невозможен — у модели Mamba-слои (совпало ${it.groupValues[1]} " +
+                "из ${it.groupValues[2]}, обсчитано ${it.groupValues[3]}), ход идёт от снимка стены · "
+        } ?: ""
+        val saved = request.firstNotNullOfOrNull { WALL_SAVED.find(it) }?.let {
+            " · снимок стены записан на диск (${it.groupValues[1]} ток.)"
+        } ?: request.firstNotNullOfOrNull { WALL_NOT_SAVED.find(it) }?.let {
+            " · снимок стены не записан: " + when (val why = it.groupValues[1].trim()) {
+                "write failed" -> "запись на диск не удалась"
+                "wall cuts into tokens differently inside the request" ->
+                    "стена в запросе режется на токены иначе, чем отдельно"
+                else -> why
+            }
+        } ?: ""
+        return refused + reuseOutcome(request, wall) + saved
+    }
+
+    private fun reuseOutcome(request: List<String>, wall: Int?): String {
+        for (line in request) {
+            REUSE_FROM_DISK.find(line)?.let {
+                val reused = it.groupValues[1].toInt()
+                val numbers = "(совпало $reused из ${it.groupValues[2]}, стена ${wall ?: "?"})"
+                return when {
+                    wall == null -> "Стена: взята с диска, длина стены не известна $numbers"
+                    reused >= wall -> "Стена: взята с диска готовой $numbers"
+                    else -> "КЭШ СТЕНЫ ИСПОРЧЕН: на диске чужое состояние, стена " +
+                        "считается заново при каждом запуске $numbers"
+                }
+            }
+            REUSE_IN_MEMORY.find(line)?.let {
+                val reused = it.groupValues[1].toInt()
+                val numbers = "(совпало $reused из ${it.groupValues[2]}, стена ${wall ?: "?"})"
+                return when {
+                    wall == null -> "Стена: взята из этого запуска, длина стены не известна $numbers"
+                    reused >= wall -> "Стена: взята готовой из этого запуска $numbers"
+                    else -> "Стена посчитана заново: перед этим к модели ходил другой " +
+                        "запрос (например, разбор памяти) или стена сменилась на лету. Кэш цел $numbers"
+                }
+            }
+            NO_REUSE.find(line)?.let { none ->
+                val unusable = request.firstNotNullOfOrNull { DISK_UNUSABLE.find(it) }
+                return if (unusable != null) {
+                    "Стена посчитана с нуля: снимок на диске не подошёл (в нём " +
+                        "${unusable.groupValues[1]} ток., совпало ${unusable.groupValues[2]}; " +
+                        "обсчитано ${none.groupValues[1]} токенов)"
+                } else {
+                    "Стена посчитана с нуля: готовой на диске не было " +
+                        "(обсчитано ${none.groupValues[1]} токенов)"
+                }
+            }
+        }
+        return "Стена: движок о совпадении не сообщил"
+    }
+
+    // Строки лога nativeGenerateStreamMultiTurn (`gguf_lib.cpp`), дословно.
+    private val REUSE_IN_MEMORY = Regex("""Context reuse: (\d+)/(\d+) tokens cached""")
+    private val REUSE_FROM_DISK = Regex("""Disk cache hit: reusing (\d+)/(\d+) tokens""")
+    private val NO_REUSE = Regex("""No context reuse, full re-eval of (\d+) tokens""")
+    private val ROLLBACK_REFUSED = Regex("""Rollback refused: (\d+)/(\d+) tokens in common, (\d+) computed""")
+    private val DISK_UNUSABLE = Regex("""Disk cache unusable: (\d+) tokens restored, (\d+) in common""")
+    private val WALL_SAVED = Regex("""Wall snapshot saved: (\d+) tokens""")
+    private val WALL_NOT_SAVED = Regex("""Wall snapshot not saved: (.+)$""")
+
     private fun bufferName(raw: String): String = when (raw) {
         "CPU_REPACK" -> "перепакованные"
         "CPU_Mapped" -> "из файла"
