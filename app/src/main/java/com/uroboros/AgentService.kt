@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.documentfile.provider.DocumentFile
+import com.uroboros.gate.link.GateLink
 import com.uroboros.initiative.CuriositySource
 import com.uroboros.initiative.FirstOfSources
 import com.uroboros.initiative.GapSource
@@ -293,6 +294,8 @@ class AgentService : Service() {
             _initiativeTallyLines.value = InitiativeTally.meter(tallyStore.read(), System.currentTimeMillis())
         }
         scope.launch { sleepLoop() }
+        // Канал врат живёт, пока живо тело: опрос телеграма (gate.link.GateLink).
+        GateLink.start(applicationContext, scope)
     }
 
     /**

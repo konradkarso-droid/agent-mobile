@@ -52,7 +52,7 @@ abstract class GateDatabase : RoomDatabase() {
          * Версия схемы врат — своя, отдельно от баз памяти и ленты. При подъёме
          * сюда же добавляется миграция: без неё база не откроется.
          */
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 4
 
         const val FILE_NAME = "uroboros_gate.db"
 
@@ -94,13 +94,24 @@ abstract class GateDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Версия 4: столбец `form` у исходящих — подписанная форма пакета для
+         * повтора ([com.uroboros.gate.GatePost]). У старых строк формы нет: NULL —
+         * правда, такой пакет не повторяется.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `gate_outgoing` ADD COLUMN `form` BLOB")
+            }
+        }
+
         @Volatile
         private var INSTANCE: GateDatabase? = null
 
         fun getInstance(context: Context): GateDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(context.applicationContext, GateDatabase::class.java, FILE_NAME)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build().also { INSTANCE = it }
             }
         }
