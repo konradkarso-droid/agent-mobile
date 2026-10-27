@@ -463,6 +463,10 @@ class JournalStore(context: Context) {
     fun recordTexts(row: JournalArchiveTurn): List<String> =
         parseRecords(row.recordsJson)?.map { it.text }.orEmpty()
 
+    /** Служебные блоки реплики хода архива (EchoCheck.serviceBlocks). */
+    fun serviceBlocks(row: JournalArchiveTurn): List<String> =
+        EchoCheck.serviceBlocks(row.userContent, row.question, recordTexts(row))
+
     /**
      * Оба числа диска разом: активная лента и архив.
      *

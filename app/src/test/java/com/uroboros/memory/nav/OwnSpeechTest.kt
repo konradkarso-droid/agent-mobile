@@ -89,6 +89,76 @@ class OwnSpeechTest {
         assertEquals(1, said.size)
     }
 
+    // --- Служебный текст ---
+
+    // Подсказка сна, как она лежит в реплике хода, и ответ, повторивший её вслух
+    // (живой случай из архива ленты, имена и тема — как были).
+    private val dreamHint = "[Мне от системы: Во сне мне подумалось, что модель LLM и беседа с агентом — " +
+        "это одно и то же обучение. Скажи пользователю об этом одной фразой и скажи, что это пришло во сне.]"
+
+    @Test
+    fun `повтор служебной подсказки — не своё и считается отдельно`() {
+        val question = "Что нового?"
+        val user = "Прошлый ответ ты дал без записей из памяти.\n\n$dreamHint\n\n$question"
+        val blocks = EchoCheck.serviceBlocks(user, question, emptyList())
+        val sifted = OwnSpeech.sift(
+            listOf(
+                OwnSpeech.Turn(
+                    "Обучение моделей мне интересно по-своему. Скажи пользователю об этом одной фразой и скажи, что это пришло во сне.",
+                    question, emptyList(), 7L, blocks,
+                )
+            )
+        )
+        assertEquals(listOf("Обучение моделей мне интересно по-своему."), sifted.said.map { it.sentence })
+        assertEquals(1, sifted.serviceDropped)
+    }
+
+    @Test
+    fun `служебная приписка с именем инструмента — не своё`() {
+        val sifted = OwnSpeech.sift(
+            listOf(
+                OwnSpeech.Turn(
+                    "В прошлый раз мне приснился длинный сценарий. (Я использовал функцию look_at_instruments " +
+                        "для получения актуальной информации, но в данном случае она не применима.)",
+                    "Что тебе снилось?", emptyList(), 7L,
+                )
+            )
+        )
+        assertEquals(listOf("В прошлый раз мне приснился длинный сценарий."), sifted.said.map { it.sentence })
+        assertEquals(1, sifted.serviceDropped)
+    }
+
+    @Test
+    fun `своя речь рядом со служебным блоком остаётся — отсев молчит`() {
+        val question = "Что нового?"
+        val user = "$dreamHint\n\n$question"
+        val sifted = OwnSpeech.sift(
+            listOf(
+                OwnSpeech.Turn(
+                    "Сегодня я думал о радуге и о цветах. Мне нравится разбирать записи ночью.",
+                    question, emptyList(), 7L, EchoCheck.serviceBlocks(user, question, emptyList()),
+                )
+            )
+        )
+        assertEquals(2, sifted.said.size)
+        assertEquals(0, sifted.serviceDropped)
+    }
+
+    @Test
+    fun `без служебных блоков своя речь как прежде`() {
+        val turns = listOf(OwnSpeech.Turn("Люблю чай. Рассказывал про цвета радуги подробно.", "Люблю чай", emptyList(), 7L))
+        assertEquals(OwnSpeech.said(turns), OwnSpeech.sift(turns).said)
+        assertEquals(0, OwnSpeech.sift(turns).serviceDropped)
+    }
+
+    @Test
+    fun `служебные блоки хода архива — те же, что у хода ленты`() {
+        val question = "Что нового?"
+        val record = "Твои слова вчера: «Колодка рубанка сделана из берёзы»."
+        val user = "$record\n\n$dreamHint\n\n$question"
+        assertEquals(listOf(dreamHint), EchoCheck.serviceBlocks(user, question, listOf(record)))
+    }
+
     // --- Места ---
 
     private fun sticker(id: Long) = Sticker(id = id, content = "запись $id", layer = Layer.GREEN.name)
@@ -121,7 +191,7 @@ class OwnSpeechTest {
 
     @Test
     fun `строка круга про свою речь печатается и при нуле`() {
-        assertEquals("своя речь: нашло 0, усажено 0", DolmenCircle.ownSpeechPart(0, 0))
+        assertEquals("своя речь: нашло 0, усажено 0, служебного в архиве отсеяно 0", DolmenCircle.ownSpeechPart(0, 0))
         val line = DolmenCircle.meter(
             DolmenCircle.Window.NoWords, DolmenCircle.Window.NoWords, emptyList(),
             DolmenCircle.Window.LayerEmpty, false, 0,

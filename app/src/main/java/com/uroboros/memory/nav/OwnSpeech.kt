@@ -1,6 +1,7 @@
 package com.uroboros.memory.nav
 
 import com.uroboros.llm.EchoCheck
+import com.uroboros.llm.Glance
 import com.uroboros.memory.RiskTrigger
 
 /**
@@ -29,8 +30,25 @@ import com.uroboros.memory.RiskTrigger
  * ниже порога. Проверка по форме, не по смыслу — цена та же, что у
  * PersonForm (обобщённое «ты» тоже уйдёт). «Не ясно» остаётся своим.
  *
- * Фильтр стоит в [said], поэтому действует и на облако агента: слова агента
- * о владельце не набирают вес облаку агента.
+ * СЛУЖЕБНЫЙ ТЕКСТ СВОЕЙ РЕЧЬЮ НЕ СЧИТАЕТСЯ. Модель иногда повторяет вслух
+ * подсказку из реплики хода («Скажи пользователю об этом одной фразой и
+ * скажи, что это пришло во сне») или дописывает к ответу служебное
+ * («(Я использовал функцию look_at_instruments…)»). Такое предложение,
+ * поднятое как «я говорил», вернуло бы модели подсказку её же голосом, и
+ * кольцо памяти стало бы укладывать собственный шум. Отсеивается:
+ *  - повтор служебного блока реплики этого хода — мера и порог те же, что у
+ *    прибора эха (EchoCheck.echoesService, EchoCheck.SERVICE_SHARE);
+ *  - предложение с именем инструмента или началом его вызова (Glance) —
+ *    живой речи о себе они не нужны.
+ * Отсеянное считается отдельно от эха владельца ([Sifted.serviceDropped]):
+ * эхо владельца — его слова, они законно возвращаются через записи, а
+ * служебное не должно вернуться никак. Архив при этом не правится: он
+ * история сказанного, отсев — только при чтении.
+ * ЧЕГО НЕ УМЕЕТ: пересказ подсказки другими словами и служебная приписка
+ * без имени инструмента («(Я проверил данные…)») останутся своими.
+ *
+ * Фильтр стоит в [sift], поэтому действует и на облако агента: слова агента
+ * о владельце и служебный текст не набирают вес облаку агента.
  *
  * АРХИВ ЛЕНТЫ — НЕ МАТЕРИАЛ СНОВ. Сны плетутся из записей памяти
  * (dream.DreamWeaver.weave), и так остаётся: своя речь в плетение не идёт.
@@ -50,17 +68,39 @@ object OwnSpeech {
         val records: List<String>,
         /** Время хода (Coordinates.turnTime); null — неизвестно. */
         val at: Long?,
+        /** Служебные блоки реплики этого хода (EchoCheck.serviceBlocks). */
+        val serviceBlocks: List<String> = emptyList(),
     )
 
     /** Предложение своей речи и время хода, где оно сказано. */
     data class Said(val sentence: String, val at: Long?)
 
-    /** Предложения своей речи по ходам, в порядке ходов. */
-    fun said(turns: List<Turn>): List<Said> = turns.flatMap { turn ->
-        EchoCheck.ownSentences(turn.answer, turn.question, turn.records)
-            .filterNot { PersonForm.of(it).aboutAddressee }
-            .map { Said(it, turn.at) }
+    /** Своя речь и сколько предложений отсеяно как служебный текст. */
+    data class Sifted(val said: List<Said>, val serviceDropped: Int)
+
+    /** Предложения своей речи по ходам, в порядке ходов, и счёт отсеянного служебного. */
+    fun sift(turns: List<Turn>): Sifted {
+        var dropped = 0
+        val said = turns.flatMap { turn ->
+            EchoCheck.ownSentences(turn.answer, turn.question, turn.records)
+                .filterNot { PersonForm.of(it).aboutAddressee }
+                .filter { sentence ->
+                    val service = isService(sentence, turn.serviceBlocks)
+                    if (service) dropped++
+                    !service
+                }
+                .map { Said(it, turn.at) }
+        }
+        return Sifted(said, dropped)
     }
+
+    /** Предложения своей речи по ходам, в порядке ходов (см. [sift]). */
+    fun said(turns: List<Turn>): List<Said> = sift(turns).said
+
+    /** Служебный текст в ответе агента — см. «СЛУЖЕБНЫЙ ТЕКСТ» в шапке. */
+    fun isService(sentence: String, serviceBlocks: List<String>): Boolean =
+        sentence.contains(Glance.TOOL_NAME) || sentence.contains(Glance.CALL_OPEN) ||
+            EchoCheck.echoesService(sentence, serviceBlocks)
 
     /**
      * Найти в своей речи предложения по словам вопроса: не меньше одной общей

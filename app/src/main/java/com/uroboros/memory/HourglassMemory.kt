@@ -888,6 +888,8 @@ class HourglassMemory(
          * усаженные — срезанного после раздачи у круга не бывает.
          */
         seats: Int = limit,
+        /** Сколько предложений своей речи отсеяно как служебный текст (nav.OwnSpeech.Sifted) — для строки круга. */
+        ownSpeechServiceDropped: Int = 0,
     ): ContextResult {
         migrateExpired()
 
@@ -1061,7 +1063,7 @@ class HourglassMemory(
             coldByTheme = coldByTheme,
             red = dao.countInLayer(Layer.RED.name),
             ribbonExcluded = excluded.texts.size,
-            ownSpeech = ownSpeechFound?.let { DolmenCircle.ownSpeechPart(it, seating.ownSpeech) }
+            ownSpeech = ownSpeechFound?.let { DolmenCircle.ownSpeechPart(it, seating.ownSpeech, ownSpeechServiceDropped) }
                 ?: DolmenCircle.OWN_SPEECH_NOT_ASKED,
         )
 
