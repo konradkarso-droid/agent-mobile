@@ -83,8 +83,10 @@ object EchoCheck {
 
     /**
      * Какая доля основ предложения ответа должна найтись в служебном блоке.
-     * Ниже порога зеркала ([MIN_SHARE]) намеренно: прибор ничего не
-     * запускает, только показывает, и ошибаться ему можно в сторону лишнего.
+     * Ниже порога зеркала ([MIN_SHARE]) намеренно: ошибаться здесь можно в
+     * сторону лишнего. Прибор только показывает, а в своей речи агента
+     * ([echoesService]) лишнее значит одну выпавшую из поиска фразу — дешевле,
+     * чем подсказка, вернувшаяся модели как «я говорил».
      *
      * Живой пример — ответ «Понял, повторил слова пользователя.» на блок «В
      * прошлом ответе ты повторил слова пользователя вместо своих.»: основ в
@@ -163,13 +165,32 @@ object EchoCheck {
      * записях их текстами без провенанса и кавычек (см. `DisputeNotice`), а
      * не готовыми строками.
      */
-    fun serviceBlocks(turn: ConversationJournal.Turn): List<String> {
-        var rest = turn.userContent
-        if (turn.question.isNotEmpty()) rest = rest.removeSuffix(turn.question)
-        for (record in turn.records.map { it.text }.filter { it.isNotEmpty() }.sortedByDescending { it.length }) {
+    fun serviceBlocks(turn: ConversationJournal.Turn): List<String> =
+        serviceBlocks(turn.userContent, turn.question, turn.records.map { it.text })
+
+    /** То же для хода архива, где записи — только тексты (JournalStore.recordTexts). */
+    fun serviceBlocks(userContent: String, question: String, recordTexts: List<String>): List<String> {
+        var rest = userContent
+        if (question.isNotEmpty()) rest = rest.removeSuffix(question)
+        for (record in recordTexts.filter { it.isNotEmpty() }.sortedByDescending { it.length }) {
             rest = rest.replace(record, "")
         }
         return rest.split(BLANK_LINE).map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    /**
+     * Предложение собрано из слов одного служебного блока — та же мера, что у
+     * части «ответ служебной строке» в [check]. Для своей речи агента
+     * (memory.nav.OwnSpeech): такое предложение — повтор подсказки, а не его
+     * слова. Короче [MIN_STEMS] основ — не повтор: из одной основы не судить.
+     */
+    fun echoesService(sentence: String, serviceBlocks: List<String>): Boolean {
+        val stems = RiskTrigger.echoStems(sentence)
+        if (stems.size < MIN_STEMS) return false
+        return serviceBlocks.any { block ->
+            val blockStems = RiskTrigger.echoStems(block)
+            blockStems.isNotEmpty() && covered(stems, blockStems, SERVICE_SHARE)
+        }
     }
 
     private val BLANK_LINE = Regex("\\n\\s*\\n")

@@ -48,6 +48,7 @@ class SelfGapReader(private val context: Context, private val store: JournalStor
                 question = row.question,
                 records = store.recordTexts(row),
                 at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+                serviceBlocks = store.serviceBlocks(row),
             )
         })
         val (aboutSelf, notAboutSelf) = own.partition { Clouds.keepsOwn(it.sentence) }

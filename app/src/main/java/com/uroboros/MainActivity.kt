@@ -4649,19 +4649,18 @@ class MainActivity : AppCompatActivity() {
                 // Своя речь агента — окно архива ленты, только на вопрос к
                 // агенту (см. OwnSpeech). Время старого хода — не позже
                 // закрытия разговора (Coordinates.turnTime).
-                val ownSaid =
-                    if (address != Coordinates.Address.AGENT || archive == null) emptyList()
-                    else OwnSpeech.search(
-                        OwnSpeech.said(archive.map { row ->
-                            OwnSpeech.Turn(
-                                answer = row.agentContent,
-                                question = row.question,
-                                records = journalStore.recordTexts(row),
-                                at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
-                            )
-                        }),
-                        userText,
-                    )
+                val ownSifted =
+                    if (address != Coordinates.Address.AGENT || archive == null) null
+                    else OwnSpeech.sift(archive.map { row ->
+                        OwnSpeech.Turn(
+                            answer = row.agentContent,
+                            question = row.question,
+                            records = journalStore.recordTexts(row),
+                            at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+                            serviceBlocks = journalStore.serviceBlocks(row),
+                        )
+                    })
+                val ownSaid = if (ownSifted == null) emptyList() else OwnSpeech.search(ownSifted.said, userText)
                 // Портрет собеседника — его слова о себе по провенансу
                 // (Portrait). Ищется на каждом ходе, модели идёт по поводу:
                 // на вопрос о собеседнике — весь, на тему реплики — строки
@@ -4719,6 +4718,7 @@ class MainActivity : AppCompatActivity() {
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
                     address = address,
                     ownSpeechFound = if (address == Coordinates.Address.AGENT) ownSaid.size else null,
+                    ownSpeechServiceDropped = ownSifted?.serviceDropped ?: 0,
                     seats = DolmenCircle.circleSeats(portraitRetold.size),
                 )
                 // Облако адреса — прибор хода; в отбор и в модель не идёт (Clouds).
