@@ -112,6 +112,14 @@ object Prochnost {
      */
     const val PAIN_SHIFT = 0.5
 
+    /**
+     * Сколько общих значимых основ нужно строке о себе, чтобы её подать.
+     * Объявленное число: на стенде строки, совпавшие одним словом («выброшу
+     * телефон» → «живёт на этом телефоне»; «ответы» → строки о памяти и снах),
+     * уводили ответ в сторону, совпавшие двумя («удалять записи») — нет.
+     */
+    const val MIN_SELF_STEMS = 2
+
     /** Сколько строк о себе и сколько найденных цитат подавать. Объявленные. */
     const val MAX_SELF_LINES = 2
     const val MAX_FOUND = 2
@@ -216,7 +224,7 @@ object Prochnost {
         return selfLines.asSequence()
             .map(::unnumbered)
             .map { it to RiskTrigger.significantStems(it).count { s -> s in asked } }
-            .filter { it.second > 0 }
+            .filter { it.second >= MIN_SELF_STEMS }
             .sortedByDescending { it.second }
             .map { it.first }
             .distinct()

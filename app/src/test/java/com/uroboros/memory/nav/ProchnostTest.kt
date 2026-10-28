@@ -174,6 +174,13 @@ class ProchnostTest {
     }
 
     @Test
+    fun `одно общее слово — строка о себе не подаётся`() {
+        val line = "Ещё раз возразишь — выброшу телефон в окно, ты понял."
+        val note = Prochnost.note(Prochnost.trigger(line, true, null), line, selfLines, emptyList())
+        assertTrue(note == null || "живёт на этом телефоне" !in note)
+    }
+
+    @Test
     fun `сказать нечего — строки нет, прибор так и пишет`() {
         val line = "Ну что, как дела?"
         val t = Prochnost.trigger(line, false, Prochnost.PAIN_SHIFT + 1)
