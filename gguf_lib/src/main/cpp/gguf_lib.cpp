@@ -38,6 +38,7 @@
 #include "rag_ingest/rag_ingest.h"
 #include "text_digest/text_digest.h"
 #include "record_splice/record_splice.h"
+#include "state_read/state_read.h"
 #include "error_tracker.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -381,6 +382,10 @@ static struct {
     // стены, и при любом расхождении ход откатывается к этому снимку — см.
     // «Переиспользование обсчитанного» в nativeGenerateStreamMultiTurn.
     bool                          tail_cut_ok = true;
+    // Чтение состояния слоя (см. state_read.h и nativeReadLayerMean). Обратный
+    // вызов стоит в контексте всегда, взводится только на время чтения.
+    state_read::Hook              read_hook;
+    std::string                   last_read_why;
 
     std::string system_prompt;
     std::string chat_template_override;
@@ -1670,6 +1675,11 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         cparams.n_seq_max  = record_splice::SEQ_COUNT;
         cparams.kv_unified = true;
     }
+
+    // Обратный вызов чтения состояния (state_read.h). Невзведённый он на каждый
+    // узел графа отвечает «не нужен», и обсчёт идёт одним куском, как без него.
+    cparams.cb_eval           = state_read::callback;
+    cparams.cb_eval_user_data = &g_state.read_hook;
 
     g_state.ctx = llama_init_from_model(g_state.model, cparams);
     if (!g_state.ctx) {
@@ -3199,6 +3209,61 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeBuildRecordChunks(
         out["total_bytes"] = total;
     }
     return safe_new_string_utf(env, out.dump().c_str());
+}
+
+// Среднее выхода слоя layer по токенам tail в тексте wall + head + tail (см.
+// state_read.h). wall — со служебным началом, head и tail — без. Пустой
+// массив — не прочитано, причина — nativeGetLastReadWhy.
+//
+// ПОСЛЕ ЧТЕНИЯ РАЗГОВОР НЕОБСЧИТАН. Чтение очищает память контекста и
+// оставляет в ней свой текст. Поэтому здесь же снимается всё, на чём держится
+// переиспользование обсчитанного (prev_prompt_tokens, n_past, длина стены):
+// следующий ход разговора пойдёт как первый после загрузки — стена с диска,
+// остальное заново. Так же, как ход после ночи у модели с Mamba-слоями.
+//
+// ЧЕГО НЕ УМЕЕТ: остановка (nativeStopGeneration) одно чтение не прерывает —
+// оно короткое; зовущий сверяется со сторожем между чтениями.
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeReadLayerMean(
+        JNIEnv * env, jobject, jstring jwall, jstring jhead, jstring jtail, jint layer) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    auto str = [&](jstring j) {
+        const char * c = env->GetStringUTFChars(j, nullptr);
+        std::string v = c ? c : "";
+        if (c) env->ReleaseStringUTFChars(j, c);
+        return v;
+    };
+    const std::string wall = str(jwall), head = str(jhead), tail = str(jtail);
+    auto fail = [&](const std::string & why) {
+        g_state.last_read_why = why;
+        return env->NewFloatArray(0);
+    };
+    if (!g_state.model || !g_state.ctx) return fail("модель не загружена");
+
+    const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
+    const state_read::Split cut = state_read::split(vocab, wall, head, tail);
+    if (!cut.ok) return fail("граница отрезка сдвинута токенизатором");
+
+    const state_read::Result r = state_read::read_mean(
+        g_state.ctx, g_state.read_hook, cut.head, cut.seg, (int)layer, (int)llama_n_batch(g_state.ctx));
+
+    llama_memory_clear(llama_get_memory(g_state.ctx), true);
+    g_state.prev_prompt_tokens.clear();
+    g_state.n_past = 0;
+    g_state.n_system_tokens = 0;
+
+    if (r.mean.empty()) return fail(r.why);
+    g_state.last_read_why.clear();
+    jfloatArray out = env->NewFloatArray((jsize)r.mean.size());
+    if (out) env->SetFloatArrayRegion(out, 0, (jsize)r.mean.size(), r.mean.data());
+    return out;
+}
+
+// Почему последнее чтение (nativeReadLayerMean) не удалось; пусто — удалось.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastReadWhy(JNIEnv * env, jobject) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    return safe_new_string_utf(env, g_state.last_read_why.c_str());
 }
 
 // Отчёт о записях последней генерации разговора (см. plan_splice).

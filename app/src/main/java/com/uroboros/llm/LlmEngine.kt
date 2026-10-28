@@ -196,6 +196,18 @@ enum class GenerationEnd {
     UNEXPLAINED,
 }
 
+/** Итог чтения слоя модели ([LlmEngine.readLayerMean]). */
+sealed class LayerRead {
+    /** Прочитано: среднее выхода слоя по токенам отрезка. */
+    class Read(val mean: FloatArray) : LayerRead()
+
+    /** Не читалось: сторож велел остановиться ещё до чтения. */
+    data class Stopped(val end: GenerationEnd) : LayerRead()
+
+    /** Движок не прочитал; [why] — его слова. */
+    data class Failed(val why: String) : LayerRead()
+}
+
 
 class LlmEngine(
     private val context: Context,
@@ -2325,6 +2337,34 @@ class LlmEngine(
             }
         }
     }
+
+    /**
+     * Прочитать выход слоя [layer] модели на тексте [wall] + [head] + [tail]:
+     * среднее по токенам [tail]. Печати нет. Что это и чего не умеет — у
+     * `state_read.h` в нативной части; зачем — у memory.judge.DirectJudge.
+     *
+     * Под тем же присмотром, что генерация и сборка кусков: занятость движка
+     * ([activity]) и счёт непрерывной работы у сторожа. Одно чтение короткое и
+     * внутри не прерывается, поэтому сторож спрашивается до него: в опасной
+     * зоне или на исчерпанном потолке чтение не начинается ([LayerRead.Stopped]).
+     *
+     * После чтения разговор у движка необсчитан: следующий ход пойдёт со стены
+     * с диска, как первый после загрузки.
+     */
+    suspend fun readLayerMean(wall: String, head: String, tail: String, layer: Int): LayerRead =
+        withContext(Dispatchers.IO) {
+            barrierStopReason(watchdog.zone.value)?.let { return@withContext LayerRead.Stopped(it) }
+            watchdog.markInferenceStarted()
+            activity.begin()
+            try {
+                val mean = engine.readLayerMean(wall, head, tail, layer)
+                if (mean != null) LayerRead.Read(mean)
+                else LayerRead.Failed(engine.lastReadWhy().ifEmpty { "движок не назвал причину" })
+            } finally {
+                activity.end()
+                watchdog.resetInferenceTimer()
+            }
+        }
 
     private fun conversationMessages(messages: List<Pair<String, String>>): String {
         val array = JSONArray()

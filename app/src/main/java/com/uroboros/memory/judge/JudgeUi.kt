@@ -70,6 +70,8 @@ class JudgeUi(
         out.append("Просмотрено: ").append(counters.reviewed.toString())
         out.append(" · из них промахов судьи: ").append(counters.misses.toString()).append("\n")
         appendRings(out, counters.byRing)
+        out.append("Прямой судья: прочитано пар ").append(counters.directRead.toString())
+        out.append(" · отброшено (печатному не шли): ").append(counters.directDropped.toString()).append("\n")
 
         if (pending.isEmpty()) {
             out.append(

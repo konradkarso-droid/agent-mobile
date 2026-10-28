@@ -67,6 +67,8 @@ internal object GGUFNativeLib {
     external fun nativeSetRecordChunkDir(path: String, identity: String)
     external fun nativeBuildRecordChunks(linesJson: String, finish: Boolean): String
     external fun nativeGetLastConversationPrompt(): ByteArray
+    external fun nativeReadLayerMean(wall: String, head: String, tail: String, layer: Int): FloatArray
+    external fun nativeGetLastReadWhy(): String
 
     external fun nativeGenerateStream(
         prompt: String, maxTokens: Int, callback: StreamCallback,
