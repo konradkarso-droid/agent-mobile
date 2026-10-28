@@ -509,6 +509,18 @@ class GGMLEngine {
         GGUFNativeLib.nativeBuildRecordChunks(linesJson, finish)
 
     /**
+     * Среднее выхода слоя [layer] по токенам [tail] в тексте [wall] + [head] +
+     * [tail]; null — не прочитано, причина — [lastReadWhy]. После чтения разговор
+     * считается необсчитанным. Что это и чего не умеет — у `state_read.h` и
+     * `nativeReadLayerMean` в нативной части.
+     */
+    fun readLayerMean(wall: String, head: String, tail: String, layer: Int): FloatArray? =
+        if (!loaded) null else GGUFNativeLib.nativeReadLayerMean(wall, head, tail, layer).takeIf { it.isNotEmpty() }
+
+    /** Почему последнее чтение слоя не удалось; пусто — удалось. */
+    fun lastReadWhy(): String = if (!loaded) "модель не загружена" else GGUFNativeLib.nativeGetLastReadWhy()
+
+    /**
      * Что модель собиралась сказать первым в последней генерации разговора:
      * сломанные числа, пятёрка вероятных токенов, вес «конца ответа», что
      * выбрано, и последние токены запроса. Зачем и чего не умеет — у

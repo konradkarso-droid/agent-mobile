@@ -109,6 +109,9 @@ set(TEXT_DIGEST_SOURCES ${TEXT_DIGEST_DIR}/text_digest.cpp)
 set(RECORD_SPLICE_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/record_splice)
 set(RECORD_SPLICE_SOURCES ${RECORD_SPLICE_DIR}/record_splice.cpp)
 
+set(STATE_READ_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/state_read)
+set(STATE_READ_SOURCES ${STATE_READ_DIR}/state_read.cpp)
+
 set(VLM_DIR ${LLAMA_DIR}/engine/vlm)
 set(VLM_SOURCES
     ${VLM_DIR}/clip.cpp
@@ -147,6 +150,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
     ${RAG_INGEST_SOURCES}
     ${TEXT_DIGEST_SOURCES}
     ${RECORD_SPLICE_SOURCES}
+    ${STATE_READ_SOURCES}
     ${VLM_SOURCES})
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

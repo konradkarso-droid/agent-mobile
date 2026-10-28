@@ -33,6 +33,9 @@ data class JudgeCounters(
      * посчитаны ни в одном кольце — кольцо без текста не определить.
      */
     val byRing: RingCounters = RingCounters(),
+    /** Сколько пар прочитал прямой судья этой модели и сколько отбросил ([JudgeSieveRow]). */
+    val directRead: Int = 0,
+    val directDropped: Int = 0,
 )
 
 /** Счёт вердиктов одного кольца: судья сказал, человек подтвердил или нет. */
@@ -67,7 +70,35 @@ class JudgeLauncher(
 ) {
     private val stickers: StickerDao = MemoryDatabase.getInstance(context).stickerDao()
     private val verdicts: JudgeVerdictDao = MemoryDatabase.getInstance(context).judgeVerdictDao()
-    private val run = JudgeRun(engine, stickers, verdicts, EngineJudgeLlm(engine))
+    private val sieveRows: JudgeSieveDao = MemoryDatabase.getInstance(context).judgeSieveDao()
+
+    /**
+     * Направление прямого судьи из файла приложения — один раз на сборку.
+     * Нет файла или он испорчен — [DirectJudgeDirections.Parsed.Bad], и прямой
+     * судья в каждом прогоне говорит об этом словами, а судит печатный.
+     */
+    private val directions: DirectJudgeDirections.Parsed by lazy {
+        runCatching { context.assets.open(DirectJudge.ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() } }
+            .fold(
+                onSuccess = { DirectJudgeDirections.parse(it) },
+                onFailure = { DirectJudgeDirections.Parsed.Bad("файла ${DirectJudge.ASSET} нет") },
+            )
+    }
+
+    /** Отпечаток прямого судьи: модель и версия направления вместе, см. [JudgeSieveRow]. */
+    private fun directFingerprint(modelIdentity: String): String {
+        val version = (directions as? DirectJudgeDirections.Parsed.Ok)?.directions?.version ?: 0
+        return Integer.toHexString(modelIdentity.hashCode()) + "-d" + version
+    }
+
+    /**
+     * Прогон собирается на каждый вызов: у прямого судьи состояние прогона
+     * (эталон, счёт прочитанного) и отпечаток, зависящий от модели.
+     */
+    private fun run(modelIdentity: String): JudgeRun = JudgeRun(
+        engine, stickers, verdicts, EngineJudgeLlm(engine),
+        DirectSieve(directions, sieveRows, directFingerprint(modelIdentity), engine::readLayerMean),
+    )
 
     /**
      * Чем судим, короткой строкой: модель и текст промпта вместе.
@@ -94,10 +125,10 @@ class JudgeLauncher(
         budgetMs: Long,
         onProgress: (done: Int) -> Unit = {},
     ): String =
-        describe(run.run(fingerprint(modelIdentity), budgetMs, onProgress))
+        describe(run(modelIdentity).run(fingerprint(modelIdentity), budgetMs, onProgress))
 
     /** Есть ли что судить судье этой модели — без модели. См. JudgeRun.hasPending. */
-    suspend fun hasPending(modelIdentity: String): Boolean = run.hasPending(fingerprint(modelIdentity))
+    suspend fun hasPending(modelIdentity: String): Boolean = run(modelIdentity).hasPending(fingerprint(modelIdentity))
 
     suspend fun counters(modelIdentity: String): JudgeCounters {
         val print = fingerprint(modelIdentity)
@@ -108,6 +139,8 @@ class JudgeLauncher(
                 verdicts.countHuman(print, HumanVerdict.MISS.name),
             misses = verdicts.countHuman(print, HumanVerdict.MISS.name),
             byRing = ringCounters(print),
+            directRead = sieveRows.countFor(directFingerprint(modelIdentity)),
+            directDropped = sieveRows.countDropped(directFingerprint(modelIdentity)),
         )
     }
 
@@ -190,6 +223,12 @@ class JudgeLauncher(
             append(head).append("\n")
             append("Разобрано за этот раз: ").append(report.judged).append("\n")
             append("Из них спорных: ").append(report.disputes).append("\n")
+            if (report.droppedByDirect > 0) {
+                append("Отброшено прямым судьёй (печатному не шли): ").append(report.droppedByDirect).append("\n")
+            }
+            // Всегда, когда прямой судья есть: молчащий и выключенный выглядели
+            // бы одинаково, а причина выключения — первое, что надо видеть.
+            report.direct?.let { append("Прямой судья: ").append(it).append("\n") }
             if (report.unreadable > 0) {
                 // Строка появляется, только когда есть что сказать: постоянный
                 // нуль перестают замечать, а именно это число первым покажет,

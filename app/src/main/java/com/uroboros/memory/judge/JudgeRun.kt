@@ -74,6 +74,13 @@ data class JudgeRunReport(
      * большинство, и список из них никто не прочтёт.
      */
     val outsideSieve: Int = 0,
+    /**
+     * Сколько пар в этот раз отброшено прямым судьёй ([DirectJudge]) — они
+     * печатному судье не шли и в [judged] не входят.
+     */
+    val droppedByDirect: Int = 0,
+    /** Что сделал прямой судья, словами ([PairSieve.report]); null — его нет. */
+    val direct: String? = null,
 )
 
 /**
@@ -128,6 +135,11 @@ data class JudgeRunReport(
  * пара, у которой есть строка. Отдельного курсора нет намеренно, он был бы
  * вторым местом для той же мысли и разошёлся бы с хранилищем молча.
  *
+ * Перед печатным судьёй стоит прямой судья ([direct], см. [DirectJudge]),
+ * если он есть: пара, которую прямое чтение уверенно называет «не спорят»,
+ * печатному судье не идёт и считается разобранной. Прямой судья выключился —
+ * пары судятся как без него; в отчёте сказано почему.
+ *
  * ЧЕГО ПРОГОН НЕ ДЕЛАЕТ. Он не меняет память: ни одной записи не правит, не
  * удаляет и не помечает. Его выход — вердикты, которые читает человек.
  */
@@ -136,6 +148,7 @@ class JudgeRun(
     private val stickers: StickerDao,
     private val verdicts: JudgeVerdictDao,
     private val llm: MemoryJudge.Llm,
+    private val direct: PairSieve? = null,
 ) {
 
     /**
@@ -167,6 +180,7 @@ class JudgeRun(
         // нынешний отпечаток точно известен. Заодно таблица всегда весит один
         // комплект, а не по комплекту на каждого судью, которого пробовали.
         verdicts.forgetOtherJudges(fingerprint)
+        direct?.begin()
 
         // Как и почему собирается пул — у collectPool().
         val (pool, dropped) = collectPool()
@@ -177,6 +191,7 @@ class JudgeRun(
         var judged = 0
         var disputes = 0
         var unreadable = 0
+        var droppedByDirect = 0
         var interruptedBy: String? = null
         var sawWork = false
 
@@ -184,11 +199,27 @@ class JudgeRun(
             engine.withDeterministicSampling {
                 outer@ for ((first, second) in queue.pairs) {
                     if (verdicts.judged(first.id, second.id, fingerprint) > 0) continue
+                    if (direct?.dropped(first.id, second.id) == true) continue
                     sawWork = true
 
                     if (System.currentTimeMillis() - startedAt >= budgetMs) {
                         interruptedBy = REASON_BUDGET
                         break@outer
+                    }
+
+                    when (val d = direct?.decide(first, second)) {
+                        SieveDecision.Drop -> {
+                            droppedByDirect++
+                            onProgress(judged + unreadable + droppedByDirect)
+                            continue@outer
+                        }
+                        is SieveDecision.Stop -> {
+                            interruptedBy = reasonOf(d.end)
+                            break@outer
+                        }
+                        // Выключенный прямой судья — не повод не судить: пара
+                        // идёт печатному, причина — в отчёте прямого.
+                        SieveDecision.Keep, is SieveDecision.Off, null -> Unit
                     }
 
                     val pairStartedAt = System.currentTimeMillis()
@@ -206,7 +237,7 @@ class JudgeRun(
 
                     if (judgement.verdict == MemoryJudge.Verdict.UNREADABLE) {
                         unreadable++
-                        onProgress(judged + unreadable)
+                        onProgress(judged + unreadable + droppedByDirect)
                         continue
                     }
 
@@ -224,7 +255,7 @@ class JudgeRun(
                     )
                     judged++
                     if (judgement.verdict == MemoryJudge.Verdict.DISPUTE) disputes++
-                    onProgress(judged + unreadable)
+                    onProgress(judged + unreadable + droppedByDirect)
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -254,6 +285,8 @@ class JudgeRun(
             onlyRequests = onlyRequests.map { it.id },
             onlySocial = onlySocial.map { it.id },
             outsideSieve = queue.outsideSieve,
+            droppedByDirect = droppedByDirect,
+            direct = direct?.report(),
         )
     }
 
@@ -265,9 +298,7 @@ class JudgeRun(
      */
     suspend fun hasPending(fingerprint: String): Boolean {
         val (pool, _) = collectPool()
-        return queue(pool).pairs.any { (first, second) ->
-            verdicts.judged(first.id, second.id, fingerprint) == 0
-        }
+        return queue(pool).pairs.any { (first, second) -> pending(first, second, fingerprint) }
     }
 
     /** Выпавшие из пула записи — длинные, одни вопросы, одни просьбы, один обычай. */
@@ -345,9 +376,15 @@ class JudgeRun(
      * спрашивающий со своим условием разошёлся бы с первым молча.
      */
     private fun watchdogStop(): String? = when (engine.lastGenerationEnd) {
+        GenerationEnd.WATCHDOG_CRITICAL, GenerationEnd.WATCHDOG_TIMEOUT -> reasonOf(engine.lastGenerationEnd)
+        else -> null
+    }
+
+    /** Причина остановки сторожем словами — одна на печатного судью и на сито. */
+    private fun reasonOf(end: GenerationEnd): String = when (end) {
         GenerationEnd.WATCHDOG_CRITICAL -> REASON_HEAT
         GenerationEnd.WATCHDOG_TIMEOUT -> REASON_WORK_LIMIT
-        else -> null
+        else -> REASON_ENGINE
     }
 
     /**
@@ -361,7 +398,11 @@ class JudgeRun(
      * запросу на пару, один раз в конце прогона.
      */
     private suspend fun unjudgedPairs(pairs: List<Pair<Sticker, Sticker>>, fingerprint: String): Int =
-        pairs.count { (first, second) -> verdicts.judged(first.id, second.id, fingerprint) == 0 }
+        pairs.count { (first, second) -> pending(first, second, fingerprint) }
+
+    /** Не разобрана ни печатным судьёй, ни ситом (отброшенная ситом — разобрана). */
+    private suspend fun pending(first: Sticker, second: Sticker, fingerprint: String): Boolean =
+        verdicts.judged(first.id, second.id, fingerprint) == 0 && direct?.dropped(first.id, second.id) != true
 
     companion object {
         /**
