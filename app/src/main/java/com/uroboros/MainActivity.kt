@@ -40,6 +40,8 @@ import com.uroboros.llm.ConversationJournal
 import com.uroboros.initiative.InitiativeHolder
 import com.uroboros.memory.nav.OwnCorrection
 import com.uroboros.llm.EchoCheck
+import com.uroboros.llm.BibleSoftWall
+import com.uroboros.llm.Glance
 import com.uroboros.llm.EngineLines
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.ConversationTimes
@@ -105,6 +107,7 @@ import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
+import com.uroboros.memory.nav.Prochnost
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.Retelling
@@ -263,6 +266,13 @@ class MainActivity : AppCompatActivity() {
      * молча, и увидеть это было бы нечем.
      */
     private var disputeNoticeLine: String? = null
+
+    /**
+     * Строка проверки на прочность к последнему ходу этого экрана
+     * (memory.nav.Prochnost.meter). Стирается с числами хода — по той же
+     * причине, что строка сверки.
+     */
+    private var prochnostLine: String? = null
 
     /**
      * Строка перехвата повтора к последнему ходу этого экрана (см.
@@ -3077,7 +3087,8 @@ class MainActivity : AppCompatActivity() {
         group(
             "Ход", lastMetricsLine, recordsLine ?: "Записи: чисел хода на экране нет", echoLine, interceptMeter(),
             glanceLine ?: "Взгляд: чисел хода на экране нет",
-            WordDamageHolder.meterLine(), disputeNoticeLine, composedLine,
+            WordDamageHolder.meterLine(), disputeNoticeLine,
+            prochnostLine ?: "Прочность: чисел хода на экране нет", composedLine,
         )
         val composed = lastComposedContent
         if (composed != null) {
@@ -3367,6 +3378,16 @@ class MainActivity : AppCompatActivity() {
      * файла на диске, а не прогон, и обнулять её значило бы врать, что кэша
      * нет. Строка параметров движка не трогается по той же причине.
      */
+    /**
+     * Строки о себе для проверки на прочность (nav.Prochnost.note): стена в
+     * том виде, в каком её получает модель, без описания инструментов — оно
+     * не о том, каков агент. Модель ещё не загружена — стена человека.
+     */
+    private fun prochnostSelfLines(): List<String> {
+        val wall = if (::llmEngine.isInitialized) llmEngine.wallFor() else BibleSoftWall.TEXT
+        return wall.substringBefore(Glance.WALL_BLOCK).lines().map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
     private fun clearRunMetrics() {
         lastMetricsLine = null
         recordsLine = null
@@ -3374,6 +3395,7 @@ class MainActivity : AppCompatActivity() {
         // описывает ход, который может не состояться, и оставшись на экране,
         // читалась бы как относящаяся к следующему.
         disputeNoticeLine = null
+        prochnostLine = null
         // Строка перехвата — по той же причине, что и строка сверки.
         interceptLine = null
         glanceLine = null
@@ -4661,6 +4683,44 @@ class MainActivity : AppCompatActivity() {
                         )
                     })
                 val ownSaid = if (ownSifted == null) emptyList() else OwnSpeech.search(ownSifted.said, userText)
+                // Проверка на прочность (nav.Prochnost). Реплика с экрана —
+                // всегда владелец. Свою речь для «ты сам говорил» ищет по всему
+                // архиву и открытой ленте, а не только на вопрос к агенту:
+                // ссылка на прежние слова бывает в любом вопросе. Архив не
+                // прочитался — найденное null: строка о прежних словах молчит,
+                // прибор говорит почему.
+                val prochnostTrigger = Prochnost.trigger(userText, fromOwner = true, painShift = null)
+                val prochnostOwnWords = prochnostTrigger is Prochnost.Trigger.Active &&
+                    Prochnost.Kind.OWN_WORDS in prochnostTrigger.kinds
+                val prochnostSaid: List<String>? = when {
+                    !prochnostOwnWords -> emptyList()
+                    archive == null -> null
+                    else -> runCatching {
+                        OwnSpeech.sift(
+                            archive.map { row ->
+                                OwnSpeech.Turn(
+                                    answer = row.agentContent,
+                                    question = row.question,
+                                    records = journalStore.recordTexts(row),
+                                    at = null,
+                                    serviceBlocks = journalStore.serviceBlocks(row),
+                                )
+                            } + journal.history().map { turn ->
+                                OwnSpeech.Turn(
+                                    answer = turn.agentContent,
+                                    question = turn.question,
+                                    records = turn.records.map { it.text },
+                                    at = turn.at,
+                                    serviceBlocks = EchoCheck.serviceBlocks(turn),
+                                )
+                            }
+                        ).said.map { it.sentence }
+                    }.getOrNull()
+                }
+                val prochnostNote = Prochnost.note(
+                    prochnostTrigger, userText, prochnostSelfLines(), prochnostSaid?.let { Prochnost.foundIn(it, userText) },
+                )
+                prochnostLine = Prochnost.meter(prochnostTrigger, prochnostNote, archiveRead = prochnostSaid != null)
                 // Портрет собеседника — его слова о себе по провенансу
                 // (Portrait). Ищется на каждом ходе, модели идёт по поводу:
                 // на вопрос о собеседнике — весь, на тему реплики — строки
@@ -5133,6 +5193,7 @@ class MainActivity : AppCompatActivity() {
                 // (selfNote в turns.run ниже).
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
+                    prochnost = prochnostNote,
                     curiosityAsk = selfGapLine
                         ?: homeTell?.line
                         ?: askedGap?.let { CuriosityAsk.gapLine(it) }

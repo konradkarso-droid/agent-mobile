@@ -45,6 +45,32 @@ class ConversationJournalTest {
     }
 
     @Test
+    fun `строка прочности — меткой системы, за предложением спросить, перед сверкой и вопросом`() {
+        val journal = ConversationJournal()
+        val content = journal.composeUserContent(
+            "Ты сам говорил, что тебя зовут Гоша.",
+            disputeNotice = "СВЕРКА",
+            curiosityAsk = "спроси о сне",
+            prochnost = "Прочность: в моей ленте и записях этого нет — вспомнить нечего.",
+        )
+        assertEquals(
+            listOf(
+                ConversationJournal.toAgent("спроси о сне"),
+                ConversationJournal.toAgent("Прочность: в моей ленте и записях этого нет — вспомнить нечего."),
+                "СВЕРКА",
+                "Ты сам говорил, что тебя зовут Гоша.",
+            ),
+            content.split("\n\n"),
+        )
+    }
+
+    @Test
+    fun `без строки прочности реплика прежняя`() {
+        assertEquals("Вопрос?", ConversationJournal().composeUserContent("Вопрос?", prochnost = null))
+        assertEquals("Вопрос?", ConversationJournal().composeUserContent("Вопрос?", prochnost = "  "))
+    }
+
+    @Test
     fun `пометка появляется после хода без записей`() {
         val journal = ConversationJournal()
         journal.appendTurn(
