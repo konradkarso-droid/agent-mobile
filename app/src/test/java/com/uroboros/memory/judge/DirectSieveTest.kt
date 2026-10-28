@@ -88,7 +88,9 @@ class DirectSieveTest {
     @Test
     fun `сомнительная пара идёт печатному судье и отброшенной не считается`() = runBlocking {
         val store = Store()
-        val s = sieve(store, reader { _, tail -> if (tail == " б") 0.3 else 0.05 })
+        // «спорят» выше порога только в одном порядке — этого достаточно, чтобы пара шла дальше
+        val above = DirectJudge.SIEVE_THRESHOLD + 0.05
+        val s = sieve(store, reader { _, tail -> if (tail == " б") above else 0.05 })
         assertEquals(SieveDecision.Keep, s.decide(sticker(1, "а"), sticker(2, "б")))
         assertFalse(s.dropped(1, 2))
     }
