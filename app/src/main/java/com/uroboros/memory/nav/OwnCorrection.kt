@@ -16,6 +16,10 @@ import com.uroboros.memory.Sticker
  *
  * УСЛОВИЯ — все сразу ([superseded]):
  *  - обе записи — сказанное одним собеседником (Coordinates.speakerOf);
+ *  - обе — целиком его своя речь, без подписи, пересказа и цитаты
+ *    (ForeignSpeech.allOwn): «Клод сказал, что я не программист» — заявка
+ *    Клода, а не перемена от того, кто знает; вставленная реплика Клода с его
+ *    «я» не снимается фразой владельца о себе;
  *  - обе — о нём самом ([aboutSelf]): есть первое лицо, нет обращения к
  *    агенту, не только вопросы и просьбы;
  *  - правило противоречия видит спор (RiskTrigger.contradicts: отрицание,
@@ -27,6 +31,8 @@ import com.uroboros.memory.Sticker
  * собеседника о другом.
  *
  * ЧЕГО НЕ УМЕЕТ:
+ *  - чужую речь узнаёт с промахами ForeignSpeech: своё, принятое за чужое,
+ *    поправкой не считается — обе записи остаются, как без этого механизма;
  *  - поправку без отрицания и без числа («Теперь я в Самаре») правило не
  *    видит — обе записи остаются, как и без этого механизма;
  *  - ложный спор снимает верную запись: «Я не стоматолог, я просто был у
@@ -51,13 +57,16 @@ object OwnCorrection {
      */
     fun superseded(candidate: Sticker, pool: List<Sticker>): List<Sticker> {
         val speaker = Coordinates.speakerOf(candidate.source) ?: return emptyList()
-        if (!aboutSelf(candidate.content)) return emptyList()
+        if (!aboutSelf(candidate.content) || !ForeignSpeech.allOwn(candidate.content)) return emptyList()
+        // Разбор чужой речи — последним: он дороже остальных проверок, а
+        // доходят до него только пары, которые снялись бы.
         return pool.filter { old ->
             old.id != candidate.id &&
                 Coordinates.speakerOf(old.source) == speaker &&
                 !old.reviewPending && old.rejectedAt == null &&
                 aboutSelf(old.content) &&
-                RiskTrigger.contradicts(old.content, candidate.content)
+                RiskTrigger.contradicts(old.content, candidate.content) &&
+                ForeignSpeech.allOwn(old.content)
         }
     }
 

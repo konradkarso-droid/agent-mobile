@@ -334,4 +334,33 @@ class PortraitTest {
             file.bufferedReader(Charsets.UTF_8).useLines { LemmaDictionary.read(it) }
         }
     }
+
+    // --- Чужая речь (проверка 0) ---
+
+    @Test
+    fun `«я» во вставленной реплике — не собеседника`() {
+        assertTrue(passed("Клод: я тоже программа. Я учусь у людей.").isEmpty())
+        val r = Portrait.of(listOf(record(1, "Клод: я тоже программа. Я учусь у людей."), record(2, "Я работаю по субботам")))
+        assertEquals(2, r.foreign)
+        assertEquals(listOf("Я работаю по субботам"), r.passed.map { it.sentence })
+    }
+
+    @Test
+    fun `своё рядом с чужим в одной записи — остаётся`() {
+        assertEquals(listOf("Я сегодня устал."), passed("Я сегодня устал. Клод сказал, что я не программист."))
+    }
+
+    @Test
+    fun `ссылка на сказанное в разговоре — своё, чужой речью не снимается`() {
+        assertEquals(0, Portrait.of(listOf(record(1, "Ты вчера сказал, что я гений."))).foreign)
+    }
+
+    @Test
+    fun `пересказ о собеседнике — заявка другого, в портрет не идёт`() {
+        // «Я» здесь собеседника, но сказала это мама (граница —
+        // ForeignSpeech.ownSentences: мерка — вид, а не голос).
+        val r = Portrait.of(listOf(record(1, "Мама говорит, что я похудел.")))
+        assertEquals(1, r.foreign)
+        assertTrue(r.passed.isEmpty())
+    }
 }
