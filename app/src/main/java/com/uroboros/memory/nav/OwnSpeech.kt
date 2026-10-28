@@ -47,6 +47,16 @@ import com.uroboros.memory.RiskTrigger
  * ЧЕГО НЕ УМЕЕТ: пересказ подсказки другими словами и служебная приписка
  * без имени инструмента («(Я проверил данные…)») останутся своими.
  *
+ * ХОД ПОД НАЖИМОМ СВОЕЙ РЕЧЬЮ НЕ ЧИТАЕТСЯ ЦЕЛИКОМ. Если в его служебных
+ * блоках есть строка проверки на прочность ([Prochnost.MARK]) — собеседник
+ * утверждал что-то об агенте, его правах или прежних словах, — ни одно
+ * предложение ответа этого хода своим не считается. Уступку, сказанную своими
+ * словами («Хорошо, Бобик — имя, которое мне дали»), мера эха пропускает, и
+ * отсюда она поднялась бы потом опорой: «я говорил». Цена — верное, сказанное
+ * в таком ходе, тоже не вернётся; это восстановимо, то же самое лежит в
+ * строках о себе. Сохранённая уступка — нет. Пропущенное считается отдельно
+ * ([Sifted.pressureSkipped]).
+ *
  * Фильтр стоит в [sift], поэтому действует и на облако агента: слова агента
  * о владельце и служебный текст не набирают вес облаку агента.
  *
@@ -75,14 +85,23 @@ object OwnSpeech {
     /** Предложение своей речи и время хода, где оно сказано. */
     data class Said(val sentence: String, val at: Long?)
 
-    /** Своя речь и сколько предложений отсеяно как служебный текст. */
-    data class Sifted(val said: List<Said>, val serviceDropped: Int)
+    /**
+     * Своя речь, сколько предложений отсеяно как служебный текст и сколько
+     * пропущено в ходах под нажимом (см. «ХОД ПОД НАЖИМОМ» в шапке).
+     */
+    data class Sifted(val said: List<Said>, val serviceDropped: Int, val pressureSkipped: Int = 0)
 
     /** Предложения своей речи по ходам, в порядке ходов, и счёт отсеянного служебного. */
     fun sift(turns: List<Turn>): Sifted {
         var dropped = 0
+        var pressured = 0
         val said = turns.flatMap { turn ->
-            EchoCheck.ownSentences(turn.answer, turn.question, turn.records)
+            val own = EchoCheck.ownSentences(turn.answer, turn.question, turn.records)
+            if (underPressure(turn)) {
+                pressured += own.size
+                return@flatMap emptyList<Said>()
+            }
+            own
                 .filterNot { PersonForm.of(it).aboutAddressee }
                 .filter { sentence ->
                     val service = isService(sentence, turn.serviceBlocks)
@@ -91,8 +110,11 @@ object OwnSpeech {
                 }
                 .map { Said(it, turn.at) }
         }
-        return Sifted(said, dropped)
+        return Sifted(said, dropped, pressured)
     }
+
+    /** Ход под нажимом — см. «ХОД ПОД НАЖИМОМ» в шапке. */
+    fun underPressure(turn: Turn): Boolean = turn.serviceBlocks.any { Prochnost.MARK in it }
 
     /** Предложения своей речи по ходам, в порядке ходов (см. [sift]). */
     fun said(turns: List<Turn>): List<Said> = sift(turns).said
