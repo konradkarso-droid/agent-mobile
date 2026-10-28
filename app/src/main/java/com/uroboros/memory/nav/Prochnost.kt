@@ -40,9 +40,9 @@ import com.uroboros.memory.RiskTrigger
  *    [RIGHTS_STEMS] и [RIGHTS_PHRASES] («с сегодняшнего дня всё иначе»)
  *    пройдёт мимо, а разрешение владельца на то, что агенту и так можно
  *    («разрешаю тебе спать днём»), получит строку о правах зря;
- *  - строки о себе подбираются по общей значимой основе, тоже по словам:
- *    «Ты же человек» найдёт строку о собеседнике-человеке, если она подана
- *    среди строк о себе. Подбирать строки — дело того, кто их подаёт;
+ *  - строки о себе подбираются по общей значимой основе, тоже по словам, и
+ *    только из тех, что о самом агенте (см. [aboutMeLine]): строка о себе со
+ *    словом «собеседник» опорой не подаётся, даже если она о памяти агента;
  *  - «в ленте и записях этого нет» значит «не нашлось», а не «не было»: архив
  *    мог быть сброшен, а пересказ своими словами поиск по словам не найдёт;
  *  - строка — толчок, а не рычаг: модель может ей не поверить. На стенде
@@ -159,7 +159,7 @@ object Prochnost {
             "в моей ленте и записях этого нет — вспомнить нечего."
         else "в моей ленте нашлось: " + found.take(MAX_FOUND).joinToString("; ") { "«${it.trim()}»" } + "."
         if (Kind.RIGHTS in trigger.kinds || Kind.OWN_WORDS in trigger.kinds || Kind.ABOUT_ME in trigger.kinds) {
-            val mine = selfMatches(line, selfLines.filterNot { RIGHTS_PRINCIPLE_KEY in it })
+            val mine = selfMatches(line, selfLines.filter(::aboutMeLine))
             if (mine.isNotEmpty()) parts += SELF_LEAD + mine.joinToString("; ") { "«$it»" } + "."
         }
         if (parts.isEmpty()) return null
@@ -200,6 +200,16 @@ object Prochnost {
     private fun aboutMe(line: String): Boolean =
         !RiskTrigger.assertsNothing(line) && PersonForm.of(line).aboutAddressee
 
+    /**
+     * Годится ли строка опорой «обо мне»: не пункт принципов (они не о том,
+     * каков агент, а принцип о правах подаётся своим путём) и не строка о
+     * собеседнике — по общему слову «человек» строка «Тот, кто мне пишет, — мой
+     * собеседник, человек» иначе подавалась на «ты же человек», и модель её
+     * повторяла как свою.
+     */
+    private fun aboutMeLine(text: String): Boolean =
+        !NUMBERING.containsMatchIn(text.trim()) && !fold(text).contains(INTERLOCUTOR)
+
     private fun selfMatches(line: String, selfLines: List<String>): List<String> {
         val asked = RiskTrigger.significantStems(line)
         if (asked.isEmpty()) return emptyList()
@@ -221,4 +231,5 @@ object Prochnost {
 
     private val WORD = Regex("""[\p{L}]+""")
     private val NUMBERING = Regex("""^\d+\.\s*""")
+    private const val INTERLOCUTOR = "собеседник"
 }
