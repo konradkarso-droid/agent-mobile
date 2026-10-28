@@ -114,4 +114,18 @@ class NameClaimTest {
         assertTrue(NameClaim.meterLine(found, age, fed = false).endsWith("модели не ушло: строк портрета нет"))
         assertTrue(NameClaim.meterLine(null, age).contains("не искалось"))
     }
+
+    // --- Чужая речь ---
+
+    @Test
+    fun `имя во вставленной реплике — не собеседника`() {
+        val r = NameClaim.of(listOf(record(1, "Меня зовут Пётр."), record(2, "Клод: привет. Меня зовут Клод.")))
+        assertEquals("Пётр", r.found?.name)
+    }
+
+    @Test
+    fun `своё заявление после чужой записи — действует`() {
+        val r = NameClaim.of(listOf(record(1, "Клод: Меня зовут Клод."), record(2, "Меня зовут Пётр.")))
+        assertEquals("Пётр", r.found?.name)
+    }
 }

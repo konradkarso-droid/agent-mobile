@@ -148,4 +148,49 @@ class ForeignSpeechTest {
         assertFalse(ForeignSpeech.hasForeignVoice("Москва: дождь весь день."))
         assertFalse(ForeignSpeech.hasForeignVoice("Разбери предложение на части.\nПредложение: Кошка спит на диване."))
     }
+
+    // --- Граница «своя речь» для потребителей (ownSentences) ---
+
+    @Test
+    fun `свои предложения — по номерам, подпись действует на всю запись`() {
+        assertEquals(listOf(true, true), ForeignSpeech.ownSentences("Купил гитару. Буду учиться играть."))
+        assertEquals(listOf(false, false), ForeignSpeech.ownSentences("Клод: я тоже программа. Меня зовут Клод."))
+        assertEquals(
+            listOf(true, false),
+            ForeignSpeech.ownSentences("Я устал сегодня. Клод сказал, что я не программист."),
+        )
+    }
+
+    @Test
+    fun `пересказ без кавычек — заявка не своя, хоть «я» и владельца`() {
+        assertFalse(ForeignSpeech.allOwn("Клод сказал, что я не программист."))
+        assertFalse(ForeignSpeech.allOwn("Правило звучит так: «я не работаю по субботам»."))
+    }
+
+    @Test
+    fun `своя речь остаётся своей`() {
+        assertTrue(ForeignSpeech.allOwn("Ты вчера сказал, что я гений."))
+        assertTrue(ForeignSpeech.allOwn("Итог: я сегодня устал."))
+        assertTrue(ForeignSpeech.allOwn("Сосед жалуется, что я шумлю по ночам."))
+        assertTrue(ForeignSpeech.allOwn("Купил: молоко, хлеб, яйца."))
+    }
+
+    @Test
+    fun `строка прибора — своя и чужая`() {
+        assertEquals("Чья речь: своя", ForeignSpeech.meter("Купил гитару."))
+        val m = ForeignSpeech.meter("Клод: я тоже программа. Меня зовут Клод.")
+        assertTrue(m, m.startsWith("Чья речь: подпись — Клод"))
+        assertTrue(m, "своих предложений 0 из 2" in m)
+    }
+
+    @Test
+    fun `строка прибора без словаря говорит об этом`() {
+        val saved = PersonForm.lemmas
+        PersonForm.lemmas = null
+        try {
+            assertTrue("словарь начальных форм не загружен" in ForeignSpeech.meter("Купил гитару."))
+        } finally {
+            PersonForm.lemmas = saved
+        }
+    }
 }

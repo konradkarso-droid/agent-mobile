@@ -50,8 +50,11 @@ import com.uroboros.util.TextFold
  * предложения; прибор считает их отдельно («столбиком»).
  *
  * КАКОЕ ПРЕДЛОЖЕНИЕ БЕРЁТСЯ. Запись режется на предложения (Sentences.split,
- * через PersonForm.of), и каждое проходит четыре проверки по порядку; первая
+ * через PersonForm.of), и каждое проходит проверки по порядку; первая
  * не пройденная — причина, по которой оно снято (её и считает прибор):
+ *  0. СВОЯ РЕЧЬ — не подпись, не пересказ, не цитата текста: «я» во
+ *     вставленной реплике Клода — Клод, а не собеседник (граница и её промахи —
+ *     ForeignSpeech.ownSentences);
  *  1. ГРАНИЦА — нет обращения к агенту (MirrorFilter.addressesAgent — тот
  *     же признак, что у общего отбора) и нет «мы с тобой»: портрет — о нём
  *     самом, а не о них двоих. Предложение, где собеседник говорит агенту о
@@ -212,6 +215,8 @@ object Portrait {
         val aboutTalk: Int = 0,
         /** Снято как повтор текущей реплики (описание объекта, «ПОВТОР РЕПЛИКИ»). */
         val repeats: Int = 0,
+        /** Снято проверкой 0 — чужая речь (ForeignSpeech.ownSentences). */
+        val foreign: Int = 0,
     )
 
     /** Подпись над строками портрета в записях хода, когда имя не задано. */
@@ -327,14 +332,18 @@ object Portrait {
         var noFirst = 0
         var inColumn = 0
         var aboutTalk = 0
+        var foreign = 0
         val passed = ArrayList<Line>()
         for (record in own) {
             val column = inColumn(record.content)
-            for (s in PersonForm.of(record.content).sentences) {
+            // Столбиком — запись снята целиком, разбирать её речь незачем.
+            val mine = if (column) emptyList() else ForeignSpeech.ownSentences(record.content)
+            for ((i, s) in PersonForm.of(record.content).sentences.withIndex()) {
                 sentences++
                 val p = s.persons
                 when {
                     column -> inColumn++
+                    !mine.getOrElse(i) { true } -> foreign++
                     MirrorFilter.addressesAgent(s) || PersonForm.Person.WE_WITH_YOU in p -> toAgent++
                     s.sentence.trimEnd().endsWith('?') ||
                         PersonForm.Person.IMPERATIVE in p ||
@@ -352,6 +361,7 @@ object Portrait {
         }
         return Result(
             own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed), inColumn, aboutTalk, repeats,
+            foreign,
         )
     }
 
@@ -471,7 +481,7 @@ object Portrait {
             Reason.QUESTION -> {
                 val archive = result.chosen.count { it.fromArchive }
                 "вопрос о собеседнике → весь портрет · его записей ${result.records}, предложений ${result.sentences}" +
-                    " · снято: столбиком ${result.inColumn}, обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
+                    " · снято: столбиком ${result.inColumn}, чужая речь ${result.foreign}, обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
                     " без «я/мой» ${result.noFirstPronoun}, о разговоре ${result.aboutTalk}" +
                     repeats +
                     " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" + feeding

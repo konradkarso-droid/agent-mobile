@@ -35,7 +35,9 @@ import com.uroboros.memory.Sticker
  *  - «Тебя зовут…» здесь не ловится намеренно: имя агента растёт из его
  *    опыта, а не назначается фразой;
  *  - личность не доказывает: кто пишет, знает только замок приложения;
- *  - смотрит записи одного собеседника — того, чей [PersonKey] передан.
+ *  - смотрит записи одного собеседника — того, чей [PersonKey] передан, и в
+ *    них только его своя речь: «Клод: … Меня зовут Клод.» — имя Клода, а не
+ *    собеседника (граница — ForeignSpeech.ownSentences).
  *
  * Чистый объект: ни базы, ни Android.
  */
@@ -83,7 +85,10 @@ object NameClaim {
             Coordinates.speakerOf(it.source) == person && !it.reviewPending && it.rejectedAt == null
         }
         val claims = own.mapNotNull { r ->
-            PersonForm.of(r.content).sentences.firstNotNullOfOrNull { claimed(it.sentence) }?.let { r to it }
+            val mine = ForeignSpeech.ownSentences(r.content)
+            PersonForm.of(r.content).sentences.withIndex()
+                .firstNotNullOfOrNull { (i, s) -> if (mine.getOrElse(i) { true }) claimed(s.sentence) else null }
+                ?.let { r to it }
         }
         val last = claims.maxByOrNull { it.first.createdAt } ?: return Result(own.size, null)
         val times = claims.count { it.second.equals(last.second, ignoreCase = true) }

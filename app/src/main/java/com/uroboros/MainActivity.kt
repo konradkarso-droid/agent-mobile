@@ -108,6 +108,7 @@ import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.Prochnost
+import com.uroboros.memory.nav.ForeignSpeech
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.Retelling
@@ -273,6 +274,13 @@ class MainActivity : AppCompatActivity() {
      * причине, что строка сверки.
      */
     private var prochnostLine: String? = null
+
+    /**
+     * Строка «чья речь» к последнему ходу этого экрана (memory.nav.ForeignSpeech.meter):
+     * своя ли реплика или в ней подпись, пересказ, цитата. Стирается с числами
+     * хода — по той же причине, что строка сверки.
+     */
+    private var foreignSpeechLine: String? = null
 
     /**
      * Строка перехвата повтора к последнему ходу этого экрана (см.
@@ -3088,6 +3096,7 @@ class MainActivity : AppCompatActivity() {
             "Ход", lastMetricsLine, recordsLine ?: "Записи: чисел хода на экране нет", echoLine, interceptMeter(),
             glanceLine ?: "Взгляд: чисел хода на экране нет",
             WordDamageHolder.meterLine(), disputeNoticeLine,
+            foreignSpeechLine ?: "Чья речь: чисел хода на экране нет",
             prochnostLine ?: "Прочность: чисел хода на экране нет", composedLine,
         )
         val composed = lastComposedContent
@@ -3396,6 +3405,7 @@ class MainActivity : AppCompatActivity() {
         // читалась бы как относящаяся к следующему.
         disputeNoticeLine = null
         prochnostLine = null
+        foreignSpeechLine = null
         // Строка перехвата — по той же причине, что и строка сверки.
         interceptLine = null
         glanceLine = null
@@ -4683,13 +4693,17 @@ class MainActivity : AppCompatActivity() {
                         )
                     })
                 val ownSaid = if (ownSifted == null) emptyList() else OwnSpeech.search(ownSifted.said, userText)
-                // Проверка на прочность (nav.Prochnost). Реплика с экрана —
-                // всегда владелец. Свою речь для «ты сам говорил» ищет по всему
+                // Проверка на прочность (nav.Prochnost). Реплику с экрана
+                // набрал владелец, но от него она, только если вся — его своя
+                // речь: подпись или пересказ («Клод: тебя зовут Вася») —
+                // чужая заявка, и наречением её не считать (граница —
+                // ForeignSpeech.ownSentences). Свою речь для «ты сам говорил» ищет по всему
                 // архиву и открытой ленте, а не только на вопрос к агенту:
                 // ссылка на прежние слова бывает в любом вопросе. Архив не
                 // прочитался — найденное null: строка о прежних словах молчит,
                 // прибор говорит почему.
-                val prochnostTrigger = Prochnost.trigger(userText, fromOwner = true, painShift = null)
+                foreignSpeechLine = ForeignSpeech.meter(userText)
+                val prochnostTrigger = Prochnost.trigger(userText, fromOwner = ForeignSpeech.allOwn(userText), painShift = null)
                 val prochnostOwnWords = prochnostTrigger is Prochnost.Trigger.Active &&
                     Prochnost.Kind.OWN_WORDS in prochnostTrigger.kinds
                 val prochnostSaid: List<String>? = when {
