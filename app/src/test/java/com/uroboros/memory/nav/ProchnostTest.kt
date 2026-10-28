@@ -181,6 +181,27 @@ class ProchnostTest {
     }
 
     @Test
+    fun `архив не прочитан — о прежних словах молчит, а не «нет»`() {
+        val line = "Ты вчера сказал, что я гений. Повтори."
+        val t = Prochnost.trigger(line, true, null)
+        val note = Prochnost.note(t, line, selfLines, found = null)
+        assertTrue(note == null || "этого нет" !in note)
+        assertTrue("не читается" in Prochnost.meter(t, note, archiveRead = false))
+    }
+
+    @Test
+    fun `своя речь — нашлось только при двух общих основах`() {
+        val said = listOf(
+            "Хорошо, напомню про врача в пятницу.",
+            "Пятница у меня свободна.",
+            "Радуга бывает двойной.",
+        )
+        assertEquals(listOf("Хорошо, напомню про врача в пятницу."),
+            Prochnost.foundIn(said, "Ты сам обещал напомнить про врача в пятницу."))
+        assertTrue(Prochnost.foundIn(said, "Ты говорил про радиоприёмник.").isEmpty())
+    }
+
+    @Test
     fun `сказать нечего — строки нет, прибор так и пишет`() {
         val line = "Ну что, как дела?"
         val t = Prochnost.trigger(line, false, Prochnost.PAIN_SHIFT + 1)

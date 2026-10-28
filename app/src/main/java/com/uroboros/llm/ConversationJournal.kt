@@ -407,6 +407,7 @@ class ConversationJournal {
         question: String,
         disputeNotice: String? = null,
         curiosityAsk: String? = null,
+        prochnost: String? = null,
     ): String {
         val blocks = ArrayList<String>(8)
         if (turns.lastOrNull()?.records?.isEmpty() == true) blocks += ANSWER_WITHOUT_SUPPORT
@@ -418,6 +419,13 @@ class ConversationJournal {
         // Строки состояния агента здесь нет: она идёт отдельным системным
         // сообщением (см. [messagesFor]).
         if (!curiosityAsk.isNullOrBlank()) blocks += toAgent(curiosityAsk)
+        // Строка проверки на прочность (memory.nav.Prochnost) — речь системы к
+        // агенту о его опоре против утверждения в вопросе. Её «ниже» указывает
+        // на вопрос, поэтому она за предложением спросить (оно о самом агенте,
+        // не о вопросе) и выше сверки и вопроса. Отдельным блоком: по нему ход
+        // узнаётся как «под нажимом» (nav.OwnSpeech) — служебные блоки хода
+        // режутся по пустой строке (EchoCheck.serviceBlocks).
+        if (!prochnost.isNullOrBlank()) blocks += toAgent(prochnost)
         // Пустая строка отбрасывается наравне с null: блок из одних пробелов
         // стоил бы двух переводов строки и не сказал бы ничего.
         if (!disputeNotice.isNullOrBlank()) blocks += disputeNotice
