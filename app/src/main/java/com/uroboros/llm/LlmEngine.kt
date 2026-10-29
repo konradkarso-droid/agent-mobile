@@ -7,6 +7,8 @@ import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import com.uroboros.memory.RecordChunks
+import com.uroboros.memory.nav.Razvilka
+import com.uroboros.memory.nav.RazvilkaHolder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
@@ -207,6 +209,14 @@ sealed class LayerRead {
     /** Движок не прочитал; [why] — его слова. */
     data class Failed(val why: String) : LayerRead()
 }
+
+/**
+ * Задание живого отвода слоя на одну генерацию разговора: сложить выход слоя
+ * [layer] по токенам [segment] — конца реплики собеседника, — пока движок
+ * обсчитывает запрос. Ответ от этого не меняется. Что это и чего не умеет — у
+ * `state_read.h` («ЖИВОЙ ОТВОД») в нативной части; итог — [LlmEngine.liveReadFor].
+ */
+data class LiveReadOrder(val layer: Int, val segment: String)
 
 
 class LlmEngine(
@@ -840,7 +850,24 @@ class LlmEngine(
             )
         }
         if (!ok) loadedSource = null
+        liveEtalonAfterLoad(ok, AdapterFile.Role.DAY)
         ok
+    }
+
+    /**
+     * Эталон прибора развилки (memory.nav.RazvilkaHolder.checkEtalon) — сразу
+     * за загрузкой, пока память движка пуста: дальше её займёт подъём
+     * разговора, а чтение эталона её очищает. Только дневной загрузке:
+     * развилку читает разговор, а ночная модель (со своей накладкой) — другая
+     * модель, и её эталон дню ничего бы не сказал.
+     */
+    private suspend fun liveEtalonAfterLoad(ok: Boolean, role: AdapterFile.Role) {
+        RazvilkaHolder.load { context.assets.open(Razvilka.ASSET) }
+        when {
+            !ok -> RazvilkaHolder.forgetEtalon("модель не загрузилась")
+            role != AdapterFile.Role.DAY -> RazvilkaHolder.forgetEtalon("модель загружена для ночной работы")
+            else -> RazvilkaHolder.checkEtalon(::readLayerMean)
+        }
     }
 
     /**
@@ -895,6 +922,7 @@ class LlmEngine(
             )
         }
         if (!ok) loadedSource = null
+        liveEtalonAfterLoad(ok, role)
         ok
     }
 
@@ -1947,11 +1975,14 @@ class LlmEngine(
          * ([RecordSplit]).
          */
         recall: String? = null,
+        /** Живой отвод слоя по реплике собеседника; null — не взводить. Итог — [liveReadFor]. */
+        liveRead: LiveReadOrder? = null,
     ): Flow<GenerationEvent> = guardedFlow(
         conversationMessages(messages),
         maxTokens,
         dryAgainst = dryAgainst,
         recall = recall,
+        liveRead = liveRead,
         // Лента разговора первым системного сообщения не несёт — стену ставит
         // движок; системные сообщения посреди ленты (строка о себе, см.
         // ConversationJournal.messagesFor) первыми не стоят никогда. Первым
@@ -1981,6 +2012,8 @@ class LlmEngine(
         dryAgainst: String? = null,
         /** Вспоминание хода для прибора «Записи:»; только разговору. См. [generateConversationFlow]. */
         recall: String? = null,
+        /** Живой отвод слоя; только разговору. См. [generateConversationFlow] и [liveReadFor]. */
+        liveRead: LiveReadOrder? = null,
     ): Flow<GenerationEvent> = channelFlow {
         // Движок уходит от разговора к чужой работе — сперва точка разговора
         // на диск. Зачем и чего не умеет — у [conversationDisplaced].
@@ -2015,6 +2048,11 @@ class LlmEngine(
         // иначе отчёт прибора мог бы описать записи прошлого хода. Судье и
         // ночным работам не ставится — их запрос записей хода не несёт.
         if (conversation) withContext(Dispatchers.IO) { engine.setRecordPlan(recordPlanJson(recall)) }
+        // Задание отвода ставится на каждый запрос, и снимается тоже: оставленное
+        // взвелось бы на следующий запрос, чей бы он ни был. Итог прежнего
+        // задания при снятии остаётся — его читают после хода (см. [liveReadFor]).
+        val live = liveRead?.takeIf { conversation }
+        withContext(Dispatchers.IO) { engine.setLiveRead(live?.layer ?: -1, live?.segment.orEmpty()) }
         // Первым делом, до всякой работы движка: с этого момента состояние в
         // нём принадлежит этому запросу, как бы он ни кончился.
         stateIsConversation = conversation
@@ -2186,6 +2224,11 @@ class LlmEngine(
             // DRY выключается сразу за своим прогоном: следующий может быть не
             // разговором (судья, задача) и общие настройки не переставлять.
             if (dry) withContext(NonCancellable + Dispatchers.IO) { engine.updateSamplerParams(SAMPLER_PARAMS_JSON) }
+            // Итог отвода — сразу за своим прогоном: следующий взведённый его сотрёт.
+            if (live != null) liveResult = live to withContext(NonCancellable + Dispatchers.IO) {
+                engine.takeLiveRead()?.let { LayerRead.Read(it) }
+                    ?: LayerRead.Failed(engine.liveReadWhy().ifEmpty { "движок не назвал причину" })
+            }
             val endedAtMs = System.currentTimeMillis()
             // Хвост: от последней проверки до конца потока. Без него прибор
             // молчал бы про отрезок, на котором барьер не смотрит уже ни
@@ -2337,6 +2380,18 @@ class LlmEngine(
             }
         }
     }
+
+    /**
+     * Итог живого отвода по заданию [order]; null — генерации с этим заданием
+     * не было (ход не дошёл до движка) или она ещё идёт. Задание сверяется
+     * как объект, а не по тексту: та же реплика прошлого хода — другое
+     * задание. Генерации без задания итог не трогают: проход с доской приборов
+     * после первого прохода хода итог первого не стирает.
+     */
+    fun liveReadFor(order: LiveReadOrder): LayerRead? = liveResult?.takeIf { it.first === order }?.second
+
+    @Volatile
+    private var liveResult: Pair<LiveReadOrder, LayerRead>? = null
 
     /**
      * Прочитать выход слоя [layer] модели на тексте [wall] + [head] + [tail]:

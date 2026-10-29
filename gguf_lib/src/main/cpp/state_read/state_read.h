@@ -20,6 +20,13 @@
 // после чтения считать разговор необсчитанным — см. nativeReadLayerMean в
 // gguf_lib.cpp.
 //
+// ЖИВОЙ ОТВОД ([locate], [arm], [take]) — то же чтение, но без своего обсчёта:
+// слой снимается на лету, пока движок обсчитывает обычный запрос разговора, по
+// токенам одного отрезка внутри него (реплики собеседника). Отдельный обсчёт тут
+// не годится: у модели с Mamba-слоями состояние не откатить, и чтение после
+// ответа стоило бы пересчёта всего разговора от стены. Отвод памяти не трогает
+// и ответ не меняет — он только складывает строки слоя.
+//
 // ЧЕГО НЕ УМЕЕТ:
 //  - только процессор: строки слоя читаются прямо из памяти тензора;
 //  - последний слой не читается: у него строки уже отобраны под выдачу;
@@ -30,6 +37,7 @@
 // телефона.
 
 #include <atomic>
+#include <climits>
 #include <string>
 #include <vector>
 
@@ -45,7 +53,8 @@ struct Hook {
     int n_embd = 0;
     std::vector<double> acc;
     long row0 = 0;   // с какого токена текста начинается отрезок
-    long seen = 0;   // сколько токенов текста уже прошло через слой
+    long row1 = LONG_MAX;  // на каком кончается (не включая); LONG_MAX — до конца текста
+    long seen = 0;   // сколько токенов текста уже прошло через слой (номер следующего)
     long rows = 0;   // сколько строк отрезка сложено
     bool bad_shape = false;
 };
@@ -74,5 +83,28 @@ struct Split {
     std::vector<llama_token> seg;
 };
 Split split(const llama_vocab * vocab, const std::string & wall, const std::string & head, const std::string & tail);
+
+// Где в запросе лежит отрезок для живого отвода: номера его токенов [t0, t1).
+// prompt — текст запроса целиком, tokens — его токены (tokenize с add_special,
+// как их режет движок); отрезок — знаки [c0, c1) текста. ok = false — отрезок
+// не ложится на границы токенов (токенизатор сливает его край с соседом) или
+// пуст; why — словами.
+struct Window {
+    bool ok = false;
+    long t0 = 0;
+    long t1 = 0;
+    std::string why;
+};
+Window locate(const llama_vocab * vocab, const std::string & prompt, const std::vector<llama_token> & tokens,
+              size_t c0, size_t c1);
+
+// Взвести отвод на обсчёт, который начнётся с токена first (n_past перед ним):
+// сложить выход слоя layer по токенам [w.t0, w.t1). false — отрезок уже
+// обсчитан (лежит раньше first), читать нечем.
+bool arm(Hook & hook, int n_embd, int layer, const Window & w, long first);
+
+// Снять отвод после обсчёта и вернуть среднее. Зовётся при любом исходе
+// обсчёта: невзведённый отвод тоже снимается.
+Result take(Hook & hook, const Window & w);
 
 }  // namespace state_read

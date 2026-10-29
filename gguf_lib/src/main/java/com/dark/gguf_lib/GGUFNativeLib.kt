@@ -69,6 +69,9 @@ internal object GGUFNativeLib {
     external fun nativeGetLastConversationPrompt(): ByteArray
     external fun nativeReadLayerMean(wall: String, head: String, tail: String, layer: Int): FloatArray
     external fun nativeGetLastReadWhy(): String
+    external fun nativeSetLiveRead(layer: Int, segment: String)
+    external fun nativeTakeLiveRead(): FloatArray
+    external fun nativeGetLiveReadWhy(): String
 
     external fun nativeGenerateStream(
         prompt: String, maxTokens: Int, callback: StreamCallback,

@@ -430,10 +430,11 @@ class ConversationTurns(
         onThird: () -> Unit = {},
         desk: (suspend () -> String)? = null,
         onGlance: () -> Unit = {},
+        liveRead: LiveReadOrder? = null,
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry, onThird, desk, onGlance) { closedIndex = it }
+            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry, onThird, desk, onGlance, liveRead) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -459,6 +460,7 @@ class ConversationTurns(
         onThird: () -> Unit,
         desk: (suspend () -> String)?,
         onGlance: () -> Unit,
+        liveRead: LiveReadOrder?,
         onClosed: (Int) -> Unit,
     ): Outcome {
         gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall)?.let { return it }
@@ -550,8 +552,10 @@ class ConversationTurns(
         }
 
         // Один проход модели с ловлей вызова приборов (см. [passCatchingCall]).
-        suspend fun pass(msgs: List<Pair<String, String>>): String? =
-            passCatchingCall(msgs, answer, onEvent, recall = recall, onPiece = {
+        // Живой отвод — только первому проходу: реплика собеседника
+        // обсчитывается в нём, следующие проходы берут её готовой.
+        suspend fun pass(msgs: List<Pair<String, String>>, live: LiveReadOrder? = null): String? =
+            passCatchingCall(msgs, answer, onEvent, recall = recall, liveRead = live, onPiece = {
                 if (firstTokenAtMs == null) firstTokenAtMs = System.currentTimeMillis() - startMs
                 tokensSeen++
             }) { metrics = it }
@@ -559,7 +563,7 @@ class ConversationTurns(
         var glanced = false
         var glanceRetried = false
         try {
-            val before = pass(messages)
+            val before = pass(messages, liveRead)
             if (before != null) {
                 // Модель позвала приборы: показать доску и спросить снова. Ответ
                 // хода — второй проход; первый (вызов) в ленту не идёт, доска
@@ -746,6 +750,8 @@ class ConversationTurns(
         onEvent: (GenerationEvent) -> Unit,
         /** Вспоминание хода — движку для прибора «Записи:» ([RecordSplit]). */
         recall: String?,
+        /** Живой отвод слоя по реплике собеседника ([LlmEngine.liveReadFor]); null — не взводить. */
+        liveRead: LiveReadOrder? = null,
         onPiece: () -> Unit,
         dryAgainst: String? = null,
         onMetrics: (DecodingMetrics) -> Unit,
@@ -754,7 +760,7 @@ class ConversationTurns(
         var holding = true
         // Знак отдаётся сборщику ниже до проверки: тот, что открыл вызов,
         // уже лежит в [text], и выдача обрывается на нём же.
-        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = dryAgainst, recall = recall).transformWhile { event ->
+        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = dryAgainst, recall = recall, liveRead = liveRead).transformWhile { event ->
             emit(event)
             text.indexOf(Glance.CALL_OPEN) < 0
         }.collect { event ->

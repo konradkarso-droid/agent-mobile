@@ -521,6 +521,23 @@ class GGMLEngine {
     fun lastReadWhy(): String = if (!loaded) "модель не загружена" else GGUFNativeLib.nativeGetLastReadWhy()
 
     /**
+     * Живой отвод слоя [layer] по реплике [segment] — разовое задание следующей
+     * генерации разговора; [layer] < 0 — задания нет. Слой снимается на лету,
+     * пока обсчитывается запрос; ответ и память движка не меняются. Что это и
+     * чего не умеет — у `state_read.h` («ЖИВОЙ ОТВОД») и `nativeSetLiveRead`.
+     */
+    fun setLiveRead(layer: Int, segment: String) {
+        if (loaded) GGUFNativeLib.nativeSetLiveRead(layer, segment)
+    }
+
+    /** Итог последнего взведённого отвода; null — не прочитано, причина — [liveReadWhy]. */
+    fun takeLiveRead(): FloatArray? =
+        if (!loaded) null else GGUFNativeLib.nativeTakeLiveRead().takeIf { it.isNotEmpty() }
+
+    /** Почему последний отвод не прочитал; пусто — прочитал. */
+    fun liveReadWhy(): String = if (!loaded) "модель не загружена" else GGUFNativeLib.nativeGetLiveReadWhy()
+
+    /**
      * Что модель собиралась сказать первым в последней генерации разговора:
      * сломанные числа, пятёрка вероятных токенов, вес «конца ответа», что
      * выбрано, и последние токены запроса. Зачем и чего не умеет — у

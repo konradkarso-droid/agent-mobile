@@ -386,6 +386,12 @@ static struct {
     // вызов стоит в контексте всегда, взводится только на время чтения.
     state_read::Hook              read_hook;
     std::string                   last_read_why;
+    // Живой отвод слоя по реплике (см. nativeSetLiveRead): задание следующей
+    // генерации разговора и итог последнего взведённого отвода.
+    int                           live_layer = -1;   // -1 — задания нет
+    std::string                   live_segment;
+    std::vector<float>            live_mean;
+    std::string                   live_why = "отвода ещё не было";
 
     std::string system_prompt;
     std::string chat_template_override;
@@ -2395,6 +2401,26 @@ static splice_turn plan_splice(const std::string & prompt, bool starts_with_wall
     return t;
 }
 
+// Где в запросе отрезок живого отвода: последнее сообщение — собеседника, его
+// текст кончается отрезком, и в тексте запроса этот текст стоит последним (за
+// ним — только разметка шаблона). Знаки [c0, c1) или причина отказа.
+static bool live_segment_chars(const std::vector<common_chat_msg> & messages, const std::string & prompt,
+                               const std::string & segment, size_t & c0, size_t & c1, std::string & why) {
+    if (segment.empty()) { why = "реплика пуста"; return false; }
+    if (messages.empty() || messages.back().role != "user") { why = "последнее сообщение — не собеседника"; return false; }
+    const std::string & content = messages.back().content;
+    if (content.size() < segment.size() ||
+            content.compare(content.size() - segment.size(), segment.size(), segment) != 0) {
+        why = "реплики нет в конце сообщения собеседника";
+        return false;
+    }
+    const size_t at = prompt.rfind(content);
+    if (at == std::string::npos) { why = "шаблон изменил текст сообщения — реплика в запросе не нашлась"; return false; }
+    c1 = at + content.size();
+    c0 = c1 - segment.size();
+    return true;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetFirstStepReport(JNIEnv * env, jobject) {
     // Не ждать генерацию: спрашивают после неё, а занятый замок значит, что
@@ -2412,6 +2438,11 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     std::lock_guard<std::mutex> lock(g_state.gen_mutex);
     g_state.last_first_step = "до первого шага не дошло";
+    // Задание живого отвода забирается первым делом: генерация может кончиться
+    // раньше обсчёта, а оставленное задание взвелось бы на чужой запрос.
+    const int live_layer_order = g_state.live_layer;
+    g_state.live_layer = -1;
+    if (live_layer_order >= 0) g_state.live_why = "генерация не дошла до обсчёта";
 
     if (!g_state.model || !g_state.ctx) {
         LOGE("Model not loaded");
@@ -2639,6 +2670,29 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
+    // Живой отвод по реплике собеседника (см. nativeSetLiveRead). Задание
+    // разовое: забирается здесь при любом исходе. Взводится до обсчёта, с
+    // номера первого обсчитываемого токена; снимается сразу после обсчёта, до
+    // выдачи — выдача слой не трогает.
+    state_read::Window live_window;
+    bool live_armed = false;
+    if (live_layer_order >= 0) {
+        const int layer = live_layer_order;
+        size_t c0 = 0, c1 = 0;
+        std::string why;
+        if (splice.use) {
+            why = "ход по кускам — отвод не взводится";
+        } else if (live_segment_chars(messages, tmpl_result.prompt, g_state.live_segment, c0, c1, why)) {
+            live_window = state_read::locate(llama_model_get_vocab(g_state.model), tmpl_result.prompt, tokens, c0, c1);
+            if (!live_window.ok) why = live_window.why;
+            else if (layer >= llama_model_n_layer(g_state.model) - 1) why = "слоя с таким номером читать нельзя";
+            else if (!state_read::arm(g_state.read_hook, llama_model_n_embd(g_state.model), layer, live_window, g_state.n_past))
+                why = "реплика уже обсчитана — читать нечем";
+            else live_armed = true;
+        }
+        g_state.live_why = live_armed ? "" : why;
+    }
+
     // only evaluate tokens beyond the cached prefix
     std::vector<llama_token> new_tokens(tokens.begin() + g_state.n_past, tokens.end());
     // Full prompt size, not just newly-evaluated. See generateStream above
@@ -2690,6 +2744,11 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     } else {
         evaluated = new_tokens.empty() || eval_tokens(new_tokens, g_state.n_past,
                                                       jni_eval_progress, &mt_progress);
+    }
+    if (live_armed) {
+        const state_read::Result live = state_read::take(g_state.read_hook, live_window);
+        g_state.live_mean = live.mean;
+        g_state.live_why = live.mean.empty() ? (evaluated ? live.why : "обсчёт запроса не дошёл до конца") : "";
     }
     if (!evaluated) {
         jstring jerr = env->NewStringUTF("Failed to evaluate prompt");
@@ -3124,6 +3183,45 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetRecordPlan(
     const char * cstr = env->GetStringUTFChars(jjson, nullptr);
     g_state.record_plan = cstr ? std::string(cstr) : std::string();
     if (cstr) env->ReleaseStringUTFChars(jjson, cstr);
+}
+
+// Живой отвод слоя по реплике собеседника (state_read.h, «ЖИВОЙ ОТВОД») —
+// разовое задание следующей генерации разговора: сложить выход слоя layer по
+// токенам segment, пока обсчитывается запрос. segment — конец текста последнего
+// сообщения собеседника в запросе (реплика или её часть после подписи); где он
+// в запросе, движок ищет сам. layer < 0 — задания нет: прежний итог остаётся,
+// следующая генерация отвод не взводит. Задание с layer >= 0 стирает прежний
+// итог сразу: итог всегда относится к последнему заданию.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetLiveRead(
+        JNIEnv * env, jobject, jint layer, jstring jsegment) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    const char * cstr = env->GetStringUTFChars(jsegment, nullptr);
+    g_state.live_segment = cstr ? std::string(cstr) : std::string();
+    if (cstr) env->ReleaseStringUTFChars(jsegment, cstr);
+    g_state.live_layer = (int) layer;
+    if (layer >= 0) {
+        g_state.live_mean.clear();
+        g_state.live_why = "генерация с заданием не начиналась";
+    }
+}
+
+// Итог последнего взведённого отвода: среднее слоя по токенам реплики; пусто —
+// не прочитано, причина — nativeGetLiveReadWhy.
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeTakeLiveRead(JNIEnv * env, jobject) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    jfloatArray out = env->NewFloatArray((jsize) g_state.live_mean.size());
+    if (out && !g_state.live_mean.empty())
+        env->SetFloatArrayRegion(out, 0, (jsize) g_state.live_mean.size(), g_state.live_mean.data());
+    return out;
+}
+
+// Почему последний отвод не прочитал; пусто — прочитал.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLiveReadWhy(JNIEnv * env, jobject) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    return safe_new_string_utf(env, g_state.live_why.c_str());
 }
 
 // Папка кусков этой загрузки и отпечаток загрузки, с которым куски сверяются

@@ -108,6 +108,8 @@ import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.Prochnost
+import com.uroboros.memory.nav.Razvilka
+import com.uroboros.memory.nav.RazvilkaHolder
 import com.uroboros.memory.nav.ForeignSpeech
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
@@ -274,6 +276,13 @@ class MainActivity : AppCompatActivity() {
      * причине, что строка сверки.
      */
     private var prochnostLine: String? = null
+
+    /**
+     * Строка прибора развилки к последнему ходу этого экрана
+     * (memory.nav.Razvilka.meterLine). Стирается с числами хода — по той же
+     * причине, что строка сверки.
+     */
+    private var razvilkaLine: String? = null
 
     /**
      * Строка «чья речь» к последнему ходу этого экрана (memory.nav.ForeignSpeech.meter):
@@ -3097,7 +3106,8 @@ class MainActivity : AppCompatActivity() {
             glanceLine ?: "Взгляд: чисел хода на экране нет",
             WordDamageHolder.meterLine(), disputeNoticeLine,
             foreignSpeechLine ?: "Чья речь: чисел хода на экране нет",
-            prochnostLine ?: "Прочность: чисел хода на экране нет", composedLine,
+            prochnostLine ?: "Прочность: чисел хода на экране нет",
+            razvilkaLine ?: "Развилка: чисел хода на экране нет", composedLine,
         )
         val composed = lastComposedContent
         if (composed != null) {
@@ -3405,6 +3415,7 @@ class MainActivity : AppCompatActivity() {
         // читалась бы как относящаяся к следующему.
         disputeNoticeLine = null
         prochnostLine = null
+        razvilkaLine = null
         foreignSpeechLine = null
         // Строка перехвата — по той же причине, что и строка сверки.
         interceptLine = null
@@ -5423,6 +5434,10 @@ class MainActivity : AppCompatActivity() {
                 var worstZone: SafetyZone = watchdog.zone.value
                 var startMs = System.currentTimeMillis()
                 var firstTokenShown = false
+                // Прибор развилки (memory.nav.Razvilka): отвод слоя по реплике
+                // взводится на первый проход хода; модели ничего не подаётся.
+                val razvilkaPlan = Razvilka.plan(userText, RazvilkaHolder.direction, RazvilkaHolder.etalon)
+                val razvilkaOrder = (razvilkaPlan as? Razvilka.Plan.Read)?.order
                 val outcome = turns.run(
                     content = userContent,
                     question = userText,
@@ -5438,6 +5453,7 @@ class MainActivity : AppCompatActivity() {
                     recordMarks = recordMarks,
                     dreamNote = dreamNote,
                     recall = recall,
+                    liveRead = razvilkaOrder,
                     onAccepted = {
                         // Экран показывает всю ленту плюс начатый ход. Поле НЕ
                         // очищается: разговор копится, а не заменяется. Токены ниже
@@ -5797,6 +5813,9 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     "Записи: не известно — генерация не дошла до ответа"
                 }
+                // Итог отвода лежит у движка по заданию этого хода; не дошёл
+                // ход до движка — итога нет, и строка так и скажет.
+                razvilkaLine = Razvilka.meterLine(razvilkaPlan, razvilkaOrder?.let { llmEngine.liveReadFor(it) })
                 lastSpeed = engineMetrics?.let { fmt1(it.tokensPerSecond.toDouble()) }
                 lastMetricsLine = metricsReport(
                     metrics = engineMetrics,
