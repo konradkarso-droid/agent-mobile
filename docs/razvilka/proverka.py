@@ -14,7 +14,11 @@ L = 21
 def load(name, layers=True):
     rows = json.load(open('%s/%s.json' % (d, name)))
     X = np.fromfile('%s/sost_%s.bin' % (d, name if name != 'etalon' else 'etalon_pust'), dtype=np.float32)
-    X = X.reshape(len(rows), -1, 3072)[:, L] if layers else X.reshape(len(rows), 3072)
+    if layers:
+        X = X.reshape(len(rows), -1, 3072)
+        X = X[:, L] if X.shape[1] > 1 else X[:, 0]   # все слои подряд или уже только слой L
+    else:
+        X = X.reshape(len(rows), 3072)
     return rows, X.astype(np.float64)
 rows, X = load('o_sebe'); kind = np.array([r['kind'] for r in rows]); grp = np.array([r['grp'] for r in rows])
 TRAIN = ['sp', 'spc', 'rz', 'rzn']
@@ -68,7 +72,11 @@ for g in (1,):
     print('    эталон приложения (предмет %d): стена агента спор %.3f / развилка %.3f; пустая стена спор %.3f / развилка %.3f' % (
         g, wall[(ek == 'sp') & (eg == g)][0], wall[(ek == 'rz') & (eg == g)][0], empty[(ek == 'sp') & (eg == g)][0], empty[(ek == 'rz') & (eg == g)][0]))
 
-print('5. Путь приложения (stend_otvod) против vektor87 на тех же заданиях, слой %d:' % L)
-OT = np.fromfile(d + '/sost_otvod.bin', dtype=np.float32).reshape(len(er), 3072).astype(np.float64)
-VX = np.array([X[idx[('G', r['kind'], r['grp'])]] for r in er])
-print('    наибольшее расхождение состояний %.3g, долей «спор» %.3g' % (np.abs(OT - VX).max(), np.abs(app(OT) - app(VX)).max()))
+import os
+if os.path.exists(d + '/sost_otvod.bin'):
+    print('5. Путь приложения (stend_otvod) против vektor87 на тех же заданиях, слой %d:' % L)
+    OT = np.fromfile(d + '/sost_otvod.bin', dtype=np.float32).reshape(len(er), 3072).astype(np.float64)
+    VX = np.array([X[idx[('G', r['kind'], r['grp'])]] for r in er])
+    print('    наибольшее расхождение состояний %.3g, долей «спор» %.3g' % (np.abs(OT - VX).max(), np.abs(app(OT) - app(VX)).max()))
+else:
+    print('5. Путь приложения — не снимался (нет sost_otvod.bin)')

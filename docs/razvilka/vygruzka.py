@@ -10,7 +10,9 @@ import json, sys, numpy as np
 from sklearn.linear_model import LogisticRegression
 nab, layer, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 rows = json.load(open(nab + '/o_sebe.json'))
-X = np.fromfile(nab + '/sost_o_sebe.bin', dtype=np.float32).reshape(len(rows), -1, 3072)[:, layer].astype(np.float64)
+# В файле — все слои подряд (vektor87 snyat) или уже только нужный (снятое по кускам в Colab).
+X = np.fromfile(nab + '/sost_o_sebe.bin', dtype=np.float32).reshape(len(rows), -1, 3072)
+X = (X[:, layer] if X.shape[1] > 1 else X[:, 0]).astype(np.float64)
 kind = np.array([r['kind'] for r in rows])
 m = np.isin(kind, ['sp', 'spc', 'rz', 'rzn'])
 Xt, y = X[m], np.isin(kind[m], ['rz', 'rzn']).astype(int)
