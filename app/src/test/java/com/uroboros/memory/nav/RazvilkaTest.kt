@@ -52,6 +52,16 @@ class RazvilkaTest {
         assertEquals(RazvilkaDirection.Parsed.Bad("строки b нет"), RazvilkaDirection.parse(text.replace("b 0", "")))
     }
 
+    @Test
+    fun `направление из файла приложения разбирается`() {
+        val file = javaClass.classLoader!!.getResource(Razvilka.ASSET)?.readText()
+            ?: java.io.File("src/main/assets/${Razvilka.ASSET}").readText()
+        val d = (RazvilkaDirection.parse(file) as RazvilkaDirection.Parsed.Ok).direction
+        assertEquals(3072, d.width)
+        assertEquals(21, d.layer)
+        assertEquals(1, d.version)
+    }
+
     // --- Какую часть реплики читать ---
 
     @Test
