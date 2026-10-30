@@ -33,7 +33,7 @@ bool callback(ggml_tensor * t, bool ask, void * user_data) {
     const float * d = static_cast<const float *>(t->data);
     const long nr = (long) t->ne[1];
     for (long r = 0; r < nr; r++) {
-        if (h->seen + r < h->row0) continue;
+        if (h->seen + r < h->row0 || h->seen + r >= h->row1) continue;
         const float * row = d + (size_t) r * h->n_embd;
         for (int j = 0; j < h->n_embd; j++) h->acc[j] += row[j];
         h->rows++;
@@ -77,6 +77,7 @@ Result read_mean(llama_context * ctx, Hook & hook, const std::vector<llama_token
     hook.rows = 0;
     hook.seen = 0;
     hook.row0 = (long) head.size();
+    hook.row1 = LONG_MAX;
     hook.bad_shape = false;
     hook.layer.store(layer);
     bool ok = true;
@@ -89,6 +90,56 @@ Result read_mean(llama_context * ctx, Hook & hook, const std::vector<llama_token
     if (!ok) { out.why = "сбой движка при обсчёте"; return out; }
     if (hook.bad_shape) { out.why = "выход слоя неожиданной формы"; return out; }
     if (hook.seen != (long) all.size() || hook.rows != (long) seg.size()) { out.why = "прочитаны не все токены отрезка"; return out; }
+    out.mean.resize((size_t) hook.n_embd);
+    for (int j = 0; j < hook.n_embd; j++) out.mean[j] = (float) (hook.acc[j] / (double) hook.rows);
+    return out;
+}
+
+Window locate(const llama_vocab * vocab, const std::string & prompt, const std::vector<llama_token> & tokens,
+              size_t c0, size_t c1) {
+    Window w;
+    if (c0 >= c1 || c1 > prompt.size()) { w.why = "отрезок пуст"; return w; }
+    // Начало запроса до отрезка и до его конца — токенами, как резал бы их
+    // токенизатор отдельно. Совпали с началом токенов запроса — край отрезка
+    // лежит на границе токенов; нет — токенизатор слил край с соседом, и
+    // прочитанное было бы не тем отрезком, на котором учили.
+    const std::vector<llama_token> a = record_splice::tokenize(vocab, prompt.substr(0, c0), true);
+    const std::vector<llama_token> b = record_splice::tokenize(vocab, prompt.substr(0, c1), true);
+    auto prefix = [&](const std::vector<llama_token> & p) {
+        return p.size() <= tokens.size() && std::equal(p.begin(), p.end(), tokens.begin());
+    };
+    if (!prefix(a) || !prefix(b) || b.size() <= a.size()) {
+        w.why = "граница реплики сдвинута токенизатором";
+        return w;
+    }
+    w.ok = true;
+    w.t0 = (long) a.size();
+    w.t1 = (long) b.size();
+    return w;
+}
+
+bool arm(Hook & hook, int n_embd, int layer, const Window & w, long first) {
+    hook.layer.store(-1);
+    if (!w.ok || w.t0 < first) return false;
+    hook.n_embd = n_embd;
+    hook.acc.assign((size_t) n_embd, 0.0);
+    hook.rows = 0;
+    hook.seen = first;
+    hook.row0 = w.t0;
+    hook.row1 = w.t1;
+    hook.bad_shape = false;
+    hook.layer.store(layer);
+    return true;
+}
+
+Result take(Hook & hook, const Window & w) {
+    Result out;
+    const bool armed = hook.layer.load() >= 0;
+    hook.layer.store(-1);
+    hook.row1 = LONG_MAX;
+    if (!armed) { out.why = "отвод не взведён"; return out; }
+    if (hook.bad_shape) { out.why = "выход слоя неожиданной формы"; return out; }
+    if (hook.rows != w.t1 - w.t0) { out.why = "прочитаны не все токены реплики"; return out; }
     out.mean.resize((size_t) hook.n_embd);
     for (int j = 0; j < hook.n_embd; j++) out.mean[j] = (float) (hook.acc[j] / (double) hook.rows);
     return out;
