@@ -333,6 +333,37 @@ class ConversationJournalTest {
         assertEquals(ConversationJournal.ROLE_USER, journal.messagesFor("дальше").first().first)
     }
 
+    // [stableMessageCount]: граница снимка ленты (gguf_lib.cpp, «СНИМОК ЛЕНТЫ»).
+
+    @Test
+    fun `прошлые ходы — начало запроса, которое следующий ход повторяет целиком`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("Привет", "Привет!", "Привет", emptyList())
+        val note = "Я очнулся в 15:42."
+        val recall = "Твои слова в прошлом разговоре: «рубанок»."
+
+        val now = journal.messagesFor("Как дела?", note, currentRecall = recall)
+        val stable = journal.stableMessageCount()
+        assertEquals(2, stable)
+
+        journal.appendTurn("Как дела?", "Хорошо.", "Как дела?", emptyList(), selfNote = note, recall = recall)
+        val next = journal.messagesFor("А ещё?")
+        assertEquals(now.take(stable), next.take(stable))
+        // Дальше границы — нет: вспоминание прошлого хода из ленты ушло.
+        assertFalse(next.drop(stable).any { it.second == recall })
+    }
+
+    @Test
+    fun `прошлых ходов нет — граница ноль, с выкинутым ходом — короче`() {
+        val journal = ConversationJournal()
+        assertEquals(0, journal.stableMessageCount())
+        journal.appendTurn("Привет", "Привет!", "Привет", emptyList())
+        journal.appendTurn("Как дела?", "Хорошо.", "Как дела?", emptyList())
+        assertEquals(4, journal.stableMessageCount())
+        assertEquals(2, journal.stableMessageCount(without = setOf(0)))
+        assertEquals(journal.messagesFor("x", without = setOf(0)).size - 1, journal.stableMessageCount(without = setOf(0)))
+    }
+
     @Test
     fun `строка о себе стоит перед репликой своего хода и остаётся на месте`() {
         val journal = ConversationJournal()

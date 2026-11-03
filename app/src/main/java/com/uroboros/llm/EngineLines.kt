@@ -123,9 +123,11 @@ object EngineLines {
      *   свежей папке.
      * Перед исходом может стоять отказ отката: у модели с Mamba-слоями
      * обсчитанное к середине не вернуть, и при любом расхождении раньше конца
-     * ход идёт от снимка стены на диске (почему — `gguf_lib.cpp`,
-     * «Переиспользование обсчитанного»). После исхода — записан ли снимок
-     * стены, если движок писал его в этом запросе.
+     * ход идёт от снимка ленты в памяти, а без него — от снимка стены на диске
+     * (почему — `gguf_lib.cpp`, «Переиспользование обсчитанного» и «СНИМОК
+     * ЛЕНТЫ»). Тогда исход четвёртого вида — лента взята из снимка. После
+     * исхода — записан ли снимок стены, если движок писал его в этом запросе,
+     * и снят ли снимок ленты этого хода.
      *
      * ОТКУДА ЧИСЛА. У каждого многоходового запроса в логе есть ровно одна
      * итоговая строка о совпадении одного из трёх видов. Значит звать это
@@ -146,7 +148,7 @@ object EngineLines {
     fun wallReuse(request: List<String>, wall: Int?): String {
         val refused = request.firstNotNullOfOrNull { ROLLBACK_REFUSED.find(it) }?.let {
             "Откат к середине невозможен — у модели Mamba-слои (совпало ${it.groupValues[1]} " +
-                "из ${it.groupValues[2]}, обсчитано ${it.groupValues[3]}), ход идёт от снимка стены · "
+                "из ${it.groupValues[2]}, обсчитано ${it.groupValues[3]}), ход идёт от снимка · "
         } ?: ""
         val saved = request.firstNotNullOfOrNull { WALL_SAVED.find(it) }?.let {
             " · снимок стены записан на диск (${it.groupValues[1]} ток.)"
@@ -158,11 +160,28 @@ object EngineLines {
                 else -> why
             }
         } ?: ""
-        return refused + reuseOutcome(request, wall) + saved
+        val ribbonMiss = request.firstNotNullOfOrNull { RIBBON_UNUSABLE.find(it) }
+            ?.let { " · снимок ленты не подошёл: ${it.groupValues[1].trim()}" } ?: ""
+        return refused + reuseOutcome(request, wall) + ribbonMiss + saved + ribbonSnapshot(request)
+    }
+
+    /** Снят ли снимок ленты этого хода; модели без Mamba-слоёв и ходу без задания — пусто. */
+    private fun ribbonSnapshot(request: List<String>): String {
+        request.firstNotNullOfOrNull { RIBBON_TAKEN.find(it) }?.let {
+            val mb = it.groupValues[2].toLong() / (1024L * 1024L)
+            return " · снимок ленты снят на границе прошлых ходов (${it.groupValues[1]} ток., $mb МБ в памяти)"
+        }
+        return request.firstNotNullOfOrNull { RIBBON_NOT_TAKEN.find(it) }?.let {
+            " · снимок ленты не снят: ${it.groupValues[1].trim()}"
+        } ?: ""
     }
 
     private fun reuseOutcome(request: List<String>, wall: Int?): String {
         for (line in request) {
+            RIBBON_HIT.find(line)?.let {
+                return "Лента: взята из снимка ленты (совпало ${it.groupValues[1]} из ${it.groupValues[2]}), " +
+                    "досчитан прошлый ход и новое"
+            }
             REUSE_FROM_DISK.find(line)?.let {
                 val reused = it.groupValues[1].toInt()
                 val numbers = "(совпало $reused из ${it.groupValues[2]}, стена ${wall ?: "?"})"
@@ -206,6 +225,10 @@ object EngineLines {
     private val DISK_UNUSABLE = Regex("""Disk cache unusable: (\d+) tokens restored, (\d+) in common""")
     private val WALL_SAVED = Regex("""Wall snapshot saved: (\d+) tokens""")
     private val WALL_NOT_SAVED = Regex("""Wall snapshot not saved: (.+)$""")
+    private val RIBBON_HIT = Regex("""Ribbon snapshot hit: reusing (\d+)/(\d+) tokens""")
+    private val RIBBON_UNUSABLE = Regex("""Ribbon snapshot unusable: (.+)$""")
+    private val RIBBON_TAKEN = Regex("""Ribbon snapshot taken: (\d+) tokens, (\d+) bytes""")
+    private val RIBBON_NOT_TAKEN = Regex("""Ribbon snapshot not taken: (.+)$""")
 
     private fun bufferName(raw: String): String = when (raw) {
         "CPU_REPACK" -> "перепакованные"

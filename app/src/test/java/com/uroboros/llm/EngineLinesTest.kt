@@ -1,6 +1,7 @@
 package com.uroboros.llm
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class EngineLinesTest {
@@ -96,7 +97,7 @@ class EngineLinesTest {
     fun `стена — откат отказан, взята с диска`() {
         assertEquals(
             "Откат к середине невозможен — у модели Mamba-слои (совпало 2210 из 2211, обсчитано 2263), " +
-                "ход идёт от снимка стены · Стена: взята с диска готовой (совпало 2186 из 2211, стена 2186)",
+                "ход идёт от снимка · Стена: взята с диска готовой (совпало 2186 из 2211, стена 2186)",
             EngineLines.wallReuse(
                 request(
                     "I: Rollback refused: 2210/2211 tokens in common, 2263 computed",
@@ -174,6 +175,51 @@ class EngineLinesTest {
                 "(совпало 3 из 2211, стена 2186)",
             EngineLines.wallReuse(request("I: Disk cache hit: reusing 3/2211 tokens"), 2186),
         )
+    }
+
+    // --- Снимок ленты (модель с Mamba-слоями) ---
+
+    @Test
+    fun `лента — взята из снимка, снимок этого хода снят`() {
+        assertEquals(
+            "Откат к середине невозможен — у модели Mamba-слои (совпало 1916 из 2157, обсчитано 2107), " +
+                "ход идёт от снимка · Лента: взята из снимка ленты (совпало 1915 из 2157), досчитан прошлый ход " +
+                "и новое · снимок ленты снят на границе прошлых ходов (2057 ток., 188 МБ в памяти)",
+            EngineLines.wallReuse(
+                request(
+                    "I: Rollback refused: 1916/2157 tokens in common, 2107 computed",
+                    "I: Ribbon snapshot hit: reusing 1915/2157 tokens",
+                    "I: Ribbon snapshot taken: 2057 tokens, 197575144 bytes",
+                ),
+                2186,
+            ),
+        )
+    }
+
+    @Test
+    fun `лента — снимок не подошёл, ход от стены, и почему снимок не снят`() {
+        assertEquals(
+            "Стена: взята с диска готовой (совпало 2186 из 2211, стена 2186) · снимок ленты не подошёл: " +
+                "начало запроса другое (в снимке 2300 ток.) · снимок ленты не снят: граница позади обсчитанного",
+            EngineLines.wallReuse(
+                request(
+                    "I: Ribbon snapshot unusable: начало запроса другое (в снимке 2300 ток.)",
+                    "I: Prompt cache restored: 2186 tokens",
+                    "I: Disk cache hit: reusing 2186/2211 tokens",
+                    "I: Ribbon snapshot not taken: граница позади обсчитанного",
+                ),
+                2186,
+            ),
+        )
+    }
+
+    @Test
+    fun `лента — без строк снимка о нём молчит`() {
+        val line = EngineLines.wallReuse(
+            request("I: Context reuse: 2223/2251 tokens cached, 28 new tokens to eval"),
+            2186,
+        )
+        assertFalse(line, line.contains("снимок ленты"))
     }
 
     @Test

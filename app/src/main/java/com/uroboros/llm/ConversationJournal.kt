@@ -480,6 +480,9 @@ class ConversationJournal {
      * Цена: обсчитанное начало обрывается перед прошлым ходом, и движок
      * каждый раз считает заново один ход (на той же ленте — в среднем около
      * 45 токенов, в худшем ходе около 150), зато запрос растёт медленнее.
+     * Модели с Mamba-слоями обрыв стоил бы всей ленты: откатить обсчитанное к
+     * середине она не может. Её держит снимок состояния на границе прошлых
+     * ходов ([stableMessageCount], `gguf_lib.cpp`, «СНИМОК ЛЕНТЫ»).
      *
      * ЧЕГО ЭТО НЕ ЛЕЧИТ. Ответ агента, уже ставший подписью, остаётся в ленте
      * образцом: на том же стенде ход сразу за таким ответом давал подписи в
@@ -513,6 +516,27 @@ class ConversationJournal {
         without: Set<Int> = emptySet(),
     ): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>(turns.size * 5 + 4)
+        out += pastMessages(without)
+        if (out.isNotEmpty() && !currentSelfNote.isNullOrBlank()) out += ROLE_SYSTEM to currentSelfNote
+        if (out.isNotEmpty() && !currentDreamNote.isNullOrBlank()) out += ROLE_SYSTEM to currentDreamNote
+        if (!currentRecall.isNullOrBlank()) out += ROLE_ASSISTANT to currentRecall
+        out += ROLE_USER to currentUserContent
+        return out
+    }
+
+    /**
+     * Сколько первых сообщений [messagesFor] с тем же [without] — прошлые ходы.
+     * На следующем ходе они те же (к ним только допишется этот ход), и движок
+     * модели с Mamba-слоями снимает состояние на их границе — см.
+     * LlmEngine.generateConversationFlow. Ошибка в числе стоит скорости, а не
+     * ответа: движок поднимает снимок, только если он совпал с запросом токен
+     * в токен.
+     */
+    fun stableMessageCount(without: Set<Int> = emptySet()): Int = pastMessages(without).size
+
+    /** Прошлые ходы ленты сообщениями — начало [messagesFor]; правила места — там. */
+    private fun pastMessages(without: Set<Int>): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>(turns.size * 4)
         turns.forEachIndexed { index, turn ->
             if (index in without) return@forEachIndexed
             if (out.isNotEmpty() && !turn.selfNote.isNullOrBlank()) out += ROLE_SYSTEM to turn.selfNote
@@ -520,10 +544,6 @@ class ConversationJournal {
             out += ROLE_USER to turn.userContent
             out += ROLE_ASSISTANT to turn.agentContent
         }
-        if (out.isNotEmpty() && !currentSelfNote.isNullOrBlank()) out += ROLE_SYSTEM to currentSelfNote
-        if (out.isNotEmpty() && !currentDreamNote.isNullOrBlank()) out += ROLE_SYSTEM to currentDreamNote
-        if (!currentRecall.isNullOrBlank()) out += ROLE_ASSISTANT to currentRecall
-        out += ROLE_USER to currentUserContent
         return out
     }
 

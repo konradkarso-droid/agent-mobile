@@ -14,6 +14,7 @@
 #include <cmath>
 #include <chrono>
 #include <random>
+#include <new>
 
 #include <unistd.h>
 #include <errno.h>
@@ -382,6 +383,13 @@ static struct {
     // стены, и при любом расхождении ход откатывается к этому снимку — см.
     // «Переиспользование обсчитанного» в nativeGenerateStreamMultiTurn.
     bool                          tail_cut_ok = true;
+    // Снимок ленты (только у моделей с Mamba-слоями) — см. «СНИМОК ЛЕНТЫ» у
+    // ribbon_snap_take. stable_messages — разовое задание следующей генерации
+    // разговора (nativeSetStableMessages): сколько сообщений ленты, не считая
+    // стены, не изменится на следующем ходе; -1 — задания нет.
+    int                           stable_messages = -1;
+    std::vector<uint8_t>          ribbon_snap;          // состояние после ribbon_snap_tokens
+    std::vector<llama_token>      ribbon_snap_tokens;   // пусто — снимка нет
     // Чтение состояния слоя (см. state_read.h и nativeReadLayerMean). Обратный
     // вызов стоит в контексте всегда, взводится только на время чтения.
     state_read::Hook              read_hook;
@@ -1383,6 +1391,143 @@ static int reusable_prefix(const std::vector<llama_token> & prev, const std::vec
     return std::max(0, std::min(n, (int)tokens.size() - 1));
 }
 
+/*
+ * СНИМОК ЛЕНТЫ — только у моделей с Mamba-слоями. Обсчитанное к середине им
+ * не вернуть (см. «Переиспользование обсчитанного» в
+ * nativeGenerateStreamMultiTurn), а лента меняется не только в конце:
+ * вспоминание хода уходит из ленты на следующем ходе
+ * (ConversationJournal.messagesFor). Без снимка каждый ход досчитывает всю
+ * ленту от стены.
+ *
+ * Поэтому при обсчёте хода состояние снимается на границе — после стены и
+ * прошлых ходов, до сообщений этого хода; сколько сообщений до границы,
+ * приходит заданием (nativeSetStableMessages). На следующем ходе начало
+ * запроса до этой границы то же, снимок поднимается, и досчитываются только
+ * прошлый ход и новое.
+ *
+ * Снимок живёт в памяти процесса. На диск его пишет точка разговора: у такой
+ * модели nativeStateSaveToFile пишет снимок вместо полного состояния, а
+ * nativeStateLoadFromFile поднимает его. Полное состояние после ответа ей
+ * бесполезно: следующий ход расходится с ним раньше конца, а откатить его
+ * нельзя.
+ *
+ * ВЕРНОСТЬ. Снимок поднимается, только если его токены — начало нового
+ * запроса токен в токен. Задание с неверным числом сообщений стоит скорости, а
+ * не ответа. Подъём снимка даёт те же числа на выходе модели, что и полный
+ * пересчёт, — сверено на стенде побайтно.
+ *
+ * ЦЕНА — ПАМЯТЬ. Размер — постоянная часть (сводка Mamba-слоёв) плюс часть на
+ * каждый токен до границы; у Falcon-H1 7B около 140 МБ и 23 КБ на токен
+ * (замер стенда, не телефона). Снимок один: новый заменяет прежний, и прежний
+ * освобождается раньше, чем выделяется новый.
+ *
+ * ЧЕГО НЕ УМЕЕТ. Снимок один на процесс: ход без задания (чат телеграма,
+ * судья) его не трогает, но и своего не получает. Повтор хода (замена ответа)
+ * поднимает снимок и досчитывает весь свой ход, а не только ответ. У модели
+ * без Mamba-слоёв не нужен и не снимается: ей хватает отката к совпавшему
+ * началу.
+ */
+static void ribbon_snap_drop() {
+    std::vector<uint8_t>().swap(g_state.ribbon_snap);
+    g_state.ribbon_snap_tokens.clear();
+}
+
+// Снять состояние (последовательность 0) как снимок ленты: контекст обсчитан
+// ровно до конца tokens. Под замком генерации.
+static bool ribbon_snap_take(const std::vector<llama_token> & tokens, std::string & why) {
+    ribbon_snap_drop();
+    try {
+        const size_t size = llama_state_seq_get_size(g_state.ctx, 0);
+        if (size == 0) { why = "движок отдал пустое состояние"; return false; }
+        g_state.ribbon_snap.resize(size);
+        const size_t got = llama_state_seq_get_data(g_state.ctx, g_state.ribbon_snap.data(), size, 0);
+        if (got == 0) { ribbon_snap_drop(); why = "движок не отдал состояние"; return false; }
+        g_state.ribbon_snap.resize(got);
+    } catch (const std::bad_alloc &) {
+        ribbon_snap_drop();
+        why = "не хватило памяти";
+        return false;
+    }
+    g_state.ribbon_snap_tokens = tokens;
+    return true;
+}
+
+// Поднять снимок ленты в контекст. Под замком генерации. При отказе контекст
+// пуст, а снимок выброшен: движок его не принял и не примет.
+static bool ribbon_snap_put() {
+    llama_memory_t mem = llama_get_memory(g_state.ctx);
+    llama_memory_clear(mem, true);
+    const size_t set = llama_state_seq_set_data(g_state.ctx, g_state.ribbon_snap.data(), g_state.ribbon_snap.size(), 0);
+    if (set == 0) {
+        llama_memory_clear(mem, true);
+        g_state.n_past = 0;
+        g_state.prev_prompt_tokens.clear();
+        ribbon_snap_drop();
+        return false;
+    }
+    g_state.n_past = (int)g_state.ribbon_snap_tokens.size();
+    g_state.prev_prompt_tokens = g_state.ribbon_snap_tokens;
+    return true;
+}
+
+// Файл снимка ленты: «URS1», число токенов (uint32), токены, число байт
+// (uint64), байты состояния. Свой формат, а не llama_state_seq_save_file:
+// снимок лежит в памяти, а не в контексте. Модель файл не проверяет — папка
+// точки названа отпечатком загрузки (LlmEngine.checkpointFile).
+static const char RIBBON_SNAP_MAGIC[4] = {'U', 'R', 'S', '1'};
+
+static bool ribbon_snap_write(const char * path) {
+    FILE * f = fopen(path, "wb");
+    if (!f) return false;
+    const uint32_t n_tok = (uint32_t)g_state.ribbon_snap_tokens.size();
+    const uint64_t n_bytes = (uint64_t)g_state.ribbon_snap.size();
+    bool ok = fwrite(RIBBON_SNAP_MAGIC, 1, 4, f) == 4
+        && fwrite(&n_tok, sizeof(n_tok), 1, f) == 1
+        && fwrite(g_state.ribbon_snap_tokens.data(), sizeof(llama_token), n_tok, f) == n_tok
+        && fwrite(&n_bytes, sizeof(n_bytes), 1, f) == 1
+        && fwrite(g_state.ribbon_snap.data(), 1, n_bytes, f) == n_bytes;
+    ok = (fclose(f) == 0) && ok;
+    return ok;
+}
+
+static bool ribbon_snap_read(const char * path, std::string & why) {
+    FILE * f = fopen(path, "rb");
+    if (!f) { why = "файла нет"; return false; }
+    char magic[4] = {0};
+    uint32_t n_tok = 0;
+    uint64_t n_bytes = 0;
+    bool ok = fread(magic, 1, 4, f) == 4 && std::equal(magic, magic + 4, RIBBON_SNAP_MAGIC);
+    if (!ok) why = "файл не снимок ленты (точка от прежней версии)";
+    if (ok) {
+        ok = fread(&n_tok, sizeof(n_tok), 1, f) == 1 && n_tok > 0 && n_tok < llama_n_ctx(g_state.ctx);
+        if (!ok) why = "в файле неверное число токенов";
+    }
+    std::vector<llama_token> tokens;
+    std::vector<uint8_t> data;
+    try {
+        if (ok) {
+            tokens.resize(n_tok);
+            ok = fread(tokens.data(), sizeof(llama_token), n_tok, f) == n_tok
+                && fread(&n_bytes, sizeof(n_bytes), 1, f) == 1 && n_bytes > 0;
+            if (!ok) why = "файл оборван";
+        }
+        if (ok) {
+            data.resize(n_bytes);
+            ok = fread(data.data(), 1, n_bytes, f) == n_bytes;
+            if (!ok) why = "файл оборван";
+        }
+    } catch (const std::bad_alloc &) {
+        ok = false;
+        why = "не хватило памяти";
+    }
+    fclose(f);
+    if (!ok) return false;
+    ribbon_snap_drop();
+    g_state.ribbon_snap.swap(data);
+    g_state.ribbon_snap_tokens.swap(tokens);
+    return true;
+}
+
 // 0 = fits, -1 = prompt alone overflows the context window (fatal).
 static int check_prompt_fits(int n_prompt_tokens, int max_gen_tokens) {
     if (!g_state.ctx) return -1;
@@ -1558,6 +1703,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
     g_state.n_past = 0;
     g_state.prev_prompt_tokens.clear();
     g_state.n_system_tokens = 0;
+    ribbon_snap_drop();
 
     // Copy JNI strings before any early returns — the error-path snprintf below
     // reads cacheK_s/cacheV_s, which the original code freed too early.
@@ -1886,6 +2032,16 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetSampling(
          g_state.sampling_params.seed, seed);
 }
 
+// Задание снимка ленты следующей генерации разговора: первые [n] сообщений
+// ленты (без стены) на следующем ходе не изменятся. -1 — не снимать. Разовое:
+// забирается следующей генерацией разговора при любом исходе. Зачем и чего не
+// умеет — «СНИМОК ЛЕНТЫ» у ribbon_snap_take.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetStableMessages(JNIEnv *, jobject, jint n) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    g_state.stable_messages = n;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetSystemPrompt(
         JNIEnv * env, jobject, jstring jprompt) {
@@ -1901,6 +2057,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetSystemPrompt(
     // переиспользование совпавшего начала, ради которого смена и идёт на лету.
     if (next != g_state.system_prompt) {
         g_state.n_system_tokens = 0;
+        // Снимок ленты начинается со стены: с новой стеной он не совпадёт ни с
+        // одним запросом, а память держит. Освобождаем.
+        ribbon_snap_drop();
     }
     g_state.system_prompt = std::move(next);
     LOGI("System prompt set (%zu chars)", g_state.system_prompt.size());
@@ -2443,6 +2602,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     const int live_layer_order = g_state.live_layer;
     g_state.live_layer = -1;
     if (live_layer_order >= 0) g_state.live_why = "генерация не дошла до обсчёта";
+    // Задание снимка ленты — так же первым делом (см. «СНИМОК ЛЕНТЫ»).
+    const int stable_task = g_state.stable_messages;
+    g_state.stable_messages = -1;
 
     if (!g_state.model || !g_state.ctx) {
         LOGE("Model not loaded");
@@ -2464,9 +2626,12 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     auto messages = parse_messages_json(messages_json);
 
+    // Стену ставит движок; задание снимка ленты считает сообщения без неё.
+    bool wall_inserted = false;
     if (!g_state.system_prompt.empty()) {
         if (messages.empty() || messages[0].role != "system") {
             messages.insert(messages.begin(), {"system", g_state.system_prompt});
+            wall_inserted = true;
         }
     }
 
@@ -2546,10 +2711,9 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
      * досчитывается всё после неё. Снимок для такой модели пишется ровно по
      * границе стены (ниже, при обсчёте), иначе его тоже было бы не обрезать.
      *
-     * ЧЕГО НЕ УМЕЕТ. Промежуточных снимков нет: при расхождении в конце
-     * длинной ленты у модели с Mamba-слоями досчитывается вся лента после
-     * стены. Снимок на каждый ход стоил бы ~160 МБ записи на диск за ход
-     * (объявленное число по размеру снимка стены, не мерено на ленте).
+     * Раньше снимка стены пробуется снимок ленты — состояние на границе
+     * прошлых ходов, снятое на прошлом ходе (см. «СНИМОК ЛЕНТЫ»): с ним
+     * досчитываются только прошлый ход и новое, а не вся лента.
      *
      * Каждая ветка пишет в лог ровно одну итоговую строку о совпадении —
      * их разбирает EngineLines.wallReuse на стороне приложения; отказ
@@ -2575,7 +2739,22 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         g_state.n_past = 0;
         n_common = 0;
 
-        if (starts_with_wall) {
+        const size_t n_snap = g_state.ribbon_snap_tokens.size();
+        if (!g_state.tail_cut_ok && n_snap > 0) {
+            if (n_snap < tokens.size() && std::equal(g_state.ribbon_snap_tokens.begin(),
+                                                     g_state.ribbon_snap_tokens.end(), tokens.begin())) {
+                if (ribbon_snap_put()) {
+                    n_common = (int)n_snap;
+                    LOGI("Ribbon snapshot hit: reusing %d/%d tokens", n_common, (int)tokens.size());
+                } else {
+                    LOGI("Ribbon snapshot unusable: движок не принял снимок, он выброшен");
+                }
+            } else {
+                LOGI("Ribbon snapshot unusable: начало запроса другое (в снимке %zu ток.)", n_snap);
+            }
+        }
+
+        if (n_common == 0 && starts_with_wall) {
             auto sys_tokens = tokenize_string(g_state.system_prompt, true);
             if (try_restore_prompt_cache(g_state.system_prompt, sys_tokens)) {
                 int restored = g_state.n_past;
@@ -2600,6 +2779,39 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
             LOGI("No context reuse, full re-eval of %d tokens", (int)tokens.size());
         }
     }
+    // Граница снимка ленты этого хода (см. «СНИМОК ЛЕНТЫ»); 0 — не снимать.
+    // Каждая модель с Mamba-слоями при задании пишет одну строку: снят или
+    // почему нет (ниже, при обсчёте, или здесь).
+    size_t snap_at = 0;
+    std::vector<llama_token> snap_tokens;
+    if (!g_state.tail_cut_ok && stable_task >= 0 && !splice.use) {
+        const size_t k = (size_t)stable_task + (wall_inserted ? 1 : 0);
+        std::string why;
+        if (stable_task == 0) {
+            why = "прошлых ходов нет — граница совпадает со стеной";
+        } else if (k >= messages.size()) {
+            why = "в задании сообщений больше, чем в запросе";
+        } else {
+            std::vector<common_chat_msg> head(messages.begin(), messages.begin() + k);
+            try {
+                snap_tokens = tokenize_string(apply_chat_template(head, false).prompt, true);
+            } catch (...) {
+                snap_tokens.clear();
+            }
+            if (snap_tokens.empty() || snap_tokens.size() >= tokens.size()
+                    || !std::equal(snap_tokens.begin(), snap_tokens.end(), tokens.begin())) {
+                why = "граница в запросе режется на токены иначе, чем отдельно";
+            } else if (snap_tokens == g_state.ribbon_snap_tokens) {
+                why = "граница та же, снимок уже есть";
+            } else if ((int)snap_tokens.size() < g_state.n_past) {
+                why = "граница позади обсчитанного";
+            } else {
+                snap_at = snap_tokens.size();
+            }
+        }
+        if (snap_at == 0) LOGI("Ribbon snapshot not taken: %s", why.c_str());
+    }
+
     // Если ход у модели с Mamba-слоями считается с нуля, стена обсчитывается
     // отдельно и сразу ложится на диск — см. «Переиспользование обсчитанного».
     // Пусто — не нужно или не вышло (причина в логе).
@@ -2725,25 +2937,45 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         r["failed"] = stats.failed;
         r["unsplit"] = stats.unsplit;
         g_state.last_record_report = r.dump();
-    } else if (!wall_to_save.empty()) {
-        // Стена — отдельно и на диск, потом остальное (см. wall_to_save).
-        const size_t n_wall = wall_to_save.size();
-        const float wall_share = (float)n_wall / (float)new_tokens.size();
-        scaled_progress_ctx part1 = { jni_eval_progress, &mt_progress, 0.0f, wall_share };
-        scaled_progress_ctx part2 = { jni_eval_progress, &mt_progress, wall_share, 1.0f - wall_share };
-        std::vector<llama_token> rest(new_tokens.begin() + n_wall, new_tokens.end());
-        evaluated = eval_tokens(wall_to_save, g_state.n_past, scaled_progress, &part1);
-        if (evaluated) {
-            if (save_prompt_cache(g_state.system_prompt, wall_to_save, (int)n_wall)) {
-                LOGI("Wall snapshot saved: %d tokens", (int)n_wall);
-            } else {
-                LOGI("Wall snapshot not saved: write failed");
-            }
-            evaluated = eval_tokens(rest, g_state.n_past, scaled_progress, &part2);
-        }
     } else {
-        evaluated = new_tokens.empty() || eval_tokens(new_tokens, g_state.n_past,
-                                                      jni_eval_progress, &mt_progress);
+        // Обсчёт частями: стена — и на диск (wall_to_save), до границы ленты —
+        // и снимок (snap_at), потом остальное. Без того и другого — одной частью.
+        const int n_start = g_state.n_past;
+        const size_t total = new_tokens.size();
+        size_t done = 0;
+        auto part = [&](size_t upto) -> bool {
+            if (upto <= done) return true;
+            std::vector<llama_token> piece(new_tokens.begin() + done, new_tokens.begin() + upto);
+            scaled_progress_ctx sp = { jni_eval_progress, &mt_progress,
+                                       (float)done / (float)total, (float)(upto - done) / (float)total };
+            const bool ok = eval_tokens(piece, g_state.n_past, scaled_progress, &sp);
+            done = upto;
+            return ok;
+        };
+        evaluated = true;
+        if (!wall_to_save.empty()) {
+            const size_t n_wall = wall_to_save.size();
+            evaluated = part(n_wall);
+            if (evaluated) {
+                if (save_prompt_cache(g_state.system_prompt, wall_to_save, (int)n_wall)) {
+                    LOGI("Wall snapshot saved: %d tokens", (int)n_wall);
+                } else {
+                    LOGI("Wall snapshot not saved: write failed");
+                }
+            }
+        }
+        if (evaluated && snap_at > 0) {
+            evaluated = part(snap_at - (size_t)n_start);
+            if (evaluated) {
+                std::string why;
+                if (ribbon_snap_take(snap_tokens, why)) {
+                    LOGI("Ribbon snapshot taken: %zu tokens, %zu bytes", snap_tokens.size(), g_state.ribbon_snap.size());
+                } else {
+                    LOGI("Ribbon snapshot not taken: %s", why.c_str());
+                }
+            }
+        }
+        if (evaluated) evaluated = part(total);
     }
     if (live_armed) {
         const state_read::Result live = state_read::take(g_state.read_hook, live_window);
@@ -3021,6 +3253,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeRelease(JNIEnv *, jobject) {
     g_state.n_past = 0;
     g_state.prev_prompt_tokens.clear();
     g_state.n_system_tokens = 0;
+    ribbon_snap_drop();
     g_state.system_prompt.clear();
     g_state.chat_template_override.clear();
 
@@ -3462,6 +3695,21 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeStateSaveToFile(
     std::lock_guard<std::mutex> lock(g_state.gen_mutex);
     if (!g_state.ctx) return JNI_FALSE;
 
+    // У модели с Mamba-слоями точка — снимок ленты, а не полное состояние
+    // (почему — «СНИМОК ЛЕНТЫ» у ribbon_snap_take).
+    if (!g_state.tail_cut_ok) {
+        if (g_state.ribbon_snap_tokens.empty()) {
+            LOGW("State save refused: снимка ленты ещё нет (у модели с Mamba-слоями точка — только он)");
+            return JNI_FALSE;
+        }
+        const char * spath = env->GetStringUTFChars(jpath, nullptr);
+        const bool sok = ribbon_snap_write(spath);
+        LOGI("State save to %s: %s (%zu tokens, снимок ленты)",
+             spath, sok ? "success" : "failed", g_state.ribbon_snap_tokens.size());
+        env->ReleaseStringUTFChars(jpath, spath);
+        return sok ? JNI_TRUE : JNI_FALSE;
+    }
+
     // Сохранять нечего.
     if (g_state.n_past <= 0) {
         LOGW("State save refused: nothing evaluated yet");
@@ -3494,6 +3742,25 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeStateLoadFromFile(
     if (!g_state.ctx) return JNI_FALSE;
 
     const char * path = env->GetStringUTFChars(jpath, nullptr);
+
+    // У модели с Mamba-слоями точка — снимок ленты: он ложится и в память
+    // процесса, и в контекст (см. «СНИМОК ЛЕНТЫ» у ribbon_snap_take).
+    if (!g_state.tail_cut_ok) {
+        std::string why;
+        bool sok = ribbon_snap_read(path, why);
+        if (sok && !ribbon_snap_put()) { sok = false; why = "движок не принял снимок"; }
+        if (sok) {
+            LOGI("State loaded from %s: %d tokens (снимок ленты)", path, g_state.n_past);
+        } else {
+            llama_memory_t smem = llama_get_memory(g_state.ctx);
+            if (smem) llama_memory_clear(smem, true);
+            g_state.prev_prompt_tokens.clear();
+            g_state.n_past = 0;
+            LOGE("Failed to load state from %s: %s", path, why.c_str());
+        }
+        env->ReleaseStringUTFChars(jpath, path);
+        return sok ? JNI_TRUE : JNI_FALSE;
+    }
 
     size_t n_token_count = 0;
     std::vector<llama_token> loaded(llama_n_ctx(g_state.ctx));
