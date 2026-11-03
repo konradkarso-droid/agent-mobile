@@ -1992,6 +1992,28 @@ class LlmEngine(
     )
 
     /**
+     * Ход чата телеграма: разговорная выдача (зерно, настройки разговора,
+     * перевод иероглифов), но НЕ лента экрана. Стену движок ставит сам, как и
+     * разговору экрана, — [messages] без системного первым, и тогда начало
+     * запроса совпадает со снимком стены на диске (`gguf_lib.cpp`), и считать
+     * заново приходится только чат.
+     *
+     * ПОЧЕМУ ОТДЕЛЬНЫЙ ВХОД. [generateConversationFlow] по виду запроса решает,
+     * что в движке теперь лента экрана ([stateIsConversation]). Ход чата выглядит
+     * так же, а лентой экрана не является: прими его движок за неё — точка
+     * разговора экрана перед ним не записалась бы, а следующий ход экрана
+     * пересчитал бы всю ленту заново. Здесь движок, как перед судьёй, сперва
+     * пишет точку разговора экрана, а экран поднимает её на своём ходе.
+     *
+     * ЧЕГО НЕ УМЕЕТ: DRY, план записей и живой отвод — только экрану;
+     * ожидающая стена здесь не встаёт (встанет на ходе экрана).
+     */
+    fun generateChatFlow(messages: List<Pair<String, String>>, maxTokens: Int): Flow<GenerationEvent> {
+        require(messages.firstOrNull()?.first != "system") { "ход чата не несёт своего системного первым: стену ставит движок" }
+        return guardedFlow(conversationMessages(messages), maxTokens, conversation = false, talk = true)
+    }
+
+    /**
      * Обёртка над генерацией, общая для обоих входов.
      *
      * Стояла раньше прямо в теле [generateFlow]. Вынесена, когда входов
@@ -2003,7 +2025,15 @@ class LlmEngine(
     private fun guardedFlow(
         messagesJson: String,
         maxTokens: Int,
+        /** Запрос — лента экрана: от этого флага зависят точка разговора и ожидающая стена ([stateIsConversation]). */
         conversation: Boolean,
+        /**
+         * Разговорная выдача: новое зерно, настройки разговора, перевод
+         * иероглифов. У ленты экрана — всегда; у хода чата ([generateChatFlow])
+         * — без ленты. Два флага, а не один: слитые, они заставили бы ход чата
+         * выдавать себя за ленту экрана.
+         */
+        talk: Boolean = conversation,
         /**
          * Текст, против копий которого включается DRY на этот прогон (прошлые
          * ответы агента); null — DRY выключен. Только разговору. Числа и
@@ -2038,16 +2068,17 @@ class LlmEngine(
         // Держится на том, что генерации не идут из двух мест сразу (оговорка у
         // [withDeterministicSampling]): разрешив это, ответ разговора посреди
         // прогона судьи сбросил бы ему повторяемую выдачу.
-        if (conversation) withContext(Dispatchers.IO) { applyChatSampling() }
+        if (talk) withContext(Dispatchers.IO) { applyChatSampling() }
         val dry = conversation && dryAgainst != null
         if (dry) withContext(Dispatchers.IO) {
             engine.updateSamplerParams(DRY_PARAMS_JSON)
             engine.setDryHistory(dryAgainst!!)
         }
         // План записей ставится на каждый запрос разговора, и пустым тоже:
-        // иначе отчёт прибора мог бы описать записи прошлого хода. Судье и
-        // ночным работам не ставится — их запрос записей хода не несёт.
-        if (conversation) withContext(Dispatchers.IO) { engine.setRecordPlan(recordPlanJson(recall)) }
+        // иначе отчёт прибора мог бы описать записи прошлого хода. Ходу чата —
+        // пустой: записей в нём нет. Судье и ночным работам не ставится — их
+        // запрос записей хода не несёт.
+        if (talk) withContext(Dispatchers.IO) { engine.setRecordPlan(recordPlanJson(recall?.takeIf { conversation })) }
         // Задание отвода ставится на каждый запрос, и снимается тоже: оставленное
         // взвелось бы на следующий запрос, чей бы он ни был. Итог прежнего
         // задания при снятии остаётся — его читают после хода (см. [liveReadFor]).
@@ -2060,7 +2091,7 @@ class LlmEngine(
         // Перевод иероглифов в скобках — только разговору: судье скобка
         // сломала бы цифры вердикта, циклу — код. Ставится на каждый запрос,
         // а не один раз, потому что запросы разных хозяев идут вперемешку.
-        engine.setConversationGloss(conversation)
+        engine.setConversationGloss(talk)
         watchdog.markInferenceStarted()
         val startedAtMs = System.currentTimeMillis()
         // Причина сбрасывается ЗДЕСЬ, в начале прогона, а не в конце прошлого.

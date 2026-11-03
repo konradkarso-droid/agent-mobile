@@ -193,6 +193,9 @@ class TrustedMediator(context: Context) {
      *  - ввод пользователя         -> USER_STATED  + OBSERVED
      *  - вывод/итог работы агента  -> AGENT_INFERRED + INFERRED
      *  - распознанный текст с фото -> OCR_EXTRACTED + UNCERTAIN
+     *  - слова из чата телеграма   -> USER_STATED + OBSERVED с [Heard]; чужие —
+     *    с подписью «Имя: …» в тексте, как чужая речь, переданная владельцем
+     *    (nav.ForeignSpeech), свои слова владельца — без подписи
      *
      * ВОЗВРАЩАЕТ ИСХОД, А НЕ НОМЕР. Дословный повтор в память не кладётся, и
      * номера новой записи в этом случае не существует. Пока возвращалось
@@ -208,13 +211,19 @@ class TrustedMediator(context: Context) {
         content: String,
         source: SourceKind,
         confidence: ConfidenceLevel,
-        tag: String = "general"
+        tag: String = "general",
+        /** Где и от кого прозвучало — только для записей из чата; с экрана null (см. поля в [Sticker]). */
+        heard: Heard? = null
     ): SaveResult {
         val sticker = Sticker(
             content = content,
             tag = tag,
             source = source.name,
-            confidence = confidence.name
+            confidence = confidence.name,
+            speaker = heard?.speaker,
+            place = heard?.place,
+            chat = heard?.chat,
+            addressRing = heard?.addressRing
         )
         return describeSave(hourglass.saveEventChecked(sticker))
     }
@@ -493,3 +502,15 @@ class TrustedMediator(context: Context) {
     /** Item 6b/8: читает снимок последнего стабильного состояния (null, если ещё не было). */
     suspend fun getStableSnapshot(): LastStableSnapshot? = snapshotDao.get()
 }
+
+/**
+ * Слово канала о записи из чата: кто сказал (ключ персоны), где (nav.Place),
+ * в каком чате и в каком кольце обращения. Задаёт канал (gate.link.ChatLink),
+ * а не текст и не модель. Смысл полей — у [Sticker].
+ */
+data class Heard(
+    val speaker: String,
+    val place: String,
+    val chat: String,
+    val addressRing: String,
+)

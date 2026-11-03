@@ -148,6 +148,14 @@ object AddressSorter {
     fun modelReads(ring: Ring): Boolean = ring != Ring.GENERAL
 
     /**
+     * Судить ли запись памяти с кольцом [addressRing] (поле записи, имя [Ring]).
+     * null — запись с экрана, судится как всегда; кольцо — по [judged];
+     * незнакомое имя — не судится: о сомнительной записи судить нельзя.
+     */
+    fun judgedRecord(addressRing: String?): Boolean =
+        addressRing == null || Ring.entries.firstOrNull { it.name == addressRing }?.let(::judged) == true
+
+    /**
      * Слова, после которых имя — обращение и без запятой («Эй Астра», «Слушай
      * Астра»). Объявленный список, не подобранный; дополняется здесь.
      */

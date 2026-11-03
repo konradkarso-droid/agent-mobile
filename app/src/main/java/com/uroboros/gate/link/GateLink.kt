@@ -48,8 +48,9 @@ import java.util.concurrent.ConcurrentHashMap
  * базе. Сдвиг пишется после разбора обновления, а не до: упал разбор — то же
  * придёт снова, лишнее отсеется.
  *
- * ПРИНЯТОЕ — ТОЛЬКО СТРОКАМИ ([lines]), в памяти процесса: ни в память агента,
- * ни модели. Что делать с пришедшим, решается отдельно.
+ * ПРИНЯТОЕ ВРАТАМИ — ТОЛЬКО СТРОКАМИ ([lines]), в памяти процесса: пакеты не
+ * идут ни в память агента, ни модели. Сообщение без файла — не пакет, а слова
+ * чата: их ведёт [ChatLink] (лента чата, память, ответ).
  *
  * АВАРИЙНЫЙ СТОП останавливает опрос и отправку: стоп только запрещает.
  *
@@ -99,6 +100,7 @@ object GateLink {
     fun start(context: Context, scope: CoroutineScope) {
         if (job?.isActive == true) return
         val app = context.applicationContext
+        ChatLink.start(app, scope)
         job = scope.launch(Dispatchers.IO) {
             try {
                 loop(app)
@@ -113,7 +115,8 @@ object GateLink {
 
     private fun day(ms: Long) = SimpleDateFormat("dd.MM.yyyy", Locale.ROOT).format(Date(ms))
 
-    private fun note(vararg ls: String?) {
+    /** Строка события на экран врат (новые сверху). Зовут канал и слова чата ([ChatLink]). */
+    fun note(vararg ls: String?) {
         val add = ls.filterNotNull().map { "${clock(System.currentTimeMillis())} $it" }
         if (add.isEmpty()) return
         synchronized(this) { _lines.value = (add.reversed() + _lines.value).take(MAX_LINES) }
@@ -208,7 +211,7 @@ object GateLink {
                     failures = 0
                     status(s, "Телеграм: опрос идёт, последний ответ сервера ${clock(System.currentTimeMillis())}")
                     for (u in GateBotApi.updates(reply.result)) {
-                        u.message?.let { handle(s, it) }
+                        u.message?.let { handle(app, s, it) }
                         prefs.edit().putLong(offsetKey(s.me.id), u.id + 1).apply()
                     }
                 }
@@ -246,11 +249,23 @@ object GateLink {
         return Session(token, http, me, store, post, head)
     }
 
-    private fun handle(s: Session, m: GateBotApi.Message) {
+    private suspend fun handle(app: Context, s: Session, m: GateBotApi.Message) {
         val fromUsername = m.fromUsername
         if (m.fromId != null && fromUsername != null) names[fromUsername.lowercase(Locale.ROOT)] = m.fromId
         GateClock.selfCheck(m.dateSec * 1000, System.currentTimeMillis(), GateTelegram.SERVER)?.let { note(it) }
         val doc = m.doc
+        // Без файла пакета нет: это слова чата. Сбой слов не роняет опрос —
+        // сдвиг всё равно запишется, и сообщение не придёт снова бесконечно.
+        if (doc == null) {
+            try {
+                ChatLink.heard(app, m, s.me)
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                note("Слова: приём сорвался — ${t.javaClass.simpleName}: ${GateBotApi.scrub(t.message ?: "", s.token)}")
+            }
+            return
+        }
         var file: ByteArray? = null
         if (GateBotApi.needsFile(m) && doc != null) {
             file = try {
@@ -321,6 +336,29 @@ object GateLink {
         val what = send.forms.joinToString(", ") { GateBotApi.fileNameOf(it).removeSuffix(".txt") }
         note("Ушло в канал (${peer?.id ?: to}): $what — это ещё не «принял»")
         return chatId
+    }
+
+    /** Итог отправки текста: номер ушедшего сообщения или причина, почему не ушло. */
+    class TextSent(val messageId: Long?, val failure: String?)
+
+    /**
+     * Текст [text] в чат [chatId] ответом на [replyTo], в ветку [thread]. Зовёт
+     * только [ChatLink] — после ворот действий. Блокирует поток. Причина
+     * отказа — без токена.
+     */
+    fun sendText(chatId: Long, text: String, replyTo: Long?, thread: Long?): TextSent {
+        val s = ready() ?: return TextSent(null, "канал не готов (нет токена, нет службы или аварийный стоп)")
+        val r = try {
+            s.http.sendMessage(chatId, text, replyTo, thread)
+        } catch (e: IOException) {
+            return TextSent(null, e.message ?: "сеть")
+        } catch (e: IllegalArgumentException) {
+            return TextSent(null, e.message ?: "текст не годится")
+        }
+        return when (r) {
+            is GateBotApi.Reply.Error -> TextSent(null, "${r.code} ${GateBotApi.scrub(r.description, s.token)}")
+            is GateBotApi.Reply.Ok -> TextSent(GateBotApi.sentMessageId(r.result), null)
+        }
     }
 
     // --- Действия владельца с экрана врат ---

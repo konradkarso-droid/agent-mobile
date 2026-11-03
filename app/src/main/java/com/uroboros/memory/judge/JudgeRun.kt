@@ -1,5 +1,6 @@
 package com.uroboros.memory.judge
 
+import com.uroboros.memory.nav.AddressSorter
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.HOT_LAYERS
@@ -326,6 +327,9 @@ class JudgeRun(
         val candidates = stickers.getAll()
             .filter { it.layer in HOT_LAYERS }
             .filter { !it.reviewPending }
+            // Из чата судится только обращённое к агенту (nav.AddressSorter):
+            // «про агента» и «сомнительно» — не ему сказано.
+            .filter { AddressSorter.judgedRecord(it.addressRing) }
             .sortedByDescending { it.createdAt }
         val (sized, tooLong) = candidates.partition { it.content.length <= MAX_RECORD_CHARS }
         val (asserting, onlyQuestions) = sized.partition { !RiskTrigger.isOnlyQuestions(it.content) }

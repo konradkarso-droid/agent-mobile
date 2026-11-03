@@ -32,6 +32,14 @@ class TgHttp(private val token: String) {
         return call(GateBotApi.methodUrl(token, "sendDocument"), body = body, contentType = "multipart/form-data; boundary=$boundary")
     }
 
+    /** Текст в чат (тело — [GateBotApi.messageBody]). */
+    fun sendMessage(chatId: Long, text: String, replyTo: Long?, thread: Long?): GateBotApi.Reply =
+        call(
+            GateBotApi.methodUrl(token, "sendMessage"),
+            body = GateBotApi.messageBody(chatId, text, replyTo, thread),
+            contentType = "application/x-www-form-urlencoded; charset=UTF-8",
+        )
+
     /** Скачать файл по пути из `getFile`; больше [maxBytes] — не дочитывается, IOException. */
     fun download(path: String, maxBytes: Int): ByteArray {
         val (code, bytes) = exchange(GateBotApi.fileUrl(token, path), 30_000, null, null, maxBytes)

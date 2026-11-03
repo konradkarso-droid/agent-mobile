@@ -1,0 +1,453 @@
+package com.uroboros.gate.link
+
+import android.content.Context
+import android.net.Uri
+import android.os.PowerManager
+import androidx.documentfile.provider.DocumentFile
+import com.dark.gguf_lib.models.GenerationEvent
+import com.uroboros.AgentService
+import com.uroboros.ModelPrefs
+import com.uroboros.ProcessObjects
+import com.uroboros.gate.ChatFeed
+import com.uroboros.gate.ChatReply
+import com.uroboros.gate.GateBotApi
+import com.uroboros.gate.GateTelegram
+import com.uroboros.gate.TgWords
+import com.uroboros.llm.ChatDatabase
+import com.uroboros.llm.ChatLine
+import com.uroboros.llm.GenerationEnd
+import com.uroboros.llm.Glance
+import com.uroboros.memory.ActionProvenance
+import com.uroboros.memory.ActionRequest
+import com.uroboros.memory.ActionType
+import com.uroboros.memory.ConfidenceLevel
+import com.uroboros.memory.EmergencyStop
+import com.uroboros.memory.GateResult
+import com.uroboros.memory.GatedAction
+import com.uroboros.memory.Heard
+import com.uroboros.memory.SourceKind
+import com.uroboros.memory.nav.AddressSorter
+import com.uroboros.memory.nav.PersonKey
+import com.uroboros.memory.nav.Place
+import com.uroboros.safety.SafetyZone
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Слова в телеграме: обычные сообщения людей и ботов боту агента — лента
+ * чата, кольцо обращения, память, ответ. Живёт в службе агента рядом с
+ * каналом врат ([GateLink]): тот опрашивает и шлёт, этот решает, что делать
+ * со словами.
+ *
+ * ПУТЬ СООБЩЕНИЯ ([heard]): слова ([TgWords]) → «сообщение прямо перед этим»
+ * из ленты чата → кольцо ([AddressSorter.sort]) → строка ленты чата
+ * ([ChatDatabase]) → память, если велит кольцо (AddressSorter.memory) → в
+ * очередь ответа, если кольцо велит ответить или переспросить.
+ *
+ * ПАМЯТЬ — общая, через дверь записи (TrustedMediator.saveEvent) со словом
+ * канала: кто сказал, где, в каком чате, кольцо (memory.Heard). Чужие слова —
+ * «Подпись: текст» ([TgWords.memoryText]): отбор, портрет и судья читают их
+ * чужой речью, как реплики других, переданные владельцем. Слова владельца,
+ * отмеченного «это я» ([ChatPrefs.owner]), — без подписи: они его.
+ *
+ * ОТВЕТ ([work]) — по одному, в очереди, под замком хода
+ * (ConversationTurns.aside), с решением [ChatReply.decide] до хода и
+ * повторной проверкой после замка. Модель читает стену и ленту чата
+ * ([ChatFeed]) — записей памяти нет: граница там. Ушло — только через ворота
+ * действий с согласием владельца на срок ([ChatPrefs.consent]); каждое
+ * отправленное — в журнале действий.
+ *
+ * ЧЕГО НЕ УМЕЕТ:
+ *  - суд и ночь телеграму не уступают: сообщение ждёт, дождавшееся сверх
+ *    срока ([ChatReply.STALE_MS]) молчит со строкой;
+ *  - перехвата повтора и порчи слов, как у экрана, нет: режется только вызов
+ *    приборов;
+ *  - очередь и счёт обращения — в памяти процесса: после комы ждавшие ответа
+ *    сообщения остаются без ответа (строки ленты и память — на диске);
+ *  - отвечает ровно на то сообщение, что его позвало: несколько подряд — несколько ответов.
+ */
+object ChatLink {
+
+    /** Компонент для ворот действий и согласия: одно имя в одном месте. */
+    const val REQUESTED_BY = "ChatLink: ответ в телеграме"
+
+    /** Объявленные числа, не подобранные: предел ответа и сколько строк ленты читать на ход. */
+    const val ANSWER_TOKENS = 300
+    private const val RIBBON_READ = 40
+
+    /** Между двумя отправками в один чат: правило телеграма — около раза в секунду (помню). */
+    private const val SEND_GAP_MS = 1_100L
+
+    /** Срок блокировки сна на ход — страховка, если finally не отработает. Объявленное. */
+    private const val WAKE_MS = 10 * 60_000L
+
+    private val _status = MutableStateFlow(listOf("Слова: сообщений не было"))
+
+    /** Строки слов для экрана врат: счёт, согласие, владелец, имена, кольца, ответы. */
+    val status: StateFlow<List<String>> get() = _status
+
+    private class Job(
+        val chatId: Long,
+        val chat: String,
+        val thread: Long?,
+        val lineId: Long,
+        val messageId: Long,
+        val sender: PersonKey,
+        val answer: AddressSorter.Answer,
+        val senderIsBot: Boolean,
+        val atMs: Long,
+        val place: Place,
+        val chatTitle: String?,
+        val tallyKey: String,
+    )
+
+    private val queue = Channel<Job>(Channel.UNLIMITED)
+    private val waiting = ConcurrentHashMap<String, AtomicInteger>()
+    private val tallies = ConcurrentHashMap<String, Pair<String, AddressSorter.Tally>>()
+    private val answers = ConcurrentHashMap<String, String>()
+    private val lastSent = ConcurrentHashMap<Long, Long>()
+    private val direct = AtomicInteger(0)
+    private val group = AtomicInteger(0)
+
+    @Volatile
+    private var lastAt: Long? = null
+
+    @Volatile
+    private var me: GateBotApi.Me? = null
+
+    @Volatile
+    private var failedUri: String? = null
+
+    private var worker: kotlinx.coroutines.Job? = null
+
+    /** Запустить очередь ответов в области службы; уже идёт — ничего. */
+    @Synchronized
+    fun start(context: Context, scope: CoroutineScope) {
+        if (worker?.isActive == true) return
+        val app = context.applicationContext
+        // Объекты процесса — здесь, на потоке службы, а не первым сообщением на
+        // потоке опроса: сторож и движок заводятся там, где их ждут.
+        ProcessObjects.get(app)
+        refresh(app)
+        worker = scope.launch(Dispatchers.IO) { work(app) }
+    }
+
+    private fun clock(ms: Long) = SimpleDateFormat("HH:mm", Locale.ROOT).format(Date(ms))
+
+    private fun moment(ms: Long) = SimpleDateFormat("dd.MM HH:mm", Locale.ROOT).format(Date(ms))
+
+    /** Сообщение без файла из канала. Зовёт опрос [GateLink] на своём потоке. */
+    suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
+        this.me = me
+        val w = when (val read = TgWords.of(m, me)) {
+            is TgWords.Read.NotWords -> {
+                GateLink.note("Слова: ${read.why}")
+                refresh(app)
+                return
+            }
+            is TgWords.Read.Of -> read.words
+        }
+        val dao = ChatDatabase.getInstance(app).chatLineDao()
+        val prior = dao.recent(w.chat.id, w.thread, 1).firstOrNull()?.let(::priorOf)
+        val route = AddressSorter.sort(w.message, self(app, me), prior)
+        val lineId = dao.insert(
+            ChatLine(
+                chat = w.chat.id, thread = w.thread, messageId = w.messageId, sender = w.message.sender.id,
+                name = w.name, signature = w.signature, isBot = w.senderIsBot, isAgent = false,
+                text = w.message.text, ring = route.ring.name, reason = route.reason,
+                replyTo = w.message.replyTo?.id, at = w.atMs, place = w.place.name,
+            )
+        )
+        if (w.place == Place.DIRECT) direct.incrementAndGet() else group.incrementAndGet()
+        lastAt = System.currentTimeMillis()
+        val tallyKey = w.chatRef
+        val chatName = if (w.place == Place.DIRECT) w.name else (w.chatTitle ?: w.chat.id) + (w.thread?.let { ", ветка $it" } ?: "")
+        tallies.compute(tallyKey) { _, old -> chatName to ((old?.second ?: AddressSorter.Tally()) + route) }
+
+        val owner = ChatPrefs.owner(app)?.key == w.message.sender
+        val memo = remember(app, w, route, owner)
+        GateLink.note("Слова (${w.name}, ${placeWord(w.place)}): ${ringWord(route.ring)} — ${route.reason}; $memo")
+
+        val answer = AddressSorter.answer(route.ring)
+        if (answer != AddressSorter.Answer.SILENT) {
+            val counter = waiting.getOrPut(tallyKey) { AtomicInteger(0) }
+            if (counter.get() >= ChatReply.MAX_QUEUE) {
+                answers[tallyKey] = "Ответ ($chatName): не отвечаю — очередь полна (${ChatReply.MAX_QUEUE})"
+            } else {
+                counter.incrementAndGet()
+                queue.trySend(
+                    Job(
+                        chatId = m.chatId, chat = w.chat.id, thread = w.thread, lineId = lineId, messageId = w.messageId,
+                        sender = w.message.sender, answer = answer, senderIsBot = w.senderIsBot, atMs = w.atMs,
+                        place = w.place, chatTitle = w.chatTitle, tallyKey = tallyKey,
+                    )
+                )
+            }
+        }
+        refresh(app)
+    }
+
+    /** Положить в память по кольцу; итог словами для строки события. */
+    private suspend fun remember(app: Context, w: TgWords.Words, route: AddressSorter.Route, owner: Boolean): String {
+        if (AddressSorter.memory(route.ring) == AddressSorter.Memory.NONE) return "в память не идёт"
+        val text = TgWords.memoryText(w.message.text, w.signature, owner)
+            ?: return "в память не легло: подпись «${w.signature}» не читается чужой речью"
+        return try {
+            val saved = ProcessObjects.get(app).mediator.saveEvent(
+                content = text,
+                source = SourceKind.USER_STATED,
+                confidence = ConfidenceLevel.OBSERVED,
+                heard = Heard(w.message.sender.id, w.place.name, w.chatRef, route.ring.name),
+            )
+            when {
+                !saved.stored -> "в памяти уже есть"
+                owner -> "в память — ваши слова"
+                else -> "в память — с подписью «${w.signature}»"
+            }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            "в память не легло: ${t.javaClass.simpleName}"
+        }
+    }
+
+    private fun self(app: Context, me: GateBotApi.Me) = AddressSorter.Self(
+        key = GateTelegram.userKey(me.id),
+        usernames = setOfNotNull(me.username),
+        names = ChatPrefs.names(app),
+    )
+
+    private fun priorOf(line: ChatLine) = AddressSorter.Prior(
+        sender = PersonKey(line.sender),
+        ring = line.ring?.let { r -> AddressSorter.Ring.entries.firstOrNull { it.name == r } },
+        replyTo = line.replyTo?.let(::PersonKey),
+    )
+
+    private fun placeWord(p: Place) = if (p == Place.DIRECT) "личка" else "группа"
+
+    private fun ringWord(r: AddressSorter.Ring) = when (r) {
+        AddressSorter.Ring.TO_AGENT -> "к агенту"
+        AddressSorter.Ring.ABOUT_AGENT -> "про агента"
+        AddressSorter.Ring.DOUBTFUL -> "сомнительно"
+        AddressSorter.Ring.GENERAL -> "общее"
+    }
+
+    // --- Очередь ответов ---
+
+    private suspend fun work(app: Context) {
+        for (job in queue) {
+            waiting[job.tallyKey]?.decrementAndGet()
+            val name = tallies[job.tallyKey]?.first ?: job.chat
+            val line = try {
+                reply(app, job)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                "не ответил — сбой: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}"
+            }
+            answers[job.tallyKey] = "Ответ ($name): $line"
+            refresh(app)
+        }
+    }
+
+    private fun watchdogRefusal(app: Context): String? {
+        val watchdog = ProcessObjects.get(app).watchdog
+        return when {
+            watchdog.zoneObservation().powerLastAtMs == null -> "нет показаний батареи"
+            watchdog.zone.value != SafetyZone.COMFORT -> "зона ${watchdog.zone.value} — не «норма»"
+            else -> watchdog.longRunBlockReason()
+        }
+    }
+
+    private fun nightRunning() = AgentService.state.value is AgentService.RunState.Running
+
+    /** Один ответ; итог словами. */
+    private suspend fun reply(app: Context, job: Job): String {
+        val dao = ChatDatabase.getInstance(app).chatLineDao()
+        val recent = dao.recent(job.chat, job.thread, RIBBON_READ).asReversed()
+        val at = recent.indexOfLast { it.id == job.lineId }
+        if (at < 0) return "не ответил — строки нет в ленте чата"
+        val upTo = recent.subList(0, at + 1)
+        val now = System.currentTimeMillis()
+        val inputs = ChatReply.Inputs(
+            answer = job.answer,
+            emergencyStop = EmergencyStop.isActive(),
+            watchdogRefusal = watchdogRefusal(app),
+            consentValid = ChatPrefs.consent(app, now) != null,
+            nightRunning = nightRunning(),
+            ageMs = now - job.atMs,
+            newer = dao.countAfter(job.chat, job.thread, job.lineId),
+            senderIsBot = job.senderIsBot,
+            answersSinceHuman = ChatReply.answersSinceHuman(upTo.dropLast(1).map { ChatReply.Turn(it.isAgent, it.isBot) }),
+        )
+        return when (val d = ChatReply.decide(inputs)) {
+            is ChatReply.Decision.Silent -> "не отвечаю — ${d.why}"
+            ChatReply.Decision.Ask -> {
+                val failure = send(app, job, ChatReply.ASK_TEXT, ActionProvenance.CODE)
+                if (failure != null) "не переспросил — $failure" else {
+                    tallies.computeIfPresent(job.tallyKey) { _, v -> v.first to v.second.asked() }
+                    "переспросил ${clock(System.currentTimeMillis())}"
+                }
+            }
+            ChatReply.Decision.Answer -> answer(app, job, upTo)
+        }
+    }
+
+    private suspend fun answer(app: Context, job: Job, upTo: List<ChatLine>): String {
+        val objects = ProcessObjects.get(app)
+        ensureModel(app, objects)?.let { return "не отвечаю — $it" }
+        val engine = objects.llmEngine
+        val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "uroboros:chat").apply { setReferenceCounted(false) }
+        wake.acquire(WAKE_MS)
+        val generated = try {
+            objects.turns.aside {
+                // За замком — заново: пока ждали, мог начаться суд, сработать стоп или нагреться телефон.
+                when {
+                    EmergencyStop.isActive() -> Generated(null, "аварийный стоп")
+                    nightRunning() -> Generated(null, "началась ночная работа")
+                    watchdogRefusal(app) != null -> Generated(null, "сторож: ${watchdogRefusal(app)}")
+                    !engine.isLoaded -> Generated(null, "модель выгружена")
+                    else -> generate(app, job, upTo)
+                }
+            }
+        } finally {
+            if (wake.isHeld) wake.release()
+        }
+        generated.why?.let { return "не отвечаю — $it" }
+        val text = generated.text ?: return "не отвечаю — ответа нет"
+        tallies.computeIfPresent(job.tallyKey) { _, v -> v.first to v.second.read() }
+        send(app, job, text, ActionProvenance.MODEL_OUTPUT)?.let { return "ответ не ушёл — $it" }
+        return "ответил ${clock(System.currentTimeMillis())}, ${text.length} зн."
+    }
+
+    private class Generated(val text: String?, val why: String?)
+
+    private suspend fun generate(app: Context, job: Job, upTo: List<ChatLine>): Generated {
+        val engine = ProcessObjects.get(app).llmEngine
+        val owner = ChatPrefs.owner(app)
+        val lines = upTo.map { l ->
+            ChatFeed.Line(
+                isAgent = l.isAgent,
+                signature = l.signature,
+                text = l.text,
+                modelReads = l.isAgent || l.ring?.let { r ->
+                    AddressSorter.Ring.entries.firstOrNull { it.name == r }?.let(AddressSorter::modelReads)
+                } == true,
+            )
+        }
+        val ownerSignature = owner?.let { o -> upTo.lastOrNull { it.sender == o.key.id }?.signature }
+        val place = ChatFeed.placeLine(job.place == Place.DIRECT, job.chatTitle, ownerSignature)
+        val selfLines = engine.wallFor().substringBefore(Glance.WALL_BLOCK).lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val note = ChatFeed.prochnostNote(upTo.last().text, upTo.filter { it.isAgent }.map { it.text }, selfLines)
+        val messages = ChatFeed.messages(lines, place, note)
+        val out = StringBuilder()
+        var error: String? = null
+        engine.generateChatFlow(messages, ANSWER_TOKENS).collect { e ->
+            when (e) {
+                is GenerationEvent.Token -> out.append(e.text)
+                is GenerationEvent.Error -> error = e.message
+                else -> Unit
+            }
+        }
+        error?.let { return Generated(null, "движок: $it") }
+        if (engine.lastGenerationEnd != GenerationEnd.COMPLETED) return Generated(null, engine.getGenerationEndReport())
+        // Вызов приборов в телеграм не уходит: в чате приборов нет.
+        val text = TgWords.cut(out.toString().substringBefore(Glance.CALL_OPEN))
+        return if (text.isEmpty()) Generated(null, "модель не выдала ни знака") else Generated(text, null)
+    }
+
+    /** Загрузить последнюю выбранную модель, если её нет; null — готово, иначе причина. */
+    private suspend fun ensureModel(app: Context, objects: ProcessObjects.Held): String? {
+        val engine = objects.llmEngine
+        if (engine.isLoaded) return null
+        val uri = ModelPrefs.lastModelUri(app) ?: return "модель не выбрана"
+        if (uri == failedUri) return "модель не загрузилась — снова попробую после выбора модели или комы"
+        val parsed = Uri.parse(uri)
+        if (!engine.loadModelFromUri(parsed)) {
+            failedUri = uri
+            return "модель не загрузилась"
+        }
+        objects.loadedModelName = DocumentFile.fromSingleUri(app, parsed)?.name ?: parsed.lastPathSegment
+        return null
+    }
+
+    /**
+     * Отправить [text] ответом на сообщение задания: ворота с согласием, пауза
+     * чата, канал, строка ленты. null — ушло; иначе причина.
+     */
+    private suspend fun send(app: Context, job: Job, text: String, provenance: ActionProvenance): String? {
+        val consent = ChatPrefs.consent(app)
+        val verdict = GatedAction.evaluate(
+            app,
+            ActionRequest(
+                type = ActionType.SEND_MESSAGE,
+                requestedBy = REQUESTED_BY,
+                confirmedBy = consent?.id,
+                provenance = provenance,
+                crossesDeviceBoundary = true,
+                isReversible = false,
+            ),
+            consent,
+        )
+        if (verdict.result != GateResult.ALLOW) return "ворота: ${verdict.reason}"
+        val since = System.currentTimeMillis() - (lastSent[job.chatId] ?: 0L)
+        if (since < SEND_GAP_MS) delay(SEND_GAP_MS - since)
+        val sent = GateLink.sendText(job.chatId, text, job.messageId, job.thread)
+        sent.failure?.let { return it }
+        val now = System.currentTimeMillis()
+        lastSent[job.chatId] = now
+        val meId = me?.id ?: return null
+        ChatDatabase.getInstance(app).chatLineDao().insert(
+            ChatLine(
+                chat = job.chat, thread = job.thread, messageId = sent.messageId ?: 0L,
+                sender = GateTelegram.userKey(meId).id, name = "агент", signature = "", isBot = true, isAgent = true,
+                text = text, ring = null, reason = null, replyTo = job.sender.id, at = now, place = job.place.name,
+            )
+        )
+        return null
+    }
+
+    // --- Прибор ---
+
+    /** Собрать строки экрана заново. Зовётся после каждого события. */
+    fun refresh(context: Context) {
+        val app = context.applicationContext
+        val now = System.currentTimeMillis()
+        val out = ArrayList<String>()
+        val d = direct.get()
+        val g = group.get()
+        out += if (d + g == 0) "Слова: сообщений не было (с запуска службы)"
+        else "Слова: личка $d · группы $g · последнее ${lastAt?.let(::clock) ?: "?"}"
+        out += ChatPrefs.consent(app, now)?.let { "Отвечать в телеграме: разрешено до ${moment(it.expiresAt)}" }
+            ?: "Отвечать в телеграме: не разрешено (кнопка «Отвечать» вверху справа)"
+        out += ChatPrefs.owner(app)?.let { "Владелец в телеграме: ${it.name} (${it.key.id})" }
+            ?: "Владелец в телеграме: не отмечен (кнопка «Мой тг» вверху справа)"
+        val names = ChatPrefs.names(app)
+        out += if (names.isEmpty()) "Имена агента: не объявлены — в группах по имени не сортирую (кнопка «Имена»)"
+        else "Имена агента: ${names.joinToString(", ")}"
+        me?.let { m ->
+            out += when (m.readsAllGroupMessages) {
+                true -> "Приватность в группах: выключена — вижу все сообщения"
+                false -> "Приватность в группах: включена — вижу только обращённое (выключить в @BotFather: /setprivacy)"
+                null -> "Приватность в группах: телеграм не сказал"
+            }
+        }
+        for ((key, v) in tallies.entries.sortedBy { it.key }) {
+            out += v.second.meterLine(v.first, names)
+            answers[key]?.let { out += it }
+        }
+        _status.value = out
+    }
+}

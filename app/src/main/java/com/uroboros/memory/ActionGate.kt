@@ -9,7 +9,14 @@ enum class ActionProvenance {
     USER,
     MODEL_OUTPUT,
     WEB_FETCH,
-    OTHER_AGENT
+    OTHER_AGENT,
+
+    /**
+     * Текст собран кодом по правилу, без модели и без человека (переспрос
+     * агента в чате «Это мне?»). Не пользователь — вес тот же, что у прочих
+     * не-пользовательских.
+     */
+    CODE
 }
 
 /**
@@ -119,11 +126,15 @@ object ActionGate {
      *   с подтверждением. Умолчание null сохраняет старые вызовы рабочими.
      * @param now время для проверки срока разрешения — параметром ради
      *   детерминированного юнит-теста.
+     * @param consent согласие владельца на срок ([StandingConsent]), если оно
+     *   есть. Покрывает тип и компонент, без задачи; стоит рядом с
+     *   разрешением задачи и ниже потолка, как и оно.
      */
     fun evaluate(
         request: ActionRequest,
         authorization: TaskAuthorization? = null,
-        now: Long = System.currentTimeMillis()
+        now: Long = System.currentTimeMillis(),
+        consent: StandingConsent? = null
     ): ActionVerdict {
         // Правка 2026-08-24. Аварийный стоп проверяется ПЕРВЫМ — раньше allow-list,
         // раньше подсчёта весов. Пока флаг взведён, ни одно действие не проходит,
@@ -181,9 +192,13 @@ object ActionGate {
         // области — тип, запросивший компонент, задача — и срок не должен истечь.
         // Запрос без taskSessionId не покрывается ничем: действие вне задачи
         // не может опираться на разрешение, выданное задаче.
-        val authorized = authorization != null &&
+        val byTask = authorization != null &&
             request.taskSessionId != null &&
             authorization.covers(request.type, request.requestedBy, request.taskSessionId, now)
+        // Согласие на срок — вторая, отдельная дверь: без задачи, по типу и
+        // компоненту. Какая из двух открыла — видно в тексте вердикта.
+        val byConsent = !byTask && consent != null && consent.covers(request.type, request.requestedBy, now)
+        val authorized = byTask || byConsent
 
         // Порядок именно такой: сначала обычный порог, потом безусловный потолок,
         // и только потом разрешение. Потолок стоит ВЫШЕ разрешения — иначе
@@ -222,12 +237,22 @@ object ActionGate {
                 "Отказано: риск $riskWeight из максимума $DENY_THRESHOLD допустимых. " +
                     "Что насчитало: $whatCounted. " +
                     "Действие ${request.type}, запросил ${request.requestedBy}. " +
-                    if (authorization == null) {
+                    if (authorization == null && consent != null) {
+                        "Согласие ${consent.describe()} сюда не подходит " +
+                            "(другой тип, другой запросивший или истёк срок)."
+                    } else if (authorization == null) {
                         "Нужно подтверждение человека — его не было."
                     } else {
                         "Предъявленное ${authorization.describe()} сюда не подходит " +
                             "(другая задача, другой запросивший, другой тип или истёк срок)."
                     }
+
+            // Разрешено согласием владельца на срок: вес честный, рядом — чьё.
+            byConsent && riskWeight >= DENY_THRESHOLD ->
+                "Разрешено согласием владельца: риск $riskWeight выше обычного " +
+                    "порога $DENY_THRESHOLD, но ниже потолка $AUTHORIZATION_CEILING. " +
+                    "Действует ${consent!!.describe()}. " +
+                    "Что насчитало: $whatCounted."
 
             // Разрешено человеком: вес остаётся честным, в тексте видно и риск,
             // и то, чьим разрешением он покрыт.

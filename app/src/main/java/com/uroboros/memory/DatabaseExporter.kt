@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.provider.MediaStore
 import com.uroboros.gate.store.GateDatabase
+import com.uroboros.llm.ChatDatabase
 import com.uroboros.llm.JournalDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -101,6 +102,18 @@ object DatabaseExporter {
             fileName = GateDatabase.FILE_NAME,
             checkpoint = { context ->
                 GateDatabase.getInstance(context)
+                    .openHelper.writableDatabase
+                    .query("PRAGMA wal_checkpoint(FULL)")
+                    .use { it.moveToFirst() }
+            }
+        ),
+        // Переписка в телеграме: в выгрузке — чужие сообщения. Учить на ней
+        // модели нельзя (условия телеграма, см. llm.ChatDatabase).
+        Source(
+            label = "чаты телеграма",
+            fileName = ChatDatabase.FILE_NAME,
+            checkpoint = { context ->
+                ChatDatabase.getInstance(context)
                     .openHelper.writableDatabase
                     .query("PRAGMA wal_checkpoint(FULL)")
                     .use { it.moveToFirst() }
