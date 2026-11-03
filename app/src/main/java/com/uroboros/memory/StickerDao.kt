@@ -472,6 +472,9 @@ interface StickerDao {
     // «Принятая» строка — с меткой identity, не на проверке и не отвергнутая.
     // Условие одно на все запросы ниже; стена, счёт стены и правило подсказки
     // обязаны видеть один и тот же набор.
+    //
+    // Строка о себе — с основанием (basedOnId); без основания — строка паспорта
+    // (dream.Passport), у неё свои запросы ниже. Почему развести — там.
 
     /**
      * Тексты принятых строк «о себе», старые первыми, не больше [limit]. Это
@@ -481,24 +484,35 @@ interface StickerDao {
      * начало стены движок переиспользует.
      */
     @Query(
-        "SELECT content FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' " +
+        "SELECT content FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId IS NOT NULL " +
             "AND reviewPending = 0 AND rejectedAt IS NULL ORDER BY createdAt ASC, id ASC LIMIT :limit"
     )
     suspend fun identityWall(limit: Int): List<String>
 
     /** Сколько строк «о себе» принято — для потолка стены (SelfLine.WALL_CEILING). */
     @Query(
-        "SELECT COUNT(*) FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' " +
+        "SELECT COUNT(*) FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId IS NOT NULL " +
             "AND reviewPending = 0 AND rejectedAt IS NULL"
     )
     suspend fun countAcceptedIdentity(): Int
 
     /** Строка «о себе», ждущая решения, самая новая; null — такой нет. */
     @Query(
-        "SELECT * FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' " +
+        "SELECT * FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId IS NOT NULL " +
             "AND reviewPending = 1 AND rejectedAt IS NULL ORDER BY createdAt DESC LIMIT 1"
     )
     suspend fun pendingIdentity(): Sticker?
+
+    /** Принятые строки паспорта (dream.Passport), старые первыми — для стены. */
+    @Query(
+        "SELECT content FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId IS NULL " +
+            "AND reviewPending = 0 AND rejectedAt IS NULL ORDER BY createdAt ASC, id ASC"
+    )
+    suspend fun passportWall(): List<String>
+
+    /** Все строки паспорта — принятые, ждущие и отвергнутые: что уже предлагалось. */
+    @Query("SELECT * FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId IS NULL ORDER BY createdAt ASC, id ASC")
+    suspend fun passportAll(): List<Sticker>
 
     /**
      * Строки «о себе» с основанием [baseId], которые человек уже решил:

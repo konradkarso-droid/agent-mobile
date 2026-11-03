@@ -97,6 +97,7 @@ import com.uroboros.memory.dream.ConclusionView
 import com.uroboros.memory.desk.DeskView
 import com.uroboros.memory.dream.MirrorChecker
 import com.uroboros.memory.dream.MirrorView
+import com.uroboros.memory.dream.PassportReader
 import com.uroboros.memory.dream.UnpromptedLeaderGauge
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.JudgeUi
@@ -600,6 +601,29 @@ class MainActivity : AppCompatActivity() {
     private suspend fun refreshSelfLeader() {
         selfLeaderLine = runCatching { unpromptedLeaderGauge.line() }
             .getOrElse { "Нажитое о себе: не прочиталось — ${it.javaClass.simpleName}" }
+        refreshPassport()
+    }
+
+    /** Паспорт агента: чтение и предложение строк в очередь (dream.Passport). */
+    private val passportReader by lazy { PassportReader(applicationContext, mediator) }
+
+    /**
+     * Строка «Паспорт:», посчитанная при последнем показе; null — ещё не
+     * считалась. Считается из базы и архива ленты (см. PassportReader).
+     */
+    private var passportLine: String? = null
+
+    /**
+     * Предложить недостающие строки паспорта и перечитать строку прибора —
+     * вместе с «Нажитым о себе»: тем же движением и по тем же поводам. Сбой
+     * называется в самой строке.
+     */
+    private suspend fun refreshPassport() {
+        // Лента — здесь, на главном потоке, где она и меняется; разбор архива — в стороне.
+        val ribbon = journal.history()
+        passportLine = runCatching {
+            withContext(Dispatchers.Default) { passportReader.proposeAndMeter(journalStore.readArchive(), ribbon) }
+        }.getOrElse { "Паспорт: не прочитался — ${it.javaClass.simpleName}" }
     }
 
     /** Раздел «Зеркало» в «Показать» и строка «Зеркало:». Только чтение, см. MirrorView. */
@@ -2138,7 +2162,13 @@ class MainActivity : AppCompatActivity() {
             // Строка о себе, предложенная агентом, в ответ не идёт — она идёт в
             // стену (см. dream.SelfLine), и прежний абзац для неё неверен.
             val selfLine = sticker.tag == Prism.IDENTITY_TAG && sticker.basedOnId != null
-            val acceptNote = if (selfLine) {
+            // Строка паспорта (dream.Passport) — тоже в стену, но вечной строкой «кто я».
+            val isPassport = sticker.tag == Prism.IDENTITY_TAG && sticker.basedOnId == null
+            val acceptNote = if (isPassport) {
+                "«Принять»: строка встанет в паспорт агента — в стену, которую он " +
+                    "читает перед каждым ответом, и в телеграме тоже. Она будет там, " +
+                    "пока её не отвергнуть. Права она не даёт: права даёт код."
+            } else if (selfLine) {
                 "«Принять»: строка встанет в стену — текст, который агент читает " +
                     "перед каждым разговором. Она будет там, пока её не отвергнуть. " +
                     "Её тема перестанет засчитываться в касания без подсказки."
@@ -3053,6 +3083,7 @@ class MainActivity : AppCompatActivity() {
         val touchesLine = mediator.touchesLine ?: "Касания: в этом запуске ответа ещё не было"
         // Нажитое о себе — сразу за касаниями: из них оно и считается.
         val selfLeader = selfLeaderLine ?: "Нажитое о себе: ещё не прочитано"
+        val passportMeter = passportLine ?: "Паспорт: ещё не прочитан"
         val mirror = mirrorLine ?: "Зеркало: ещё не прочитано"
         val conclusions = conclusionsLine ?: "Выводы: ещё не прочитано"
         // Зеркало в отборе и облако печатаются всегда: пустая строка на экране
@@ -3082,7 +3113,7 @@ class MainActivity : AppCompatActivity() {
             windowMapLine ?: "Карта окна: чисел хода на экране нет", recordsSources, mirrorSelection, drift, portraitMeter,
             nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(),
             edgesLine ?: "Края разговоров: чисел хода на экране нет", cloud,
-            touchesLine, selfLeader,
+            touchesLine, selfLeader, passportMeter,
         )
         // Портрет — отдельной группой: здесь видно, что прошло отбор портрета
         // и откуда (давность, касания, архив); в раскрытом списке хода — что

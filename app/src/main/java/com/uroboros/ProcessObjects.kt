@@ -2,11 +2,13 @@ package com.uroboros
 
 import android.content.Context
 import com.uroboros.gate.store.GateTokenStore
+import com.uroboros.llm.BuildSelfDescription
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.TrustedMediator
+import com.uroboros.memory.dream.Passport
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.HomeEventStore
@@ -96,6 +98,7 @@ object ProcessObjects {
             readLearned = { stickers.identityWall(SelfLine.WALL_CEILING) },
             // Строки о телеграме в стене стоят, пока лежит ключ бота (BuildSelfDescription).
             telegramOn = { File(app.filesDir, GateTokenStore.FILE_NAME).exists() },
+            readPassport = { stickers.passportWall().let { BuildSelfDescription.PassportWall(it, Passport.hasName(it)) } },
         )
         // «Дом» (safety.HomeEvents): выход из нормы и обрыв сторожем пишутся на
         // диск, чтобы пережить кому, — о них агент потом расскажет фактом.

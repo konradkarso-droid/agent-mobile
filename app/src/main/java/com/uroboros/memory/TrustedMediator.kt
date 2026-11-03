@@ -259,6 +259,31 @@ class TrustedMediator(context: Context) {
     }
 
     /**
+     * Предложить строку паспорта (dream.Passport) — сразу красной и сразу на
+     * проверке, без основания: по нему её и отличают от строки о себе
+     * (StickerDao). Принимает только человек, тем же [acceptFromReview], что и
+     * всё в очереди. Вставка — мимо сверок записи, почему — у
+     * HourglassMemory.insertPassportLine.
+     *
+     * Провенанс — вывод агента: строку собрал код (имя — из своей речи агента,
+     * владелец — из слов владельца, род — решением владельца), а говорит она от
+     * лица агента.
+     *
+     * @return номер записи.
+     */
+    suspend fun proposePassportLine(text: String): Long =
+        hourglass.insertPassportLine(
+            Sticker(
+                content = text,
+                tag = Prism.IDENTITY_TAG,
+                source = SourceKind.AGENT_INFERRED.name,
+                confidence = ConfidenceLevel.INFERRED.name,
+                reviewPending = true,
+                basedOnId = null,
+            )
+        )
+
+    /**
      * Достать текст похожей записи по номеру.
      *
      * Пропавшая запись не выдаётся за отсутствие похожей: отсев её нашёл, а

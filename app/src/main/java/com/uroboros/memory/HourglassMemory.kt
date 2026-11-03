@@ -1604,6 +1604,27 @@ class HourglassMemory(
     }
 
     /**
+     * Вставить строку паспорта (dream.Passport) — красной и на проверке, как
+     * её подал [sticker], — одним действием и без сверок [saveEventChecked].
+     *
+     * ПОЧЕМУ МИМО СВЕРОК. Строку собрал код, а не сказал собеседник: повтора
+     * сказанного в ней нет, спор с записями разговора ничего о ней не говорит
+     * (она на проверке у человека и так), а поправка о себе (nav.OwnCorrection)
+     * сняла бы старые записи собеседника молча — по строке, которую он ещё не
+     * принял. Слой ставит [Prism.classify]: метка identity — красный.
+     */
+    suspend fun insertPassportLine(sticker: Sticker): Long {
+        val (layer, interval) = Prism.classify(sticker)
+        return dao.insert(
+            sticker.copy(
+                layer = layer.name,
+                expiryTime = interval?.let { System.currentTimeMillis() + it },
+                contentFolded = TextFold.fold(sticker.content),
+            )
+        )
+    }
+
+    /**
      * Сохранить запись, пройдя отсев повторов и проверку на противоречие.
      *
      * ПОРЯДОК: отсев повторов идёт ПЕРВЫМ, сравнение на противоречие вторым,
