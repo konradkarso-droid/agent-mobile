@@ -1,6 +1,7 @@
 package com.uroboros.memory
 
 import com.uroboros.memory.nav.LemmaDictionary
+import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.WindowMap
 
 /**
@@ -144,6 +145,11 @@ object DolmenCircle {
      * агенту). Нашло — оно получает одно гарантированное место из мест
      * вопроса ([OWN_SPEECH_SEATS]), свободных мест сверх него не берёт. Ноль
      * (по умолчанию) — раздача прежняя.
+     *
+     * [recall] — ход с просьбой вспомнить (nav.RecallRequest): своя речь и
+     * холод садятся первыми, вместе не больше [recallCap] мест, и свободные
+     * места сверх этого холод не берёт. Своя речь тогда берёт место из этих,
+     * а не из мест вопроса. Остальное — вопросу и теме, как обычно.
      */
     fun seat(
         limit: Int,
@@ -151,6 +157,7 @@ object DolmenCircle {
         theme: List<Sticker>,
         cold: List<Sticker>,
         ownSpeech: Int = 0,
+        recall: Boolean = false,
     ): Seating {
         val q = question.distinctBy { it.id }
         val seen = q.mapTo(HashSet()) { it.id }
@@ -162,6 +169,16 @@ object DolmenCircle {
         fun take(want: Int): Int = minOf(want, left).also { left -= it }
 
         val ownWant = minOf(OWN_SPEECH_SEATS, ownSpeech.coerceAtLeast(0))
+        if (recall) {
+            val cap = recallCap(limit)
+            val oTaken = take(minOf(ownWant, cap))
+            val cTaken = take(minOf(cap - oTaken, c.size))
+            var qTaken = take(minOf(QUESTION_SEATS, q.size))
+            var tTaken = take(minOf(THEME_SEATS, t.size))
+            qTaken += take(q.size - qTaken)
+            tTaken += take(t.size - tTaken)
+            return Seating(q.take(qTaken), t.take(tTaken), c.take(cTaken), oTaken)
+        }
         var qTaken = take(minOf(QUESTION_SEATS - ownWant, q.size))
         val oTaken = take(ownWant)
         var tTaken = take(minOf(THEME_SEATS, t.size))
@@ -172,6 +189,14 @@ object DolmenCircle {
 
         return Seating(q.take(qTaken), t.take(tTaken), c.take(cTaken), oTaken)
     }
+
+    /**
+     * Мест у холода и своей речи вместе на ходе с просьбой вспомнить: не
+     * больше nav.RecallRequest.RECALL_SEATS и не больше половины мест круга
+     * (с округлением вверх: при одном месте — одно). Почему половина — у
+     * RECALL_SEATS.
+     */
+    fun recallCap(limit: Int): Int = minOf(RecallRequest.RECALL_SEATS, (limit.coerceAtLeast(0) + 1) / 2)
 
     /**
      * Слова темы — из карты окна (nav.WindowMap): написанные формы самых
@@ -235,12 +260,15 @@ object DolmenCircle {
         ownSpeech: String = OWN_SPEECH_NOT_ASKED,
         /** Часть про окно якорей (nav.Anchors.meterPart); пусто — не печатается. */
         anchors: String = "",
+        /** Часть про просьбу вспомнить (nav.RecallRequest.meterPart); пусто — не печатается. */
+        recall: String = "",
     ): String {
         val themeName = if (themeWords.isEmpty()) "тема" else "тема (${themeWords.joinToString(", ")})"
         val coldName = if (coldByTheme && cold !is Window.LayerEmpty) "холод по словам темы" else "холод"
         val excludedPart = if (ribbonExcluded > 0) " · реплик ленты в исключении $ribbonExcluded" else ""
         val anchorsPart = if (anchors.isEmpty()) "" else "$anchors · "
-        return "Круг: ${anchorsPart}вопрос — ${say(question)} · $themeName — ${say(theme)} · " +
+        val recallPart = if (recall.isEmpty()) "" else "$recall · "
+        return "Круг: ${recallPart}${anchorsPart}вопрос — ${say(question)} · $themeName — ${say(theme)} · " +
             "$coldName — ${say(cold)} · $ownSpeech · красный: $red — в ответ не идут, идут в стену" +
             excludedPart
     }
@@ -254,8 +282,8 @@ object DolmenCircle {
     fun ownSpeechPart(found: Int, seated: Int, serviceDropped: Int = 0): String =
         "своя речь: нашло $found, усажено $seated, служебного в архиве отсеяно $serviceDropped"
 
-    /** Окно своей речи не искало: вопрос не к агенту или отбор не для ответа. */
-    const val OWN_SPEECH_NOT_ASKED = "своя речь: не ищет — вопрос не к агенту"
+    /** Окно своей речи не искало: вопрос не к агенту и без просьбы вспомнить, или отбор не для ответа. */
+    const val OWN_SPEECH_NOT_ASKED = "своя речь: не ищет — вопрос не к агенту и просьбы вспомнить нет"
 
     /** Строка круга, когда вопроса не было: отбор не собирался. */
     const val NOT_GATHERED = "Круг: не собирался — вопроса не было, показан срез памяти по рангу."

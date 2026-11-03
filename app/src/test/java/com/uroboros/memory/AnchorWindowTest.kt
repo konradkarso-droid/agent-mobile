@@ -120,7 +120,7 @@ class AnchorWindowTest {
 
         assertEquals(without.stickers.map { it.id }, with.stickers.map { it.id })
         assertEquals(daoWithout.searchedPrefixes, daoWith.searchedPrefixes)
-        assertTrue(with.circle, with.circle.startsWith("Круг: якоря: нет · вопрос —"))
+        assertTrue(with.circle, with.circle.startsWith("Круг: просьба вспомнить: нет · якоря: нет · вопрос —"))
         assertTrue(without.circle, without.circle.contains("якоря: нет (словарь не загружен"))
     }
 
@@ -193,6 +193,52 @@ class AnchorWindowTest {
         )
         assertTrue(result.coldIds.isEmpty())
         assertTrue(result.circle, result.circle.contains("в холоде нашли 0, мест 0"))
+    }
+
+    // --- Просьба вспомнить (nav.RecallRequest) ---
+
+    private fun recallPlan(query: String, recent: List<String> = emptyList()) =
+        com.uroboros.memory.nav.RecallRequest.plan(query, recent, TestVerbs.lemmas)
+
+    @Test
+    fun `просьба вспомнить даёт холоду три места вместо одного`() = runBlocking {
+        val hot = (1L..5L).map { sticker(it, "полотенце висит в ванной $it") }
+        val cold = (11L..14L).map { sticker(it, "полотенце было синим $it", Layer.BLUE) }
+        val query = "Что ты помнишь про полотенце?"
+        val records = (hot + cold).toTypedArray()
+        val with = withDictionary(dao(*records)).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, query, 5, recall = recallPlan(query),
+        )
+        val without = withDictionary(dao(*records)).getContextWithSummary(RetrievalPurpose.ANSWERING_USER, query, 5)
+        assertEquals(3, with.coldIds.size)
+        assertEquals(1, without.coldIds.size)
+        assertTrue(with.circle, with.circle.startsWith("Круг: просьба вспомнить: «помнишь» · холод и своя речь — до 3 мест"))
+        assertTrue(without.circle, without.circle.startsWith("Круг: просьба вспомнить: нет"))
+    }
+
+    @Test
+    fun `на просьбе слово «помнишь» не ищется`() = runBlocking {
+        val dao = dao(sticker(1, "полотенце висит в ванной"))
+        val query = "Что ты помнишь про полотенце?"
+        withDictionary(dao).getContextWithSummary(RetrievalPurpose.ANSWERING_USER, query, 5, recall = recallPlan(query))
+        assertFalse(dao.searchedPrefixes.toString(), dao.searchedPrefixes.any { it.startsWith("помн") })
+    }
+
+    @Test
+    fun `просьба без якоря ищет холод якорями разговора и пользу им не засчитывает`() = runBlocking {
+        val praxis = sticker(1, "Praxis тоже агент, его строил другой человек", Layer.BLUE)
+        val other = sticker(2, "рубанок из дуба", Layer.BLUE)
+        val dao = dao(praxis, other)
+        val query = "Помнишь что-нибудь?"
+        val recent = listOf("Расскажи про Praxis")
+        val result = withDictionary(dao).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, query, 5, recentQuestions = recent, recall = recallPlan(query, recent),
+        )
+        assertEquals(setOf(praxis.id), result.coldIds)
+        assertTrue(result.circle, result.circle.contains("якоря из разговора (praxis) — в холоде нашли 1, мест 1"))
+        assertFalse("вопрос Praxis не называл", praxis.id in dao.touchedUserMatch)
+        // И как любой холод — за всплытие не греется.
+        assertTrue(dao.layerUpdates.none { it.id == praxis.id })
     }
 
     @Test

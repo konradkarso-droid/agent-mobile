@@ -270,4 +270,58 @@ class DolmenCircleTest {
     fun `гарантированные места складываются в пять`() {
         assertEquals(5, DolmenCircle.QUESTION_SEATS + DolmenCircle.THEME_SEATS + DolmenCircle.COLD_SEATS)
     }
+
+    // --- Просьба вспомнить ---
+
+    @Test
+    fun `просьба вспомнить — холод первым, до трёх мест, остальное по прежнему порядку`() {
+        val seating = DolmenCircle.seat(
+            5,
+            question = (1L..6L).map(::s),
+            theme = (11L..13L).map(::s),
+            cold = (21L..25L).map(::s),
+            recall = true,
+        )
+        assertEquals(listOf(21L, 22L, 23L), ids(seating.cold))
+        // Два оставшихся места — вопросу: из своих трёх он берёт сколько осталось.
+        assertEquals(listOf(1L, 2L), ids(seating.question))
+        assertTrue(seating.theme.isEmpty())
+    }
+
+    @Test
+    fun `просьба вспомнить — своя речь берёт место из мест холода, а не вопроса`() {
+        val seating = DolmenCircle.seat(
+            5, question = (1L..6L).map(::s), theme = emptyList(), cold = (21L..25L).map(::s), ownSpeech = 2, recall = true,
+        )
+        assertEquals(1, seating.ownSpeech)
+        assertEquals(listOf(21L, 22L), ids(seating.cold))
+        assertEquals(listOf(1L, 2L), ids(seating.question))
+    }
+
+    @Test
+    fun `просьба вспомнить — свободные места сверх трёх холод не берёт`() {
+        // Вопросу и теме нечего дать: без просьбы холод взял бы все пять.
+        val with = DolmenCircle.seat(5, emptyList(), emptyList(), (21L..27L).map(::s), recall = true)
+        assertEquals(3, with.cold.size)
+        val without = DolmenCircle.seat(5, emptyList(), emptyList(), (21L..27L).map(::s))
+        assertEquals(5, without.cold.size)
+    }
+
+    @Test
+    fun `просьба вспомнить — не больше половины мест круга`() {
+        assertEquals(3, DolmenCircle.recallCap(5))
+        assertEquals(2, DolmenCircle.recallCap(3))
+        assertEquals(1, DolmenCircle.recallCap(1))
+        assertEquals(0, DolmenCircle.recallCap(0))
+        val two = DolmenCircle.seat(3, (1L..6L).map(::s), emptyList(), (21L..25L).map(::s), recall = true)
+        assertEquals(2, two.cold.size); assertEquals(1, two.question.size)
+    }
+
+    @Test
+    fun `просьба вспомнить без холода — раздача мест прежняя`() {
+        val q = (1L..6L).map(::s); val t = (11L..13L).map(::s)
+        val with = DolmenCircle.seat(5, q, t, emptyList(), recall = true)
+        val without = DolmenCircle.seat(5, q, t, emptyList())
+        assertEquals(ids(without.all), ids(with.all))
+    }
 }

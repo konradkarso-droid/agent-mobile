@@ -3,6 +3,7 @@ package com.uroboros.memory
 import android.util.Log
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.memory.nav.Anchors
+import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
@@ -885,7 +886,7 @@ class HourglassMemory(
         /**
          * Сколько нашло окно своей речи (nav.OwnSpeech) — ищет вызывающий, у
          * которого есть архив ленты. null — окно не искало (вопрос не к
-         * агенту); раздача мест тогда прежняя.
+         * агенту и просьбы вспомнить нет); раздача мест тогда прежняя.
          */
         ownSpeechFound: Int? = null,
         /**
@@ -899,6 +900,12 @@ class HourglassMemory(
         seats: Int = limit,
         /** Сколько предложений своей речи отсеяно как служебный текст (nav.OwnSpeech.Sifted) — для строки круга. */
         ownSpeechServiceDropped: Int = 0,
+        /**
+         * План хода с просьбой вспомнить (nav.RecallRequest.plan); null —
+         * просьбы нет или отбор не для ответа, всё как прежде. Что меняет
+         * просьба — у nav.RecallRequest.
+         */
+        recall: RecallRequest.Plan? = null,
     ): ContextResult {
         migrateExpired()
 
@@ -923,7 +930,9 @@ class HourglassMemory(
         // окон в один запрос не сливаются: доля вопроса упала бы, и отсев
         // выбросил бы годное молча.
         val trace = mutableListOf<String>()
-        val questionWords = meaningfulWords(query)
+        // На ходе с просьбой слова самой просьбы («помнишь») не ищутся — почему, у nav.RecallRequest.
+        val questionWords =
+            if (recall == null) meaningfulWords(query) else RecallRequest.searchWords(query).take(MAX_SEARCH_WORDS)
         val dictionary = lemmas()
         val themeWords = DolmenCircle.themeWords(recentQuestions, questionWords, dictionary)
         // Исключение идёт внутри поиска каждого окна, а не после него — почему,
@@ -972,9 +981,13 @@ class HourglassMemory(
         // Якоря ищутся и в холоде — тем же правилом, что в горячих слоях, и
         // найденное встаёт в окно холода первым, как якорные записи в окне
         // вопроса. Мест у холода от этого не прибавляется. Зачем — у nav.Anchors.
+        // В просьбе вспомнить без своего якоря холод ищет якорями разговора
+        // (nav.RecallRequest.Plan.contextAnchors).
+        val coldAnchorsFromQuery = anchors.isNotEmpty()
+        val coldAnchorList = if (coldAnchorsFromQuery) anchors else recall?.contextAnchors.orEmpty()
         val coldAnchored =
-            if (anchors.isEmpty() || coldEmpty) null
-            else searchByAnchors(anchors, query, limit, purpose, excluded, COLD_LAYERS)
+            if (coldAnchorList.isEmpty() || coldEmpty) null
+            else searchByAnchors(coldAnchorList, query, limit, purpose, excluded, COLD_LAYERS)
         coldAnchored?.let { trace += "окно якорей в холоде:"; trace += it.trace }
 
         // Зеркало — до раздачи мест, чтобы место досталось следующему кандидату
@@ -1008,16 +1021,18 @@ class HourglassMemory(
             themeKept,
             coldKept,
             ownSpeech = ownSpeechFound ?: 0,
+            recall = recall != null,
         )
         val result = seating.all
         val coldIds = seating.cold.mapTo(HashSet()) { it.id }
 
         // Кому засчитывается польза — решает usefulnessMarks, там же и объяснение.
         // Холод, искавший по словам вопроса, с вопросом совпал; по словам темы — нет.
-        // Холодная запись с якорем совпала с вопросом якорем — как якорная в окне вопроса.
-        val matchedByQuestion = seating.question.map { it.id } +
-            if (coldByTheme) seating.cold.filter { it.id in coldAnchoredIds }.map { it.id }
-            else seating.cold.map { it.id }
+        // Холодная запись с якорем вопроса совпала с вопросом якорем — как
+        // якорная в окне вопроса. С якорем из разговора — нет: вопрос его не называл.
+        val matchedByQuestion = seating.question.map { it.id } + seating.cold.filter {
+            if (it.id in coldAnchoredIds) coldAnchorsFromQuery else !coldByTheme
+        }.map { it.id }
         val toMark = usefulnessMarks(
             purpose = purpose,
             returned = result.map { it.id },
@@ -1106,6 +1121,11 @@ class HourglassMemory(
             anchors = Anchors.meterPart(
                 anchors, anchored?.found ?: 0, seating.question.count { it.id in anchoredIds }, dictionary != null,
                 cold = if (coldEmpty) null else Anchors.ColdPart(coldAnchored?.found ?: 0, seating.cold.count { it.id in coldAnchoredIds }),
+            ),
+            recall = if (purpose != RetrievalPurpose.ANSWERING_USER) "" else RecallRequest.meterPart(
+                recall,
+                coldFound = if (coldAnchorsFromQuery) 0 else coldAnchored?.found ?: 0,
+                coldSeated = if (coldAnchorsFromQuery) 0 else seating.cold.count { it.id in coldAnchoredIds },
             ),
         )
 
