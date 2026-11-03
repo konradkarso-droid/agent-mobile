@@ -39,6 +39,10 @@ package com.uroboros.memory.dream
  *  - не знает, день или ночь: часы циферблата сюда намеренно не входят;
  *  - не спрашивает нагрев и заряд: сон — счёт в миллисекунды, и не греет.
  *    Судья, который греет, сюда не входит вовсе.
+ *
+ * ТЕЛЕГРАМ. Разговор там тоже меняет память — слова собеседника ложатся в неё
+ * сразу, — поэтому держит сон той же меркой тишины, что разговор на экране,
+ * но своей строкой (что считается разговором — у gate.ChatQuiet).
  */
 object SleepDecision {
 
@@ -86,11 +90,17 @@ object SleepDecision {
      * Первый шаг, дешёвый: занят ли агент и набран ли пол тишины. null — можно
      * спрашивать давление; иначе — почему нельзя, словами для уведомления.
      */
-    fun gate(nowMs: Long, busy: Boolean, quietSinceMs: Long): String? = when {
+    fun gate(
+        nowMs: Long,
+        busy: Boolean,
+        quietSinceMs: Long,
+        /** Почему ждём телеграма при пороге тишины, словами (gate.ChatQuiet.refusal); null — не мешает. */
+        chatRefusal: (neededMs: Long) -> String? = { null },
+    ): String? = when {
         busy -> "Не сплю: работаю."
         nowMs - quietSinceMs < QUIET_FLOOR_MS ->
             "Не сплю: тихо ${minutes(nowMs - quietSinceMs)} мин, меньше ${minutes(QUIET_FLOOR_MS)}."
-        else -> null
+        else -> chatRefusal(QUIET_FLOOR_MS)?.let { "Не сплю: $it." }
     }
 
     /** Есть ли что обдумать. null — есть; иначе — почему спать незачем. */
@@ -101,10 +111,10 @@ object SleepDecision {
      * Хватает ли тишины для этого давления. null — хватает, спать; иначе —
      * сколько набрано и сколько нужно.
      */
-    fun waitReason(pressure: Int, quietMs: Long): String? {
+    fun waitReason(pressure: Int, quietMs: Long, chatRefusal: (neededMs: Long) -> String? = { null }): String? {
         val needed = quietNeededMs(pressure)
-        return if (quietMs >= needed) null
-        else "Не сплю: давление $pressure, тихо ${minutes(quietMs)} мин из ${minutes(needed)}."
+        return if (quietMs < needed) "Не сплю: давление $pressure, тихо ${minutes(quietMs)} мин из ${minutes(needed)}."
+        else chatRefusal(needed)?.let { "Не сплю: давление $pressure, $it." }
     }
 
     private fun minutes(ms: Long): Int = (ms.coerceAtLeast(0) / 60_000).toInt()

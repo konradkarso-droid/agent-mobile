@@ -23,6 +23,10 @@ package com.uroboros.memory.judge
  *    касания экрана: человек, который читает ответ, для него молчит;
  *  - отдых после прогона живёт в памяти процесса; после комы его нет, и первый
  *    же тихий час на зарядке начнёт суд заново.
+ *
+ * ТЕЛЕГРАМ. Разговор там держит суд той же меркой тишины, что разговор на
+ * экране, но своей строкой (что считается разговором — у gate.ChatQuiet).
+ * Начатый сам суд разговору в телеграме уступает (gate.link.ChatLink).
  */
 object SelfJudgeDecision {
 
@@ -60,6 +64,11 @@ object SelfJudgeDecision {
         val restLeftMs: Long,
         /** Выбиралась ли модель хоть раз — иначе загружать нечего. */
         val modelChosen: Boolean,
+        /**
+         * Почему ждём телеграма при пороге тишины, словами (gate.ChatQuiet.refusal);
+         * null — телеграм не мешает. Порог передаётся отсюда: он у суда свой.
+         */
+        val chatRefusal: (neededMs: Long) -> String? = { null },
     )
 
     /** Почему суд сейчас не начинается, словами; null — условия выполнены. */
@@ -71,6 +80,7 @@ object SelfJudgeDecision {
         i.watchdogRefusal != null -> i.watchdogRefusal
         i.engineBusy -> "модель занята"
         i.quietMs < QUIET_MS -> "тихо ${minutes(i.quietMs)} мин из ${minutes(QUIET_MS)}"
+        i.chatRefusal(QUIET_MS) != null -> i.chatRefusal(QUIET_MS)
         i.restLeftMs > 0 -> "отдыхаю после разбора, ещё ${minutesUp(i.restLeftMs)} мин"
         !i.modelChosen -> "модель ни разу не выбиралась — загружать нечего"
         else -> null

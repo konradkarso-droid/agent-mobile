@@ -58,4 +58,30 @@ class SleepDecisionTest {
         assertNotNull(SleepDecision.decide(0))
         assertNull(SleepDecision.decide(SleepDecision.MIN_PRESSURE))
     }
+
+    @Test
+    fun `разговор в телеграме не даёт уснуть — сначала пол тишины`() {
+        val chat: (Long) -> String? = { needed -> if (needed == SleepDecision.QUIET_FLOOR_MS) "в телеграме разговор: тихо 2 мин из 5" else null }
+        assertEquals(
+            "Не сплю: в телеграме разговор: тихо 2 мин из 5.",
+            SleepDecision.gate(nowMs = 60 * minute, busy = false, quietSinceMs = 0, chatRefusal = chat),
+        )
+    }
+
+    @Test
+    fun `в телеграме тихо меньше, чем требует давление — ждёт`() {
+        val asked = ArrayList<Long>()
+        val chat: (Long) -> String? = { needed -> asked += needed; "в телеграме разговор: тихо 12 мин из 30" }
+        assertEquals(
+            "Не сплю: давление 1, в телеграме разговор: тихо 12 мин из 30.",
+            SleepDecision.waitReason(pressure = 1, quietMs = 40 * minute, chatRefusal = chat),
+        )
+        assertEquals(listOf(SleepDecision.quietNeededMs(1)), asked)
+    }
+
+    @Test
+    fun `молчит телеграм — сон по прежним правилам`() {
+        assertNull(SleepDecision.gate(nowMs = 60 * minute, busy = false, quietSinceMs = 0, chatRefusal = { null }))
+        assertNull(SleepDecision.waitReason(pressure = 1, quietMs = 40 * minute, chatRefusal = { null }))
+    }
 }
