@@ -574,7 +574,7 @@ class ConversationTurns(
         // Живой отвод — только первому проходу: реплика собеседника
         // обсчитывается в нём, следующие проходы берут её готовой.
         suspend fun pass(msgs: List<Pair<String, String>>, live: LiveReadOrder? = null): String? =
-            passCatchingCall(msgs, answer, onEvent, recall = recall, liveRead = live, onPiece = {
+            passCatchingCall(msgs, answer, onEvent, recall = recall, liveRead = live, stableMessages = journal.stableMessageCount(), onPiece = {
                 if (firstTokenAtMs == null) firstTokenAtMs = System.currentTimeMillis() - startMs
                 tokensSeen++
             }) { metrics = it }
@@ -771,6 +771,8 @@ class ConversationTurns(
         recall: String?,
         /** Живой отвод слоя по реплике собеседника ([LlmEngine.liveReadFor]); null — не взводить. */
         liveRead: LiveReadOrder? = null,
+        /** Сообщений прошлых ходов в [messages] — для снимка ленты ([LlmEngine.generateConversationFlow]); null — не снимать. */
+        stableMessages: Int? = null,
         onPiece: () -> Unit,
         dryAgainst: String? = null,
         onMetrics: (DecodingMetrics) -> Unit,
@@ -779,7 +781,10 @@ class ConversationTurns(
         var holding = true
         // Знак отдаётся сборщику ниже до проверки: тот, что открыл вызов,
         // уже лежит в [text], и выдача обрывается на нём же.
-        engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = dryAgainst, recall = recall, liveRead = liveRead).transformWhile { event ->
+        engine.generateConversationFlow(
+            messages, ANSWER_TOKEN_LIMIT, dryAgainst = dryAgainst, recall = recall, liveRead = liveRead,
+            stableMessages = stableMessages,
+        ).transformWhile { event ->
             emit(event)
             text.indexOf(Glance.CALL_OPEN) < 0
         }.collect { event ->
@@ -885,6 +890,9 @@ class ConversationTurns(
         // Доска взгляда — и сюда: повторная попытка отвечает на тот же вопрос
         // о приборах и без доски назвала бы числа из головы.
         val base = journal.messagesFor(content, selfNote, dreamNote, recall, without = without)
+        // Снимок ленты — только запросу без выкинутых ходов: граница с дырой не
+        // совпадёт со следующим ходом, а снимок первого прохода она заменила бы.
+        val stable = if (without.isEmpty()) journal.stableMessageCount() else null
         // Хвост взгляда этой попытки: доска первого прохода или своя, если
         // вторая попытка позвала приборы сама. Его видит и третья ступень.
         var tail = glanceTail
@@ -911,7 +919,7 @@ class ConversationTurns(
         // отменой — для хода это законченная выдача.
         var cutByCall = false
         try {
-            val before = passCatchingCall(base + tail, second, onEvent, recall = recall, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
+            val before = passCatchingCall(base + tail, second, onEvent, recall = recall, stableMessages = stable, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
             if (before != null && tail.isEmpty()) {
                 glancedHere = true
                 onGlance()
@@ -924,7 +932,7 @@ class ConversationTurns(
                 second.clear()
                 pieces = 0
                 metrics = null
-                val again = passCatchingCall(base + tail, second, onEvent, recall = recall, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
+                val again = passCatchingCall(base + tail, second, onEvent, recall = recall, stableMessages = stable, onPiece = { pieces++ }, dryAgainst = dry) { metrics = it }
                 if (again != null) {
                     cutByCall = true
                     if (cutAtCall(second, again)) pieces = 0
@@ -1056,7 +1064,11 @@ class ConversationTurns(
             onThird()
             val messages = journal.messagesFor(content, selfNote, dreamNote, recall, without = without) +
                 glanceTail + (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
-            engine.generateConversationFlow(messages, ANSWER_TOKEN_LIMIT, dryAgainst = sources.joinToString("\n"), recall = recall).collect { event ->
+            engine.generateConversationFlow(
+                messages, ANSWER_TOKEN_LIMIT, dryAgainst = sources.joinToString("\n"), recall = recall,
+                // Как у второй попытки: с выкинутыми ходами снимок не снимается.
+                stableMessages = if (without.isEmpty()) journal.stableMessageCount() else null,
+            ).collect { event ->
                 when (event) {
                     is GenerationEvent.Token -> text.append(event.text)
                     is GenerationEvent.Metrics -> metrics = event.metrics

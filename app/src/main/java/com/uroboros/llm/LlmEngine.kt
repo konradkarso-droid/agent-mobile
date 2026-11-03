@@ -1769,7 +1769,9 @@ class LlmEngine(
      * Зачем. Разговор переживает поворот экрана, но не выгрузку приложения:
      * при возвращении вся лента считается заново, а это минуты. На диске же
      * лежит не текст, а уже обсчитанное внимание модели по всей ленте, и
-     * поднять его стоит секунд.
+     * поднять его стоит секунд. У модели с Mamba-слоями на диск идёт не полное
+     * состояние, а снимок ленты на границе прошлых ходов (`gguf_lib.cpp`,
+     * «СНИМОК ЛЕНТЫ»): полное ей не поднять с пользой.
      *
      * ЧЕГО ЭТА ФУНКЦИЯ НЕ ДЕЛАЕТ. Она не решает, когда сохраняться, и не
      * связана с лентой разговора. Точка без сохранённой ленты бесполезна: при
@@ -2029,12 +2031,20 @@ class LlmEngine(
         recall: String? = null,
         /** Живой отвод слоя по реплике собеседника; null — не взводить. Итог — [liveReadFor]. */
         liveRead: LiveReadOrder? = null,
+        /**
+         * Сколько первых сообщений [messages] — прошлые ходы ленты
+         * (ConversationJournal.stableMessageCount): они на следующем ходе не
+         * изменятся, и движок модели с Mamba-слоями снимает состояние на их
+         * границе (`gguf_lib.cpp`, «СНИМОК ЛЕНТЫ»). null — не снимать.
+         */
+        stableMessages: Int? = null,
     ): Flow<GenerationEvent> = guardedFlow(
         conversationMessages(messages),
         maxTokens,
         dryAgainst = dryAgainst,
         recall = recall,
         liveRead = liveRead,
+        stableMessages = stableMessages,
         // Лента разговора первым системного сообщения не несёт — стену ставит
         // движок; системные сообщения посреди ленты (строка о себе, см.
         // ConversationJournal.messagesFor) первыми не стоят никогда. Первым
@@ -2096,6 +2106,8 @@ class LlmEngine(
         recall: String? = null,
         /** Живой отвод слоя; только разговору. См. [generateConversationFlow] и [liveReadFor]. */
         liveRead: LiveReadOrder? = null,
+        /** Сообщений прошлых ходов в [messagesJson]; только разговору. См. [generateConversationFlow]. */
+        stableMessages: Int? = null,
     ): Flow<GenerationEvent> = channelFlow {
         // Движок уходит от разговора к чужой работе — сперва точка разговора
         // на диск. Зачем и чего не умеет — у [conversationDisplaced].
@@ -2136,6 +2148,10 @@ class LlmEngine(
         // задания при снятии остаётся — его читают после хода (см. [liveReadFor]).
         val live = liveRead?.takeIf { conversation }
         withContext(Dispatchers.IO) { engine.setLiveRead(live?.layer ?: -1, live?.segment.orEmpty()) }
+        // Задание снимка ленты — так же на каждый запрос, и снимается тоже: ход
+        // чата или судьи снимком ленты экрана стать не должен.
+        val stable = stableMessages?.takeIf { conversation } ?: -1
+        withContext(Dispatchers.IO) { engine.setStableMessages(stable) }
         // Первым делом, до всякой работы движка: с этого момента состояние в
         // нём принадлежит этому запросу, как бы он ни кончился.
         stateIsConversation = conversation
