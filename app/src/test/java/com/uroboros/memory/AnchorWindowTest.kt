@@ -141,6 +141,60 @@ class AnchorWindowTest {
         assertTrue(result.circle, result.circle.contains("якоря (клод — имя) — нашли 1, мест 1"))
     }
 
+    // --- Якоря в холоде ---
+
+    @Test
+    fun `холодная запись с якорем садится на место холода, хотя доли слов вопроса у неё нет`() = runBlocking {
+        // Обе холодные. Запись о Клоде окно холода по словам не взяло бы: одно
+        // слово из шести. Вторая проходит по словам. Горячих нет, и пустые
+        // окна вопроса и темы отдают места холоду — садятся обе, Клод первым.
+        val claude = sticker(1, "Клод сказал, что тоже не знает, как устроен изнутри.", Layer.BLUE)
+        val other = sticker(2, "Первые разговоры с другими было трудно вспомнить.", Layer.BLUE)
+        val dao = dao(claude, other)
+        val result = withDictionary(dao).getContextWithSummary(RetrievalPurpose.ANSWERING_USER, longQuestion, 5)
+
+        assertEquals(listOf(claude.id, other.id), result.stickers.filter { it.id in result.coldIds }.map { it.id })
+        assertTrue(result.circle, result.circle.contains("— нашли 0, мест 0 · в холоде нашли 1, мест 1"))
+        // Холод за всплытие не греется — и с якорем тоже: слой тот же.
+        assertTrue(dao.layerUpdates.none { it.id == claude.id })
+    }
+
+    @Test
+    fun `якорная запись холода встаёт первой и не прибавляет холоду мест`() = runBlocking {
+        // Запись по словам вопроса и запись с якорем — обе в холоде. Место у
+        // холода одно (при пяти местах и пустом вопросе — больше, поэтому
+        // горячие записи заполняют вопрос).
+        val byWords = sticker(1, "рубанок и стамеска лежат в сарае", Layer.BLUE)
+        val anchored = sticker(2, "Клод советовал точить рубанок", Layer.BLUE)
+        val hot = (3L..7L).map { sticker(it, "рубанок и стамеска для работы $it") }
+        val result = withDictionary(dao(byWords, anchored, *hot.toTypedArray()))
+            .getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "Где рубанок и стамеска, о которых говорил Клод?", 5)
+
+        assertEquals(setOf(anchored.id), result.coldIds)
+        assertFalse(byWords.id in result.stickers.map { it.id })
+    }
+
+    @Test
+    fun `пустой холод — якоря в холоде не ищутся, строка говорит «слой пуст»`() = runBlocking {
+        val claude = sticker(1, "Клод работает с текстами")
+        val dao = dao(claude)
+        val result = withDictionary(dao).getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "Что говорил Клод?", 5)
+        assertTrue(result.circle, result.circle.contains("якоря (клод — имя) — нашли 1, мест 1 · в холоде: слой пуст"))
+        assertTrue(dao.searchCalls.none { Layer.BLUE.name in it.layers })
+    }
+
+    @Test
+    fun `якоря в холоде не берут реплик ленты, записей из одних вопросов и горячих`() = runBlocking {
+        val ribbon = sticker(1, "Клод говорил про туман и реку", Layer.BLUE)
+        val onlyQuestion = sticker(2, "А Клод кто?", Layer.PURPLE)
+        val hot = sticker(3, "Клод работает с текстами")
+        val result = withDictionary(dao(ribbon, onlyQuestion, hot, honorLayers = false)).getContextWithSummary(
+            RetrievalPurpose.ANSWERING_USER, "Что говорил Клод?", 5, excludedTexts = listOf(ribbon.content),
+        )
+        assertTrue(result.coldIds.isEmpty())
+        assertTrue(result.circle, result.circle.contains("в холоде нашли 0, мест 0"))
+    }
+
     @Test
     fun `якорь в середине чужого слова записи не находит`() = runBlocking {
         val inside = sticker(1, "перерубанный ствол лежал у дороги")
