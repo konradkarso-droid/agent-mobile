@@ -2,7 +2,9 @@ package com.uroboros.memory
 
 import android.util.Log
 import com.uroboros.memory.dream.SelfLine
+import com.uroboros.memory.nav.Anchors
 import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnCorrection
@@ -256,12 +258,14 @@ internal const val MAX_SEARCH_WORDS = 6
  * На верхнем уровне, а не в классе: тот же отсев — короткие и служебные
  * слова — у карты окна без словаря (nav.WindowMap).
  */
-internal fun meaningfulWords(query: String): List<String> =
+internal fun meaningfulWords(query: String): List<String> = allMeaningfulWords(query).take(MAX_SEARCH_WORDS)
+
+/** Те же значимые слова без потолка [MAX_SEARCH_WORDS] — для веса редких слов в окне якорей. */
+internal fun allMeaningfulWords(query: String): List<String> =
     TextFold.fold(Sentences.split(query).filterNot { SentenceKind.of(it).kind == SentenceKind.Kind.SOCIAL }.joinToString(" "))
         .split(Regex("[^\\p{L}\\p{N}]+"))
         .filter { it.length >= MIN_WORD_LENGTH && it !in STOP_WORDS }
         .distinct()
-        .take(MAX_SEARCH_WORDS)
 
 /**
  * Меры кандидата вместе с вердиктом по нему.
@@ -658,7 +662,12 @@ class HourglassMemory(
      * приложении сюда приходит прибор с укладкой, а если этого не сделали,
      * отчёт скажет об этом сам и не промолчит нулём.
      */
-    private val witness: ReviewWitness = ReviewWitness()
+    private val witness: ReviewWitness = ReviewWitness(),
+    /**
+     * Словарь начальных форм для окна темы и окна якорей; null — не загружен.
+     * Умолчание — словарь приложения (nav.LemmaHolder); тест подаёт свой.
+     */
+    private val lemmas: () -> LemmaDictionary? = { LemmaHolder.loaded },
 ) {
 
     /**
@@ -915,11 +924,19 @@ class HourglassMemory(
         // выбросил бы годное молча.
         val trace = mutableListOf<String>()
         val questionWords = meaningfulWords(query)
-        val themeWords = DolmenCircle.themeWords(recentQuestions, questionWords, LemmaHolder.loaded)
+        val dictionary = lemmas()
+        val themeWords = DolmenCircle.themeWords(recentQuestions, questionWords, dictionary)
         // Исключение идёт внутри поиска каждого окна, а не после него — почему,
         // см. searchByWords и KDoc StickerDao.searchAnyCase.
         val excludedRaw = excludedTexts.filter { it.isNotBlank() }.distinct()
         val excluded = Excluded(excludedRaw, excludedRaw.mapTo(HashSet()) { normalizeExact(it) })
+
+        // Окно якорей — раньше окна вопроса, и его записи встают в окно вопроса
+        // первыми: запись с именем или предметом вопроса проходит без доли слов
+        // вопроса. Зачем и чего не умеет — у nav.Anchors.
+        val anchors = Anchors.of(query, dictionary)
+        val anchored = if (anchors.isEmpty()) null else searchByAnchors(anchors, query, limit, purpose, excluded)
+        anchored?.let { trace += "окно якорей:"; trace += it.trace }
 
         val question =
             if (questionWords.isEmpty()) null
@@ -962,11 +979,13 @@ class HourglassMemory(
         val retell = RetellHolder.table
         fun mirrored(found: List<Sticker>): List<Sticker> =
             if (mirrorOn) MirrorFilter.apply(found, address, retell).first else found
-        val questionKept = mirrored(question?.stickers.orEmpty())
+        val anchoredKept = mirrored(anchored?.stickers.orEmpty())
+        val anchoredIds = anchoredKept.mapTo(HashSet()) { it.id }
+        val questionKept = anchoredKept + mirrored(question?.stickers.orEmpty()).filterNot { it.id in anchoredIds }
         val themeKept = mirrored(theme?.stickers.orEmpty())
         val coldKept = mirrored(cold?.stickers.orEmpty())
         val mirrorRemoved = if (!mirrorOn) 0 else
-            (question?.stickers.orEmpty() + theme?.stickers.orEmpty() + cold?.stickers.orEmpty())
+            (anchored?.stickers.orEmpty() + question?.stickers.orEmpty() + theme?.stickers.orEmpty() + cold?.stickers.orEmpty())
                 .filterNot { MirrorFilter.keeps(it, address, retell) }
                 .mapTo(HashSet()) { it.id }.size
 
@@ -1056,7 +1075,9 @@ class HourglassMemory(
         }
 
         val circle = DolmenCircle.meter(
-            question = windowOf(question, seating.question.size),
+            // Места записей окна якорей считает часть якорей: они из мест окна
+            // вопроса, но окно вопроса их не находило (или нашло вторым).
+            question = windowOf(question, seating.question.count { it.id !in anchoredIds }),
             theme = windowOf(theme, seating.theme.size),
             themeWords = themeWords,
             cold = if (coldEmpty) DolmenCircle.Window.LayerEmpty else windowOf(cold, seating.cold.size),
@@ -1065,6 +1086,7 @@ class HourglassMemory(
             ribbonExcluded = excluded.texts.size,
             ownSpeech = ownSpeechFound?.let { DolmenCircle.ownSpeechPart(it, seating.ownSpeech, ownSpeechServiceDropped) }
                 ?: DolmenCircle.OWN_SPEECH_NOT_ASKED,
+            anchors = Anchors.meterPart(anchors, anchored?.found ?: 0, seating.question.count { it.id in anchoredIds }, dictionary != null),
         )
 
         // Строка итога и счёт отсеянных — по окну вопроса, как и прежде: она
@@ -1138,6 +1160,84 @@ class HourglassMemory(
         val trace: List<String>,
         val summary: SelectionSummary
     )
+
+    /** Найденное окном якорей: сколько прошло, первые [limit] по порядку и объяснение для «Подробно». */
+    private class AnchorSelection(val found: Int, val stickers: List<Sticker>, val trace: List<String>)
+
+    /**
+     * Окно якорей: записи горячих слоёв, где есть хоть один якорь вопроса
+     * ([Anchors]). Порядок — по весу найденных якорей, затем по редкости в
+     * памяти остальных слов вопроса, которые в записи есть (редкое слово весит
+     * больше частого), затем короче запись и новее. Доли слов вопроса и цены
+     * места здесь нет: их и обходит якорь (почему — у [Anchors]).
+     *
+     * Те же заборы, что у [searchByWords]: красный и чужие слои не берутся,
+     * реплики ленты исключены, на пути ответа отсеиваются записи из одних
+     * вопросов, просьб и обычаев.
+     *
+     * ЧЕГО НЕ УМЕЕТ: на якорь берётся не больше [ANCHOR_CANDIDATES] самых новых
+     * записей — у частого предмета старая запись может не дойти до счёта.
+     * Записи на проверке не видны, и скрытые здесь не считаются (их считает
+     * окно вопроса).
+     */
+    private suspend fun searchByAnchors(
+        anchors: List<Anchors.Anchor>,
+        query: String,
+        limit: Int,
+        purpose: RetrievalPurpose,
+        excluded: Excluded,
+    ): AnchorSelection {
+        val trace = mutableListOf<String>()
+        val candidates = LinkedHashMap<Long, Sticker>()
+        for (a in anchors) {
+            val cap = a.prefix.replaceFirstChar { it.uppercaseChar() }
+            var n = 0
+            for (sticker in dao.searchAnyCase(a.prefix, cap, ANCHOR_CANDIDATES, SEARCH_HOT_LAYERS, excluded.texts)) {
+                if (sticker.layer == Layer.RED.name || sticker.layer !in SEARCH_HOT_LAYERS) continue
+                if (excluded.matches(normalizeExact(sticker.content))) continue
+                candidates[sticker.id] = sticker
+                n++
+            }
+            val kind = if (a.kind == Anchors.Kind.NAME) "имя" else "предмет"
+            trace += "якорь «${a.word}» ($kind) · приставка «${a.prefix}» · база дала $n"
+        }
+        // Редкость считается только словам, которые есть хоть в одном кандидате:
+        // остальные порядок не меняют, а каждое слово — проход по таблице.
+        val anchorWords = anchors.mapTo(HashSet()) { it.word }
+        val foldedCandidates = candidates.values.map { TextFold.fold(it.content) }
+        val others = allMeaningfulWords(query).filter { it !in anchorWords }
+            .map { it to it.take(maxOf(MIN_PREFIX, it.length - 2)) }
+            .filter { (_, prefix) -> foldedCandidates.any { prefix in it } }
+            .take(RARITY_WORDS)
+        val total = if (others.isEmpty()) 0 else dao.countInLayers(SEARCH_HOT_LAYERS)
+        val rarity = others.associate { (w, prefix) ->
+            val df = dao.countContaining(prefix, prefix.replaceFirstChar { it.uppercaseChar() }, SEARCH_HOT_LAYERS)
+            w to Math.log((total + 1.0) / (df + 1.0))
+        }
+        data class Ranked(val sticker: Sticker, val weight: Int, val rare: Double)
+        val ranked = candidates.values.mapNotNull { sticker ->
+            if (purpose == RetrievalPurpose.ANSWERING_USER && (
+                    RiskTrigger.isOnlyQuestions(sticker.content) ||
+                        RiskTrigger.isOnlyRequests(sticker.content) ||
+                        RiskTrigger.isOnlySocial(sticker.content))
+            ) return@mapNotNull null
+            val folded = TextFold.fold(sticker.content)
+            val hit = anchors.filter { Anchors.hits(it, folded) }
+            if (hit.isEmpty()) return@mapNotNull null
+            val rare = others.filter { (_, prefix) -> prefix in folded }.sumOf { (w, _) -> rarity[w] ?: 0.0 }
+            Ranked(sticker, hit.sumOf { Anchors.weight(it.kind) }, rare)
+        }.sortedWith(
+            compareByDescending<Ranked> { it.weight }
+                .thenByDescending { it.rare }
+                .thenBy { it.sticker.content.length }
+                .thenByDescending { it.sticker.createdAt }
+        )
+        for (r in ranked.take(limit)) {
+            trace += "id=${r.sticker.id} вес якорей ${r.weight} · редкость прочих слов ${"%.1f".format(r.rare)} · " +
+                "${r.sticker.content.length} зн."
+        }
+        return AnchorSelection(ranked.size, ranked.take(limit).map { it.sticker }, trace)
+    }
 
     /**
      * Поиск одного окна круга: записи, действительно связанные со словами окна.
@@ -2117,6 +2217,20 @@ class HourglassMemory(
          * память всю таблицу.
          */
         const val CANDIDATE_LIMIT = 20
+
+        /**
+         * Кандидатов окна якорей на якорь — самых новых. Объявленное число, не
+         * подобранное: шире лимита окна вопроса, потому что доли слов здесь нет
+         * и отсеивать после поиска почти нечем.
+         */
+        const val ANCHOR_CANDIDATES = 50
+
+        /**
+         * Сколько прочих слов вопроса окно якорей взвешивает по редкости.
+         * Объявленное число, не подобранное: длинная реплика из телеграма не
+         * должна обходить таблицу сотней запросов.
+         */
+        const val RARITY_WORDS = 12
 
         // MIN_COVERAGE и MAX_CHARS_PER_MATCH переехали на верхний уровень файла,
         // к scoreCandidate — единственному месту, которое их читает.

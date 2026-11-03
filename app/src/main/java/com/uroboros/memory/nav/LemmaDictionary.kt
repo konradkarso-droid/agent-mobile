@@ -138,6 +138,23 @@ class LemmaDictionary private constructor(
     /** Начальные формы слова; незнакомое слово — пустое множество. */
     fun lemmas(word: String): Set<String> = analyze(word).mapTo(LinkedHashSet()) { it.lemma }
 
+    /**
+     * Основа лексемы с начальной формой [lemma], формой которой прочитано
+     * [word]: общее начало всех её форм и начальной формы («рубанком»,
+     * «рубанок» → «рубан»; «кота» → «кот»). Так основа и записана в файле
+     * (`docs/slovar/lemma_build.py`). У лексемы с меняющимся корнем основа
+     * короткая или пустая («людьми» → «»). Не прочиталось так — null.
+     */
+    fun stemOf(word: String, lemma: String): String? {
+        val folded = TextFold.fold(word)
+        if (folded.isEmpty() || folded.any { encode(it) == NOT_A_LETTER }) return null
+        var found: String? = null
+        match("", folded) { stem, pattern, _ ->
+            if (found == null && stem + lemmaEndings[pattern] == lemma) found = stem
+        }
+        return found
+    }
+
     /** Слово — форма из словаря. */
     fun knows(word: String): Boolean = analyze(word).isNotEmpty()
 
@@ -345,7 +362,7 @@ object LemmaHolder {
         is State.Ready -> {
             val heap = s.heapBytes?.let { "куча ≈ ${mb(it)} МБ" } ?: "кучу измерить не вышло"
             "Словарь начальных форм: лексем ${s.dictionary.lexemeCount}, образцов ${s.dictionary.patternCount}, " +
-                "загружен за ${s.millis} мс · массивы ${mb(s.dictionary.arrayBytes)} МБ, $heap · потребители: портрет по теме, определитель лица, облака"
+                "загружен за ${s.millis} мс · массивы ${mb(s.dictionary.arrayBytes)} МБ, $heap · потребители: портрет по теме, определитель лица, облака, окно якорей"
         }
         State.Loading -> "Словарь начальных форм: загружается"
         State.Off -> "Словарь начальных форм: выключен"
