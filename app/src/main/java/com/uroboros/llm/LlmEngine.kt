@@ -227,6 +227,12 @@ class LlmEngine(
      * снаружи (ProcessObjects): движок о слое памяти не знает. См. [learnedLines].
      */
     private val readLearned: suspend () -> List<String> = { emptyList() },
+    /**
+     * Есть ли у агента ключ бота телеграма — для строк сборки
+     * ([BuildSelfDescription.lines]). Приходит снаружи (ProcessObjects): движок
+     * о вратах не знает.
+     */
+    private val telegramOn: () -> Boolean = { false },
 ) {
 
     private val engine = GGMLEngine()
@@ -968,7 +974,7 @@ class LlmEngine(
         // не последний ход, поэтому читать их до первой генерации законно.
         val banState = engine.getLastDecodeBreakdown().banState
         scriptBanStateAtLoad = banState
-        buildSelfLines = BuildSelfDescription.lines(banState)
+        buildSelfLines = BuildSelfDescription.lines(banState, telegramReadSafely())
         synchronized(wallLock) {
             // Ожидающая стена прежней загрузки к этой не относится: загрузка
             // собирает стену сама, из тех же настроек.
@@ -1028,6 +1034,29 @@ class LlmEngine(
         }
         learnedFailure = null
         synchronized(wallLock) { learnedLines = lines }
+    }
+
+    /**
+     * Есть ли ключ бота; сбой чтения — «нет»: строка о боте при сомнении не
+     * ставится (стена не обещает того, чего может не быть).
+     */
+    private fun telegramReadSafely(): Boolean = runCatching(telegramOn).getOrDefault(false)
+
+    /**
+     * Пересчитать строки сборки после смены ключа бота и попросить стену с ними.
+     * Встанет в начале следующего запроса разговора ([requestWall]); модель не
+     * перезагружается. До загрузки — ничего: загрузка соберёт строки сама.
+     *
+     * Звать не с главного потока — как [refreshLearned].
+     */
+    suspend fun refreshBuildLines() {
+        if (scriptBanStateAtLoad == -1) return
+        withContext(Dispatchers.IO) {
+            synchronized(wallLock) {
+                buildSelfLines = BuildSelfDescription.lines(scriptBanStateAtLoad, telegramReadSafely())
+            }
+            requestWall(wallFor())
+        }
     }
 
     /**

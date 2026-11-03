@@ -119,4 +119,24 @@ class BuildSelfDescriptionTest {
     fun `без стоящей стены ждать нечего — загрузка соберёт сама`() {
         assertNull(BuildSelfDescription.pendingAfter(null, "стена"))
     }
+
+    @Test
+    fun `без ключа бота — строк о телеграме нет, запрет прежний`() {
+        val lines = BuildSelfDescription.lines(1)
+        assertTrue(BuildSelfDescription.CANNOT_LINE in lines)
+        assertFalse(BuildSelfDescription.TELEGRAM_LINE in lines)
+        assertFalse(BuildSelfDescription.TELEGRAM_MEMORY_LINE in lines)
+        assertFalse(BuildSelfDescription.CANNOT_LINE_TELEGRAM in lines)
+    }
+
+    @Test
+    fun `с ключом бота — строки о телеграме вместо прежнего запрета`() {
+        val lines = BuildSelfDescription.lines(1, telegram = true)
+        assertTrue(BuildSelfDescription.TELEGRAM_LINE in lines)
+        assertTrue(BuildSelfDescription.TELEGRAM_MEMORY_LINE in lines)
+        assertTrue(BuildSelfDescription.CANNOT_LINE_TELEGRAM in lines)
+        assertFalse(BuildSelfDescription.CANNOT_LINE in lines)
+        // Запрет «писать другим людям» с ботом стал бы ложью о себе.
+        assertFalse(lines.any { "писать другим людям" in it })
+    }
 }

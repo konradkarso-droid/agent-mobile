@@ -75,6 +75,13 @@ class NightStepsTest {
     }
 
     @Test
+    fun `разговор в телеграме держит шаги ночи с порогом суда`() {
+        val chat: (Long) -> String? = { needed -> if (needed == SelfJudgeDecision.QUIET_MS) "в телеграме разговор: тихо 1 мин из 15" else "чужой порог" }
+        assertEquals("в телеграме разговор: тихо 1 мин из 15", NightSteps.refusal(ready.copy(chatRefusal = chat)))
+        assertNull(NightSteps.refusal(ready.copy(chatRefusal = { null })))
+    }
+
+    @Test
     fun `новая ночь без итогов — нужны все три`() {
         val missing = NightSteps.missing(night())
         assertTrue(missing.any)

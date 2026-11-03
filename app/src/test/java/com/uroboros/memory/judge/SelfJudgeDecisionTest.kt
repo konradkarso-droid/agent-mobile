@@ -77,4 +77,23 @@ class SelfJudgeDecisionTest {
             SelfJudgeDecision.refusal(ready.copy(modelChosen = false)),
         )
     }
+
+    @Test
+    fun `разговор в телеграме держит суд своей строкой`() {
+        val chat: (Long) -> String? = { needed -> if (needed == SelfJudgeDecision.QUIET_MS) "в телеграме разговор: тихо 3 мин из 15" else "чужой порог" }
+        assertEquals("в телеграме разговор: тихо 3 мин из 15", SelfJudgeDecision.refusal(ready.copy(chatRefusal = chat)))
+    }
+
+    @Test
+    fun `молчит телеграм — суд начинается`() {
+        assertNull(SelfJudgeDecision.refusal(ready.copy(chatRefusal = { null })))
+    }
+
+    @Test
+    fun `тишина экрана называется раньше телеграма`() {
+        assertEquals(
+            "тихо 3 мин из 15",
+            SelfJudgeDecision.refusal(ready.copy(quietMs = 3 * minute, chatRefusal = { "в телеграме разговор" })),
+        )
+    }
 }

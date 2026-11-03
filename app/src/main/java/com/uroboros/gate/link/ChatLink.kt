@@ -37,7 +37,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -68,9 +70,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * действий с согласием владельца на срок ([ChatPrefs.consent]); каждое
  * отправленное — в журнале действий.
  *
+ * СУД И НОЧЬ. Пока в телеграме идёт разговор, сами они не начинаются
+ * (gate.ChatQuiet). Начатые самим агентом — уступают: сообщение, на которое
+ * агент ответит, обрывает их так же, как реплика на экране ([heard]), и ответ
+ * ждёт, пока они отпустят модель ([awaitYield]).
+ *
  * ЧЕГО НЕ УМЕЕТ:
- *  - суд и ночь телеграму не уступают: сообщение ждёт, дождавшееся сверх
- *    срока ([ChatReply.STALE_MS]) молчит со строкой;
+ *  - разбор, начатый кнопкой «Разбор памяти», телеграму не уступает: ответ
+ *    молчит со строкой «идёт ночная работа» — кнопку нажал владелец, и обрывать
+ *    его работу чужим сообщением нельзя;
  *  - перехвата повтора и порчи слов, как у экрана, нет: режется только вызов
  *    приборов;
  *  - очередь и счёт обращения — в памяти процесса: после комы ждавшие ответа
@@ -91,6 +99,13 @@ object ChatLink {
 
     /** Срок блокировки сна на ход — страховка, если finally не отработает. Объявленное. */
     private const val WAKE_MS = 10 * 60_000L
+
+    /**
+     * Сколько ответ ждёт, пока уступивший суд или шаги ночи отпустят модель:
+     * после обрыва служба возвращает дневную загрузку модели. Объявленное число,
+     * то же, что у экрана.
+     */
+    private const val YIELD_WAIT_MS = 5 * 60_000L
 
     private val _status = MutableStateFlow(listOf("Слова: сообщений не было"))
 
@@ -181,6 +196,8 @@ object ChatLink {
 
         val answer = AddressSorter.answer(route.ring)
         if (answer != AddressSorter.Answer.SILENT) {
+            // Начатые самим агентом суд и шаги ночи уступают, как реплике на экране.
+            if (selfRunning()) AgentService.yieldToConversation(app)
             val counter = waiting.getOrPut(tallyKey) { AtomicInteger(0) }
             if (counter.get() >= ChatReply.MAX_QUEUE) {
                 answers[tallyKey] = "Ответ ($chatName): не отвечаю — очередь полна (${ChatReply.MAX_QUEUE})"
@@ -272,8 +289,21 @@ object ChatLink {
 
     private fun nightRunning() = AgentService.state.value is AgentService.RunState.Running
 
+    /** Идёт суд или шаги ночи, начатые самим агентом: они уступают телеграму. */
+    private fun selfRunning() = (AgentService.state.value as? AgentService.RunState.Running)?.self == true
+
+    /**
+     * Дождаться, пока уступивший самостоятельный прогон кончится. Разбор по
+     * кнопке не ждётся: он не уступает, и [ChatReply.decide] назовёт его.
+     */
+    private suspend fun awaitYield() {
+        if (!selfRunning()) return
+        withTimeoutOrNull(YIELD_WAIT_MS) { AgentService.state.first { it !is AgentService.RunState.Running } }
+    }
+
     /** Один ответ; итог словами. */
     private suspend fun reply(app: Context, job: Job): String {
+        awaitYield()
         val dao = ChatDatabase.getInstance(app).chatLineDao()
         val recent = dao.recent(job.chat, job.thread, RIBBON_READ).asReversed()
         val at = recent.indexOfLast { it.id == job.lineId }

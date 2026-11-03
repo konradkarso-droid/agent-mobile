@@ -1,6 +1,7 @@
 package com.uroboros
 
 import android.content.Context
+import com.uroboros.gate.store.GateTokenStore
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
@@ -14,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * Объекты, которые живут столько же, сколько процесс, а не столько, сколько экран.
@@ -89,7 +91,12 @@ object ProcessObjects {
         // Нажитое о себе для стены движок читает через эту функцию: слой памяти
         // знает, какие строки приняты, движок — только что их надо поставить.
         val stickers = MemoryDatabase.getInstance(app).stickerDao()
-        val llmEngine = LlmEngine(app, watchdog) { stickers.identityWall(SelfLine.WALL_CEILING) }
+        val llmEngine = LlmEngine(
+            app, watchdog,
+            readLearned = { stickers.identityWall(SelfLine.WALL_CEILING) },
+            // Строки о телеграме в стене стоят, пока лежит ключ бота (BuildSelfDescription).
+            telegramOn = { File(app.filesDir, GateTokenStore.FILE_NAME).exists() },
+        )
         // «Дом» (safety.HomeEvents): выход из нормы и обрыв сторожем пишутся на
         // диск, чтобы пережить кому, — о них агент потом расскажет фактом.
         val home = HomeEventStore(app)

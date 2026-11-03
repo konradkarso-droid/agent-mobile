@@ -84,6 +84,14 @@ interface ChatLineDao {
     )
     suspend fun countAfter(chat: String, thread: Long?, afterId: Long): Int
 
+    /**
+     * Время последней строки разговора с агентом — строки с кольцом из [rings]
+     * или своего ответа; null — таких нет. Что считается разговором — у
+     * gate.ChatQuiet.
+     */
+    @Query("SELECT MAX(at) FROM chat_lines WHERE isAgent = 1 OR ring IN (:rings)")
+    suspend fun lastDialogAt(rings: List<String>): Long?
+
     /** Последние собеседники в личке, кроме ботов, новые первыми. */
     @Query(
         "SELECT sender, name, MAX(at) AS lastAt FROM chat_lines " +

@@ -15,6 +15,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.uroboros.AgentService
+import com.uroboros.ProcessObjects
 import com.uroboros.access.PresenceLock
 import com.uroboros.gate.GateBotApi
 import com.uroboros.gate.store.GateTokenStore
@@ -257,6 +258,8 @@ class GateActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val error = withContext(Dispatchers.IO) { runCatching { GateTokenStore.write(applicationContext, token) }.exceptionOrNull() }
             statusView.append(if (error == null) "\nТокен сохранён." else "\nТокен не сохранён: ${error.javaClass.simpleName}")
+            // Строки о телеграме в стене (llm.BuildSelfDescription) — по ключу бота.
+            if (error == null) ProcessObjects.get(applicationContext).llmEngine.refreshBuildLines()
         }
     }
 
@@ -264,6 +267,7 @@ class GateActivity : AppCompatActivity() {
         lifecycleScope.launch {
             withContext(Dispatchers.IO) { runCatching { GateTokenStore.clear(applicationContext) } }
             statusView.append("\nТокен стёрт.")
+            ProcessObjects.get(applicationContext).llmEngine.refreshBuildLines()
         }
     }
 }

@@ -101,6 +101,8 @@ object NightSteps {
         val restLeftMs: Long,
         /** Выбиралась ли модель хоть раз — иначе загружать нечего. */
         val modelChosen: Boolean,
+        /** Почему ждём телеграма при пороге тишины — как у суда (SelfJudgeDecision.Inputs.chatRefusal). */
+        val chatRefusal: (neededMs: Long) -> String? = { null },
     )
 
     /**
@@ -116,6 +118,7 @@ object NightSteps {
         i.engineBusy -> "модель занята"
         i.quietMs < SelfJudgeDecision.QUIET_MS ->
             "тихо ${minutes(i.quietMs)} мин из ${minutes(SelfJudgeDecision.QUIET_MS)}"
+        i.chatRefusal(SelfJudgeDecision.QUIET_MS) != null -> i.chatRefusal(SelfJudgeDecision.QUIET_MS)
         i.restLeftMs > 0 -> "модель не загрузилась, следующая попытка через ${minutes(i.restLeftMs) + 1} мин"
         !i.modelChosen -> "модель ни разу не выбиралась — загружать нечего"
         else -> null

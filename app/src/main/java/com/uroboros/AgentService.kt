@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.documentfile.provider.DocumentFile
+import com.uroboros.gate.ChatQuiet
 import com.uroboros.gate.link.GateLink
 import com.uroboros.initiative.CuriositySource
 import com.uroboros.initiative.FirstOfSources
@@ -24,6 +25,7 @@ import com.uroboros.initiative.InitiativeSource
 import com.uroboros.initiative.InitiativeTally
 import com.uroboros.initiative.InitiativeTallyStore
 import com.uroboros.llm.AdapterFile
+import com.uroboros.llm.ChatDatabase
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.GenerationEnd
@@ -98,6 +100,9 @@ import java.util.Locale
  * нет — служба загружает последнюю выбранную сама: после комы экран может не
  * открыться до утра, а суд нужен именно ночью. Сняли с зарядки — суд
  * останавливается; человек написал — суд уступает разговору ([yield]).
+ * Разговор в телеграме держит сон, шаги ночи и суд той же меркой тишины, что
+ * разговор на экране (gate.ChatQuiet); начатые самим агентом суд и шаги ночи
+ * ему уступают, разбор по кнопке — нет (gate.link.ChatLink).
  * Разобранное не теряется: прогон продолжаемый, пара без вердикта достанется
  * следующему. Отчёт самостоятельного прогона — строка в уведомлении, а не
  * итог на экране: экран в это время показывает разговор.
@@ -621,6 +626,22 @@ class AgentService : Service() {
     }
 
     /**
+     * Отказ телеграма для проверок суда, шагов ночи и сна: лента чатов
+     * читается один раз, порог подставляет решающий (см. gate.ChatQuiet).
+     * Сбой чтения — тоже отказ: начинают они строго.
+     */
+    private suspend fun chatRefusalAt(now: Long): (Long) -> String? {
+        val reading = try {
+            ChatQuiet.reading(now, ChatDatabase.getInstance(applicationContext).chatLineDao().lastDialogAt(ChatQuiet.dialogRings))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            ChatQuiet.Reading.Failed(t.javaClass.simpleName)
+        }
+        return { needed -> ChatQuiet.refusal(reading, needed) }
+    }
+
+    /**
      * Пора ли судить самому. Порядок — от дешёвого к дорогому: условия без
      * чтения памяти ([SelfJudgeDecision]), затем «есть ли что судить» (чтение
      * базы и перебор пар), и только потом загрузка модели.
@@ -644,6 +665,7 @@ class AgentService : Service() {
                 quietMs = now - quietSince,
                 restLeftMs = restUntil - now,
                 modelChosen = modelUri != null,
+                chatRefusal = chatRefusalAt(now),
             )
         )?.let {
             showJudgeLine("Не сужу: $it.")
@@ -681,7 +703,9 @@ class AgentService : Service() {
         // Загрузка шла десятки секунд: за это время могли снять с зарядки или
         // заговорить с агентом. Переспрашиваются условия, которые могли
         // измениться, — остальное проверит служба при старте прогона.
-        if (!watchdog.power.value.charging || engine.activity.busy || job?.isActive == true) {
+        if (!watchdog.power.value.charging || engine.activity.busy || job?.isActive == true ||
+            chatRefusalAt(System.currentTimeMillis())(SelfJudgeDecision.QUIET_MS) != null
+        ) {
             showJudgeLine("Не сужу: пока грузилась модель, условия изменились.")
             return
         }
@@ -721,6 +745,7 @@ class AgentService : Service() {
                 quietMs = now - quietSince,
                 restLeftMs = stepsRestUntil - now,
                 modelChosen = modelUri != null,
+                chatRefusal = chatRefusalAt(now),
             )
         )?.let {
             showStepsLine(NightSteps.HEAD + "у ночи ${clock(night.nightAt)} нет: ${missing.words()} — жду: $it.")
@@ -741,7 +766,9 @@ class AgentService : Service() {
         }
         // Загрузка шла десятки секунд: за это время могли заговорить с агентом
         // или телефон мог нагреться и разрядиться.
-        if (engine.activity.busy || job?.isActive == true || watchdog.longRunBlockReason() != null) {
+        if (engine.activity.busy || job?.isActive == true || watchdog.longRunBlockReason() != null ||
+            chatRefusalAt(System.currentTimeMillis())(SelfJudgeDecision.QUIET_MS) != null
+        ) {
             showStepsLine(NightSteps.HEAD + "пока грузилась модель, условия изменились.")
             return
         }
@@ -841,7 +868,8 @@ class AgentService : Service() {
         val activity = ProcessObjects.get(applicationContext).llmEngine.activity
         val now = System.currentTimeMillis()
         val quietSince = maxOf(activity.lastEndedAtMs ?: 0L, bodyStartedAt)
-        SleepDecision.gate(now, activity.busy, quietSince)?.let {
+        val chat = chatRefusalAt(now)
+        SleepDecision.gate(now, activity.busy, quietSince, chat)?.let {
             showSleepLine(it)
             return
         }
@@ -859,7 +887,7 @@ class AgentService : Service() {
             showSleepLine(it)
             return
         }
-        SleepDecision.waitReason(pressure.changed, now - quietSince)?.let {
+        SleepDecision.waitReason(pressure.changed, now - quietSince, chat)?.let {
             showSleepLine(it)
             return
         }
