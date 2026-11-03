@@ -38,6 +38,7 @@ import com.uroboros.llm.ModelFolder
 import com.uroboros.llm.ResidentMemory
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.initiative.InitiativeHolder
+import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.OwnCorrection
 import com.uroboros.llm.EchoCheck
 import com.uroboros.llm.BibleSoftWall
@@ -4720,11 +4721,20 @@ class MainActivity : AppCompatActivity() {
                 val address = Coordinates.addressInRibbon(
                     journal.history().map { it.question to it.at }, userText, System.currentTimeMillis(),
                 )
-                // Своя речь агента — окно архива ленты, только на вопрос к
-                // агенту (см. OwnSpeech). Время старого хода — не позже
-                // закрытия разговора (Coordinates.turnTime).
+                // Реплики владельца нынешнего разговора — тема для окна темы и
+                // зацепка для просьбы вспомнить без якоря. После часа тишины
+                // прежний разговор их не держит (nav.WindowMap.episodeOf).
+                val episodeQuestions = WindowMap.episodeOf(
+                    journal.history().map { WindowMap.Turn(it.question, it.at) }, System.currentTimeMillis(),
+                ).map { it.question }
+                // Просьба вспомнить давнее (nav.RecallRequest): холод и своя речь
+                // садятся первыми, своя речь ищется на любой вопрос.
+                val recallPlan = RecallRequest.plan(userText, episodeQuestions, LemmaHolder.loaded, address)
+                // Своя речь агента — окно архива ленты, на вопрос к агенту или
+                // с просьбой вспомнить (см. OwnSpeech, RecallRequest). Время
+                // старого хода — не позже закрытия разговора (Coordinates.turnTime).
                 val ownSifted =
-                    if (address != Coordinates.Address.AGENT || archive == null) null
+                    if ((address != Coordinates.Address.AGENT && recallPlan == null) || archive == null) null
                     else OwnSpeech.sift(archive.map { row ->
                         OwnSpeech.Turn(
                             answer = row.agentContent,
@@ -4734,7 +4744,9 @@ class MainActivity : AppCompatActivity() {
                             serviceBlocks = journalStore.serviceBlocks(row),
                         )
                     })
-                val ownSaid = if (ownSifted == null) emptyList() else OwnSpeech.search(ownSifted.said, userText)
+                val ownSaid =
+                    if (ownSifted == null) emptyList()
+                    else OwnSpeech.search(ownSifted.said, RecallRequest.topicText(userText, recallPlan))
                 // Проверка на прочность (nav.Prochnost). Реплику с экрана
                 // набрал владелец, но от него она, только если вся — его своя
                 // речь: подпись или пересказ («Клод: тебя зовут Вася») —
@@ -4825,17 +4837,14 @@ class MainActivity : AppCompatActivity() {
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
                     limit = 5,
-                    // Тема — только нынешний разговор: после часа тишины
-                    // прежний её не держит (nav.WindowMap.episodeOf).
-                    recentQuestions = WindowMap.episodeOf(
-                        journal.history().map { WindowMap.Turn(it.question, it.at) }, System.currentTimeMillis(),
-                    ).map { it.question },
+                    recentQuestions = episodeQuestions,
                     excludedTexts = ribbonQuestions + userText,
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
                     address = address,
-                    ownSpeechFound = if (address == Coordinates.Address.AGENT) ownSaid.size else null,
+                    ownSpeechFound = if (address == Coordinates.Address.AGENT || recallPlan != null) ownSaid.size else null,
                     ownSpeechServiceDropped = ownSifted?.serviceDropped ?: 0,
                     seats = DolmenCircle.circleSeats(portraitRetold.size),
+                    recall = recallPlan,
                 )
                 // Облако адреса — прибор хода; в отбор и в модель не идёт (Clouds).
                 cloudLine = if (address == Coordinates.Address.UNDEFINED) {
@@ -5250,6 +5259,7 @@ class MainActivity : AppCompatActivity() {
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
                     prochnost = prochnostNote,
+                    recallAsk = RecallRequest.ASK_BACK.takeIf { recallPlan?.askBack == true },
                     curiosityAsk = selfGapLine
                         ?: homeTell?.line
                         ?: askedGap?.let { CuriosityAsk.gapLine(it) }

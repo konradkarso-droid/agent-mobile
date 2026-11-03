@@ -2,6 +2,7 @@ package com.uroboros.memory
 
 import android.content.Context
 import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.RecallRequest
 
 /**
  * Чем кончилась перепроверка записи, которую человек собирается принять из
@@ -356,10 +357,11 @@ class TrustedMediator(context: Context) {
         ownSpeechFound: Int? = null,
         seats: Int = limit,
         ownSpeechServiceDropped: Int = 0,
+        recall: RecallRequest.Plan? = null,
     ): ContextResult {
         val result = hourglass.getContextWithSummary(
             purpose, query, limit, recentQuestions, excludedTexts, previousAnswer, address, ownSpeechFound, seats,
-            ownSpeechServiceDropped,
+            ownSpeechServiceDropped, recall,
         )
         // Строку касаний ставит только ответ: просмотр памяти касаний не
         // засчитывает, и затирать им показание хода было бы враньём. Сбой

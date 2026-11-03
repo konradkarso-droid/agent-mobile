@@ -408,6 +408,7 @@ class ConversationJournal {
         disputeNotice: String? = null,
         curiosityAsk: String? = null,
         prochnost: String? = null,
+        recallAsk: String? = null,
     ): String {
         val blocks = ArrayList<String>(8)
         if (turns.lastOrNull()?.records?.isEmpty() == true) blocks += ANSWER_WITHOUT_SUPPORT
@@ -426,6 +427,14 @@ class ConversationJournal {
         // узнаётся как «под нажимом» (nav.OwnSpeech) — служебные блоки хода
         // режутся по пустой строке (EchoCheck.serviceBlocks).
         if (!prochnost.isNullOrBlank()) blocks += toAgent(prochnost)
+        // Предложение переспросить на просьбу вспомнить без зацепки
+        // (memory.nav.RecallRequest.ASK_BACK) — речь системы о вопросе ниже:
+        // за строкой прочности и перед сверкой, чтобы «ниже» сверки по-прежнему
+        // указывало на вопрос. Отдельным блоком,
+        // а не в предложении спросить о сне: то — почин агента, это — ответ на
+        // просьбу владельца, и слитые они не различались бы ни в приборе, ни
+        // при отсеве служебного из своей речи.
+        if (!recallAsk.isNullOrBlank()) blocks += toAgent(recallAsk)
         // Пустая строка отбрасывается наравне с null: блок из одних пробелов
         // стоил бы двух переводов строки и не сказал бы ничего.
         if (!disputeNotice.isNullOrBlank()) blocks += disputeNotice

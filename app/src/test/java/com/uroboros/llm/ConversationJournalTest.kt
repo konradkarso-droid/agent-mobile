@@ -65,6 +65,26 @@ class ConversationJournalTest {
     }
 
     @Test
+    fun `переспрос на просьбу вспомнить — меткой системы, за прочностью, перед сверкой и вопросом`() {
+        val content = ConversationJournal().composeUserContent(
+            "Помнишь что-нибудь?",
+            disputeNotice = "СВЕРКА",
+            prochnost = "ПРОЧНОСТЬ",
+            recallAsk = "переспроси",
+        )
+        assertEquals(
+            listOf(
+                ConversationJournal.toAgent("ПРОЧНОСТЬ"),
+                ConversationJournal.toAgent("переспроси"),
+                "СВЕРКА",
+                "Помнишь что-нибудь?",
+            ),
+            content.split("\n\n"),
+        )
+        assertEquals("без переспроса реплика прежняя", "Вопрос?", ConversationJournal().composeUserContent("Вопрос?", recallAsk = null))
+    }
+
+    @Test
     fun `без строки прочности реплика прежняя`() {
         assertEquals("Вопрос?", ConversationJournal().composeUserContent("Вопрос?", prochnost = null))
         assertEquals("Вопрос?", ConversationJournal().composeUserContent("Вопрос?", prochnost = "  "))
