@@ -166,6 +166,23 @@ interface StickerDao {
     ): List<Sticker>
 
     /**
+     * Сколько записей слоёв [layers] содержат [query] — тем же условием, что
+     * [searchAnyCase], без лимита и исключений. Редкость слова для порядка
+     * записей в окне якорей (HourglassMemory, nav.Anchors).
+     */
+    @Query(
+        "SELECT COUNT(*) FROM stickers WHERE reviewPending = 0 AND layer IN (:layers) " +
+            "AND (contentFolded LIKE '%' || :query || '%' " +
+            "OR (contentFolded IS NULL AND (content LIKE '%' || :query || '%' " +
+            "OR content LIKE '%' || :queryCapitalized || '%')))"
+    )
+    suspend fun countContaining(query: String, queryCapitalized: String, layers: List<String>): Int
+
+    /** Сколько записей в слоях [layers], кроме ждущих решения, — знаменатель редкости слова. */
+    @Query("SELECT COUNT(*) FROM stickers WHERE reviewPending = 0 AND layer IN (:layers)")
+    suspend fun countInLayers(layers: List<String>): Int
+
+    /**
      * Зеркало searchAnyCase: те же слова, но по записям В КАРАНТИНЕ.
      *
      * Зачем. Все три запроса пути чтения начинаются с `reviewPending = 0`, то

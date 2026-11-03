@@ -108,6 +108,21 @@ class LemmaDictionaryTest {
     }
 
     @Test
+    fun `основа лексемы — общее начало всех форм`() {
+        assertEquals("рубан", dictionary.stemOf("рубанком", "рубанок"))
+        assertEquals("рубан", dictionary.stemOf("рубанок", "рубанок"))
+        assertEquals("клод", dictionary.stemOf("Клодом", "клод"))
+        assertEquals("", dictionary.stemOf("людьми", "человек"))
+    }
+
+    @Test
+    fun `основа молчит — незнакомое слово, чужая начальная форма`() {
+        assertEquals(null, dictionary.stemOf("абвгд", "абвгд"))
+        assertEquals(null, dictionary.stemOf("рубанком", "кот"))
+        assertEquals(null, dictionary.stemOf("", ""))
+    }
+
+    @Test
     fun `кусок слова — не слово`() {
         assertFalse(dictionary.knows("рубанк"))
         assertFalse(dictionary.knows("людьм"))

@@ -232,11 +232,14 @@ object DolmenCircle {
         red: Int,
         ribbonExcluded: Int = 0,
         ownSpeech: String = OWN_SPEECH_NOT_ASKED,
+        /** Часть про окно якорей (nav.Anchors.meterPart); пусто — не печатается. */
+        anchors: String = "",
     ): String {
         val themeName = if (themeWords.isEmpty()) "тема" else "тема (${themeWords.joinToString(", ")})"
         val coldName = if (coldByTheme && cold !is Window.LayerEmpty) "холод по словам темы" else "холод"
         val excludedPart = if (ribbonExcluded > 0) " · реплик ленты в исключении $ribbonExcluded" else ""
-        return "Круг: вопрос — ${say(question)} · $themeName — ${say(theme)} · " +
+        val anchorsPart = if (anchors.isEmpty()) "" else "$anchors · "
+        return "Круг: ${anchorsPart}вопрос — ${say(question)} · $themeName — ${say(theme)} · " +
             "$coldName — ${say(cold)} · $ownSpeech · красный: $red — в ответ не идут, идут в стену" +
             excludedPart
     }

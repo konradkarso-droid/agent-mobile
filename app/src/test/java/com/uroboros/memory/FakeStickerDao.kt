@@ -80,6 +80,17 @@ class FakeStickerDao : StickerDao {
      */
     var onSearchHiddenAnyCase: ((query: String, queryCapitalized: String, limit: Int, layers: List<String>) -> List<HiddenRow>)? = null
 
+    /**
+     * Ответ на countContaining(query, queryCapitalized, layers) — сколько записей
+     * содержат слово; по нему окно якорей считает редкость слова. Строку в
+     * заглавной лямбда не получает: подделка, как и для searchAnyCase, не
+     * воспроизводит LIKE.
+     */
+    var onCountContaining: ((query: String, layers: List<String>) -> Int)? = null
+
+    /** Ответ на countInLayers(layers) — всего записей в слоях, знаменатель редкости. */
+    var onCountInLayers: ((layers: List<String>) -> Int)? = null
+
     /** Ответ на getAll() — всю таблицу целиком читает ночной показ снов. */
     var onGetAll: (() -> List<Sticker>)? = null
 
@@ -189,6 +200,12 @@ class FakeStickerDao : StickerDao {
         val answer = onSearchAnyCase ?: unprepared("searchAnyCase")
         return answer(query, queryCapitalized, limit, layers).filter { it.content !in excluded }
     }
+
+    override suspend fun countContaining(query: String, queryCapitalized: String, layers: List<String>): Int =
+        (onCountContaining ?: unprepared("countContaining"))(query, layers)
+
+    override suspend fun countInLayers(layers: List<String>): Int =
+        (onCountInLayers ?: unprepared("countInLayers"))(layers)
 
     override suspend fun searchHiddenAnyCase(
         query: String,
