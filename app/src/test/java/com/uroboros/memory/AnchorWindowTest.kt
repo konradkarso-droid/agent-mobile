@@ -242,6 +242,27 @@ class AnchorWindowTest {
     }
 
     @Test
+    fun `без просьбы горячее по якорям пусто, а холод нет — холоду до трёх мест`() = runBlocking {
+        // Горячие записи проходят по слову «говорил», но якоря Praxis в них нет.
+        val hot = (1L..5L).map { sticker(it, "говорил долго $it") }
+        val cold = (11L..14L).map { sticker(it, "Praxis говорил про реку $it", Layer.BLUE) }
+        val result = withDictionary(dao(*(hot + cold).toTypedArray()))
+            .getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "Что говорил Praxis?", 5)
+        assertEquals(3, result.coldIds.size)
+        assertTrue(result.circle, result.circle.startsWith("Круг: просьба вспомнить: нет · вспоминаю сам: по якорям горячее пусто"))
+    }
+
+    @Test
+    fun `без просьбы горячее по якорям нашло хоть одну — холоду одно место`() = runBlocking {
+        val hot = (1L..5L).map { sticker(it, "говорил долго $it") } + sticker(6, "Praxis сегодня молчит")
+        val cold = (11L..14L).map { sticker(it, "Praxis говорил про реку $it", Layer.BLUE) }
+        val result = withDictionary(dao(*(hot + cold).toTypedArray()))
+            .getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "Что говорил Praxis?", 5)
+        assertEquals(1, result.coldIds.size)
+        assertFalse(result.circle, result.circle.contains("вспоминаю сам"))
+    }
+
+    @Test
     fun `якорь в середине чужого слова записи не находит`() = runBlocking {
         val inside = sticker(1, "перерубанный ствол лежал у дороги")
         val result = withDictionary(dao(inside))

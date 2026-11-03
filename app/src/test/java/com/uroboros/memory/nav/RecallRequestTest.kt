@@ -135,6 +135,17 @@ class RecallRequestTest {
         assertEquals("без просьбы — реплика как есть", "Помнишь?", RecallRequest.topicText("Помнишь?", null))
     }
 
+    // --- Без просьбы — сам ---
+
+    @Test
+    fun `сам — только без просьбы, с якорем, когда горячее пусто, а холод нет`() {
+        assertTrue(RecallRequest.recallsItself(null, anchors = 1, hotAnchorFound = 0, coldAnchorFound = 2))
+        assertFalse("горячее нашло", RecallRequest.recallsItself(null, 1, 1, 2))
+        assertFalse("холод пуст", RecallRequest.recallsItself(null, 1, 0, 0))
+        assertFalse("якорей нет", RecallRequest.recallsItself(null, 0, 0, 2))
+        assertFalse("есть просьба — это не «сам»", RecallRequest.recallsItself(plan("Что ты помнишь про полотенце?"), 1, 0, 2))
+    }
+
     // --- Строка прибора ---
 
     @Test
