@@ -136,6 +136,9 @@ object ChatLink {
     fun start(context: Context, scope: CoroutineScope) {
         if (worker?.isActive == true) return
         val app = context.applicationContext
+        // Объекты процесса — здесь, на потоке службы, а не первым сообщением на
+        // потоке опроса: сторож и движок заводятся там, где их ждут.
+        ProcessObjects.get(app)
         refresh(app)
         worker = scope.launch(Dispatchers.IO) { work(app) }
     }
