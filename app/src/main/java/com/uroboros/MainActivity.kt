@@ -107,6 +107,8 @@ import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.Drift
 import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.MirrorFilter
+import com.uroboros.memory.nav.Meaning
+import com.uroboros.memory.nav.MeaningHolder
 import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.Prochnost
@@ -344,6 +346,15 @@ class MainActivity : AppCompatActivity() {
      * null прячет строку: отбора на этом ходе не было.
      */
     private var circleLine: String? = null
+
+    /**
+     * Прибор «смысл» к последнему ответу (см. nav.Meaning): что прибавил бы к
+     * кругу поиск по смыслу. null — хода ещё не было или прибор не досчитал.
+     * [meaningTurn] — номер хода, чья строка ждётся: досчитавший позже прошлый
+     * ход строку нового не перепишет.
+     */
+    private var meaningLine: String? = null
+    private var meaningTurn = 0
 
     /**
      * Зеркало в отборе к последнему ответу: адрес вопроса и сколько записей с
@@ -3110,9 +3121,9 @@ class MainActivity : AppCompatActivity() {
         // Строка таблицы глаголов печатается всегда: по ней и разворот, и лицо
         // глаголов на -у/-ю в адресе (nav.RetellHolder.meterLine).
         group(
-            "Память", recordsQuestionsLine, circleLine,
+            "Память", recordsQuestionsLine, circleLine, meaningLine ?: "Смысл: чисел хода на экране нет",
             windowMapLine ?: "Карта окна: чисел хода на экране нет", recordsSources, mirrorSelection, drift, portraitMeter,
-            nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(),
+            nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(), MeaningHolder.meterLine(),
             edgesLine ?: "Края разговоров: чисел хода на экране нет", cloud,
             touchesLine, selfLeader, passportMeter,
         )
@@ -3455,6 +3466,7 @@ class MainActivity : AppCompatActivity() {
         // Строка отбора — по той же причине, что и строка сверки.
         recordsQuestionsLine = null
         circleLine = null
+        meaningLine = null
         windowMapLine = null
         mirrorSelectionLine = null
         driftLine = null
@@ -4271,6 +4283,14 @@ class MainActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) { renderMetricsPanel() }
         }
 
+        // Векторы смысла (nav.MeaningHolder) — только для прибора «смысл»: один
+        // раз за процесс, не в главном потоке. Пока не загружены, прибор говорит
+        // об этом строкой; отбор и ответ от них не зависят.
+        lifecycleScope.launch(Dispatchers.IO) {
+            MeaningHolder.load { assets.open(MeaningHolder.ASSET) }
+            withContext(Dispatchers.Main) { renderMetricsPanel() }
+        }
+
         // Детектор порчи слов (llm.WordDamageHolder): один раз за процесс, не в
         // главном потоке. Пока не загружен или не загрузился, перехват ловит
         // только повтор; строка детектора в «Подробно» говорит, какой случай.
@@ -4862,6 +4882,31 @@ class MainActivity : AppCompatActivity() {
                     }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
                 }
                 circleLine = contextResult.circle
+                // Прибор «смысл» (nav.Meaning): что прибавил бы к кругу поиск по
+                // смыслу. Модели не подаётся, отбор не меняет. Считается в
+                // стороне от ответа, чтобы не задерживать его, — строка встанет
+                // в «Подробно», когда досчитается. Записи — те же, что уже
+                // прочитал портрет: второго чтения базы нет.
+                val meaningFor = ++meaningTurn
+                val meaningAll = portraitFound.getOrNull()?.second
+                val meaningTaken = contextResult.stickers.mapTo(HashSet()) { it.id } + portraitIds
+                val meaningFree = (DolmenCircle.circleSeats(portraitRetold.size) - contextResult.stickers.size -
+                    contextResult.ownSpeechSeated).coerceAtLeast(0)
+                val meaningExcluded = ribbonQuestions + userText
+                val meaningAddress = address
+                lifecycleScope.launch(Dispatchers.Default) {
+                    val line = if (meaningAll == null) "Смысл (модели не подаётся): записи не прочитались — см. «О собеседнике:»"
+                    else Meaning.meter(
+                        userText, meaningAll, meaningTaken, meaningFree, meaningExcluded, meaningAddress,
+                        RetellHolder.table, MeaningHolder.loaded, LemmaHolder.loaded,
+                    )
+                    withContext(Dispatchers.Main) {
+                        if (meaningFor == meaningTurn) {
+                            meaningLine = line
+                            renderMetricsPanel()
+                        }
+                    }
+                }
                 // Дверь сна: записи, принесённые снами последних ходов, видны
                 // отбору и из холодных слоёв, если вопрос их задевает (см.
                 // DreamDoor). Чтение по номеру ничего не греет. Сбой чтения

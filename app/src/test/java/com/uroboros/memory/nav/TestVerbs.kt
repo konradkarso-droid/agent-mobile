@@ -34,6 +34,9 @@ object TestVerbs {
         asset("lemma_forms.txt").bufferedReader(Charsets.UTF_8).useLines { LemmaDictionary.read(it) }
     }
 
+    /** Векторы смысла (`app/src/main/assets/meaning_vectors.bin`, [MeaningVectors]) — тот же файл, что у приложения. */
+    val vectors: MeaningVectors by lazy { asset(MeaningHolder.ASSET).inputStream().use { MeaningVectors.read(it) } }
+
     fun install() {
         PersonForm.verbs = table
         PersonForm.words = stencil
