@@ -48,6 +48,26 @@ class SelfGapTest {
     }
 
     @Test
+    fun `обороты, которыми агент называл себя на деле`() {
+        assertEquals("Александр", SelfGap.ownName("Вспомнил: имя — Александр."))
+        assertEquals("Александр", SelfGap.ownName("Свое: Александр — имя, которое я себе выбрал."))
+        assertEquals("Александр", SelfGap.ownName("Да, Александр — имя, которое я себе выбрал."))
+        assertEquals("Александр", SelfGap.ownName("Имя выбрал себе: Александр."))
+        assertEquals("Александр", SelfGap.ownName("Александр — имя, которое я себе выбрал с неделю назад."))
+    }
+
+    @Test
+    fun `чужое имя в пересказе и догадка — молчит`() {
+        assertNull(SelfGap.ownName("Я запутался: ты говорил, что Иван — это прозвище, а имя — Кэп."))
+        assertNull(SelfGap.ownName("Так и скажи: «Иван — это прозвище, а имя — Кэп»."))
+        assertNull(SelfGap.ownName("Я думаю, имя — Олег."))
+        assertNull(SelfGap.ownName("Твоё имя — Иван."))
+        assertNull(SelfGap.ownName("Я говорил: «Свое: Александр — имя, которое я себе выбрал»."))
+        // Повтор слова владельца — не выбор и в новых оборотах.
+        assertNull(SelfGap.ownName("Имя — Кэп.", "Зови меня Кэп."))
+    }
+
+    @Test
     fun `не своё имя — молчит`() {
         assertNull(SelfGap.ownName("Меня зовут агент."))
         assertNull(SelfGap.ownName("Имени у меня пока нет."))

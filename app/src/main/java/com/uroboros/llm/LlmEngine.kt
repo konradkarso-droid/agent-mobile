@@ -233,6 +233,11 @@ class LlmEngine(
      * о вратах не знает.
      */
     private val telegramOn: () -> Boolean = { false },
+    /**
+     * Чтение паспорта для стены — принятых строк «кто я» (memory.dream.Passport).
+     * Приходит снаружи, как [readLearned]; читается теми же путями (см. [passport]).
+     */
+    private val readPassport: suspend () -> BuildSelfDescription.PassportWall = { BuildSelfDescription.PassportWall() },
 ) {
 
     private val engine = GGMLEngine()
@@ -997,7 +1002,16 @@ class LlmEngine(
         buildLines = buildSelfLines,
         learned = learnedLines,
         tools = Glance.WALL_BLOCK,
+        passport = passport,
     )
+
+    /**
+     * Паспорт в стене — как [learnedLines]: пишется под [wallLock], читается без
+     * него, подменяется целиком; читается вместе с нажитым ([loadLearned],
+     * [refreshLearned]).
+     */
+    @Volatile
+    private var passport: BuildSelfDescription.PassportWall = BuildSelfDescription.PassportWall()
 
     /**
      * Нажитое о себе в стене: принятые человеком строки «о себе», как их
@@ -1023,17 +1037,23 @@ class LlmEngine(
      * база отвечает на своём потоке.
      */
     private suspend fun loadLearned() {
-        val lines = try {
-            readLearned()
+        val (lines, read) = try {
+            readLearned() to readPassport()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            learnedFailure = "Стена без нажитого: память не ответила (${t.javaClass.simpleName})"
-            synchronized(wallLock) { learnedLines = emptyList() }
+            learnedFailure = "Стена без нажитого и паспорта: память не ответила (${t.javaClass.simpleName})"
+            synchronized(wallLock) {
+                learnedLines = emptyList()
+                passport = BuildSelfDescription.PassportWall()
+            }
             return
         }
         learnedFailure = null
-        synchronized(wallLock) { learnedLines = lines }
+        synchronized(wallLock) {
+            learnedLines = lines
+            passport = read
+        }
     }
 
     /**
@@ -1071,18 +1091,21 @@ class LlmEngine(
      *   сбое стена остаётся прежней.
      */
     suspend fun refreshLearned(): String? {
-        val lines = try {
-            readLearned()
+        val (lines, read) = try {
+            readLearned() to readPassport()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            val why = "Нажитое в стене не обновлено: память не ответила (${t.javaClass.simpleName})"
+            val why = "Нажитое и паспорт в стене не обновлены: память не ответила (${t.javaClass.simpleName})"
             learnedFailure = why
             return why
         }
         learnedFailure = null
         withContext(Dispatchers.IO) {
-            synchronized(wallLock) { learnedLines = lines }
+            synchronized(wallLock) {
+                learnedLines = lines
+                passport = read
+            }
             requestWall(wallFor())
         }
         return null
@@ -1241,7 +1264,7 @@ class LlmEngine(
         if (buildSelfLines.isNotEmpty()) {
             // Тексты строк здесь не печатаются: они занимали полэкрана. Их
             // показывает экран по нажатию (см. MainActivity, «показать»).
-            return "О себе от сборки: ${buildSelfLines.size} стр. · нажитых в стене: ${learnedLines.size}"
+            return "О себе от сборки: ${buildSelfLines.size} стр. · нажитых в стене: ${learnedLines.size} · паспорт: ${passport.lines.size}"
         }
         val why = when (scriptBanStateAtLoad) {
             -1 -> "библиотека не сообщила о запрете иероглифов"

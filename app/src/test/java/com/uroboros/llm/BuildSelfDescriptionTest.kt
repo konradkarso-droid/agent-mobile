@@ -139,4 +139,28 @@ class BuildSelfDescriptionTest {
         // Запрет «писать другим людям» с ботом стал бы ложью о себе.
         assertFalse(lines.any { "писать другим людям" in it })
     }
+
+    @Test
+    fun `строка «имя появится позже» — буква в букву из стены человека`() {
+        assertTrue(BibleSoftWall.TEXT.lines().any { it.trim() == BuildSelfDescription.NAME_LATER_LINE })
+    }
+
+    @Test
+    fun `имя в паспорте — строки «имя появится позже» нет, паспорт сразу за стеной человека`() {
+        val passport = BuildSelfDescription.PassportWall(listOf("Меня зовут Александр. Это имя я выбрал себе сам."), hasName = true)
+        val wall = BuildSelfDescription.compose(BibleSoftWall.TEXT, listOf("строка сборки"), listOf("нажитое"), passport = passport)
+        assertFalse(wall.contains(BuildSelfDescription.NAME_LATER_LINE))
+        val lines = wall.lines()
+        assertTrue(lines.indexOf("Меня зовут Александр. Это имя я выбрал себе сам.") < lines.indexOf("строка сборки"))
+        assertTrue(lines.indexOf("строка сборки") < lines.indexOf("нажитое"))
+    }
+
+    @Test
+    fun `без имени в паспорте — стена человека цела`() {
+        val passport = BuildSelfDescription.PassportWall(listOf("Иван — мой создатель и хост."), hasName = false)
+        val wall = BuildSelfDescription.compose(BibleSoftWall.TEXT, emptyList(), passport = passport)
+        assertTrue(wall.contains(BuildSelfDescription.NAME_LATER_LINE))
+        assertTrue(wall.contains("Иван — мой создатель и хост."))
+        assertEquals(BuildSelfDescription.compose(BibleSoftWall.TEXT, emptyList()), BuildSelfDescription.compose(BibleSoftWall.TEXT, emptyList(), passport = BuildSelfDescription.PassportWall()))
+    }
 }

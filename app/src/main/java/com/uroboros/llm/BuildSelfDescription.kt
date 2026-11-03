@@ -204,11 +204,28 @@ object BuildSelfDescription {
     }
 
     /**
+     * Строка человеческой стены ([BibleSoftWall.TEXT]) об имени, которого ещё
+     * нет. Пока в паспорте нет имени, она стоит; принято имя — уходит
+     * ([compose]): иначе стена говорила бы и «имя появится позже», и «меня
+     * зовут…». Текст обязан совпадать со строкой стены буква в букву — это
+     * закреплено тестом.
+     */
+    const val NAME_LATER_LINE = "Имя у меня появится позже: оно вырастет из моего опыта."
+
+    /**
+     * Паспорт для стены: принятые строки (memory.dream.Passport) и есть ли
+     * среди них имя. Собирает зовущий: движок о слое памяти не знает.
+     */
+    data class PassportWall(val lines: List<String> = emptyList(), val hasName: Boolean = false)
+
+    /**
      * Стена целиком — единственное место её сборки, и для загрузки, и для
      * смены на лету.
      *
-     * Порядок — от постоянного к меняющемуся: текст человека, строки сборки,
-     * нажитое о себе. Движок переиспользует совпавшее
+     * Порядок — от постоянного к меняющемуся: текст человека, паспорт, строки
+     * сборки, нажитое о себе. Паспорт — сразу за текстом человека: это то, из
+     * чего агент состоит («Я — агент… Меня зовут…»), и меняется он реже
+     * строк сборки. Движок переиспользует совпавшее
      * начало запроса, поэтому правка ближе к концу стоит пересчёта меньшего
      * хвоста (см. BibleSoftWall, «ПОЧЕМУ РАЗДЕЛ ПОСЛЕДНИЙ»).
      *
@@ -217,6 +234,8 @@ object BuildSelfDescription {
      *
      * @param learned нажитое о себе — строки, принятые человеком; пусто,
      *        пока таких нет.
+     * @param passport паспорт — принятые человеком строки «кто я»; пусто, пока
+     *        таких нет.
      * @param tools описание инструментов (см. [Glance.WALL_BLOCK]) — последним,
      *        как его ставит шаблон модели: после всего системного текста. Это
      *        не строка о себе, и в счёт строк сборки не входит. Внутри него
@@ -228,8 +247,11 @@ object BuildSelfDescription {
         buildLines: List<String>,
         learned: List<String> = emptyList(),
         tools: String = "",
+        passport: PassportWall = PassportWall(),
     ): String {
-        val wall = (listOf(humanWall) + buildLines + learned)
+        val human = if (!passport.hasName) humanWall
+        else humanWall.lines().filterNot { it.trim() == NAME_LATER_LINE }.joinToString("\n")
+        val wall = (listOf(human) + passport.lines + buildLines + learned)
             .filter { it.isNotBlank() }
             .joinToString("\n")
         return if (tools.isBlank()) wall else "$wall\n\n$tools"
