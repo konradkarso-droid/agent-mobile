@@ -23,8 +23,9 @@ import android.util.Log
  */
 object GatedAction {
 
-    suspend fun evaluate(context: Context, request: ActionRequest): ActionVerdict {
-        val verdict = ActionGate.evaluate(request)
+    /** [consent] — согласие владельца на срок, если действие идёт под ним (см. [StandingConsent]). */
+    suspend fun evaluate(context: Context, request: ActionRequest, consent: StandingConsent? = null): ActionVerdict {
+        val verdict = ActionGate.evaluate(request, consent = consent)
 
         return try {
             MemoryDatabase.getInstance(context)

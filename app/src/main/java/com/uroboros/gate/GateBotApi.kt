@@ -17,8 +17,9 @@ import java.net.URLEncoder
  *
  * ЧЕГО НЕ УМЕЕТ: не проверяет, что ответил именно телеграм, — это делает
  * HTTPS; из обновлений берёт только сообщения и их правку (`allowed_updates`
- * в [updatesUrl]); пересылку, ответы, подписи к файлу не читает — вратам они
- * не нужны.
+ * в [updatesUrl]); из сообщения — то, что нужно вратам и словам чата
+ * ([TgWords]): текст, сущности, ответ на чьё, ветку, пересылку как признак;
+ * подписи к файлу, картинки, голос не читает.
  *
  * Чистый объект: ни сети, ни базы, ни Android.
  */
@@ -88,19 +89,33 @@ object GateBotApi {
         return Reply.Error(code, TgJson.str(o["description"]) ?: "без описания")
     }
 
-    /** Кто я: номер бота и его имя пользователя. */
-    data class Me(val id: Long, val username: String?)
+    /**
+     * Кто я: номер бота, имя пользователя и видит ли он все сообщения групп
+     * (`can_read_all_group_messages` — приватность выключена; null — телеграм не
+     * сказал).
+     */
+    data class Me(val id: Long, val username: String?, val readsAllGroupMessages: Boolean? = null)
 
     fun me(result: Any?): Me? {
         val o = TgJson.obj(result) ?: return null
         val id = TgJson.long(o["id"]) ?: return null
-        return Me(id, TgJson.str(o["username"]))
+        return Me(id, TgJson.str(o["username"]), TgJson.bool(o["can_read_all_group_messages"]))
     }
 
     /** Файл в сообщении: как скачать и какого он размера (null — телеграм не сказал). */
     data class Doc(val fileId: String, val size: Long?)
 
-    /** Сообщение из обновления — то, что нужно вратам, до скачивания файла. */
+    /** Сущность текста (`entities`): вид и место в единицах UTF-16; [userId] — у `text_mention`. */
+    data class Entity(val type: String, val offset: Int, val length: Int, val userId: Long? = null)
+
+    /**
+     * Сообщение из обновления — то, что нужно вратам (до скачивания файла) и
+     * словам чата ([TgWords]). Поля слов — с умолчаниями: вратам они не нужны.
+     *
+     * [replyToTopicRoot] — сообщение, на которое «ответ», — служебное создание
+     * ветки форума (`forum_topic_created`): так телеграм помечает каждое
+     * сообщение ветки, и ответом оно не является (см. [TgWords]).
+     */
     data class Message(
         val chatId: Long,
         val privateChat: Boolean,
@@ -110,6 +125,20 @@ object GateBotApi {
         val edited: Boolean,
         val dateSec: Long,
         val doc: Doc?,
+        val messageId: Long = 0,
+        val chatType: String? = null,
+        val chatTitle: String? = null,
+        val threadId: Long? = null,
+        val topicMessage: Boolean = false,
+        val fromIsBot: Boolean = false,
+        val fromFirstName: String? = null,
+        val fromLastName: String? = null,
+        val text: String? = null,
+        val entities: List<Entity> = emptyList(),
+        val replyToFromId: Long? = null,
+        val replyToMessageId: Long? = null,
+        val replyToTopicRoot: Boolean = false,
+        val forwarded: Boolean = false,
     ) {
         fun toTg(file: ByteArray?) = TgMessage(chatId, privateChat, fromId, senderChatId, edited, dateSec, file)
     }
@@ -130,6 +159,7 @@ object GateBotApi {
         val chatId = TgJson.long(chat["id"]) ?: return null
         val from = TgJson.obj(m["from"])
         val doc = TgJson.obj(m["document"])?.let { d -> TgJson.str(d["file_id"])?.let { Doc(it, TgJson.long(d["file_size"])) } }
+        val reply = TgJson.obj(m["reply_to_message"])
         return Message(
             chatId = chatId,
             privateChat = TgJson.str(chat["type"]) == "private",
@@ -139,7 +169,29 @@ object GateBotApi {
             edited = edited,
             dateSec = TgJson.long(m["date"]) ?: 0L,
             doc = doc,
+            messageId = TgJson.long(m["message_id"]) ?: 0L,
+            chatType = TgJson.str(chat["type"]),
+            chatTitle = TgJson.str(chat["title"]),
+            threadId = TgJson.long(m["message_thread_id"]),
+            topicMessage = TgJson.bool(m["is_topic_message"]) == true,
+            fromIsBot = from?.let { TgJson.bool(it["is_bot"]) } == true,
+            fromFirstName = from?.let { TgJson.str(it["first_name"]) },
+            fromLastName = from?.let { TgJson.str(it["last_name"]) },
+            text = TgJson.str(m["text"]),
+            entities = TgJson.list(m["entities"]).orEmpty().mapNotNull { e -> entity(TgJson.obj(e)) },
+            replyToFromId = reply?.let { TgJson.obj(it["from"]) }?.let { TgJson.long(it["id"]) },
+            replyToMessageId = reply?.let { TgJson.long(it["message_id"]) },
+            replyToTopicRoot = reply?.containsKey("forum_topic_created") == true,
+            forwarded = m["forward_origin"] != null || m["forward_from"] != null || m["forward_date"] != null,
         )
+    }
+
+    private fun entity(e: Map<String, Any?>?): Entity? {
+        if (e == null) return null
+        val type = TgJson.str(e["type"]) ?: return null
+        val offset = TgJson.long(e["offset"])?.toInt() ?: return null
+        val length = TgJson.long(e["length"])?.toInt() ?: return null
+        return Entity(type, offset, length, TgJson.obj(e["user"])?.let { TgJson.long(it["id"]) })
     }
 
     /**
@@ -156,6 +208,35 @@ object GateBotApi {
 
     /** Номер чата, куда ушло сообщение, из ответа `sendDocument`. */
     fun sentChatId(result: Any?): Long? = TgJson.obj(result)?.let { TgJson.obj(it["chat"]) }?.let { TgJson.long(it["id"]) }
+
+    /** Номер ушедшего сообщения из ответа `sendMessage`; null — телеграм не сказал. */
+    fun sentMessageId(result: Any?): Long? = TgJson.obj(result)?.let { TgJson.long(it["message_id"]) }
+
+    // --- Отправка текста ---
+
+    /**
+     * Предел текста одного сообщения у телеграма — 4096 знаков (помню, FAQ и
+     * описание `sendMessage`). Длиннее отправка отказывает целиком, поэтому
+     * режет зовущий ([TgWords.cut]).
+     */
+    const val TEXT_LIMIT = 4096
+
+    /**
+     * Тело `sendMessage` — форма `application/x-www-form-urlencoded`: текст
+     * идёт как есть, без разметки (`parse_mode` не ставится — знаки `*` и `_`
+     * из ответа модели остаются знаками). [replyTo] — ответом на это сообщение
+     * (если оно исчезло — всё равно уходит); [thread] — в эту ветку форума.
+     */
+    fun messageBody(chatId: Long, text: String, replyTo: Long?, thread: Long?): ByteArray {
+        require(text.isNotEmpty() && text.length <= TEXT_LIMIT) { "текст пустой или длиннее $TEXT_LIMIT" }
+        fun enc(v: String) = URLEncoder.encode(v, "UTF-8")
+        val parts = ArrayList<String>(4)
+        parts += "chat_id=$chatId"
+        parts += "text=" + enc(text)
+        if (thread != null) parts += "message_thread_id=$thread"
+        if (replyTo != null && replyTo > 0) parts += "reply_parameters=" + enc("{\"message_id\":$replyTo,\"allow_sending_without_reply\":true}")
+        return parts.joinToString("&").toByteArray(Charsets.UTF_8)
+    }
 
     // --- Отправка файла ---
 

@@ -32,10 +32,11 @@ import kotlinx.coroutines.withContext
  * весь бот, — и отсюда агент пишет другим агентам.
  *
  * РАСКЛАДКА ДЛЯ ЛЕВШИ: главные действия («Послать», «Познакомиться») внизу
- * слева; «Токен» — вверху справа: его нельзя нажать случайно.
+ * слева; «Токен», «Отвечать», «Мой тг», «Имена» — вверху справа: это решения
+ * владельца о канале ([ChatPrefs]), их нельзя нажать случайно.
  *
  * ЧЕГО НЕ УМЕЕТ: подтверждений владельца (доверенность, знакомство, новый ключ
- * подписи) нет; список собеседников не показывает — номер видно в строках;
+ * подписи) нет; «Мой тг» предлагает только тех, кто уже писал боту в личку;
  * принятое показывает только до перезапуска ([GateLink.lines]).
  */
 class GateActivity : AppCompatActivity() {
@@ -52,8 +53,8 @@ class GateActivity : AppCompatActivity() {
         }
         setContentView(build())
         lifecycleScope.launch {
-            GateLink.status.combine(GateLink.lines) { s, l -> s to l }.collect { (s, l) ->
-                statusView.text = s.joinToString("\n")
+            combine(GateLink.status, ChatLink.status, GateLink.lines) { s, w, l -> Triple(s, w, l) }.collect { (s, w, l) ->
+                statusView.text = (s + w).joinToString("\n")
                 linesView.text = if (l.isEmpty()) "Событий пока нет." else l.joinToString("\n")
             }
         }
@@ -92,13 +93,19 @@ class GateActivity : AppCompatActivity() {
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
 
-        val top = LinearLayout(this).apply { gravity = Gravity.END }
-        top.addView(Button(this).apply {
-            text = "Токен"
+        fun topButton(label: String, onClick: () -> Unit) = Button(this).apply {
+            text = label
             isAllCaps = false
-            setOnClickListener { tokenDialog() }
-        })
+            setOnClickListener { onClick() }
+        }
+        val top = LinearLayout(this).apply { gravity = Gravity.END }
+        top.addView(topButton("Отвечать") { consentDialog() })
+        top.addView(topButton("Токен") { tokenDialog() })
         root.addView(top)
+        val top2 = LinearLayout(this).apply { gravity = Gravity.END }
+        top2.addView(topButton("Имена") { namesDialog() })
+        top2.addView(topButton("Мой тг") { ownerDialog() })
+        root.addView(top2)
 
         statusView = text(13f)
         linesView = text(12f, mono = true).apply { setPadding(0, dp(8), 0, 0) }
@@ -146,6 +153,83 @@ class GateActivity : AppCompatActivity() {
         })
         root.addView(actions)
         return root
+    }
+
+    /**
+     * Согласие агенту отвечать в телеграме — на срок ([com.uroboros.memory.StandingConsent]).
+     * Здесь и только здесь оно даётся и снимается.
+     */
+    private fun consentDialog() {
+        val now = System.currentTimeMillis()
+        val held = ChatPrefs.consent(this, now)
+        val days = com.uroboros.memory.StandingConsent.DEFAULT_TERM_MS / (24 * 60 * 60 * 1000)
+        val b = AlertDialog.Builder(this).setTitle("Ответы в телеграме")
+        if (held == null) {
+            b.setMessage(
+                "Разрешить агенту отвечать в телеграме на $days дней? Он отвечает обращённым к нему, " +
+                    "опираясь на свою стену и ленту чата; ваша память с экрана туда не идёт. " +
+                    "Каждое сообщение — в журнале действий. Снять можно здесь же или аварийным стопом."
+            )
+                .setPositiveButton("Разрешить") { _, _ -> ChatPrefs.grantConsent(this); ChatLink.refresh(this) }
+                .setNegativeButton("Отмена", null)
+        } else {
+            b.setMessage("Разрешено до ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.ROOT).format(java.util.Date(held.expiresAt))}.")
+                .setPositiveButton("Продлить на $days дней") { _, _ -> ChatPrefs.grantConsent(this); ChatLink.refresh(this) }
+                .setNeutralButton("Снять") { _, _ -> ChatPrefs.revokeConsent(this); ChatLink.refresh(this) }
+                .setNegativeButton("Отмена", null)
+        }
+        b.show()
+    }
+
+    /** «Это я»: выбрать свой аккаунт среди тех, кто писал боту в личку. */
+    private fun ownerDialog() {
+        lifecycleScope.launch {
+            val peers = withContext(Dispatchers.IO) {
+                runCatching { com.uroboros.llm.ChatDatabase.getInstance(applicationContext).chatLineDao().directPeers(5) }.getOrDefault(emptyList())
+            }
+            val held = ChatPrefs.owner(this@GateActivity)
+            val b = AlertDialog.Builder(this@GateActivity).setTitle("Мой телеграм")
+            if (peers.isEmpty()) {
+                b.setMessage(
+                    (held?.let { "Сейчас отмечен: ${it.name} (${it.key.id}).\n\n" } ?: "") +
+                        "Напишите боту из своего телеграма в личку, потом откройте это окно снова — здесь появится ваше имя."
+                )
+            } else {
+                b.setItems(peers.map { "${it.name} (${it.sender})" }.toTypedArray()) { _, i ->
+                    val p = peers[i]
+                    AlertDialog.Builder(this@GateActivity)
+                        .setTitle("Это я?")
+                        .setMessage(
+                            "${p.name} (${p.sender}) — ваш аккаунт. Сказанное с него ляжет в вашу память без подписи. " +
+                                "Права по-прежнему даёт только этот экран."
+                        )
+                        .setPositiveButton("Это я") { _, _ ->
+                            ChatPrefs.setOwner(this@GateActivity, com.uroboros.memory.nav.PersonKey(p.sender), p.name)
+                            ChatLink.refresh(this@GateActivity)
+                        }
+                        .setNegativeButton("Отмена", null)
+                        .show()
+                }
+            }
+            if (held != null) b.setNeutralButton("Снять отметку") { _, _ -> ChatPrefs.clearOwner(this@GateActivity); ChatLink.refresh(this@GateActivity) }
+            b.setNegativeButton("Закрыть", null).show()
+        }
+    }
+
+    /** Имена агента для сортировщика в группах — все формы через запятую. */
+    private fun namesDialog() {
+        val field = EditText(this).apply {
+            hint = "Александр, Саша, …"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            setText(ChatPrefs.names(this@GateActivity).joinToString(", "))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Имена агента")
+            .setMessage("Все формы, какими агента зовут в группах: падежи, уменьшительные, латиницей. Через запятую.")
+            .setView(field)
+            .setPositiveButton("Сохранить") { _, _ -> ChatPrefs.setNames(this, field.text.toString()); ChatLink.refresh(this) }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     /** Ввод токена: поле скрыто, как пароль; токен никуда, кроме хранилища, не идёт. */
