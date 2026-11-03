@@ -109,8 +109,14 @@ class AnchorsTest {
 
     @Test
     fun `строка круга называет якоря, а без них — причину`() {
-        val line = Anchors.meterPart(of("А что помнишь про беседу с Клодом?"), found = 4, seated = 2, dictionaryLoaded = true)
-        assertEquals("якоря (беседу, клодом — имя) — нашли 4, мест 2", line)
+        val anchors = of("А что помнишь про беседу с Клодом?")
+        val line = Anchors.meterPart(anchors, found = 4, seated = 2, dictionaryLoaded = true, cold = Anchors.ColdPart(3, 1))
+        assertEquals("якоря (беседу, клодом — имя) — нашли 4, мест 2 · в холоде нашли 3, мест 1", line)
+        // Пустой холод сказан словами, а не нулём: «искал — пусто» и «искать не в чем» — разное.
+        assertEquals(
+            "якоря (беседу, клодом — имя) — нашли 4, мест 2 · в холоде: слой пуст",
+            Anchors.meterPart(anchors, found = 4, seated = 2, dictionaryLoaded = true, cold = null),
+        )
         assertEquals("якоря: нет", Anchors.meterPart(emptyList(), 0, 0, dictionaryLoaded = true))
         assertTrue(Anchors.meterPart(emptyList(), 0, 0, dictionaryLoaded = false).contains("словарь не загружен"))
     }

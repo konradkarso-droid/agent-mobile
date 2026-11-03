@@ -935,7 +935,9 @@ class HourglassMemory(
         // первыми: запись с именем или предметом вопроса проходит без доли слов
         // вопроса. Зачем и чего не умеет — у nav.Anchors.
         val anchors = Anchors.of(query, dictionary)
-        val anchored = if (anchors.isEmpty()) null else searchByAnchors(anchors, query, limit, purpose, excluded)
+        val anchored =
+            if (anchors.isEmpty()) null
+            else searchByAnchors(anchors, query, limit, purpose, excluded, SEARCH_HOT_LAYERS)
         anchored?.let { trace += "окно якорей:"; trace += it.trace }
 
         val question =
@@ -967,6 +969,14 @@ class HourglassMemory(
             )
         cold?.let { trace += "окно холода:"; trace += it.trace }
 
+        // Якоря ищутся и в холоде — тем же правилом, что в горячих слоях, и
+        // найденное встаёт в окно холода первым, как якорные записи в окне
+        // вопроса. Мест у холода от этого не прибавляется. Зачем — у nav.Anchors.
+        val coldAnchored =
+            if (anchors.isEmpty() || coldEmpty) null
+            else searchByAnchors(anchors, query, limit, purpose, excluded, COLD_LAYERS)
+        coldAnchored?.let { trace += "окно якорей в холоде:"; trace += it.trace }
+
         // Зеркало — до раздачи мест, чтобы место досталось следующему кандидату
         // (nav.MirrorFilter). Одна запись может найтись в двух окнах — снятые
         // считаются по номерам записей. Только для ответа: зеркало защищает
@@ -983,9 +993,12 @@ class HourglassMemory(
         val anchoredIds = anchoredKept.mapTo(HashSet()) { it.id }
         val questionKept = anchoredKept + mirrored(question?.stickers.orEmpty()).filterNot { it.id in anchoredIds }
         val themeKept = mirrored(theme?.stickers.orEmpty())
-        val coldKept = mirrored(cold?.stickers.orEmpty())
+        val coldAnchoredKept = mirrored(coldAnchored?.stickers.orEmpty())
+        val coldAnchoredIds = coldAnchoredKept.mapTo(HashSet()) { it.id }
+        val coldKept = coldAnchoredKept + mirrored(cold?.stickers.orEmpty()).filterNot { it.id in coldAnchoredIds }
         val mirrorRemoved = if (!mirrorOn) 0 else
-            (anchored?.stickers.orEmpty() + question?.stickers.orEmpty() + theme?.stickers.orEmpty() + cold?.stickers.orEmpty())
+            (anchored?.stickers.orEmpty() + question?.stickers.orEmpty() + theme?.stickers.orEmpty() +
+                coldAnchored?.stickers.orEmpty() + cold?.stickers.orEmpty())
                 .filterNot { MirrorFilter.keeps(it, address, retell) }
                 .mapTo(HashSet()) { it.id }.size
 
@@ -1001,8 +1014,10 @@ class HourglassMemory(
 
         // Кому засчитывается польза — решает usefulnessMarks, там же и объяснение.
         // Холод, искавший по словам вопроса, с вопросом совпал; по словам темы — нет.
+        // Холодная запись с якорем совпала с вопросом якорем — как якорная в окне вопроса.
         val matchedByQuestion = seating.question.map { it.id } +
-            if (coldByTheme) emptyList() else seating.cold.map { it.id }
+            if (coldByTheme) seating.cold.filter { it.id in coldAnchoredIds }.map { it.id }
+            else seating.cold.map { it.id }
         val toMark = usefulnessMarks(
             purpose = purpose,
             returned = result.map { it.id },
@@ -1080,13 +1095,18 @@ class HourglassMemory(
             question = windowOf(question, seating.question.count { it.id !in anchoredIds }),
             theme = windowOf(theme, seating.theme.size),
             themeWords = themeWords,
-            cold = if (coldEmpty) DolmenCircle.Window.LayerEmpty else windowOf(cold, seating.cold.size),
+            // Места холодных записей с якорем — в части якорей, как у окна вопроса.
+            cold = if (coldEmpty) DolmenCircle.Window.LayerEmpty
+            else windowOf(cold, seating.cold.count { it.id !in coldAnchoredIds }),
             coldByTheme = coldByTheme,
             red = dao.countInLayer(Layer.RED.name),
             ribbonExcluded = excluded.texts.size,
             ownSpeech = ownSpeechFound?.let { DolmenCircle.ownSpeechPart(it, seating.ownSpeech, ownSpeechServiceDropped) }
                 ?: DolmenCircle.OWN_SPEECH_NOT_ASKED,
-            anchors = Anchors.meterPart(anchors, anchored?.found ?: 0, seating.question.count { it.id in anchoredIds }, dictionary != null),
+            anchors = Anchors.meterPart(
+                anchors, anchored?.found ?: 0, seating.question.count { it.id in anchoredIds }, dictionary != null,
+                cold = if (coldEmpty) null else Anchors.ColdPart(coldAnchored?.found ?: 0, seating.cold.count { it.id in coldAnchoredIds }),
+            ),
         )
 
         // Строка итога и счёт отсеянных — по окну вопроса, как и прежде: она
@@ -1165,20 +1185,24 @@ class HourglassMemory(
     private class AnchorSelection(val found: Int, val stickers: List<Sticker>, val trace: List<String>)
 
     /**
-     * Окно якорей: записи горячих слоёв, где есть хоть один якорь вопроса
-     * ([Anchors]). Порядок — по весу найденных якорей, затем по редкости в
-     * памяти остальных слов вопроса, которые в записи есть (редкое слово весит
-     * больше частого), затем короче запись и новее. Доли слов вопроса и цены
-     * места здесь нет: их и обходит якорь (почему — у [Anchors]).
+     * Окно якорей: записи слоёв [layers], где есть хоть один якорь вопроса
+     * ([Anchors]). Зовётся дважды: по горячим слоям — для окна вопроса, по
+     * холодным — для окна холода. Порядок — по весу найденных якорей, затем по
+     * редкости в памяти остальных слов вопроса, которые в записи есть (редкое
+     * слово весит больше частого; редкость считается в тех же слоях), затем
+     * короче запись и новее. Доли слов вопроса и цены места здесь нет: их и
+     * обходит якорь (почему — у [Anchors]).
      *
      * Те же заборы, что у [searchByWords]: красный и чужие слои не берутся,
      * реплики ленты исключены, на пути ответа отсеиваются записи из одних
      * вопросов, просьб и обычаев.
      *
      * ЧЕГО НЕ УМЕЕТ: на якорь берётся не больше [ANCHOR_CANDIDATES] самых новых
-     * записей — у частого предмета старая запись может не дойти до счёта.
-     * Записи на проверке не видны, и скрытые здесь не считаются (их считает
-     * окно вопроса).
+     * записей — у частого предмета старая запись может не дойти до счёта. В
+     * холоде это значит: самые давние записи с частым якорем не видны.
+     * Синий раньше фиолетового здесь не ставится, как у окна холода по
+     * словам: решает вес якоря, а из равных — новее. Записи на проверке не
+     * видны, и скрытые здесь не считаются (их считает окно вопроса).
      */
     private suspend fun searchByAnchors(
         anchors: List<Anchors.Anchor>,
@@ -1186,14 +1210,15 @@ class HourglassMemory(
         limit: Int,
         purpose: RetrievalPurpose,
         excluded: Excluded,
+        layers: List<String>,
     ): AnchorSelection {
         val trace = mutableListOf<String>()
         val candidates = LinkedHashMap<Long, Sticker>()
         for (a in anchors) {
             val cap = a.prefix.replaceFirstChar { it.uppercaseChar() }
             var n = 0
-            for (sticker in dao.searchAnyCase(a.prefix, cap, ANCHOR_CANDIDATES, SEARCH_HOT_LAYERS, excluded.texts)) {
-                if (sticker.layer == Layer.RED.name || sticker.layer !in SEARCH_HOT_LAYERS) continue
+            for (sticker in dao.searchAnyCase(a.prefix, cap, ANCHOR_CANDIDATES, layers, excluded.texts)) {
+                if (sticker.layer == Layer.RED.name || sticker.layer !in layers) continue
                 if (excluded.matches(normalizeExact(sticker.content))) continue
                 candidates[sticker.id] = sticker
                 n++
@@ -1209,9 +1234,9 @@ class HourglassMemory(
             .map { it to it.take(maxOf(MIN_PREFIX, it.length - 2)) }
             .filter { (_, prefix) -> foldedCandidates.any { prefix in it } }
             .take(RARITY_WORDS)
-        val total = if (others.isEmpty()) 0 else dao.countInLayers(SEARCH_HOT_LAYERS)
+        val total = if (others.isEmpty()) 0 else dao.countInLayers(layers)
         val rarity = others.associate { (w, prefix) ->
-            val df = dao.countContaining(prefix, prefix.replaceFirstChar { it.uppercaseChar() }, SEARCH_HOT_LAYERS)
+            val df = dao.countContaining(prefix, prefix.replaceFirstChar { it.uppercaseChar() }, layers)
             w to Math.log((total + 1.0) / (df + 1.0))
         }
         data class Ranked(val sticker: Sticker, val weight: Int, val rare: Double)
