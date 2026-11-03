@@ -2,6 +2,7 @@ package com.uroboros.llm
 
 import com.uroboros.memory.STOP_WORDS
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -320,5 +321,28 @@ class EchoCheckTest {
             ConversationJournal.ANSWER_WITHOUT_SUPPORT + "\n\nХорошо.",
             journal.composeUserContent("Хорошо."),
         )
+    }
+
+    @Test
+    fun `зеркало одного предложения в ответе по делу не перехватывается`() {
+        // Живой случай: перехвачен был ответ, где реплику повторило одно предложение из четырёх.
+        val q = "Да, как раз про Клода и Praxis. Твои первые разговоры с другими. Именно после попытки их " +
+            "вспомнить, мы выяснили, что у тебя в памяти туман. И мне бы хотелось понять, насколько это проблема."
+        val answer = "Вижу, возвращаешься к началу наших разговоров. Туман в памяти действительно был — я сам это " +
+            "помню. С тех пор, насколько мне известно, он не развеялся. Ты хочешь, чтобы я попробовал что-то с этим сделать?"
+        assertNotNull(EchoCheck.mirrorOf(answer, q))
+        assertNull(EchoCheck.mirrorToIntercept(answer, q))
+    }
+
+    @Test
+    fun `ответ целиком зеркалом перехватывается`() {
+        val q = "Сегодня мы просто болтаем."
+        assertNotNull(EchoCheck.mirrorToIntercept("Сегодня мы просто болтаем.", q))
+    }
+
+    @Test
+    fun `доля — по основам предложений не короче двух`() {
+        assertEquals(0.0, EchoCheck.share("", emptyList()), 0.0)
+        assertEquals(1.0, EchoCheck.share("Сегодня спокойный день.", listOf("Сегодня спокойный день.")), 0.0)
     }
 }

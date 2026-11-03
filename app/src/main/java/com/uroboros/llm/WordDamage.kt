@@ -17,7 +17,8 @@ import java.io.InputStream
  *     концом «$» слова), которого нет ни в одной словоформе словаря. Не
  *     проверяются: слова короче 4 букв (сочетания из 6 знаков в них нет), слова
  *     целиком заглавными (сокращения: «РОЯЗГСФ»), слова, стоящие в запросе в
- *     ТОЧНО той же форме (имена: «Уроборос», «Одмин»). Сверка с запросом по
+ *     ТОЧНО той же форме (имена: «Уроборос», «Одмин») или в ней же с падежным
+ *     окончанием («Праксом» при «Пракс» в запросе). Сверка с запросом по
  *     основе не годится: «людьмами» спряталось бы за «людьми» из прошлого
  *     ответа — а это и есть главная порча.
  *  2) Буквы. Латиница или иероглиф вплотную к русской букве; заглавная посреди
@@ -138,7 +139,7 @@ class WordDamage private constructor(private val codes: Packed) {
         val caps = CAPS.findAll(answer).mapTo(HashSet()) { TextFold.fold(it.value) }
         for (m in WORD.findAll(TextFold.fold(answer))) {
             val w = m.value
-            if (w in caps || w in request) continue
+            if (w in caps || w in request || inflectedFrom(w, request)) continue
             if (!fits(w)) found += w
         }
         GLUED.find(answer)?.let { found += it.value }
@@ -147,6 +148,18 @@ class WordDamage private constructor(private val codes: Packed) {
             ?.let { found += it.value }
         return found
     }
+
+    /**
+     * Слово запроса с падежным окончанием: «Пракс» → «Праксом», «Уроборос» →
+     * «уроборосов». Имени нет в словаре, и его формы, которых нет в запросе
+     * дословно, трафарет считал бы порчей. Основа — слово запроса целиком, не
+     * короче 4 букв; окончание — из [CASE_ENDINGS]. Глагольные хвосты («-ся»)
+     * сюда не входят: «обижуся» остаётся порчей.
+     */
+    private fun inflectedFrom(w: String, request: Set<String>): Boolean =
+        (1..3).any { k ->
+            w.length - k >= 4 && w.takeLast(k) in CASE_ENDINGS && w.dropLast(k) in request
+        }
 
     /**
      * Похоже ли слово на настоящую русскую словоформу: все его сочетания есть в
@@ -193,6 +206,10 @@ class WordDamage private constructor(private val codes: Packed) {
         private val GLUED = Regex(
             "\\S*(?:[а-яёА-ЯЁ][a-zA-Z]|[a-zA-Z][а-яёА-ЯЁ]|[а-яё][А-ЯЁ]|" +
                 "[а-яё][\\u4e00-\\u9fff]|[\\u4e00-\\u9fff][а-яё])\\S*"
+        )
+        /** Падежные окончания имён и существительных — объявленный список (см. inflectedFrom). */
+        private val CASE_ENDINGS = setOf(
+            "а", "я", "у", "ю", "е", "ы", "и", "ом", "ем", "ой", "ей", "ою", "ов", "ев", "ам", "ям", "ами", "ями", "ах", "ях",
         )
         private val QUOTED = Regex("«[^»]*»|\"[^\"]*\"|“[^”]*”|\\([^)]*\\)")
         private val LATIN = Regex("(?<![\\p{L}\\p{N}_])[a-zA-Z]{3,}(?![\\p{L}\\p{N}_])")

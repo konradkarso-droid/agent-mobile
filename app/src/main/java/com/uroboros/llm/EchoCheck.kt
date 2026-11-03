@@ -67,6 +67,18 @@ object EchoCheck {
     const val EARLIER_ANSWERS = 3
 
     /**
+     * Какую долю основ ответа должны нести повторённые или отражённые
+     * предложения, чтобы ответ перехватывался второй попыткой
+     * ([EchoIntercept], зеркало — [mirrorToIntercept]). Объявленное число, не
+     * подобранное, проверено по выгрузке: с ним из 24 перехваченных ответов
+     * переставали перехватываться короткие подтверждения внутри ответа по делу
+     * («Понял, Клод — агент.», «Сейчас всё в порядке.»), а целые копии прошлого
+     * ответа перехватывались по-прежнему. Строка «Эхо:» показывает и
+     * предложения ниже доли — она прибор, а не решение.
+     */
+    const val INTERCEPT_SHARE = 0.5
+
+    /**
      * Какая доля основ предложения должна найтись в одном более раннем
      * предложении того же ответа, чтобы это была петля. Выше [MIN_SHARE]
      * намеренно: строки записей с подписью («С твоих слов в прошлом разговоре,
@@ -337,6 +349,30 @@ object EchoCheck {
             if (second in PersonForm.ofSentence(sentence) && second in PersonForm.ofSentence(ownerSentence)) return sentence
         }
         return null
+    }
+
+    /**
+     * Доля основ ответа [answer], которую несут предложения [picked] (из того
+     * же ответа). Считаются только предложения не короче [MIN_STEMS] основ —
+     * как в [check]: из одной основы повтор не судят. Пустой ответ — ноль.
+     */
+    fun share(answer: String, picked: List<String>): Double {
+        val all = Sentences.split(answer).map { RiskTrigger.echoStems(it) }.filter { it.size >= MIN_STEMS }.flatten().toSet()
+        if (all.isEmpty()) return 0.0
+        val got = picked.flatMapTo(HashSet()) { RiskTrigger.echoStems(it) }
+        return all.count { it in got }.toDouble() / all.size
+    }
+
+    /**
+     * Зеркало, ради которого ответ перехватывается: первое отражённое
+     * предложение, если отражённые вместе несут не меньше [INTERCEPT_SHARE]
+     * основ ответа; иначе null. Ответ на реплику её же словами в одном
+     * предложении из нескольких — не зеркало ответа, а разговор о том же.
+     */
+    fun mirrorToIntercept(answer: String, question: String): String? {
+        val first = mirrorOf(answer, question) ?: return null
+        val mirrored = Sentences.split(answer).filter { mirrorOf(it, question) != null }
+        return if (share(answer, mirrored) >= INTERCEPT_SHARE) first else null
     }
 
     /**
