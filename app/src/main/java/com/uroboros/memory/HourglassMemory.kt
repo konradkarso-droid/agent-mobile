@@ -1015,13 +1015,18 @@ class HourglassMemory(
                 .filterNot { MirrorFilter.keeps(it, address, retell) }
                 .mapTo(HashSet()) { it.id }.size
 
+        // Без просьбы холод садится как на просьбу, если горячее по якорям
+        // пусто, а холод нет (nav.RecallRequest, «БЕЗ ПРОСЬБЫ — САМ»).
+        val recallsItself = RecallRequest.recallsItself(
+            recall, anchors.size, anchored?.found ?: 0, if (coldAnchorsFromQuery) coldAnchored?.found ?: 0 else 0,
+        )
         val seating = DolmenCircle.seat(
             seats,
             questionKept,
             themeKept,
             coldKept,
             ownSpeech = ownSpeechFound ?: 0,
-            recall = recall != null,
+            recall = recall != null || recallsItself,
         )
         val result = seating.all
         val coldIds = seating.cold.mapTo(HashSet()) { it.id }
@@ -1126,6 +1131,7 @@ class HourglassMemory(
                 recall,
                 coldFound = if (coldAnchorsFromQuery) 0 else coldAnchored?.found ?: 0,
                 coldSeated = if (coldAnchorsFromQuery) 0 else seating.cold.count { it.id in coldAnchoredIds },
+                itself = recallsItself,
             ),
         )
 
