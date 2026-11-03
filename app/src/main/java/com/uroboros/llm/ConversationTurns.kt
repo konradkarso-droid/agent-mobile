@@ -743,7 +743,7 @@ class ConversationTurns(
         request: () -> Set<String>,
     ): Cause? {
         EchoIntercept.decide(answer, question, history)?.let { return Cause.Repeat(it.sentence, it.without) }
-        EchoCheck.mirrorOf(answer, question)?.let { return Cause.Mirror(it) }
+        EchoCheck.mirrorToIntercept(answer, question)?.let { return Cause.Mirror(it) }
         val damage = WordDamageHolder.damage?.check(answer, request()).orEmpty()
         return if (damage.isEmpty()) null else Cause.Damage(damage)
     }
@@ -944,7 +944,7 @@ class ConversationTurns(
             val done = pieces > 0 && !failed && end == GenerationEnd.COMPLETED
             if (done) {
                 repeats = EchoIntercept.decide(second.toString(), question, history) != null
-                mirrors = EchoCheck.mirrorOf(second.toString(), question) != null
+                mirrors = EchoCheck.mirrorToIntercept(second.toString(), question) != null
                 damage = WordDamageHolder.damage?.check(second.toString(), requestHere()).orEmpty()
             }
             needThird = done && (repeats || mirrors || damage.isNotEmpty())
@@ -1088,7 +1088,7 @@ class ConversationTurns(
                         v.contains("tool_call") || v.contains(Glance.TOOL_NAME) -> "вызов приборов"
                         v.endsWith(":") -> "вступление"
                         EchoIntercept.decide(v, question, history) != null -> "повтор"
-                        EchoCheck.mirrorOf(v, question) != null -> "зеркало"
+                        EchoCheck.mirrorToIntercept(v, question) != null -> "зеркало"
                         else -> WordDamageHolder.damage?.check(v, request())?.takeIf { it.isNotEmpty() }
                             ?.let { "порча «${it.joinToString(", ")}»" }
                     }

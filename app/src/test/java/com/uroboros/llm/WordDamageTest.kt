@@ -63,7 +63,11 @@ class WordDamageTest {
 
     @Test
     fun `другая форма слова из запроса проверяется`() =
-        assertEquals(listOf("уробороса"), damaged("у Уробороса", WordDamage.requestWords("Ты — Уроборос.")).filter { it != "у" })
+        assertEquals(listOf("уроборосится"), damaged("Уроборосится", WordDamage.requestWords("Ты — Уроборос.")))
+
+    @Test
+    fun `слово запроса с падежным окончанием — не порча`() =
+        assertTrue(damaged("у Уробороса", WordDamage.requestWords("Ты — Уроборос.")).filter { it != "у" }.isEmpty())
 
     @Test
     fun `порча не прячется за настоящей формой из запроса`() =
@@ -181,5 +185,21 @@ class WordDamageTest {
         for (w in many) assertTrue(w, t.looksLikeWord(w))
         assertFalse(t.looksLikeWord("словюяо"))
         assertFalse(t.looksLikeWord("щщщщщщ"))
+    }
+
+    @Test
+    fun `имя из запроса с падежным окончанием — не порча`() {
+        assertTrue(damaged("Праксом", setOf("пракс")).isEmpty())
+        assertTrue(damaged("уроборосов", setOf("уроборос")).isEmpty())
+    }
+
+    @Test
+    fun `глагольный хвост к слову запроса — порча, как была`() {
+        assertEquals(listOf("обижуся"), damaged("обижуся", setOf("обижу")))
+    }
+
+    @Test
+    fun `падежное окончание к слову, которого нет в запросе, — порча`() {
+        assertEquals(listOf("праксом"), damaged("Праксом", none))
     }
 }
