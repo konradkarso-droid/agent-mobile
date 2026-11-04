@@ -53,9 +53,38 @@ class ChatPromisesTest {
     }
 
     @Test
-    fun `владелец, отмеченный «это я», — вам`() {
+    fun `владелец, отмеченный «это я», — на экране «вам», в чате «владельцу» с именем`() {
         val f = ok(listOf(peer(petya, "Иван", "Глянь вечером почту"), agent("Хорошо, посмотрю после ужина.", petya)), owner = petya)
-        assertEquals(Promises.To("вам", "с вами", "личка", "tg:chat:1"), f.promises.single().to)
+        assertEquals(
+            Promises.To("вам", "с вами", "личка", "tg:chat:1", chatDative = "владельцу Ивану", chatWithWhom = "с владельцем Иваном"),
+            f.promises.single().to,
+        )
+    }
+
+    @Test
+    fun `строка чата не говорит владельцу «вам» — модель читала это как слова собеседника`() {
+        val f = ok(listOf(peer(petya, "Иван", "Глянь вечером почту"), agent("Хорошо, посмотрю после ужина.", petya)), owner = petya)
+        val text = ChatPromises.chatText(f.promises) { "4 ноября" }!!
+        assertEquals("Что я обещал в этом чате за ${Promises.DAYS} дн.: владельцу Ивану, 4 ноября — «Хорошо, посмотрю после ужина.».", text)
+        assertTrue("вам" !in text.split(Regex("""[^\p{L}]+""")))
+    }
+
+    @Test
+    fun `владелец без подписи в чате — просто «владельцу»`() {
+        val f = ok(listOf(agent("Хорошо, посмотрю после ужина.", petya)), owner = petya)
+        val to = f.promises.single().to!!
+        assertEquals("вам", to.dative)
+        assertEquals("владельцу", to.chatDative)
+        assertEquals("с владельцем", to.chatWithWhom)
+    }
+
+    @Test
+    fun `не владелец — в чате те же слова, что на экране`() {
+        val f = ok(listOf(peer(petya, "Петя", "Глянь вечером почту"), agent("Хорошо, посмотрю после ужина.", petya)), owner = anya)
+        val to = f.promises.single().to!!
+        assertEquals("Пете", to.dative)
+        assertEquals(to.dative, to.chatDative)
+        assertEquals(to.withWhom, to.chatWithWhom)
     }
 
     @Test

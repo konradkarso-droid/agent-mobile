@@ -24,7 +24,11 @@ import com.uroboros.memory.nav.Place
  *    под нажимом не берётся, эхо строки прочности отсеивается — как на экране;
  *  - АДРЕС (Promises.To): имя в дательном и творительном падеже по
  *    NameCases, «личка» или «группа», ключ чата. Владелец, отмеченный «это
- *    я», — «вам».
+ *    я», на экране — «вам», а в строке чата — «владельцу» с именем из его
+ *    подписи («владельцу Ивану»; подписи в чате нет — просто «владельцу»).
+ *    «Вам» в строке системы чата модель читала как обращение к
+ *    собеседнику или к себе и пересказывала обещание агента как слова
+ *    собеседника («ты говорил «Хорошо, постараюсь»»).
  *
  * ЧЕГО НЕ УМЕЕТ: всё, чего не умеет Promises.find; адрес — тот, кому агент
  * отвечал, хотя в группе обещают и всем сразу; названия группы в ленте чатов
@@ -122,8 +126,8 @@ object ChatPromises {
             val to = p.to
             val whom = when {
                 to == null -> ""
-                p.together -> "вместе ${to.withWhom}, "
-                else -> "${to.dative}, "
+                p.together -> "вместе ${to.chatWithWhom}, "
+                else -> "${to.chatDative}, "
             }
             "$whom${day(p.at)} — «${p.sentence}»"
         }
@@ -131,12 +135,25 @@ object ChatPromises {
         return "Что я обещал в этом чате за ${Promises.DAYS} дн.: $shown." + if (rest > 0) " Ещё обещаний: $rest." else ""
     }
 
+    /** Владелец в строке чата — роль перед именем (см. «АДРЕС» в шапке). */
+    private const val OWNER_DAT = "владельцу"
+    private const val OWNER_INS = "владельцем"
+
     private fun address(lines: List<Line>, to: String, answer: Line, ownerKey: String?, dictionary: LemmaDictionary): Promises.To {
         val where = if (answer.direct) "личка" else "группа"
-        if (to == ownerKey) return Promises.To("вам", "с вами", where, answer.chat)
         val name = lines.lastOrNull { it.sender == to && !it.isAgent }?.signature?.trim()?.split(' ')?.firstOrNull()
-            ?.takeIf { it.isNotEmpty() } ?: return Promises.To("собеседнику", "с собеседником", where, answer.chat)
-        val forms = NameCases.of(name, dictionary)
-        return Promises.To(forms.of(NameCases.Case.DAT), "с " + forms.of(NameCases.Case.INS), where, answer.chat)
+            ?.takeIf { it.isNotEmpty() }
+        val forms = name?.let { NameCases.of(it, dictionary) }
+        val dative = forms?.of(NameCases.Case.DAT)
+        val withWhom = forms?.of(NameCases.Case.INS)
+        if (to == ownerKey) {
+            return Promises.To(
+                "вам", "с вами", where, answer.chat,
+                chatDative = listOfNotNull(OWNER_DAT, dative).joinToString(" "),
+                chatWithWhom = "с " + listOfNotNull(OWNER_INS, withWhom).joinToString(" "),
+            )
+        }
+        if (dative == null || withWhom == null) return Promises.To("собеседнику", "с собеседником", where, answer.chat)
+        return Promises.To(dative, "с $withWhom", where, answer.chat)
     }
 }
