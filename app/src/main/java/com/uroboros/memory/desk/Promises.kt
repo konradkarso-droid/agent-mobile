@@ -114,8 +114,20 @@ object Promises {
      * Кому обещано в телеграме: [dative] — «Пете», «вам»; [withWhom] — «с
      * Петей», «с вами»; [where] — «личка» или «группа»; [chat] — ключ чата с
      * веткой, по нему чат видит свои обещания и не видит чужих.
+     *
+     * [chatDative] и [chatWithWhom] — те же слова для строки в самом чате
+     * (gate.ChatPromises.chatText). Расходятся они только у владельца: на
+     * экране он — «вам», в чате — «владельцу Ивану» (почему — у
+     * gate.ChatPromises, «АДРЕС»).
      */
-    data class To(val dative: String, val withWhom: String, val where: String, val chat: String)
+    data class To(
+        val dative: String,
+        val withWhom: String,
+        val where: String,
+        val chat: String,
+        val chatDative: String = dative,
+        val chatWithWhom: String = withWhom,
+    )
 
     sealed class Found {
         /**
