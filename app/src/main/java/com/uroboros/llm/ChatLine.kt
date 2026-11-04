@@ -33,7 +33,8 @@ import androidx.room.Query
  * @property name имя, каким человек назван в телеграме (`first_name` и
  *   `last_name`) — для экрана; не ключ.
  * @property signature подпись «Имя:» для модели и памяти (gate.TgWords.signature).
- * @property ring кольцо обращения (AddressSorter.Ring); null у своих сообщений.
+ * @property ring кольцо обращения (AddressSorter.Ring); null у своих сообщений,
+ *   ушедших в телеграм; [Silence.RING] — своя строка молчания, не ушедшая (llm.Silence).
  * @property reason причина кольца словами (AddressSorter.Route.reason).
  * @property replyTo ключ автора сообщения, на которое это ответ; null — не ответ.
  * @property at время сервера телеграма, мс (у своих — время отправки).

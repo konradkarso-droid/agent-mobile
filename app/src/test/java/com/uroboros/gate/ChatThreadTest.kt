@@ -161,6 +161,20 @@ class ChatThreadTest {
         assertEquals(1, t.voices.more)
     }
 
+    @Test
+    fun `настойчивость — счёт сообщений мне за десять минут, меньше трёх — молчит`() {
+        fun from(who: String, at: Long, reads: Boolean = true) = ChatFeed.Line(false, who, "ну ответь", reads, at = at, sender = "k:$who")
+        val five = (0 until 5).map { from("Петя", t0 + it * minute) }
+        assertEquals("От «Петя» мне за 10 минут 5 сообщений.", ChatThread.insistence(five))
+        assertNull(ChatThread.insistence(five.takeLast(2)))
+        val old = listOf(from("Петя", t0), from("Петя", t0 + 30 * minute), from("Петя", t0 + 31 * minute))
+        assertNull("старое за окном не считается", ChatThread.insistence(old))
+        val others = listOf(from("Аня", t0), from("Аня", t0 + minute), from("Петя", t0 + 2 * minute))
+        assertNull("чужие сообщения не его", ChatThread.insistence(others))
+        val general = listOf(from("Петя", t0, reads = false), from("Петя", t0 + minute, reads = false), from("Петя", t0 + 2 * minute))
+        assertNull("общее группы — не мне", ChatThread.insistence(general))
+    }
+
     // --- Прибор ---
 
     @Test
