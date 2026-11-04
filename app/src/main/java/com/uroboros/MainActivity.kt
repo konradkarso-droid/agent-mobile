@@ -3079,7 +3079,9 @@ class MainActivity : AppCompatActivity() {
         val spliceLink = if (chunkStore.on) SPLICE_OFF_WORD else SPLICE_ON_WORD
         val spliceLine = (if (chunkStore.on) "Склейка записей: включена" else "Склейка записей: выключена") + " — $spliceLink"
         val chunksNight = chunkStore.nightLine ?: "Куски ночи: ещё не собирала"
-        group("Движок и стена", engineParamsLine, adapterNow, promptCacheLine, buildSelf, turns.wallChangeLine, spliceLine, chunksNight)
+        // Шаблон — у движка, общего с телеграмом: строка сверяет запросы обоих.
+        val templateLine = if (::llmEngine.isInitialized) llmEngine.templateLine else null
+        group("Движок и стена", engineParamsLine, adapterNow, promptCacheLine, templateLine, buildSelf, turns.wallChangeLine, spliceLine, chunksNight)
         run {
             val at = metrics.lastIndexOf(spliceLine)
             if (at >= 0) {
@@ -5197,8 +5199,8 @@ class MainActivity : AppCompatActivity() {
                 val servedDreams = dreamOffer.picked.filter { p -> p.brought.any { it.id in broughtNowIds } }
                 dreamsLine = DreamRecall.meter(dreamOffer, alreadyInRibbon = associatedShown.size - broughtNow.size)
                 // Состояние агента — только когда что-то сдвинулось с прошлого
-                // показа (см. SelfState). Модели оно идёт системным сообщением
-                // перед репликой, но не на пустой ленте (см.
+                // показа (см. SelfState). Модели оно идёт отдельным сообщением
+                // перед репликой, но не на пустой ленте (голос и место — у
                 // ConversationJournal.messagesFor). Сбой чтения приборов не
                 // срывает ход: строки просто нет, а на экране сказано почему.
                 val selfSnapshot = runCatching {
@@ -5215,8 +5217,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 // Описание последней ночи — узкое исключение для вопроса к
                 // агенту (см. DreamTopic): код собирает фразу из тем, принятых
-                // ночью, и подаёт её системным сообщением за строкой о себе. Не
-                // на пустой ленте и не второй раз в той же ленте.
+                // ночью, и подаёт её за строкой о себе, по её правилам голоса и
+                // места. Не на пустой ленте и не второй раз в той же ленте.
                 val lastNight = runCatching { MemoryDatabase.getInstance(applicationContext).dreamDao().lastNight() }
                 val lastNightTopics = lastNight.map { it?.dreamTopics }
                 // Вывод этой ночи идёт за темами с подписью сна (см. DreamTopic.line).

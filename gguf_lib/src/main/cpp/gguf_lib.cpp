@@ -2081,19 +2081,18 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetChatTemplate(
         tn_error_set_op("setChatTemplate", detail);
     }
 
-    if (g_state.model) {
-        try {
-            g_state.chat_templates = common_chat_templates_init(
-                g_state.model, g_state.chat_template_override);
-        } catch (const std::exception & e) {
-            tn_error_set_last(TN_ERR_TEMPLATE, "ChatTemplate",
-                std::string("Invalid chat template: ").append(e.what()).c_str());
-            g_state.chat_template_override.clear();
-            g_state.chat_templates = common_chat_templates_init(g_state.model, "");
-        }
-    }
+    // Шаблон здесь не разбирается: разбор откладывается до первой генерации
+    // (ensure_chat_templates_loaded), как и после загрузки модели. Причина —
+    // у «Chat template init is DEFERRED» в nativeLoadModel: исключение разбора
+    // на этой сборке роняет процесс, а не ловится, и брошенное здесь, на
+    // потоке загрузки, роняло бы каждый подъём. Пустая строка — снова шаблон
+    // из файла модели. Свой шаблон переживает загрузку другой модели
+    // (nativeLoadModel его не сбрасывает, сбрасывает nativeRelease), поэтому
+    // вызывающий ставит его или снимает после каждой загрузки.
+    g_state.chat_templates.reset();
+    g_chat_templates_tried = false;
 
-    LOGI("Chat template override set (%zu chars)", g_state.chat_template_override.size());
+    LOGI("Chat template override set (%zu chars), parse deferred to first generate", g_state.chat_template_override.size());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

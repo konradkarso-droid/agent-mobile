@@ -385,7 +385,7 @@ class ConversationJournalTest {
     }
 
     @Test
-    fun `строка о себе стоит перед репликой своего хода и остаётся на месте`() {
+    fun `строка о себе на своём ходе — голосом агента, на следующих — системной перед репликой своего хода`() {
         val journal = ConversationJournal()
         journal.appendTurn("Привет", "Привет!", "Привет", emptyList())
 
@@ -395,19 +395,35 @@ class ConversationJournalTest {
             listOf(
                 ConversationJournal.ROLE_USER to "Привет",
                 ConversationJournal.ROLE_ASSISTANT to "Привет!",
-                ConversationJournal.ROLE_SYSTEM to note,
+                ConversationJournal.ROLE_ASSISTANT to note,
                 ConversationJournal.ROLE_USER to "Как дела?",
             ),
             sent,
         )
+        assertFalse(sent.any { it.first == ConversationJournal.ROLE_SYSTEM })
 
         journal.appendTurn("Как дела?", "Хорошо.", "Как дела?", emptyList(), selfNote = note)
         assertEquals(note, journal.history().last().selfNote)
-        // Следующий запрос начинается ровно тем, что ушло в прошлый раз, —
-        // иначе начало разойдётся с обсчитанным.
+        // Прошлые ходы до хода со строкой — те же; сам ход теперь со строкой
+        // системной, и строка в запросе одна.
         val next = journal.messagesFor("А ещё?")
-        assertEquals(sent, next.take(sent.size))
-        assertEquals(ConversationJournal.ROLE_ASSISTANT to "Хорошо.", next[sent.size])
+        assertEquals(sent.take(2), next.take(2))
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_SYSTEM to note,
+                ConversationJournal.ROLE_USER to "Как дела?",
+                ConversationJournal.ROLE_ASSISTANT to "Хорошо.",
+                ConversationJournal.ROLE_USER to "А ещё?",
+            ),
+            next.drop(2),
+        )
+        assertEquals(1, next.count { it.second == note })
+    }
+
+    @Test
+    fun `на пустой ленте строка о себе не уходит и на своём ходе`() {
+        val sent = ConversationJournal().messagesFor("Как дела?", "Я очнулся в 15:42.", "Этой ночью мне снилось: радуга.")
+        assertEquals(listOf(ConversationJournal.ROLE_USER to "Как дела?"), sent)
     }
 
     @Test
@@ -430,7 +446,9 @@ class ConversationJournalTest {
         val fresh = "Твои слова сегодня: «Я был у стоматолога»."
         val content = journal.composeUserContent("Что нового?")
 
-        val system = journal.messagesFor(content, "Я очнулся в 15:42.", null, journal.recallOf(listOf(fresh)))
+        journal.appendTurn(content, "Нового мало.", "Что нового?", listOf(fresh), selfNote = "Я очнулся в 15:42.")
+
+        val system = journal.messagesFor(journal.composeUserContent("А ещё?"), "Я бодр.", null, journal.recallOf(listOf(fresh)))
             .filter { it.first == ConversationJournal.ROLE_SYSTEM }
             .map { it.second }
         assertEquals(listOf("Я очнулся в 15:42."), system)
@@ -449,21 +467,41 @@ class ConversationJournalDreamNoteTest {
     }
 
     @Test
-    fun `описание ночи — системным сообщением перед репликой, за строкой о себе`() {
+    fun `описание ночи — за строкой о себе, на своём ходе в том же сообщении агента, на следующих системным`() {
         val journal = ConversationJournal()
         journal.appendTurn("привет", "здравствуй", "привет", emptyList())
         val messages = journal.messagesFor("что снилось?", "Я бодр.", "Этой ночью мне снилось: радуга.")
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_ASSISTANT to "Я бодр.\nЭтой ночью мне снилось: радуга.",
+                ConversationJournal.ROLE_USER to "что снилось?",
+            ),
+            messages.takeLast(2),
+        )
+        journal.appendTurn(
+            "что снилось?", "радуга", "что снилось?", emptyList(),
+            selfNote = "Я бодр.", dreamNote = "Этой ночью мне снилось: радуга.", at = 5L,
+        )
+        assertEquals("Этой ночью мне снилось: радуга.", journal.history()[1].dreamNote)
+        assertEquals(5L, journal.history()[1].at)
         assertEquals(
             listOf(
                 ConversationJournal.ROLE_SYSTEM to "Я бодр.",
                 ConversationJournal.ROLE_SYSTEM to "Этой ночью мне снилось: радуга.",
                 ConversationJournal.ROLE_USER to "что снилось?",
             ),
-            messages.takeLast(3),
+            journal.messagesFor("а ещё?").drop(2).take(3),
         )
-        journal.appendTurn("что снилось?", "радуга", "что снилось?", emptyList(), dreamNote = "Этой ночью мне снилось: радуга.", at = 5L)
-        assertEquals("Этой ночью мне снилось: радуга.", journal.history()[1].dreamNote)
-        assertEquals(5L, journal.history()[1].at)
+    }
+
+    @Test
+    fun `только описание ночи — сообщение агента из одной строки`() {
+        val journal = ConversationJournal()
+        journal.appendTurn("привет", "здравствуй", "привет", emptyList())
+        assertEquals(
+            ConversationJournal.ROLE_ASSISTANT to "Этой ночью мне снилось: радуга.",
+            journal.messagesFor("что снилось?", currentDreamNote = "Этой ночью мне снилось: радуга.").dropLast(1).last(),
+        )
     }
 }
 
@@ -489,7 +527,7 @@ class ConversationJournalRecallTest {
     }
 
     @Test
-    fun `вспоминание стоит сообщением агента за системными и перед репликой`() {
+    fun `вспоминание стоит сообщением агента за строкой о себе и перед репликой`() {
         val journal = ConversationJournal()
         journal.appendTurn("Привет", "Привет!", "Привет", emptyList())
 
@@ -499,7 +537,7 @@ class ConversationJournalRecallTest {
             listOf(
                 ConversationJournal.ROLE_USER to "Привет",
                 ConversationJournal.ROLE_ASSISTANT to "Привет!",
-                ConversationJournal.ROLE_SYSTEM to "Я очнулся в 15:42.",
+                ConversationJournal.ROLE_ASSISTANT to "Я очнулся в 15:42.",
                 ConversationJournal.ROLE_ASSISTANT to rec1,
                 ConversationJournal.ROLE_USER to "Какое правило?",
             ),

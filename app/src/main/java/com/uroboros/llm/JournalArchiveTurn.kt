@@ -69,7 +69,7 @@ import androidx.room.Query
  *   ленты, а не время хода. Время хода — [at]; у ходов, легших до него,
  *   оно выводится на лету (memory.nav.Coordinates.turnTime).
  * @property selfNote строка состояния агента, ушедшая модели на этом ходе
- *   системным сообщением (см. JournalTurn.selfNote); null — не уходила.
+ *   отдельным сообщением (см. JournalTurn.selfNote); null — не уходила.
  */
 @Entity(
     tableName = "journal_archive_turns",

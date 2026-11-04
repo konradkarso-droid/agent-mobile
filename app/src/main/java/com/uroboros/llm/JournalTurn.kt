@@ -77,13 +77,13 @@ import androidx.room.Query
  *   одинаково во всех строках одной ленты — расхождение внутри таблицы
  *   само по себе признак порчи.
  * @property selfNote строка состояния агента, ушедшая модели на этом ходе
- *   отдельным системным сообщением (ConversationJournal.Turn.selfNote); null
+ *   отдельным сообщением (ConversationJournal.Turn.selfNote); null
  *   — не уходила. Строкам, легшим до появления столбца, миграция оставляет
  *   null, и это про них правда: отдельным сообщением оно тогда не уходило.
  * @property at когда реплика ушла в движок, миллисекунды эпохи
  *   (ConversationJournal.Turn.at); null — ход лёг до появления столбца.
  * @property dreamNote описание последней ночи, ушедшее модели на этом ходе
- *   системным сообщением (ConversationJournal.Turn.dreamNote); null — не уходило.
+ *   отдельным сообщением (ConversationJournal.Turn.dreamNote); null — не уходило.
  * @property recall записи памяти, ушедшие модели на этом ходе сообщением
  *   агента перед репликой (ConversationJournal.Turn.recall); null — записей
  *   не было или ход лёг до появления столбца, и тогда записи внутри
