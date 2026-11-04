@@ -2999,10 +2999,11 @@ class MainActivity : AppCompatActivity() {
                 record = AgentLife.read(applicationContext),
                 batteryOptimized = AgentLife.batteryOptimized(applicationContext),
                 failure = bodyFailure,
-            ) + "\n" +
-            // Отчего прерывалась — рядом со счётом подъёмов: счёт без причины
-            // не говорит, что чинить (ComaCause).
-            AgentLife.comaLines(applicationContext)
+            )
+        // Отчего прерывалась жизнь (ComaCause) — в шторке, группой «Комы»: на
+        // главном экране счёт подъёмов виден всегда, а ряд ком в несколько
+        // строк отнимал бы место у поля разговора, которое снизу и так
+        // закрывает клавиатура.
         binding.textHardware.text = hardware
 
         // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
@@ -3212,6 +3213,7 @@ class MainActivity : AppCompatActivity() {
                 start, metrics.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
+        group("Комы", AgentLife.comaLines(applicationContext))
         group(
             "Сторож",
             // Наблюдение за зоной стоит последним: смотрят на него не при
