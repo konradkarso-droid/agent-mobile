@@ -337,20 +337,33 @@ class ConversationJournalTest {
 
     // СТРОКА О СЕБЕ — системным сообщением перед репликой своего хода и
     // никогда первым (см. ConversationJournal.messagesFor). Главная проверка —
-    // [на пустой ленте строка о себе не уходит]: системное сообщение первым
-    // оставило бы модель без стены, и ответы при этом не падают, а молча
-    // теряют всё, что в стене.
+    // Первый ход ленты: системное сообщение первым оставило бы модель без
+    // стены, и ответы при этом не падают, а молча теряют всё, что в стене.
+    // Поэтому на своём ходе строка — голосом агента (ему первым можно), а на
+    // следующих строки первого хода в запросе нет вовсе.
 
     @Test
-    fun `на пустой ленте строка о себе не уходит и в ход не ложится`() {
+    fun `на пустой ленте строка о себе уходит голосом агента, ложится в ход и дальше в запросе не стоит`() {
         val journal = ConversationJournal()
+        val note = "Я очнулся в 15:42."
 
-        val messages = journal.messagesFor("Привет", "Я очнулся в 15:42.")
-        assertEquals(listOf(ConversationJournal.ROLE_USER to "Привет"), messages)
+        val messages = journal.messagesFor("Привет", note)
+        assertEquals(
+            listOf(ConversationJournal.ROLE_ASSISTANT to note, ConversationJournal.ROLE_USER to "Привет"),
+            messages,
+        )
 
-        journal.appendTurn("Привет", "Привет!", "Привет", emptyList(), selfNote = "Я очнулся в 15:42.")
-        assertEquals(null, journal.history().single().selfNote)
-        assertEquals(ConversationJournal.ROLE_USER, journal.messagesFor("дальше").first().first)
+        journal.appendTurn("Привет", "Привет!", "Привет", emptyList(), selfNote = note)
+        assertEquals(note, journal.history().single().selfNote)
+        val next = journal.messagesFor("дальше")
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_USER to "Привет",
+                ConversationJournal.ROLE_ASSISTANT to "Привет!",
+                ConversationJournal.ROLE_USER to "дальше",
+            ),
+            next,
+        )
     }
 
     // [stableMessageCount]: граница снимка ленты (gguf_lib.cpp, «СНИМОК ЛЕНТЫ»).
@@ -421,9 +434,21 @@ class ConversationJournalTest {
     }
 
     @Test
-    fun `на пустой ленте строка о себе не уходит и на своём ходе`() {
+    fun `на пустой ленте строки о себе и о ночи — одним сообщением агента первыми`() {
         val sent = ConversationJournal().messagesFor("Как дела?", "Я очнулся в 15:42.", "Этой ночью мне снилось: радуга.")
-        assertEquals(listOf(ConversationJournal.ROLE_USER to "Как дела?"), sent)
+        assertEquals(
+            listOf(
+                ConversationJournal.ROLE_ASSISTANT to "Я очнулся в 15:42.\nЭтой ночью мне снилось: радуга.",
+                ConversationJournal.ROLE_USER to "Как дела?",
+            ),
+            sent,
+        )
+    }
+
+    /** Проверка на молчание: без строк на пустой ленте первой стоит реплика. */
+    @Test
+    fun `на пустой ленте без строк — одна реплика`() {
+        assertEquals(listOf(ConversationJournal.ROLE_USER to "Как дела?"), ConversationJournal().messagesFor("Как дела?"))
     }
 
     @Test
@@ -458,12 +483,16 @@ class ConversationJournalTest {
 class ConversationJournalDreamNoteTest {
 
     @Test
-    fun `описание ночи не ставится первым и не хранится у первого хода`() {
+    fun `описание ночи на первом ходе — голосом агента, хранится у хода и дальше системным первым не встаёт`() {
         val journal = ConversationJournal()
-        val first = journal.messagesFor("привет", currentDreamNote = "Этой ночью мне снилось: радуга.")
-        assertEquals(listOf(ConversationJournal.ROLE_USER to "привет"), first)
-        journal.appendTurn("привет", "здравствуй", "привет", emptyList(), dreamNote = "Этой ночью мне снилось: радуга.")
-        assertEquals(null, journal.history()[0].dreamNote)
+        val dream = "Этой ночью мне снилось: радуга."
+        val first = journal.messagesFor("привет", currentDreamNote = dream)
+        assertEquals(listOf(ConversationJournal.ROLE_ASSISTANT to dream, ConversationJournal.ROLE_USER to "привет"), first)
+        journal.appendTurn("привет", "здравствуй", "привет", emptyList(), dreamNote = dream)
+        assertEquals(dream, journal.history()[0].dreamNote)
+        val next = journal.messagesFor("дальше")
+        assertEquals(ConversationJournal.ROLE_USER, next.first().first)
+        assertFalse(next.any { it.second == dream })
     }
 
     @Test

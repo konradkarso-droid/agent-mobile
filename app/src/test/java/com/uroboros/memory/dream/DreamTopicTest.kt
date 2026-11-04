@@ -56,17 +56,8 @@ class DreamTopicTest {
     @Test
     fun `подаётся только на вопрос к агенту`() {
         val line = "Этой ночью мне снилось: радуга."
-        assertNull(DreamTopic.refusal(line, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = "тема"))
-        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent = false, ribbonEmpty = false, alreadyInRibbon = false, stored = "тема"))
-    }
-
-    @Test
-    fun `не первым в ленте`() {
-        val line = "Этой ночью мне снилось: радуга."
-        assertEquals(
-            "лента пуста — первым системное не ставится",
-            DreamTopic.refusal(line, toAgent = true, ribbonEmpty = true, alreadyInRibbon = false, stored = "тема"),
-        )
+        assertNull(DreamTopic.refusal(line, toAgent = true, alreadyInRibbon = false, stored = "тема"))
+        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent = false, alreadyInRibbon = false, stored = "тема"))
     }
 
     @Test
@@ -74,14 +65,14 @@ class DreamTopicTest {
         val line = "Этой ночью мне снилось: радуга."
         assertEquals(
             "уже рассказан в этой ленте",
-            DreamTopic.refusal(line, toAgent = true, ribbonEmpty = false, alreadyInRibbon = true, stored = "тема"),
+            DreamTopic.refusal(line, toAgent = true, alreadyInRibbon = true, stored = "тема"),
         )
     }
 
     @Test
     fun `без тем молчит с причиной`() {
-        assertEquals("шага тем у последней ночи не было", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = null))
-        assertEquals("ночью ни одна тема и ни один вывод не приняты", DreamTopic.refusal(null, toAgent = true, ribbonEmpty = false, alreadyInRibbon = false, stored = ""))
+        assertEquals("шага тем у последней ночи не было", DreamTopic.refusal(null, toAgent = true, alreadyInRibbon = false, stored = null))
+        assertEquals("ночью ни одна тема и ни один вывод не приняты", DreamTopic.refusal(null, toAgent = true, alreadyInRibbon = false, stored = ""))
     }
 
     @Test
@@ -89,7 +80,7 @@ class DreamTopicTest {
         val address = com.uroboros.memory.nav.Coordinates.questionAddress("Расскажи сон")
         val line = "Этой ночью мне снилось: радуга."
         val toAgent = address == com.uroboros.memory.nav.Coordinates.Address.AGENT
-        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent, ribbonEmpty = false, alreadyInRibbon = false, stored = "тема"))
+        assertEquals("вопрос не к агенту", DreamTopic.refusal(line, toAgent, alreadyInRibbon = false, stored = "тема"))
     }
 
     // --- Прибор ---
@@ -149,9 +140,8 @@ class DreamTopicTest {
         untold: Int,
         reply: String = "Привет! Ты как?",
         lastNightUntold: Boolean = true,
-        ribbonEmpty: Boolean = false,
         l: String? = line,
-    ) = DreamTopic.unpromptedRefusal(l, topics, lastNightUntold, untold, reply, ribbonEmpty)
+    ) = DreamTopic.unpromptedRefusal(l, topics, lastNightUntold, untold, reply)
 
     @Test
     fun `без вопроса — молчит, пока не набралось и не в теме`() {
@@ -164,9 +154,8 @@ class DreamTopicTest {
     }
 
     @Test
-    fun `без вопроса — молчит о рассказанной ночи, на пустой ленте и без тем`() {
+    fun `без вопроса — молчит о рассказанной ночи и без тем`() {
         assertEquals("последняя ночь уже рассказана", refuse(untold = 9, lastNightUntold = false))
-        assertEquals("лента пуста — первым системное не ставится", refuse(untold = 9, ribbonEmpty = true))
         assertEquals("у последней ночи ни темы, ни вывода", refuse(untold = 9, l = null))
     }
 

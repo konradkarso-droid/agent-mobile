@@ -40,9 +40,9 @@ import com.uroboros.memory.RiskTrigger
  *    темы (сокращение, опечатка), проходит;
  *  - «уже подано в этой ленте» сравнивается по тексту строки: две ночи с теми
  *    же темами дадут одну строку, и вторая не подастся;
- *  - без вопроса на пустой ленте ночь не рассказывается: на пустой ленте
- *    описание не уходит ([refusal], ribbonEmpty; почему — у
- *    llm.ConversationJournal.messagesFor), ждёт следующего хода;
+ *  - рассказанная на первом ходе разговора ночь на следующих ходах в запросе
+ *    не стоит (почему — у llm.ConversationJournal.messagesFor): модель знает о
+ *    ней по своему ответу на том ходе;
  *  - «в теме» — общие основы слов реплики и тем, а не смысл;
  *  - рассказывается только последняя ночь: если у неё тем нет, прежние
  *    несказанные ждут ночи с темами.
@@ -148,8 +148,6 @@ object DreamTopic {
      * молчания для прибора.
      *
      * @param toAgent вопрос с адресом «агент».
-     * @param ribbonEmpty лента пуста — системное сообщение первым не ставится
-     *   никогда (ConversationJournal.messagesFor), ждать следующего хода.
      * @param alreadyInRibbon эта строка уже подана в этой ленте.
      * @param stored колонка тем последней ночи как есть (DreamNight.dreamTopics):
      *   null — шаг тем у этой ночи не проходил, пустая строка — прошёл и не
@@ -158,14 +156,12 @@ object DreamTopic {
     fun refusal(
         line: String?,
         toAgent: Boolean,
-        ribbonEmpty: Boolean,
         alreadyInRibbon: Boolean,
         stored: String?,
     ): String? = when {
         !toAgent -> "вопрос не к агенту"
         line == null && stored == null -> "шага тем у последней ночи не было"
         line == null -> "ночью ни одна тема и ни один вывод не приняты"
-        ribbonEmpty -> "лента пуста — первым системное не ставится"
         alreadyInRibbon -> "уже рассказан в этой ленте"
         else -> null
     }
@@ -199,11 +195,9 @@ object DreamTopic {
         lastNightUntold: Boolean,
         untold: Int,
         reply: String,
-        ribbonEmpty: Boolean,
     ): String? = when {
         line == null -> "у последней ночи ни темы, ни вывода"
         !lastNightUntold -> "последняя ночь уже рассказана"
-        ribbonEmpty -> "лента пуста — первым системное не ставится"
         inTopic(reply, topics) -> null
         untold >= CuriosityAsk.TELL_PILED -> null
         else -> "не в теме снов — ночей без рассказа $untold из ${CuriosityAsk.TELL_PILED}"

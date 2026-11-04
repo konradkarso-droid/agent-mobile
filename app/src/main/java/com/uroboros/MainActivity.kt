@@ -5200,7 +5200,7 @@ class MainActivity : AppCompatActivity() {
                 dreamsLine = DreamRecall.meter(dreamOffer, alreadyInRibbon = associatedShown.size - broughtNow.size)
                 // Состояние агента — только когда что-то сдвинулось с прошлого
                 // показа (см. SelfState). Модели оно идёт отдельным сообщением
-                // перед репликой, но не на пустой ленте (голос и место — у
+                // перед репликой (голос и место — у
                 // ConversationJournal.messagesFor). Сбой чтения приборов не
                 // срывает ход: строки просто нет, а на экране сказано почему.
                 val selfSnapshot = runCatching {
@@ -5211,14 +5211,12 @@ class MainActivity : AppCompatActivity() {
                     selfSnapshot.isFailure -> "О себе сейчас: приборы не ответили — " +
                         (selfSnapshot.exceptionOrNull()?.javaClass?.simpleName ?: "?")
                     selfLine == null -> "О себе сейчас: без перемен"
-                    journal.history().isEmpty() ->
-                        "О себе сейчас (первый ход разговора — модели уйдёт со следующим): $selfLine"
                     else -> "О себе сейчас (модели — отдельным сообщением): $selfLine"
                 }
                 // Описание последней ночи — узкое исключение для вопроса к
                 // агенту (см. DreamTopic): код собирает фразу из тем, принятых
                 // ночью, и подаёт её за строкой о себе, по её правилам голоса и
-                // места. Не на пустой ленте и не второй раз в той же ленте.
+                // места. Не второй раз в той же ленте.
                 val lastNight = runCatching { MemoryDatabase.getInstance(applicationContext).dreamDao().lastNight() }
                 val lastNightTopics = lastNight.map { it?.dreamTopics }
                 // Вывод этой ночи идёт за темами с подписью сна (см. DreamTopic.line).
@@ -5234,7 +5232,6 @@ class MainActivity : AppCompatActivity() {
                     else DreamTopic.refusal(
                         dreamCandidate,
                         toAgent = address == Coordinates.Address.AGENT,
-                        ribbonEmpty = journal.history().isEmpty(),
                         alreadyInRibbon = journal.history().any { it.dreamNote == dreamCandidate },
                         stored = lastNightTopics.getOrNull(),
                     )
@@ -5254,7 +5251,6 @@ class MainActivity : AppCompatActivity() {
                         lastNightUntold = lastNightAt != null && (lastToldNightAt == null || lastNightAt > lastToldNightAt),
                         untold = DreamTopic.untoldNights(withTopics, lastToldNightAt),
                         reply = userText,
-                        ribbonEmpty = journal.history().isEmpty(),
                     )
                 }.getOrElse { "ночи не прочитались (${it.javaClass.simpleName})" }
                 // Выход пружины любопытства (см. CuriosityAsk): давление
@@ -5899,9 +5895,8 @@ class MainActivity : AppCompatActivity() {
                     // этим ходом получает свою (см. DreamDoor).
                     DreamDoor.afterTurn(brought.map { it.id })
                     // Состояние показано, если перемен не было или строка ушла
-                    // модели. На пустой ленте она не уходит (см.
-                    // ConversationJournal.messagesFor) — тогда показ не
-                    // отмечается, и следующий ход скажет всё, что правда.
+                    // модели (тогда она лежит в закрытом ходе). Ход не лёг —
+                    // показ не отмечается, и следующий ход скажет всё, что правда.
                     if (selfLine == null || journal.history().lastOrNull()?.selfNote != null) {
                         selfSnapshot.getOrNull()?.let { SelfState.markShown(it) }
                     }
