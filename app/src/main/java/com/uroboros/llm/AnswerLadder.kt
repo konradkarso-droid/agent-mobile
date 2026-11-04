@@ -84,6 +84,20 @@ class AnswerLadder(
          */
         fun stableMessages(without: Set<Int>): Int?
 
+        /**
+         * Строки вспоминания этого хода со своей речью агента
+         * ([EchoIntercept.ownSpeech]); пусто — у ленты вспоминания нет.
+         */
+        fun ownSpeech(): List<String> = emptyList()
+
+        /**
+         * Запрос без ходов [without] и без строк вспоминания [withoutRecall] —
+         * второй попытке после копии записи своей речи ([EchoIntercept]). Ход,
+         * закрытый ответом этой попытки (`rejected` не null), хранит
+         * вспоминание без этих строк: ход хранит то, что ушло.
+         */
+        fun messages(without: Set<Int>, withoutRecall: Set<String>): List<Pair<String, String>> = messages(without)
+
         /** Ход ложится ответом [answer]; [rejected] — отброшенный первый ответ или null. */
         fun close(answer: String, rejected: String?)
 
@@ -98,9 +112,10 @@ class AnswerLadder(
     sealed class Cause {
         /**
          * Повтор своего прошлого ответа ([EchoIntercept]): вторая попытка без
-         * ходов-образцов [without]. [sentence] — первое повторённое предложение.
+         * ходов-образцов [without] и без строк вспоминания своей речи
+         * [withoutRecall]. [sentence] — первое повторённое предложение.
          */
-        data class Repeat(val sentence: String, val without: Set<Int>) : Cause()
+        data class Repeat(val sentence: String, val without: Set<Int>, val withoutRecall: Set<String> = emptySet()) : Cause()
 
         /**
          * Порча слов без повтора ([WordDamage]): повторная выборка на той же
@@ -366,7 +381,7 @@ class AnswerLadder(
                 // Петля до потолка проверяется раньше перехвата: такой ответ
                 // скрывается, а не переспрашивается (см. [loopAtCeiling]).
                 loop = if (finished) loopAtCeiling(answer.toString(), metrics?.tokensPredicted ?: tokensSeen, answerLimit) else null
-                cause = if (finished && loop == null) causeOf(answer.toString(), question, ribbon.history()) { request } else null
+                cause = if (finished && loop == null) causeOf(answer.toString(), question, ribbon.history(), ribbon.ownSpeech()) { request } else null
                 val looped = loop
                 when {
                     looped != null -> hide(
@@ -412,9 +427,10 @@ class AnswerLadder(
         answer: String,
         question: String,
         history: List<ConversationJournal.Turn>,
+        ownSpeech: List<String>,
         request: () -> Set<String>,
     ): Cause? {
-        EchoIntercept.decide(answer, question, history)?.let { return Cause.Repeat(it.sentence, it.without) }
+        EchoIntercept.decide(answer, question, history, ownSpeech)?.let { return Cause.Repeat(it.sentence, it.without, it.withoutRecall) }
         EchoCheck.mirrorToIntercept(answer, question)?.let { return Cause.Mirror(it) }
         val found = damage()?.check(answer, request()).orEmpty()
         return if (found.isEmpty()) null else Cause.Damage(found)
@@ -545,10 +561,12 @@ class AnswerLadder(
         // же трёх прошлых ответов, что и у первого.
         val history = ribbon.history()
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
+        val withoutRecall = (cause as? Cause.Repeat)?.withoutRecall ?: emptySet()
+        val ownSpeech = ribbon.ownSpeech()
         val dry = if (cause is Cause.Mirror) question else null
         // Доска взгляда — и сюда: повторная попытка отвечает на тот же вопрос
         // о приборах и без доски назвала бы числа из головы.
-        val base = ribbon.messages(without)
+        val base = ribbon.messages(without, withoutRecall)
         val stable = ribbon.stableMessages(without)
         // Хвост взгляда этой попытки: доска первого прохода или своя, если
         // вторая попытка позвала приборы сама. Его видит и третья ступень.
@@ -609,7 +627,7 @@ class AnswerLadder(
             val done = pieces > 0 && !failed && end == GenerationEnd.COMPLETED
             val dmg = damage()
             if (done) {
-                repeats = EchoIntercept.decide(second.toString(), question, history) != null
+                repeats = EchoIntercept.decide(second.toString(), question, history, ownSpeech) != null
                 mirrors = EchoCheck.mirrorToIntercept(second.toString(), question) != null
                 found = dmg?.check(second.toString(), requestHere()).orEmpty()
             }
@@ -697,11 +715,14 @@ class AnswerLadder(
         hide: (String, String, List<ConversationJournal.Rejected>) -> Unit,
     ): Third {
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
+        val withoutRecall = (cause as? Cause.Repeat)?.withoutRecall ?: emptySet()
+        val ownSpeech = ribbon.ownSpeech()
         val sources = if (without.isNotEmpty()) {
             without.sorted().map { history[it].agentContent }
         } else {
             history.takeLast(EchoCheck.EARLIER_ANSWERS).map { it.agentContent }
-        } + (if (cause is Cause.Mirror) listOf(question) else emptyList())
+        } + withoutRecall.map { EchoIntercept.quoteOf(it) } +
+            (if (cause is Cause.Mirror) listOf(question) else emptyList())
         val startedAt = System.currentTimeMillis()
         val text = StringBuilder()
         var metrics: DecodingMetrics? = null
@@ -713,7 +734,7 @@ class AnswerLadder(
         var hidden = false
         try {
             onThird()
-            val messages = ribbon.messages(without) + glanceTail + (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
+            val messages = ribbon.messages(without, withoutRecall) + glanceTail + (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
             // Как у второй попытки: с выкинутыми ходами снимок не снимается.
             engine.generate(messages, sources.joinToString("\n"), ribbon.stableMessages(without), first = false).collect { event ->
                 when (event) {
@@ -747,7 +768,7 @@ class AnswerLadder(
                         // не ответ, а просьба, которую уже не исполнить.
                         v.contains("tool_call") || v.contains(Glance.TOOL_NAME) -> "вызов приборов"
                         v.endsWith(":") -> "вступление"
-                        EchoIntercept.decide(v, question, history) != null -> "повтор"
+                        EchoIntercept.decide(v, question, history, ownSpeech) != null -> "повтор"
                         EchoCheck.mirrorToIntercept(v, question) != null -> "зеркало"
                         else -> dmg?.check(v, request())?.takeIf { it.isNotEmpty() }
                             ?.let { "порча «${it.joinToString(", ")}»" }

@@ -41,12 +41,18 @@ class AnswerLadderTest {
         }
     }
 
-    private class FakeRibbon(private val turns: List<ConversationJournal.Turn> = emptyList()) : AnswerLadder.Ribbon {
+    private class FakeRibbon(
+        private val turns: List<ConversationJournal.Turn> = emptyList(),
+        private val own: List<String> = emptyList(),
+    ) : AnswerLadder.Ribbon {
         var closed: Pair<String, String?>? = null
         var hidden: Pair<String, String>? = null
         override fun history() = turns
+        override fun ownSpeech() = own
         override fun messages(without: Set<Int>) =
             listOf(ConversationJournal.ROLE_USER to "Иван: вопрос" + if (without.isEmpty()) "" else " (без $without)")
+        override fun messages(without: Set<Int>, withoutRecall: Set<String>) =
+            messages(without).map { (role, text) -> role to text + if (withoutRecall.isEmpty()) "" else " (без записей ${withoutRecall.size})" }
         override fun stableMessages(without: Set<Int>) = if (without.isEmpty()) 0 else null
         override fun close(answer: String, rejected: String?) {
             closed = answer to rejected
@@ -191,6 +197,30 @@ class AnswerLadderTest {
         assertTrue("(без [0])" in e.calls[1].messages[0].second)
         assertNull(e.calls[1].stable)
         assertEquals("Спасибо, у меня всё хорошо." to past, r.closed)
+    }
+
+    @Test
+    fun `копия записи своей речи — вторая попытка без этой записи, ходы и снимок на месте`() {
+        val own = "Я говорил в прошлом разговоре, на днях: «Я люблю гулять по лесу и собирать грибы осенью.»."
+        val e = FakeEngine(Reply("Я люблю гулять по лесу и собирать грибы осенью."), Reply("Спасибо, у меня всё хорошо."))
+        val r = FakeRibbon(own = listOf(own))
+        val res = run(e, r, question = "Как дела?")
+        val cause = res.intercept?.cause as AnswerLadder.Cause.Repeat
+        assertEquals(emptySet<Int>(), cause.without)
+        assertEquals(setOf(own), cause.withoutRecall)
+        assertTrue("(без записей 1)" in e.calls[1].messages[0].second)
+        assertEquals(0, e.calls[1].stable)
+        assertEquals("Спасибо, у меня всё хорошо." to "Я люблю гулять по лесу и собирать грибы осенью.", r.closed)
+    }
+
+    /** Проверка на молчание: ответ по делу рядом с записью своей речи не перехватывается. */
+    @Test
+    fun `запись своей речи без копии — перехвата нет`() {
+        val own = "Я говорил в прошлом разговоре, на днях: «Я люблю гулять по лесу и собирать грибы осенью.»."
+        val e = FakeEngine(Reply("Спасибо, у меня всё хорошо."))
+        val res = run(e, FakeRibbon(own = listOf(own)), question = "Как дела?")
+        assertNull(res.intercept)
+        assertEquals(1, e.calls.size)
     }
 
     @Test
