@@ -11,9 +11,10 @@ package com.uroboros.memory.desk
  * ночь сменяет последнюю, вопрос о сне спрошен. Отсутствие пункта значит
  * «сейчас нечего», а не «сделано».
  *
- * ПОКА ТОЛЬКО ПРИБОР. Модели отсюда не идёт ничего: строка «Доска:» в
- * «Подробно» и раздел «ДОСКА» в «Показать». Сначала видно, что доска собирает
- * и как часто пустеет, потом — подача.
+ * МОДЕЛИ ИДУТ ТОЛЬКО ОБЕЩАНИЯ — строками взгляда на приборы ([forAgent], llm.Glance):
+ * когда агент сам глядит, на один ход, в ленту не ложатся. Остальные виды —
+ * только прибор: строка «Доска:» в «Подробно» и раздел «ДОСКА» в «Показать».
+ * Сначала видно, что доска собирает и как часто пустеет, потом — подача.
  *
  * ВИДЫ ([Kind]):
  *  - «не так» — шаг ночи прошёл и ничего не принял: темы снов или выводы.
@@ -25,13 +26,14 @@ package com.uroboros.memory.desk
  *    молчания одно с показом выводов, ConclusionView.Item.silent);
  *  - «вопрос» — любопытство готово спросить о сне. Строку модели здесь не
  *    строим: она живёт у CuriosityAsk, одна на оба пути; доска показывает,
- *    о чём.
+ *    о чём;
+ *  - «обещания» — что агент обещал за срок, со словами собеседника, на
+ *    которые обещано. Как они находятся и чего поиск не умеет — у [Promises].
  *
  * ПУСТОЙ ВИД НАЗЫВАЕТ ПРИЧИНУ. Доска, пустая потому, что нечего, иначе
  * неотличима от доски, которая сломана.
  *
  * ЧЕГО НЕ УМЕЕТ:
- *  - обещаний не собирает — вид назван в приборе как несобираемый;
  *  - смотрит только на последнюю ночь: «не так» позапрошлой ночи исчезает с
  *    новой ночью, даже если та тоже ничего не приняла по другой причине;
  *  - окно ([WINDOW]) — первые пункты по порядку видов, а не выбор по
@@ -45,6 +47,7 @@ object Desk {
         WRONG("не так"),
         LINK("связи снов"),
         QUESTION("вопрос"),
+        PROMISE("обещания"),
     }
 
     /**
@@ -86,6 +89,10 @@ object Desk {
         val ageForModel: (Long) -> String,
         /** Когда ночь была — для владельца (DreamView.moment). */
         val moment: (Long) -> String,
+        /** Обещания агента ([Promises.find]). */
+        val promises: Promises.Found,
+        /** День обещания для модели: «30 октября». */
+        val dayForModel: (Long) -> String,
     )
 
     /** Собранная доска: пункты по порядку видов и причина у каждого пустого вида. */
@@ -154,13 +161,57 @@ object Desk {
             is Question.Refuse -> reasons[Kind.QUESTION] = "любопытство — ${q.reason}"
         }
 
+        // Обещания.
+        when (val f = i.promises) {
+            is Promises.Found.Silent -> reasons[Kind.PROMISE] = f.reason
+            is Promises.Found.Ok -> {
+                f.promises.mapTo(items) { promiseItem(it, i) }
+                val notes = listOfNotNull(
+                    f.undated.takeIf { it > 0 }?.let { "без времени хода $it" },
+                    f.pressureSkipped.takeIf { it > 0 }?.let { "под нажимом не взято $it" },
+                )
+                if (f.promises.isEmpty()) reasons[Kind.PROMISE] = (listOf(NO_PROMISES) + notes).joinToString(", ")
+            }
+        }
+
         return Projection(items, reasons)
+    }
+
+    private fun promiseItem(p: Promises.Promise, i: Inputs): Item {
+        val who = if (p.together) "Обещали вместе" else "Обещал"
+        val answer = p.asked?.let { " — в ответ на «$it»" }.orEmpty()
+        val owner = buildString {
+            append(i.moment(p.at)).append(" · ")
+            if (p.together) append("вместе · ")
+            p.asked?.let { append("на «").append(it).append("» → ") }
+            append("«").append(p.sentence).append("» · до ").append(i.moment(p.at + Promises.TERM_MS))
+        }
+        return Item(Kind.PROMISE, "$who ${i.dayForModel(p.at)}: «${p.sentence}»$answer", owner)
     }
 
     fun window(p: Projection): List<Item> = p.items.take(WINDOW)
 
-    const val PROMISES = "обещания — не собираются"
-    const val NOT_FED = "модели не подаётся"
+    const val NO_PROMISES = "за ${Promises.DAYS} дн. обещаний нет"
+    const val NOT_FED = "модели — только обещания при взгляде на приборы"
+
+    /**
+     * Строки обещаний для взгляда агента на приборы (llm.Glance): до [WINDOW]
+     * новых первыми и сколько осталось за окном. Пустота сказана словами:
+     * «нет обещаний» и «не видны» для модели — разное.
+     */
+    fun forAgent(p: Projection): List<String> {
+        val all = p.items.filter { it.kind == Kind.PROMISE }
+        if (all.isEmpty()) {
+            val why = p.emptyReasons[Kind.PROMISE]
+            return listOf(
+                if (why == null || why.startsWith(NO_PROMISES)) "Обещаний за ${Promises.DAYS} дн. не нашлось."
+                else "Обещания мне сейчас не видны: $why.",
+            )
+        }
+        val shown = all.take(WINDOW).mapNotNull { it.forModel }
+        val rest = all.size - WINDOW
+        return if (rest > 0) shown + "Ещё обещаний за ${Promises.DAYS} дн.: $rest." else shown
+    }
 
     /** Строка прибора. Печатается всегда; пустой вид — с причиной. */
     fun meter(p: Projection): String {
@@ -168,19 +219,21 @@ object Desk {
             val n = p.items.count { it.kind == kind }
             if (n > 0) "${kind.label} $n" else "${kind.label} 0 — ${p.emptyReasons[kind] ?: "нет"}"
         }
-        return "Доска: пунктов ${p.items.size} ($kinds · $PROMISES) · $NOT_FED"
+        return "Доска: пунктов ${p.items.size} ($kinds) · $NOT_FED"
     }
 
     /** Раздел «ДОСКА» в «Показать». */
     fun section(p: Projection): String = buildString {
         append("ДОСКА\n")
-        append("Что у агента сейчас «на потом». Собирается заново при каждом показе из того, что уже хранится; ")
-        append("модели пока не подаётся — только здесь.")
+        append("Что у агента сейчас «на потом». Собирается заново при каждом показе из того, что уже хранится. ")
+        append("Модели идут только обещания — когда агент сам глядит на приборы; остальное — только здесь.")
+        append("\n\nАгент видит при взгляде на приборы:")
+        for (line in forAgent(p)) append("\n").append(line)
         val window = window(p)
         if (window.isEmpty()) {
             append("\n\nПусто.")
         } else {
-            append("\n\nВ окно пошло бы (до $WINDOW):")
+            append("\n\nЦеликом доска модели не подаётся; пошло бы (до $WINDOW):")
             for (item in window) {
                 append("\n").append(item.forModel ?: "[${item.kind.label}] ${item.forOwner}")
             }
@@ -191,6 +244,5 @@ object Desk {
             append("\n\nПустые виды:")
             for ((kind, why) in p.emptyReasons) append("\n").append(kind.label).append(": ").append(why)
         }
-        append("\n").append(PROMISES)
     }
 }

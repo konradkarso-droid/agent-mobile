@@ -351,8 +351,8 @@ object PersonForm {
 
     private val LEAD_PARTS = setOf("ADVB", "CONJ", "PRCL", "INTJ")
 
-    /** Пометки имён собственных в словаре: имя, фамилия, отчество, место. */
-    private val PROPER_NAMES = setOf("Name", "Surn", "Patr", "Geox")
+    /** Пометки имён собственных в словаре: имя, фамилия, отчество, место. Читает и memory.desk.Promises. */
+    internal val PROPER_NAMES = setOf("Name", "Surn", "Patr", "Geox")
 
     /** Части речи, при которых слово просьбой не читается, даже если есть и повелительный разбор. */
     private val NOT_REQUEST_PARTS = setOf("NPRO", "NUMR", "PREP", "CONJ", "PRCL")

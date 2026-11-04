@@ -455,6 +455,13 @@ class JournalStore(context: Context) {
         }
     }
 
+    /** Ходы архива, закрытого не раньше [since] (JournalArchiveDao.since); не прочиталось — null. */
+    suspend fun readArchiveSince(since: Long): List<JournalArchiveTurn>? = gate.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching { archiveDao.since(since) }.getOrNull()
+        }
+    }
+
     /**
      * Тексты записей, поданных в ход архива (RecordUse.text). Испорченный
      * список — пустой: своей речи он нужен только чтобы отличить пересказ

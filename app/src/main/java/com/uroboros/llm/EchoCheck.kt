@@ -388,17 +388,20 @@ object EchoCheck {
      * если оно собрано из слов реплики владельца этого хода или из слов одной
      * из записей, поданных в этот ход.
      *
-     * Предложение короче [MIN_STEMS] основ своим не считается: из одной основы
-     * («Помню.») не отличить свою речь от чужой, а искать по нему нечего.
+     * Предложение короче [minStems] основ своим не считается. По умолчанию это
+     * [MIN_STEMS]: из одной основы («Помню.») не отличить свою речь от чужой, а
+     * искать по нему нечего. Доске обещаний (memory.desk.Promises) искать по
+     * предложению не нужно, а короткое «Запомню.» — частая форма обещания,
+     * поэтому она берёт и одну основу.
      *
      * ЧЕГО НЕ УМЕЕТ: пересказ записи своими словами останется «своим».
      */
-    fun ownSentences(answer: String, question: String, records: List<String>): List<String> {
+    fun ownSentences(answer: String, question: String, records: List<String>, minStems: Int = MIN_STEMS): List<String> {
         val questionStems = if (question.isBlank()) emptySet() else RiskTrigger.echoStems(question)
         val recordStems = records.map { RiskTrigger.echoStems(it) }.filter { it.isNotEmpty() }
         return Sentences.split(answer).filter { sentence ->
             val stems = RiskTrigger.echoStems(sentence)
-            stems.size >= MIN_STEMS &&
+            stems.size >= minStems &&
                 !(questionStems.isNotEmpty() && covered(stems, questionStems, MIN_SHARE)) &&
                 recordStems.none { covered(stems, it, MIN_SHARE) }
         }
