@@ -96,6 +96,13 @@ import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.dream.ConclusionView
 import com.uroboros.memory.desk.DeskView
+import com.uroboros.memory.desk.Promises
+import com.uroboros.gate.ChatFeed
+import com.uroboros.gate.ChatPromises
+import com.uroboros.gate.link.ChatPrefs
+import com.uroboros.llm.ChatDatabase
+import com.uroboros.memory.nav.AddressSorter
+import com.uroboros.safety.BodyLine
 import com.uroboros.memory.dream.MirrorChecker
 import com.uroboros.memory.dream.MirrorView
 import com.uroboros.memory.dream.PassportReader
@@ -738,7 +745,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Доска агента, см. Desk. Только чтение. */
-    private val deskView by lazy { DeskView(applicationContext) { since -> deskTurns(since) } }
+    private val deskView by lazy { DeskView(applicationContext, { since -> deskTurns(since) }, { since -> deskChatPromises(since) }) }
+
+    /**
+     * Обещания в чатах телеграма за время с [since] — для доски
+     * (gate.ChatPromises); лента чатов не прочиталась — null, доска говорит об
+     * этом словами.
+     */
+    private suspend fun deskChatPromises(since: Long): Promises.Found? = runCatching {
+        val rings = AddressSorter.Ring.entries.filter(AddressSorter::modelReads).map { it.name }
+        val lines = withContext(Dispatchers.IO) { ChatDatabase.getInstance(applicationContext).chatLineDao().readSince(since, rings) }
+        ChatPromises.find(
+            lines.map(ChatPromises::lineOf), System.currentTimeMillis(), LemmaHolder.loaded,
+            ChatPrefs.owner(applicationContext)?.key?.id, ChatFeed.selfLines(llmEngine.wallFor()),
+        )
+    }.getOrNull()
 
     /**
      * Ходы для обещаний на доске (memory.desk.Promises): архив, закрытый не
@@ -2919,12 +2940,7 @@ class MainActivity : AppCompatActivity() {
      * человек, который читает этот экран, не обязан знать, как названа
      * константа в коде.
      */
-    private fun zoneLabel(zone: SafetyZone): String = when (zone) {
-        SafetyZone.COMFORT -> "норма"
-        SafetyZone.WARNING -> "нагрев"
-        SafetyZone.FATIGUE -> "утомление"
-        SafetyZone.CRITICAL -> "критическая"
-    }
+    private fun zoneLabel(zone: SafetyZone): String = BodyLine.zoneWord(zone)
 
     /**
      * Исход сверки — строкой для человека.
@@ -3228,15 +3244,11 @@ class MainActivity : AppCompatActivity() {
      * при каждом взгляде; не прочитались — строки нет.
      */
     private suspend fun deskSummary(): String {
-        val power = watchdog.power.value
-        val charge = if (power.percentKnown) "${power.percent}%" else "?"
-        val plug = if (power.charging) " (заряжается)" else ""
-        val temp = if (power.temperatureKnown) "${fmt1(power.temperatureCelsius)}°C" else "?"
         val records = runCatching {
             withContext(Dispatchers.IO) { MemoryDatabase.getInstance(applicationContext).stickerDao().count() }
         }.getOrNull()
         return listOfNotNull(
-            "Тело: заряд $charge$plug, $temp, зона ${zoneLabel(watchdog.zone.value)}",
+            BodyLine.of(watchdog.power.value, watchdog.zone.value),
             journalLine(),
             "Модель: ${processObjects.loadedModelName ?: "?"}, контекст $CONTEXT_SIZE",
             records?.let { "Память: записей $it" },

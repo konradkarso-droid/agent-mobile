@@ -103,6 +103,21 @@ interface ChatLineDao {
     )
     suspend fun readCostBefore(chat: String, thread: Long?, beforeId: Long, rings: List<String>): Long
 
+    /**
+     * Читаемые строки всех чатов не раньше [since], по порядку: свои ответы и
+     * строки колец [rings] — для обещаний (gate.ChatPromises).
+     */
+    @Query("SELECT * FROM chat_lines WHERE at >= :since AND (isAgent = 1 OR ring IN (:rings)) ORDER BY id")
+    suspend fun readSince(since: Long, rings: List<String>): List<ChatLine>
+
+    /** То же, что [readSince], для одного чата и ветки — обещания этого чата в конце нити. */
+    @Query(
+        "SELECT * FROM chat_lines WHERE chat = :chat " +
+            "AND ((:thread IS NULL AND thread IS NULL) OR thread = :thread) " +
+            "AND at >= :since AND (isAgent = 1 OR ring IN (:rings)) ORDER BY id"
+    )
+    suspend fun readSinceIn(chat: String, thread: Long?, since: Long, rings: List<String>): List<ChatLine>
+
     /** Сколько строк чата и ветки легло после строки [afterId] (своих не считая). */
     @Query(
         "SELECT COUNT(*) FROM chat_lines WHERE chat = :chat " +

@@ -26,10 +26,14 @@ import java.util.Locale
  * [turnsSince] — ходы архива, закрытого не раньше момента, плюс открытая
  * лента; null — архив не прочитался. Отбор по времени — в запросе к базе, а
  * не здесь: архив растёт, и читать его целиком на каждом показе незачем.
+ * Обещания в чатах телеграма даёт он же ([chatPromisesSince], gate.ChatPromises):
+ * у чатов своя лента и свой адрес у обещания; null — лента чатов не
+ * прочиталась.
  */
 class DeskView(
     private val context: Context,
     private val turnsSince: suspend (Long) -> List<OwnSpeech.Turn>?,
+    private val chatPromisesSince: suspend (Long) -> Promises.Found?,
 ) {
 
     private val db get() = MemoryDatabase.getInstance(context)
@@ -66,10 +70,11 @@ class DeskView(
         )
     }
 
-    /** Обещания за срок; сбой чтения ходов — словами, как «не прочитался». */
+    /** Обещания за срок — экрана и чатов; сбой чтения — словами, как «не прочитался». */
     private suspend fun promises(now: Long): Promises.Found {
         val turns = runCatching { turnsSince(now - Promises.TERM_MS) }.getOrNull()
-        return Promises.find(turns, now, LemmaHolder.loaded)
+        val chats = runCatching { chatPromisesSince(now - Promises.TERM_MS) }.getOrNull()
+        return Promises.merge(Promises.find(turns, now, LemmaHolder.loaded), chats)
     }
 
     suspend fun meter(): String = Desk.meter(project())

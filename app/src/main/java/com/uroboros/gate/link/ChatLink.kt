@@ -9,6 +9,7 @@ import com.uroboros.AgentService
 import com.uroboros.ModelPrefs
 import com.uroboros.ProcessObjects
 import com.uroboros.gate.ChatFeed
+import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.ChatReply
 import com.uroboros.gate.ChatThread
 import com.uroboros.gate.ChatTurnMeter
@@ -26,12 +27,14 @@ import com.uroboros.memory.ConfidenceLevel
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
+import com.uroboros.memory.desk.Promises
 import com.uroboros.memory.Heard
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.nav.AddressSorter
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Place
+import com.uroboros.safety.BodyLine
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -181,6 +184,9 @@ object ChatLink {
     private fun clock(ms: Long) = SimpleDateFormat("HH:mm", Locale.ROOT).format(Date(ms))
 
     private fun moment(ms: Long) = SimpleDateFormat("dd.MM HH:mm", Locale.ROOT).format(Date(ms))
+
+    /** День для модели: «30 октября» — как у доски экрана. */
+    private fun day(ms: Long) = SimpleDateFormat("d MMMM", Locale("ru")).format(Date(ms))
 
     /** Сообщение без файла из канала. Зовёт опрос [GateLink] на своём потоке. */
     suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
@@ -423,14 +429,27 @@ object ChatLink {
         val head = ChatThread.head(before, window.lines.first().at, dictionary, agentNames)
         val tail = ChatThread.tail(upTo.map(::feedLine), dictionary, agentNames)
         val moved = windowStarts.put(job.tallyKey, window.startId)?.let { it != window.startId }
-        threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm)
+
+        // Конец нити — ещё что я обещал в этом чате и тело: взгляда на приборы
+        // в чате нет, а эти строки дешевле второго прохода модели.
+        val now = System.currentTimeMillis()
+        val promised = runCatching {
+            val lines = dao.readSinceIn(job.chat, job.thread, now - Promises.TERM_MS, readRings).map(ChatPromises::lineOf)
+            ChatPromises.ofChat(ChatPromises.find(lines, now, dictionary, owner?.key?.id, ChatFeed.selfLines(engine.wallFor())), job.tallyKey)
+        }.getOrNull()
+        val promisedText = promised?.let { ChatPromises.chatText(it, ::day) }
+        val watchdog = ProcessObjects.get(app).watchdog
+        val body = BodyLine.of(watchdog.power.value, watchdog.zone.value)
+        val tailBlock = listOfNotNull(tail?.let(ChatThread::tailText), promisedText, body).joinToString("\n")
+        threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm) +
+            " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body"
 
         // Подпись владельца — по окну: строка «где я» стоит первой и должна меняться только вместе с окном.
         val ownerSignature = owner?.let { o -> readRaw.lastOrNull { it.id >= window.startId && it.sender == o.key.id }?.signature }
         val place = ChatFeed.placeLine(job.place == Place.DIRECT, job.chatTitle, ownerSignature)
-        val selfLines = engine.wallFor().substringBefore(Glance.WALL_BLOCK).lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val selfLines = ChatFeed.selfLines(engine.wallFor())
         val note = ChatFeed.prochnostNote(upTo.last().text, upTo.filter { it.isAgent }.map { it.text }, selfLines)
-        val messages = ChatFeed.messages(window, place, head?.let { ChatThread.headText(it, hhmm) }, tail?.let(ChatThread::tailText), note)
+        val messages = ChatFeed.messages(window, place, head?.let { ChatThread.headText(it, hhmm) }, tailBlock, note)
 
         val out = StringBuilder()
         var error: String? = null

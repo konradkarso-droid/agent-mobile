@@ -77,8 +77,8 @@ import com.uroboros.util.TextFold
  *    видит: обещание уходит с доски только по сроку;
  *  - ход без времени не показывается — сверить со сроком нечем, он только
  *    считается ([Found.Ok.undated]);
- *  - обещаний в чате телеграма не собирает: у чата своя лента, и обещание
- *    там должно знать, кому дано.
+ *  - обещания в чатах телеграма собирает не сам: ходы и адрес там свои
+ *    (gate.ChatPromises), сюда приходят готовые [Promise.to].
  */
 object Promises {
 
@@ -106,20 +106,51 @@ object Promises {
      *   ЧТО ОБЕЩАНО»); null — собеседник ничего не сказал (ход начал агент).
      * @param at время хода.
      * @param together обещание на «мы» — вместе с собеседником.
+     * @param to кому обещано в телеграме; null — на экране, владельцу.
      */
-    data class Promise(val sentence: String, val asked: String?, val at: Long, val together: Boolean)
+    data class Promise(val sentence: String, val asked: String?, val at: Long, val together: Boolean, val to: To? = null)
+
+    /**
+     * Кому обещано в телеграме: [dative] — «Пете», «вам»; [withWhom] — «с
+     * Петей», «с вами»; [where] — «личка» или «группа»; [chat] — ключ чата с
+     * веткой, по нему чат видит свои обещания и не видит чужих.
+     */
+    data class To(val dative: String, val withWhom: String, val where: String, val chat: String)
 
     sealed class Found {
         /**
          * @param promises обещания за срок, новые первыми.
          * @param undated сколько обещаний не показано: у хода нет времени.
          * @param pressureSkipped сколько обещаний не взято: ход под нажимом.
+         * @param unread чего не прочиталось, словами (лента чатов); пусто — всё прочитано.
          */
-        data class Ok(val promises: List<Promise>, val undated: Int, val pressureSkipped: Int) : Found()
+        data class Ok(val promises: List<Promise>, val undated: Int, val pressureSkipped: Int, val unread: List<String> = emptyList()) : Found()
 
         /** Искать было нельзя; [reason] — почему, словами. */
         data class Silent(val reason: String) : Found()
     }
+
+    /**
+     * Обещания экрана [screen] вместе с обещаниями чатов [chats] — новые
+     * первыми. [chats] — null: лента чатов не прочиталась, это сказано в
+     * [Found.Ok.unread]. Обещания экрана не нашлись (нет словаря, архив) —
+     * их причина и остаётся: словарь у обоих один.
+     */
+    fun merge(screen: Found, chats: Found?): Found {
+        if (screen !is Found.Ok) return screen
+        return when (chats) {
+            null -> screen.copy(unread = screen.unread + NO_CHATS)
+            is Found.Silent -> screen.copy(unread = screen.unread + chats.reason)
+            is Found.Ok -> Found.Ok(
+                (screen.promises + chats.promises).sortedByDescending { it.at },
+                screen.undated + chats.undated,
+                screen.pressureSkipped + chats.pressureSkipped,
+                screen.unread + chats.unread,
+            )
+        }
+    }
+
+    const val NO_CHATS = "лента чатов не прочиталась"
 
     /** Форма предложения: обещания нет, обещание «я», обещание «мы». */
     enum class Form { NONE, I, WE }

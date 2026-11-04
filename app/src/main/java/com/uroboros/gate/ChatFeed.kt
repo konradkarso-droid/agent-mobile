@@ -1,6 +1,7 @@
 package com.uroboros.gate
 
 import com.uroboros.llm.ConversationJournal
+import com.uroboros.llm.Glance
 import com.uroboros.memory.nav.Prochnost
 
 /**
@@ -11,8 +12,9 @@ import com.uroboros.memory.nav.Prochnost
  * на стену и ленту чата. Записи с экрана — разговоры владельца; поданные
  * здесь, они ушли бы пересказом к другому человеку (агент принимает «можно
  * делиться» на свой счёт), а угонщик телеграма владельца вытянул бы память
- * вопросами. Граница — здесь: сюда не приходит ничего, кроме строк ленты чата
- * и того, что код собрал из них же (нить, [ChatThread]).
+ * вопросами. Граница — здесь: сюда не приходит ничего, кроме строк ленты чата,
+ * того, что код собрал из них же (нить [ChatThread], обещания этого чата), и
+ * показаний тела (safety.BodyLine) — это приборы, не память.
  *
  * ГОЛОСА — правило подачи моста агента: агент — ассистент; все остальные, и
  * владелец в телеграме тоже, — собеседник с подписью «Имя:». Подряд идущие
@@ -52,9 +54,10 @@ import com.uroboros.memory.nav.Prochnost
  *  - первым сообщением окна — где агент ([placeLine]) и голова нити (что ушло
  *    за начало окна, ChatThread.headText): они меняются только со скачком
  *    окна, и начало запроса между скачками остаётся тем же;
- *  - перед текущей репликой — хвост нити (фон группы, ChatThread.tailText) и
- *    проверка на прочность: они свои на каждом ходе. Поставленные в начало,
- *    они меняли бы начало запроса каждый ход.
+ *  - перед текущей репликой — конец нити: фон группы (ChatThread.tailText),
+ *    обещания этого чата (ChatPromises.chatText), строка тела
+ *    (safety.BodyLine), — и проверка на прочность: они свои на каждом ходе.
+ *    Поставленные в начало, они меняли бы начало запроса каждый ход.
  *
  * ЧЕГО НЕ УМЕЕТ: окно меряется знаками, а не токенами; что дальше окна, модель
  * видит только выжимкой нити; строк о себе, снов, записей — нет; после скачка
@@ -130,8 +133,9 @@ object ChatFeed {
 
     /**
      * Сообщения модели для ответа на последнюю строку окна [window]. [place] —
-     * строка «где я» ([placeLine]); [head] и [tail] — голова и хвост нити
-     * (ChatThread) или null; [prochnost] — строка проверки на прочность к
+     * строка «где я» ([placeLine]); [head] — голова нити (ChatThread) или
+     * null; [tail] — конец нити одним блоком (шапка, «СТРОКИ СИСТЕМЫ») или
+     * null; [prochnost] — строка проверки на прочность к
      * текущей реплике или null. Места строк — в шапке, «СТРОКИ СИСТЕМЫ».
      */
     fun messages(window: Window, place: String, head: String?, tail: String?, prochnost: String?): List<Pair<String, String>> {
@@ -188,6 +192,10 @@ object ChatFeed {
             Prochnost.foundIn(agentSaid, line) else emptyList()
         return Prochnost.note(trigger, line, selfLines, found)
     }
+
+    /** Строки о себе из стены [wall] — для [prochnostNote]: всё до блока приборов, по строке, без пустых. */
+    fun selfLines(wall: String): List<String> =
+        wall.substringBefore(Glance.WALL_BLOCK).lines().map { it.trim() }.filter { it.isNotEmpty() }
 
     /** Включение проверки на прочность для реплики чата — всегда как не от владельца (см. [prochnostNote]). */
     fun prochnostTrigger(line: String): Prochnost.Trigger = Prochnost.trigger(line, fromOwner = false, painShift = null)
