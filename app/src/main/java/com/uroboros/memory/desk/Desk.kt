@@ -28,7 +28,9 @@ package com.uroboros.memory.desk
  *    строим: она живёт у CuriosityAsk, одна на оба пути; доска показывает,
  *    о чём;
  *  - «обещания» — что агент обещал за срок, со словами собеседника, на
- *    которые обещано. Как они находятся и чего поиск не умеет — у [Promises].
+ *    которые обещано, — и на экране, и в телеграме; телеграмные — с адресом:
+ *    кому и где (Promises.To). Как они находятся и чего поиск не умеет — у
+ *    [Promises] и gate.ChatPromises.
  *
  * ПУСТОЙ ВИД НАЗЫВАЕТ ПРИЧИНУ. Доска, пустая потому, что нечего, иначе
  * неотличима от доски, которая сломана.
@@ -169,7 +171,7 @@ object Desk {
                 val notes = listOfNotNull(
                     f.undated.takeIf { it > 0 }?.let { "без времени хода $it" },
                     f.pressureSkipped.takeIf { it > 0 }?.let { "под нажимом не взято $it" },
-                )
+                ) + f.unread
                 if (f.promises.isEmpty()) reasons[Kind.PROMISE] = (listOf(NO_PROMISES) + notes).joinToString(", ")
             }
         }
@@ -178,11 +180,17 @@ object Desk {
     }
 
     private fun promiseItem(p: Promises.Promise, i: Inputs): Item {
-        val who = if (p.together) "Обещали вместе" else "Обещал"
+        val to = p.to
+        val who = when {
+            to == null -> if (p.together) "Обещали вместе" else "Обещал"
+            p.together -> "Обещали вместе ${to.withWhom} в телеграме (${to.where})"
+            else -> "Обещал ${to.dative} в телеграме (${to.where})"
+        }
         val answer = p.asked?.let { " — в ответ на «$it»" }.orEmpty()
         val owner = buildString {
             append(i.moment(p.at)).append(" · ")
-            if (p.together) append("вместе · ")
+            to?.let { append("телеграм, ").append(it.where).append(", ").append(if (p.together) "вместе ${it.withWhom}" else it.dative).append(" · ") }
+            if (p.together && to == null) append("вместе · ")
             p.asked?.let { append("на «").append(it).append("» → ") }
             append("«").append(p.sentence).append("» · до ").append(i.moment(p.at + Promises.TERM_MS))
         }

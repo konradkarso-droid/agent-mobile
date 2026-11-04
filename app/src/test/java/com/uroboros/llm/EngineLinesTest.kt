@@ -229,4 +229,18 @@ class EngineLinesTest {
             EngineLines.wallReuse(request("I: Prompt cache restored: 2186 tokens"), 2186),
         )
     }
+
+    @Test
+    fun `снимок ленты — снят, граница та же, не снят, строки нет`() {
+        assertEquals(ChatPoint.Outcome.TAKEN, EngineLines.ribbonOutcome(listOf("I: Ribbon snapshot taken: 912 tokens, 167772160 bytes")))
+        assertEquals(
+            ChatPoint.Outcome.SAME,
+            EngineLines.ribbonOutcome(listOf("I: Ribbon snapshot not taken: граница та же, снимок уже есть")),
+        )
+        assertEquals(
+            ChatPoint.Outcome.NOT_TAKEN,
+            EngineLines.ribbonOutcome(listOf("I: Ribbon snapshot not taken: прошлых ходов нет — граница совпадает со стеной")),
+        )
+        assertEquals(ChatPoint.Outcome.NONE, EngineLines.ribbonOutcome(listOf("I: Multi-turn prompt length: 900")))
+    }
 }

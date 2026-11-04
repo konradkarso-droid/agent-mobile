@@ -97,6 +97,7 @@ class ChatFeedTest {
         val m9 = ChatFeed.messages(ChatFeed.window(chat(9), 0, 100, 50), place, head, "фон другой", null)
         assertTrue(m7.size >= 2)
         assertEquals(m7.dropLast(1), m9.take(m7.size - 1))
+        assertEquals("граница снимка — перед последним сообщением", m7.size - 1, ChatFeed.stableMessages(m7))
     }
 
     @Test
