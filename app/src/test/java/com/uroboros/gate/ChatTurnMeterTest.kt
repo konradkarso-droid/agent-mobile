@@ -7,7 +7,11 @@ class ChatTurnMeterTest {
 
     @Test
     fun `ответ — когда, за сколько, сколько знаков`() {
-        assertEquals("ответил 14:05 за 38.4 с, 412 зн.", ChatTurnMeter.answered("14:05", 38_400, 412))
+        assertEquals("ответил 14:05 за 38.4 с, 412 зн. · не глядел на приборы", ChatTurnMeter.answered("14:05", 38_400, 412))
+        assertEquals(
+            "ответил 14:05 за 52.0 с, 90 зн. · глянул на приборы",
+            ChatTurnMeter.answered("14:05", 52_000, 90, ChatGlance.Look.LOOKED),
+        )
     }
 
     @Test

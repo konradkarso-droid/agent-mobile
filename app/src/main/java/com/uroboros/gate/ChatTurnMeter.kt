@@ -19,9 +19,13 @@ import java.util.Locale
  */
 object ChatTurnMeter {
 
-    /** Хвост строки «Ответ (…)»: когда ответил, за сколько, сколько знаков. */
-    fun answered(clock: String, tookMs: Long, chars: Int): String =
-        "ответил $clock за ${sec(tookMs)} с, $chars зн."
+    /**
+     * Хвост строки «Ответ (…)»: когда ответил, за сколько, сколько знаков и
+     * глядел ли на приборы ([look]). Время — всех проходов хода, со взглядом
+     * их два-три.
+     */
+    fun answered(clock: String, tookMs: Long, chars: Int, look: ChatGlance.Look = ChatGlance.Look.NONE): String =
+        "ответил $clock за ${sec(tookMs)} с, $chars зн. · ${look.words}"
 
     /**
      * Строка «Обсчёт (…)»: [promptTokens] новых токенов запроса за
