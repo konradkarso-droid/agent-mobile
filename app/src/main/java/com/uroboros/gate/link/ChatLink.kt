@@ -144,6 +144,10 @@ object ChatLink {
     private val answers = ConcurrentHashMap<String, String>()
     private val evals = ConcurrentHashMap<String, String>()
     private val threads = ConcurrentHashMap<String, String>()
+    private val points = ConcurrentHashMap<String, String>()
+
+    /** Последняя запись снимка каждого чата перед чужой работой — по отчёту движка, узнаётся на ходе чата. */
+    private val saves = ConcurrentHashMap<String, String>()
 
     /** Начало окна прошлого ответа в чате — для «на месте / сдвинулось» на экране врат. */
     private val windowStarts = ConcurrentHashMap<String, Long>()
@@ -432,7 +436,7 @@ object ChatLink {
         var error: String? = null
         var reached = false
         val startedAt = System.currentTimeMillis()
-        engine.generateChatFlow(messages, ANSWER_TOKENS).collect { e ->
+        engine.generateChatFlow(messages, ANSWER_TOKENS, job.tallyKey, ChatFeed.stableMessages(messages)).collect { e ->
             when (e) {
                 is GenerationEvent.Token -> {
                     reached = true
@@ -451,6 +455,8 @@ object ChatLink {
             val b = runCatching { engine.getLastDecodeBreakdown() }.getOrNull()
             ChatTurnMeter.evalLine(chatName, at, b?.promptTokens ?: 0L, b?.promptUs ?: 0L, engine.promptReuseReport())
         } else ChatTurnMeter.noEvalLine(chatName, at)
+        points[job.tallyKey] = "Снимок чата ($chatName, $at): перед ответом — ${engine.chatLiftReport ?: "не поднимался"}"
+        engine.chatSaveReport?.let { (key, line) -> saves[key] = line }
 
         error?.let { return Generated(null, "движок: $it", tookMs) }
         if (engine.lastGenerationEnd != GenerationEnd.COMPLETED) return Generated(null, engine.getGenerationEndReport(), tookMs)
@@ -540,6 +546,8 @@ object ChatLink {
             answers[key]?.let { out += it }
             evals[key]?.let { out += it }
             threads[key]?.let { out += it }
+            points[key]?.let { out += it }
+            saves[key]?.let { out += "Снимок чата (${v.first}): последняя запись — $it" }
         }
         _status.value = out
     }

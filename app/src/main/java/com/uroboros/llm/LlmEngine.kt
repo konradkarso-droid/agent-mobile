@@ -961,6 +961,7 @@ class LlmEngine(
         stateIsConversation = false
         checkpointFresh = false
         borrowReport = null
+        chatPoint = ChatPoint.otherStarted()
         loadPrint = shortHash(
             (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
         )
@@ -1662,6 +1663,98 @@ class LlmEngine(
      */
     val conversationDisplaced: Boolean get() = !stateIsConversation && hasStateCheckpoint
 
+    /**
+     * Чей снимок ленты в движке, если чата телеграма, и лежит ли он в файле
+     * этого чата. Решения — у [ChatPoint]; файлы — [chatCheckpointFile].
+     */
+    @Volatile
+    private var chatPoint = ChatPoint.State()
+
+    /** Итог подъёма снимка чата перед последним ходом чата; null — подъёма не было. */
+    @Volatile
+    var chatLiftReport: String? = null
+        private set
+
+    /** Итог последней записи снимка чата перед чужой работой: ключ чата и словами; null — записи не было. */
+    @Volatile
+    var chatSaveReport: Pair<String, String>? = null
+        private set
+
+    /**
+     * Файл снимка чата [chat] — в папке кэша стены, как и точка экрана: от
+     * другой модели, параметров или стены он лежит по другому пути и чужим
+     * не поднимется, а уборку старых папок делает [applyPromptCache]. Имя — от
+     * ключа чата, не сам ключ: в нём двоеточия и минусы номеров групп.
+     */
+    private fun chatCheckpointFile(chat: String): File? {
+        val dir = promptCacheDir ?: return null
+        return File(File(File(dir, CHECKPOINT_SUBDIR), CHAT_CHECKPOINT_SUBDIR), "${shortHash(chat)}.bin")
+    }
+
+    /**
+     * Передать слот снимка ленты перед запросом чата [incoming] (null — запрос
+     * не чата): снимок уходящего чата — в его файл, снимок приходящего — из
+     * его файла. Что и когда — [ChatPoint.before].
+     */
+    private suspend fun switchChatPoint(incoming: String?) = withContext(Dispatchers.IO) { synchronized(wallLock) {
+        val step = ChatPoint.before(chatPoint, incoming)
+        step.save?.let { leaving ->
+            val started = System.currentTimeMillis()
+            val ok = writeChatCheckpoint(leaving)
+            chatPoint = ChatPoint.afterSave(chatPoint, ok)
+            chatSaveReport = leaving to ((if (ok) "записан перед чужой работой" else "не записан") +
+                " · ${chatCheckpointLine(leaving)} · ${"%.1f".format((System.currentTimeMillis() - started) / 1000.0)} с")
+        }
+        if (incoming == null) {
+            chatPoint = ChatPoint.otherStarted()
+            return@synchronized
+        }
+        val lift = step.lift ?: run {
+            chatLiftReport = "не нужен — в движке этот чат"
+            return@synchronized
+        }
+        val file = chatCheckpointFile(lift)
+        if (file == null || !file.isFile || !engine.isLoaded) {
+            chatPoint = ChatPoint.afterLift(lift, false)
+            chatLiftReport = "на диске нет — окно чата посчитается заново"
+            return@synchronized
+        }
+        val started = System.currentTimeMillis()
+        val ok = runCatching { engine.stateLoadFromFile(file.absolutePath) }.getOrDefault(false)
+        chatPoint = ChatPoint.afterLift(lift, ok)
+        // Подъём заменил состояние движка: разговора экрана в нём больше нет.
+        if (ok) {
+            stateIsConversation = false
+            checkpointFresh = false
+        }
+        val took = "%.1f".format((System.currentTimeMillis() - started) / 1000.0)
+        chatLiftReport = if (ok) "поднят с диска, ${humanBytes(file.length())} · $took с"
+        else "ОТКАЗ при подъёме · ${lastEngineLogLine(STATE_LOAD_FAILED_FRAGMENT) ?: "лог молчит"} · $took с"
+    } }
+
+    /** Записать снимок слота в файл чата [chat]: во временный и переименованием, как точку экрана. */
+    private fun writeChatCheckpoint(chat: String): Boolean {
+        if (!engine.isLoaded) return false
+        val target = chatCheckpointFile(chat) ?: return false
+        val dir = target.parentFile ?: return false
+        if (!dir.isDirectory && !dir.mkdirs()) return false
+        val temp = File(dir, target.name + CHECKPOINT_TEMP_SUFFIX)
+        val ok = runCatching { engine.stateSaveToFile(temp.absolutePath) }.getOrDefault(false)
+        if (!ok || !temp.renameTo(target)) {
+            temp.delete()
+            return false
+        }
+        // Сверх предела — самые давние: снимок весит больше сотни мегабайт.
+        val files = dir.listFiles { f -> f.isFile && !f.name.endsWith(CHECKPOINT_TEMP_SUFFIX) }.orEmpty()
+        val stale = ChatPoint.extra(files.map { it.name to it.lastModified() }).toSet()
+        files.filter { it.name in stale }.forEach { it.delete() }
+        return true
+    }
+
+    /** Размер файла снимка чата словами, для строк о записи. */
+    private fun chatCheckpointLine(chat: String): String =
+        chatCheckpointFile(chat)?.takeIf { it.isFile }?.let { humanBytes(it.length()) } ?: "файла нет"
+
     /** Строка о последней попытке сохранить или поднять контрольную точку. */
     fun getStateCheckpointReport(): String = checkpointReport
 
@@ -1806,7 +1899,7 @@ class LlmEngine(
         // ни судья, ни цикл ленту разговора не меняют. См. [stateIsConversation].
         if (!stateIsConversation) {
             checkpointReport = "Точка: не записана — последним в движке был не " +
-                "разговор (разбор памяти, цикл или пусто); прежняя точка цела"
+                "разговор экрана (разбор памяти, цикл, чат телеграма или пусто); прежняя точка цела"
             return@withContext false
         }
 
@@ -1864,7 +1957,14 @@ class LlmEngine(
      *
      * @return получилось ли. Подробность — в [getStateCheckpointReport].
      */
-    suspend fun restoreStateCheckpoint(): Boolean = withContext(Dispatchers.IO) { synchronized(wallLock) {
+    suspend fun restoreStateCheckpoint(): Boolean {
+        // Снимок чата, если он в слоте и ещё не на диске, — в файл чата до
+        // того, как точка экрана его заменит (ChatPoint).
+        switchChatPoint(null)
+        return restoreScreenCheckpoint()
+    }
+
+    private suspend fun restoreScreenCheckpoint(): Boolean = withContext(Dispatchers.IO) { synchronized(wallLock) {
         if (!engine.isLoaded) {
             checkpointReport = "Точка: ОТКАЗ — модель не загружена"
             return@withContext false
@@ -2067,12 +2167,24 @@ class LlmEngine(
      * пересчитал бы всю ленту заново. Здесь движок, как перед судьёй, сперва
      * пишет точку разговора экрана, а экран поднимает её на своём ходе.
      *
+     * СВОЙ СНИМОК ЛЕНТЫ. Ход чата получает задание снимка на границе
+     * [stableMessages], как лента экрана, но снимок — чата: перед чужой работой
+     * он уходит в файл этого чата, перед ходом чата поднимается из него. Как
+     * слот снимка переходит из рук в руки — у [ChatPoint].
+     *
      * ЧЕГО НЕ УМЕЕТ: DRY, план записей и живой отвод — только экрану;
      * ожидающая стена здесь не встаёт (встанет на ходе экрана).
      */
-    fun generateChatFlow(messages: List<Pair<String, String>>, maxTokens: Int): Flow<GenerationEvent> {
+    fun generateChatFlow(
+        messages: List<Pair<String, String>>,
+        maxTokens: Int,
+        /** Ключ чата (и ветки) — чей снимок ленты в слоте и чей файл поднимать (ChatPoint). */
+        chat: String,
+        /** Сообщений до границы снимка — все, кроме последнего сообщения собеседника (gate.ChatFeed). */
+        stableMessages: Int,
+    ): Flow<GenerationEvent> {
         require(messages.firstOrNull()?.first != "system") { "ход чата не несёт своего системного первым: стену ставит движок" }
-        return guardedFlow(conversationMessages(messages), maxTokens, conversation = false, talk = true)
+        return guardedFlow(conversationMessages(messages), maxTokens, conversation = false, talk = true, stableMessages = stableMessages, chat = chat)
     }
 
     /**
@@ -2106,8 +2218,10 @@ class LlmEngine(
         recall: String? = null,
         /** Живой отвод слоя; только разговору. См. [generateConversationFlow] и [liveReadFor]. */
         liveRead: LiveReadOrder? = null,
-        /** Сообщений прошлых ходов в [messagesJson]; только разговору. См. [generateConversationFlow]. */
+        /** Сообщений прошлых ходов в [messagesJson]; разговору и чату. См. [generateConversationFlow]. */
         stableMessages: Int? = null,
+        /** Ключ чата телеграма, если это ход чата; null — не чата. См. [generateChatFlow]. */
+        chat: String? = null,
     ): Flow<GenerationEvent> = channelFlow {
         // Движок уходит от разговора к чужой работе — сперва точка разговора
         // на диск. Зачем и чего не умеет — у [conversationDisplaced].
@@ -2115,6 +2229,9 @@ class LlmEngine(
             saveStateCheckpoint()
             borrowReport = checkpointReport
         }
+        // То же для чатов телеграма: снимок уходящего чата — в его файл,
+        // снимок приходящего — из его файла (ChatPoint).
+        switchChatPoint(chat)
         // Ожидающая стена — только в запрос разговора и до всякой работы
         // движка; почему здесь — у [applyWall]. На IO: ход с экрана собирается
         // на главном потоке, а установка удаляет папку, ждёт [wallLock] и замок
@@ -2148,9 +2265,11 @@ class LlmEngine(
         // задания при снятии остаётся — его читают после хода (см. [liveReadFor]).
         val live = liveRead?.takeIf { conversation }
         withContext(Dispatchers.IO) { engine.setLiveRead(live?.layer ?: -1, live?.segment.orEmpty()) }
-        // Задание снимка ленты — так же на каждый запрос, и снимается тоже: ход
-        // чата или судьи снимком ленты экрана стать не должен.
-        val stable = stableMessages?.takeIf { conversation } ?: -1
+        // Задание снимка ленты — так же на каждый запрос, и снимается тоже:
+        // судья снимка не получает. Ход чата снимок получает — свой: чей он,
+        // помнит [chatPoint], и точкой экрана он не станет (её пишет только
+        // разговор экрана, [saveStateCheckpoint]).
+        val stable = stableMessages?.takeIf { conversation || chat != null } ?: -1
         withContext(Dispatchers.IO) { engine.setStableMessages(stable) }
         // Первым делом, до всякой работы движка: с этого момента состояние в
         // нём принадлежит этому запросу, как бы он ни кончился.
@@ -2342,6 +2461,15 @@ class LlmEngine(
                 barrierStopToEndMs.set(endedAtMs - stopAt)
             }
             watchdog.resetInferenceTimer()
+            // Чей снимок теперь в слоте — по строке лога этого хода, если ход
+            // дошёл до движка; не дошёл — в слоте прежний (ChatPoint.Outcome.NONE).
+            if (chat != null) {
+                val reached = barrierPassedText.get() + barrierPassedOther.get() > 0
+                val outcome = if (!reached) ChatPoint.Outcome.NONE else withContext(NonCancellable + Dispatchers.IO) {
+                    runCatching { EngineLines.ribbonOutcome(lastRequestLog()) }.getOrDefault(ChatPoint.Outcome.NONE)
+                }
+                chatPoint = ChatPoint.afterChat(chatPoint, chat, outcome)
+            }
         }
     }
 
@@ -2587,6 +2715,13 @@ class LlmEngine(
         request.firstNotNullOfOrNull { WALL_TOKENS_RE.find(it) }
             ?.let { wallTokens = it.groupValues[1].toInt() }
         return EngineLines.wallReuse(request, wallTokens)
+    }
+
+    /** Строки лога движка от начала последнего запроса; пусто — лог не прочитан или запроса нет. */
+    private fun lastRequestLog(): List<String> {
+        val lines = runCatching { engine.getDebugLog() }.getOrNull()?.lines() ?: return emptyList()
+        val start = lines.indexOfLast { it.contains(REQUEST_START_FRAGMENT) }
+        return if (start < 0) emptyList() else lines.subList(start, lines.size)
     }
 
     private fun lastEngineLogLine(fragment: String): String? =
@@ -2935,6 +3070,9 @@ class LlmEngine(
 
         /** Расширение временного файла, в который точка пишется до замены. */
         const val CHECKPOINT_TEMP_SUFFIX = ".tmp"
+
+        /** Подпапка внутри папки точки — снимки чатов телеграма, по файлу на чат (ChatPoint). */
+        const val CHAT_CHECKPOINT_SUBDIR = "chats"
 
         /**
          * Куски строк, которые движок печатает в свой лог о контрольной точке.

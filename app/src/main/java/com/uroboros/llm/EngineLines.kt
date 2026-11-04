@@ -165,6 +165,22 @@ object EngineLines {
         return refused + reuseOutcome(request, wall) + ribbonMiss + saved + ribbonSnapshot(request)
     }
 
+    /**
+     * Что движок сделал со снимком ленты на запросе [request] (строки лога от
+     * начала запроса) — для того, чтобы знать, чей снимок в слоте (ChatPoint).
+     * Строку «граница та же» движок пишет, когда снимок с этой границей уже
+     * лежит в слоте (`gguf_lib.cpp`, «Ribbon snapshot not taken»).
+     */
+    fun ribbonOutcome(request: List<String>): ChatPoint.Outcome {
+        if (request.any { RIBBON_TAKEN.containsMatchIn(it) }) return ChatPoint.Outcome.TAKEN
+        val why = request.firstNotNullOfOrNull { RIBBON_NOT_TAKEN.find(it) }?.groupValues?.get(1)
+            ?: return ChatPoint.Outcome.NONE
+        return if (why.contains(RIBBON_SAME_BOUNDARY)) ChatPoint.Outcome.SAME else ChatPoint.Outcome.NOT_TAKEN
+    }
+
+    /** Начало причины в строке лога, когда снимок с той же границей уже в слоте. */
+    private const val RIBBON_SAME_BOUNDARY = "граница та же"
+
     /** Снят ли снимок ленты этого хода; модели без Mamba-слоёв и ходу без задания — пусто. */
     private fun ribbonSnapshot(request: List<String>): String {
         request.firstNotNullOfOrNull { RIBBON_TAKEN.find(it) }?.let {
