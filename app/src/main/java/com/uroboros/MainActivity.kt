@@ -3254,7 +3254,7 @@ class MainActivity : AppCompatActivity() {
             BodyLine.of(watchdog.power.value, watchdog.zone.value),
             journalLine(),
             "Модель: ${processObjects.loadedModelName ?: "?"}, контекст $CONTEXT_SIZE",
-            records?.let { "Память: записей $it" },
+            records?.let(Glance::recordsLine),
             lastSpeed?.let { "Последний ход: выдача $it ток/с" },
         ).plus(
             // Обещания — строками доски (Desk.forAgent); сбой сборки сказан словами.

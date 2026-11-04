@@ -9,6 +9,7 @@ import com.uroboros.AgentService
 import com.uroboros.ModelPrefs
 import com.uroboros.ProcessObjects
 import com.uroboros.gate.ChatFeed
+import com.uroboros.gate.ChatGlance
 import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.ChatQuiet
 import com.uroboros.gate.ChatReply
@@ -32,6 +33,7 @@ import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.desk.Promises
 import com.uroboros.memory.Heard
+import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.nav.AddressSorter
 import com.uroboros.memory.nav.LemmaHolder
@@ -47,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -77,7 +80,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * (ConversationTurns.aside), с решением [ChatReply.decide] до хода и
  * повторной проверкой после замка. Модель читает стену, ленту чата окном
  * скачками ([ChatFeed.window]) и нить — выжимку того, что окна не видно
- * ([ChatThread]); записей памяти нет: граница там. Ушло — только через ворота
+ * ([ChatThread]); записей памяти нет: граница там. Приборы — когда модель
+ * сама на них глянула ([ChatGlance]): доска этого чата и второй проход. Ушло — только через ворота
  * действий с согласием владельца на срок ([ChatPrefs.consent]); каждое
  * отправленное — в журнале действий.
  *
@@ -90,8 +94,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - разбор, начатый кнопкой «Разбор памяти», телеграму не уступает: ответ
  *    молчит со строкой «идёт ночная работа» — кнопку нажал владелец, и обрывать
  *    его работу чужим сообщением нельзя;
- *  - перехвата повтора и порчи слов, как у экрана, нет: режется только вызов
- *    приборов;
+ *  - перехвата повтора и порчи слов, как у экрана, нет;
  *  - очередь и счёт обращения — в памяти процесса. Ждавшие ответа после комы
  *    подхватываются по ленте чатов и отметкам на диске (ChatRevive) — свежие,
  *    и ответ, на котором служба умерла, только один раз сверх первого; счёт
@@ -159,6 +162,9 @@ object ChatLink {
 
     /** Последняя запись снимка каждого чата перед чужой работой — по отчёту движка, узнаётся на ходе чата. */
     private val saves = ConcurrentHashMap<String, String>()
+
+    /** Скорость выдачи прошлого ответа в каждом чате, ток/с, — для доски чата (ChatGlance). */
+    private val speeds = ConcurrentHashMap<String, String>()
 
     /** Начало окна прошлого ответа в чате — для «на месте / сдвинулось» на экране врат. */
     private val windowStarts = ConcurrentHashMap<String, Long>()
@@ -421,6 +427,18 @@ object ChatLink {
 
     private fun nightRunning() = AgentService.state.value is AgentService.RunState.Running
 
+    /**
+     * Почему модель сейчас не зовётся на ответ; null — можно. Одно место для
+     * проверки за замком хода и перед каждым следующим проходом (ChatGlance).
+     */
+    private fun haltReason(app: Context): String? = when {
+        EmergencyStop.isActive() -> "аварийный стоп"
+        nightRunning() -> "началась ночная работа"
+        watchdogRefusal(app) != null -> "сторож: ${watchdogRefusal(app)}"
+        !ProcessObjects.get(app).llmEngine.isLoaded -> "модель выгружена"
+        else -> null
+    }
+
     /** Идёт суд или шаги ночи, начатые самим агентом: они уступают телеграму. */
     private fun selfRunning() = (AgentService.state.value as? AgentService.RunState.Running)?.self == true
 
@@ -469,20 +487,13 @@ object ChatLink {
     private suspend fun answer(app: Context, job: Job, upTo: List<ChatLine>): String {
         val objects = ProcessObjects.get(app)
         ensureModel(app, objects)?.let { return "не отвечаю — $it" }
-        val engine = objects.llmEngine
         val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "uroboros:chat").apply { setReferenceCounted(false) }
         wake.acquire(WAKE_MS)
         val generated = try {
             objects.turns.aside {
                 // За замком — заново: пока ждали, мог начаться суд, сработать стоп или нагреться телефон.
-                when {
-                    EmergencyStop.isActive() -> Generated(null, "аварийный стоп")
-                    nightRunning() -> Generated(null, "началась ночная работа")
-                    watchdogRefusal(app) != null -> Generated(null, "сторож: ${watchdogRefusal(app)}")
-                    !engine.isLoaded -> Generated(null, "модель выгружена")
-                    else -> generate(app, job, upTo)
-                }
+                haltReason(app)?.let { Generated(null, it) } ?: generate(app, job, upTo)
             }
         } finally {
             if (wake.isHeld) wake.release()
@@ -499,7 +510,7 @@ object ChatLink {
         }
         send(app, job, text, ActionProvenance.MODEL_OUTPUT)?.let { return "ответ не ушёл — $it" }
         count[0]++
-        return ChatTurnMeter.answered(clock(System.currentTimeMillis()), generated.tookMs ?: 0L, text.length)
+        return ChatTurnMeter.answered(clock(System.currentTimeMillis()), generated.tookMs ?: 0L, text.length, generated.look)
     }
 
     /**
@@ -520,8 +531,11 @@ object ChatLink {
         )
     }
 
-    /** Итог генерации: текст или причина, и сколько шла генерация (null — до неё не дошло). */
-    private class Generated(val text: String?, val why: String?, val tookMs: Long? = null)
+    /**
+     * Итог генерации: текст или причина, сколько шла генерация (null — до неё
+     * не дошло) и глядел ли агент на приборы.
+     */
+    private class Generated(val text: String?, val why: String?, val tookMs: Long? = null, val look: ChatGlance.Look = ChatGlance.Look.NONE)
 
     /** Имена колец, строки которых модель читает (AddressSorter.modelReads), — для запросов к ленте чата. */
     private val readRings: List<String> = AddressSorter.Ring.entries.filter(AddressSorter::modelReads).map { it.name }
@@ -563,8 +577,8 @@ object ChatLink {
         val tail = ChatThread.tail(upTo.map(::feedLine), dictionary, agentNames)
         val moved = windowStarts.put(job.tallyKey, window.startId)?.let { it != window.startId }
 
-        // Конец нити — ещё что я обещал в этом чате и тело: взгляда на приборы
-        // в чате нет, а эти строки дешевле второго прохода модели.
+        // Конец нити — ещё что я обещал в этом чате. Тела здесь нет: о нём
+        // агент узнаёт, глянув на приборы (ChatGlance).
         val now = System.currentTimeMillis()
         val promised = runCatching {
             val lines = dao.readSinceIn(job.chat, job.thread, now - Promises.TERM_MS, readRings).map(ChatPromises::lineOf)
@@ -574,7 +588,7 @@ object ChatLink {
         val watchdog = ProcessObjects.get(app).watchdog
         val body = BodyLine.of(watchdog.power.value, watchdog.zone.value)
         val insist = ChatThread.insistence(upTo.map(::feedLine))
-        val tailBlock = listOfNotNull(tail?.let(ChatThread::tailText), insist, promisedText, body).joinToString("\n")
+        val tailBlock = listOfNotNull(tail?.let(ChatThread::tailText), insist, promisedText).joinToString("\n")
         threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm) +
             " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body"
 
@@ -585,37 +599,75 @@ object ChatLink {
         val note = ChatFeed.prochnostNote(upTo.last().text, upTo.filter { it.isAgent }.map { it.text }, selfLines)
         val messages = ChatFeed.messages(window, place, head?.let { ChatThread.headText(it, hhmm) }, tailBlock, note)
 
-        val out = StringBuilder()
-        var error: String? = null
-        var reached = false
+        val stable = ChatFeed.stableMessages(messages)
         val startedAt = System.currentTimeMillis()
-        engine.generateChatFlow(messages, ANSWER_TOKENS, job.tallyKey, ChatFeed.stableMessages(messages)).collect { e ->
-            when (e) {
-                is GenerationEvent.Token -> {
-                    reached = true
-                    out.append(e.text)
+        var meteredFirst = false
+
+        // Один проход модели. Вызов приборов обрывает выдачу (как у экрана,
+        // ConversationTurns.passCatchingCall): дальше модель писала бы только
+        // хвост вызова.
+        suspend fun pass(msgs: List<Pair<String, String>>): ChatGlance.Pass {
+            val out = StringBuilder()
+            var error: String? = null
+            var reached = false
+            var speed: Float? = null
+            engine.generateChatFlow(msgs, ANSWER_TOKENS, job.tallyKey, stable).transformWhile { e ->
+                emit(e)
+                out.indexOf(Glance.CALL_OPEN) < 0
+            }.collect { e ->
+                when (e) {
+                    is GenerationEvent.Token -> {
+                        reached = true
+                        out.append(e.text)
+                    }
+                    is GenerationEvent.Metrics -> {
+                        reached = true
+                        speed = e.metrics.tokensPerSecond
+                    }
+                    is GenerationEvent.Error -> error = e.message
+                    else -> Unit
                 }
-                is GenerationEvent.Metrics -> reached = true
-                is GenerationEvent.Error -> error = e.message
-                else -> Unit
+            }
+            // Числа обсчёта — первого прохода: в нём обсчитан сам чат, а
+            // второй (с доской) берёт почти всё готовым. Читаются здесь, под
+            // замком хода, пока их не сменил чужой запрос (ChatTurnMeter).
+            if (!meteredFirst) {
+                meteredFirst = true
+                val at = hhmm(System.currentTimeMillis())
+                evals[job.tallyKey] = if (reached) {
+                    val b = runCatching { engine.getLastDecodeBreakdown() }.getOrNull()
+                    ChatTurnMeter.evalLine(chatName, at, b?.promptTokens ?: 0L, b?.promptUs ?: 0L, engine.promptReuseReport())
+                } else ChatTurnMeter.noEvalLine(chatName, at)
+                points[job.tallyKey] = "Снимок чата ($chatName, $at): перед ответом — ${engine.chatLiftReport ?: "не поднимался"}"
+                engine.chatSaveReport?.let { (key, line) -> saves[key] = line }
+            }
+            val cut = out.indexOf(Glance.CALL_OPEN)
+            if (cut >= 0) return ChatGlance.Pass(out.substring(0, cut), called = true)
+            val broken = error?.let { "движок: $it" }
+                ?: engine.getGenerationEndReport().takeIf { engine.lastGenerationEnd != GenerationEnd.COMPLETED }
+            if (broken == null) speed?.let { speeds[job.tallyKey] = String.format(Locale.ROOT, "%.1f", it) }
+            return ChatGlance.Pass(out.toString(), called = false, broken = broken)
+        }
+
+        // Доска чата — на момент взгляда; что на ней и почему — у ChatGlance.
+        val desk: suspend () -> String = {
+            val records = runCatching {
+                withContext(Dispatchers.IO) { MemoryDatabase.getInstance(app).stickerDao().count() }
+            }.getOrNull()
+            val w = ProcessObjects.get(app).watchdog
+            ChatGlance.desk(BodyLine.of(w.power.value, w.zone.value), records, speeds[job.tallyKey], ChatGlance.promisesLine(promised, ::day))
+        }
+
+        val outcome = ChatGlance.run(messages, { pass(it) }, desk) { haltReason(app) }
+        val tookMs = System.currentTimeMillis() - startedAt
+        return when (outcome) {
+            is ChatGlance.Outcome.NoAnswer -> Generated(null, outcome.why, tookMs, outcome.look)
+            is ChatGlance.Outcome.Answer -> {
+                val text = TgWords.cut(outcome.text)
+                if (text.isEmpty()) Generated(null, "модель не выдала ни знака", tookMs, outcome.look)
+                else Generated(text, null, tookMs, outcome.look)
             }
         }
-        val tookMs = System.currentTimeMillis() - startedAt
-        // Числа обсчёта — последнего запроса движка: читаются здесь, под замком
-        // хода, пока его не сменил чужой запрос (ChatTurnMeter).
-        val at = hhmm(System.currentTimeMillis())
-        evals[job.tallyKey] = if (reached) {
-            val b = runCatching { engine.getLastDecodeBreakdown() }.getOrNull()
-            ChatTurnMeter.evalLine(chatName, at, b?.promptTokens ?: 0L, b?.promptUs ?: 0L, engine.promptReuseReport())
-        } else ChatTurnMeter.noEvalLine(chatName, at)
-        points[job.tallyKey] = "Снимок чата ($chatName, $at): перед ответом — ${engine.chatLiftReport ?: "не поднимался"}"
-        engine.chatSaveReport?.let { (key, line) -> saves[key] = line }
-
-        error?.let { return Generated(null, "движок: $it", tookMs) }
-        if (engine.lastGenerationEnd != GenerationEnd.COMPLETED) return Generated(null, engine.getGenerationEndReport(), tookMs)
-        // Вызов приборов в телеграм не уходит: в чате приборов нет.
-        val text = TgWords.cut(out.toString().substringBefore(Glance.CALL_OPEN))
-        return if (text.isEmpty()) Generated(null, "модель не выдала ни знака", tookMs) else Generated(text, null, tookMs)
     }
 
     /** Загрузить последнюю выбранную модель, если её нет; null — готово, иначе причина. */
