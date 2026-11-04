@@ -135,6 +135,26 @@ interface ChatLineDao {
     @Query("SELECT MAX(at) FROM chat_lines WHERE isAgent = 1 OR ring IN (:rings)")
     suspend fun lastDialogAt(rings: List<String>): Long?
 
+    /**
+     * Строки людей и ботов всех чатов после строки [afterId] с кольцом из
+     * [rings], по порядку, — ждавшие ответа для подхвата после комы
+     * (gate.ChatRevive).
+     */
+    @Query("SELECT * FROM chat_lines WHERE id > :afterId AND isAgent = 0 AND ring IN (:rings) ORDER BY id")
+    suspend fun waitingAfter(afterId: Long, rings: List<String>): List<ChatLine>
+
+    /** Номер последней строки ленты чатов; 0 — лента пуста. */
+    @Query("SELECT COALESCE(MAX(id), 0) FROM chat_lines")
+    suspend fun maxId(): Long
+
+    /**
+     * Номер строки, которой сообщение [messageId] чата [chat] уже легло в ленту;
+     * null — не легло. Телеграм присылает сообщение снова, если служба умерла
+     * между записью строки и подтверждением опроса (gate.link.GateLink).
+     */
+    @Query("SELECT id FROM chat_lines WHERE chat = :chat AND messageId = :messageId AND isAgent = 0 LIMIT 1")
+    suspend fun heardId(chat: String, messageId: Long): Long?
+
     /** Последние собеседники в личке, кроме ботов, новые первыми. */
     @Query(
         "SELECT sender, name, MAX(at) AS lastAt FROM chat_lines " +

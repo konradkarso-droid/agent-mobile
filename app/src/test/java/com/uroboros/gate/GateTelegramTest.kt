@@ -96,4 +96,12 @@ class GateTelegramTest {
     fun `время сервера из секунд сообщения`() {
         assertEquals(now / 1000 * 1000, msg().serverMs)
     }
+
+    @Test
+    fun `номер чата из ключа — и у групп, и только из ключа чата`() {
+        assertEquals(412244782L, GateTelegram.chatId(GateTelegram.chatKey(412244782L)))
+        assertEquals(-1001234567890L, GateTelegram.chatId(GateTelegram.chatKey(-1001234567890L)))
+        assertEquals(null, GateTelegram.chatId(GateTelegram.userKey(412244782L)))
+        assertEquals(null, GateTelegram.chatId(PersonKey("tg:chat:")))
+    }
 }

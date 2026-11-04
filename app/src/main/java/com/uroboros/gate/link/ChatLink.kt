@@ -10,7 +10,9 @@ import com.uroboros.ModelPrefs
 import com.uroboros.ProcessObjects
 import com.uroboros.gate.ChatFeed
 import com.uroboros.gate.ChatPromises
+import com.uroboros.gate.ChatQuiet
 import com.uroboros.gate.ChatReply
+import com.uroboros.gate.ChatRevive
 import com.uroboros.gate.ChatThread
 import com.uroboros.gate.ChatTurnMeter
 import com.uroboros.gate.GateBotApi
@@ -90,8 +92,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *    его работу чужим сообщением нельзя;
  *  - перехвата повтора и порчи слов, как у экрана, нет: режется только вызов
  *    приборов;
- *  - очередь и счёт обращения — в памяти процесса: после комы ждавшие ответа
- *    сообщения остаются без ответа (строки ленты и память — на диске);
+ *  - очередь и счёт обращения — в памяти процесса. Ждавшие ответа после комы
+ *    подхватываются по ленте чатов и отметкам на диске (ChatRevive) — свежие,
+ *    и ответ, на котором служба умерла, только один раз сверх первого; счёт
+ *    обращения начинается заново;
  *  - отвечает ровно на то сообщение, что его позвало: несколько подряд — несколько ответов.
  */
 object ChatLink {
@@ -165,6 +169,17 @@ object ChatLink {
     @Volatile
     private var lastAt: Long? = null
 
+    /** Отметки подхвата после комы (ChatRevive); пишет только очередь ответов. */
+    @Volatile
+    private var marks: ChatRevive.Marks? = null
+
+    /** Строка подхвата для экрана врат; null — очередь ещё не смотрела. */
+    @Volatile
+    private var reviveLine: String? = null
+
+    /** Строки ленты, подхваченные после комы: пришедшие ещё и очередью второй раз не отвечаются. */
+    private val revived = ConcurrentHashMap.newKeySet<Long>()
+
     @Volatile
     private var me: GateBotApi.Me? = null
 
@@ -204,6 +219,11 @@ object ChatLink {
             is TgWords.Read.Of -> read.words
         }
         val dao = ChatDatabase.getInstance(app).chatLineDao()
+        if (w.messageId > 0 && dao.heardId(w.chat.id, w.messageId) != null) {
+            GateLink.note("Слова (${w.name}): сообщение ${w.messageId} уже в ленте — телеграм прислал его снова, второй раз не беру")
+            refresh(app)
+            return
+        }
         val prior = dao.recent(w.chat.id, w.thread, 1).firstOrNull()?.let(::priorOf)
         val route = AddressSorter.sort(w.message, self(app, me), prior)
         val lineId = dao.insert(
@@ -293,19 +313,101 @@ object ChatLink {
     // --- Очередь ответов ---
 
     private suspend fun work(app: Context) {
+        // Подхваченные после комы — раньше всех новых: они пришли раньше.
+        for (job in revive(app)) process(app, job)
         for (job in queue) {
             waiting[job.tallyKey]?.decrementAndGet()
-            val name = tallies[job.tallyKey]?.first ?: job.chat
-            val line = try {
-                reply(app, job)
-            } catch (c: CancellationException) {
-                throw c
-            } catch (t: Throwable) {
-                "не ответил — сбой: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}"
-            }
-            answers[job.tallyKey] = "Ответ ($name): $line"
-            refresh(app)
+            if (job.lineId in revived) continue
+            process(app, job)
         }
+    }
+
+    /** Один ответ из очереди с отметками подхвата до и после (ChatRevive). */
+    private suspend fun process(app: Context, job: Job) {
+        mark(app) { ChatRevive.taking(it, job.lineId) }
+        val name = tallies[job.tallyKey]?.first ?: job.chat
+        val line = try {
+            reply(app, job)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            "не ответил — сбой: ${t.javaClass.simpleName}: ${t.message ?: "без пояснения"}"
+        }
+        mark(app) { ChatRevive.decided(it, job.lineId) }
+        answers[job.tallyKey] = "Ответ ($name): $line"
+        // И событием: строка «Ответ» держит только последний исход чата, а следующее сообщение её затирает.
+        GateLink.note("Ответ ($name): $line")
+        refresh(app)
+    }
+
+    // --- Подхват после комы ---
+
+    private const val REVIVE_PREFS = "uroboros_chat_revive"
+    private const val DECIDED_UP_TO = "decided_up_to"
+    private const val TAKEN = "taken"
+    private const val TRIES = "tries"
+
+    private fun revivePrefs(app: Context) = app.getSharedPreferences(REVIVE_PREFS, Context.MODE_PRIVATE)
+
+    private fun storedMarks(app: Context): ChatRevive.Marks? {
+        val p = revivePrefs(app)
+        if (!p.contains(DECIDED_UP_TO)) return null
+        return ChatRevive.Marks(p.getLong(DECIDED_UP_TO, 0L), p.getLong(TAKEN, 0L), p.getInt(TRIES, 0))
+    }
+
+    /**
+     * Сменить отметки и записать сразу, не откладывая: смерть службы через миг
+     * после отметки «взялся» — ровно тот случай, ради которого она пишется.
+     */
+    private fun mark(app: Context, change: (ChatRevive.Marks) -> ChatRevive.Marks) {
+        val m = change(marks ?: storedMarks(app) ?: ChatRevive.startMarks(0L))
+        marks = m
+        revivePrefs(app).edit().putLong(DECIDED_UP_TO, m.decidedUpTo).putLong(TAKEN, m.taken).putInt(TRIES, m.tries).commit()
+    }
+
+    /** Ждавшие ответа после комы — задания по порядку; строка экрана — в [reviveLine]. */
+    private suspend fun revive(app: Context): List<Job> {
+        val at = clock(System.currentTimeMillis())
+        return try {
+            val dao = ChatDatabase.getInstance(app).chatLineDao()
+            val stored = storedMarks(app)
+            if (stored == null) {
+                val maxId = dao.maxId()
+                mark(app) { ChatRevive.startMarks(maxId) }
+                reviveLine = ChatRevive.line(ChatRevive.plan(emptyList(), null, System.currentTimeMillis())) + " (подъём $at)"
+                return emptyList()
+            }
+            marks = stored
+            val lines = dao.waitingAfter(stored.decidedUpTo, ChatQuiet.dialogRings)
+            val plan = ChatRevive.plan(lines.map { ChatRevive.Waiting(it.id, it.at, it.text) }, stored, System.currentTimeMillis())
+            val byId = lines.associateBy { it.id }
+            val jobs = plan.again.mapNotNull { id -> byId[id]?.let(::jobOf) }
+            revived += jobs.map { it.lineId }
+            val lost = plan.again.size - jobs.size
+            reviveLine = ChatRevive.line(plan) + (if (lost > 0) " · не разобрал строку ленты: $lost" else "") + " (подъём $at)"
+            jobs
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            reviveLine = "После комы: лента чатов не прочиталась — ${t.javaClass.simpleName} (подъём $at)"
+            emptyList()
+        }
+    }
+
+    /** Задание ответа из строки ленты; null — строка не того вида (ключ чата, кольцо, место). */
+    private fun jobOf(l: ChatLine): Job? {
+        val chat = PersonKey(l.chat)
+        val chatId = GateTelegram.chatId(chat) ?: return null
+        val ring = AddressSorter.Ring.entries.firstOrNull { it.name == l.ring } ?: return null
+        val place = Place.entries.firstOrNull { it.name == l.place } ?: return null
+        val tallyKey = TgWords.chatRefOf(chat, l.thread)
+        // Название группы в ленте не хранится: после комы группа названа ключом.
+        tallies.putIfAbsent(tallyKey, (if (place == Place.DIRECT) l.name else l.chat) to AddressSorter.Tally())
+        return Job(
+            chatId = chatId, chat = l.chat, thread = l.thread, lineId = l.id, messageId = l.messageId,
+            sender = PersonKey(l.sender), answer = AddressSorter.answer(ring), senderIsBot = l.isBot, atMs = l.at,
+            place = place, chatTitle = null, tallyKey = tallyKey,
+        )
     }
 
     private fun watchdogRefusal(app: Context): String? {
@@ -578,6 +680,7 @@ object ChatLink {
         val g = group.get()
         out += if (d + g == 0) "Слова: сообщений не было (с запуска службы)"
         else "Слова: личка $d · группы $g · последнее ${lastAt?.let(::clock) ?: "?"}"
+        reviveLine?.let { out += it }
         out += ChatPrefs.consent(app, now)?.let { "Отвечать в телеграме: разрешено до ${moment(it.expiresAt)}" }
             ?: "Отвечать в телеграме: не разрешено (кнопка «Отвечать» вверху справа)"
         out += ChatPrefs.owner(app)?.let { "Владелец в телеграме: ${it.name} (${it.key.id})" }

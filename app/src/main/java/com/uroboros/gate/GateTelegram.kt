@@ -72,6 +72,9 @@ object GateTelegram {
     /** Номер аккаунта из ключа [userKey]; null — ключ не того вида. В личке с ботом номер чата — он же. */
     fun userId(key: PersonKey): Long? = key.id.removePrefix("tg:user:").takeIf { key.id.startsWith("tg:user:") }?.toLongOrNull()
 
+    /** Номер чата из ключа [chatKey]; null — ключ не того вида. У групп номер отрицательный. */
+    fun chatId(key: PersonKey): Long? = key.id.removePrefix("tg:chat:").takeIf { key.id.startsWith("tg:chat:") }?.toLongOrNull()
+
     sealed class Incoming {
         /** Нести во врата: в приём формы [form], с ключом канала [sender]. */
         class Gate(val sender: PersonKey, val form: GateWire.Form, val raw: ByteArray) : Incoming()
