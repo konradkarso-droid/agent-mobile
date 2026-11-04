@@ -123,6 +123,14 @@ class ChatPromisesTest {
     }
 
     @Test
+    fun `обещания для доски — не прочитались, нет, есть — три разные строки`() {
+        assertEquals(listOf("Обещания этого чата мне сейчас не видны."), ChatPromises.deskLines(null) { "" })
+        assertEquals(listOf("Обещаний в этом чате за ${Promises.DAYS} дн. не нашлось."), ChatPromises.deskLines(emptyList()) { "" })
+        val f = ok(listOf(peer(petya, "Петя", "Не забудь про билеты"), agent("Я напомню завтра.", petya)))
+        assertEquals(listOf(ChatPromises.chatText(f.promises) { "3 ноября" }), ChatPromises.deskLines(f.promises) { "3 ноября" })
+    }
+
+    @Test
     fun `обещания экрана и чатов — вместе, новые первыми`() {
         val screen = Promises.Found.Ok(listOf(Promises.Promise("Запомню.", null, now - 2 * day, false)), 0, 0)
         val chats = ok(listOf(peer(petya, "Петя", "Не забудь про билеты"), agent("Я напомню завтра.", petya)))

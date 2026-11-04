@@ -176,6 +176,63 @@ object ChatFeed {
     }
 
     /**
+     * Ходы окна для мер перехвата (llm.AnswerLadder.Ribbon.history): ход — свой
+     * ответ агента и реплики собеседников перед ним, от прошлого ответа (или
+     * начала окна). Номер хода — его номер среди ответов агента в окне; его же
+     * принимает [without]. Реплики — текстом, без подписей: подписи — имена, а
+     * не слова реплики, и мера зеркала считала бы их совпадением.
+     *
+     * ЧЕГО НЕ УМЕЕТ: ответов агента за началом окна не видит — повтор того, что
+     * окна не видно, не ловится.
+     */
+    fun history(window: Window): List<ConversationJournal.Turn> {
+        val out = ArrayList<ConversationJournal.Turn>()
+        val asked = ArrayList<String>()
+        for (line in window.lines) {
+            if (!line.isAgent) {
+                asked += line.text
+                continue
+            }
+            val q = asked.joinToString("\n")
+            out += ConversationJournal.Turn(userContent = q, agentContent = line.text, question = q, at = line.at)
+            asked.clear()
+        }
+        return out
+    }
+
+    /** Реплики собеседников после последнего ответа агента в окне — текстом, по строке: вопрос этого хода. */
+    fun question(window: Window): String =
+        window.lines.takeLastWhile { !it.isAgent }.joinToString("\n") { it.text }
+
+    /**
+     * Окно без ходов [turns] (номера — как у [history]): ответ агента и реплики
+     * перед ним уходят из окна. Текущая реплика остаётся всегда.
+     *
+     * Начало окна от этого сдвигается, поэтому снимок ленты такому запросу не
+     * положен (llm.AnswerLadder.Ribbon.stableMessages) — он обсчитывается от стены.
+     */
+    fun without(window: Window, turns: Set<Int>): Window {
+        if (turns.isEmpty()) return window
+        val keep = ArrayList<Line>()
+        val pending = ArrayList<Line>()
+        var turn = 0
+        for (line in window.lines) {
+            if (!line.isAgent) {
+                pending += line
+                continue
+            }
+            if (turn !in turns) {
+                keep += pending
+                keep += line
+            }
+            pending.clear()
+            turn++
+        }
+        keep += pending
+        return Window(keep, window.grid, keep.sumOf(::cost))
+    }
+
+    /**
      * Сколько первых сообщений [messages] не изменится на следующем ходе, пока
      * окно не прыгнуло, — граница снимка ленты (LlmEngine.generateChatFlow):
      * все, кроме последнего. Последнее несёт хвост нити и строку прочности

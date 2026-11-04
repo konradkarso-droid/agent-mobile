@@ -156,48 +156,6 @@ private const val FATIGUE_DELAY_MS = 100L
  */
 private const val WATCHDOG_TICK_MS = 2_000L
 
-enum class GenerationEnd {
-
-    /**
-     * С загрузки не было ни одного прогона. Отдельно от [UNEXPLAINED]
-     * намеренно: «ещё не звали» и «звали, и кончилось непонятно чем» — разные
-     * ответы, и на экране они должны выглядеть по-разному.
-     */
-    NOT_STARTED,
-
-    /** Прогон идёт прямо сейчас. */
-    RUNNING,
-
-    /** Движок прислал терминальное событие «готово». */
-    COMPLETED,
-
-    /** Оборвано сторожем: устройство в опасной зоне. */
-    WATCHDOG_CRITICAL,
-
-    /** Оборвано сторожем: исчерпан потолок непрерывной работы. */
-    WATCHDOG_TIMEOUT,
-
-    /** Движок сообщил об ошибке. */
-    ENGINE_ERROR,
-
-    /** Отменена корутина, в которой шёл прогон. */
-    CANCELLED,
-
-    /** Позвали [LlmEngine.stopGeneration]. */
-    STOPPED_BY_CALLER,
-
-    /**
-     * Поток кончился, а причины никто не назвал.
-     *
-     * Это неполадка самого прибора, а не устройства: раз прогон начался и
-     * кончился, какая-то причина была, и её не записали. Значение существует
-     * затем, чтобы такой случай не сливался с [NOT_STARTED] — иначе молчание
-     * от того, что ловить нечего, и молчание от поломки выглядели бы
-     * одинаково.
-     */
-    UNEXPLAINED,
-}
-
 /** Итог чтения слоя модели ([LlmEngine.readLayerMean]). */
 sealed class LayerRead {
     /** Прочитано: среднее выхода слоя по токенам отрезка. */
@@ -1117,7 +1075,7 @@ class LlmEngine(
 
     /**
      * Стена, стоящая в движке, — для чтения снаружи; null — модель не загружена.
-     * Детектору порчи (ConversationTurns): слова стены — слова запроса, и имя
+     * Детектору порчи (AnswerLadder): слова стены — слова запроса, и имя
      * агента из стены порчей не считается.
      */
     val wallText: String? get() = synchronized(wallLock) { currentWall }
@@ -2172,19 +2130,31 @@ class LlmEngine(
      * он уходит в файл этого чата, перед ходом чата поднимается из него. Как
      * слот снимка переходит из рук в руки — у [ChatPoint].
      *
-     * ЧЕГО НЕ УМЕЕТ: DRY, план записей и живой отвод — только экрану;
-     * ожидающая стена здесь не встаёт (встанет на ходе экрана).
+     * DRY — как у разговора экрана: только на прогон, где его просит перехват
+     * хода (AnswerLadder), и с поданным текстом.
+     *
+     * ЧЕГО НЕ УМЕЕТ: план записей и живой отвод — только экрану; ожидающая
+     * стена здесь не встаёт (встанет на ходе экрана).
      */
     fun generateChatFlow(
         messages: List<Pair<String, String>>,
         maxTokens: Int,
         /** Ключ чата (и ветки) — чей снимок ленты в слоте и чей файл поднимать (ChatPoint). */
         chat: String,
-        /** Сообщений до границы снимка — все, кроме последнего сообщения собеседника (gate.ChatFeed). */
-        stableMessages: Int,
+        /**
+         * Сообщений до границы снимка — все, кроме последнего сообщения
+         * собеседника (gate.ChatFeed); null — не снимать (запрос с выкинутыми
+         * ходами, см. AnswerLadder.Ribbon.stableMessages).
+         */
+        stableMessages: Int?,
+        /** Текст, против копий которого включается DRY на этот прогон; null — выключен. */
+        dryAgainst: String? = null,
     ): Flow<GenerationEvent> {
         require(messages.firstOrNull()?.first != "system") { "ход чата не несёт своего системного первым: стену ставит движок" }
-        return guardedFlow(conversationMessages(messages), maxTokens, conversation = false, talk = true, stableMessages = stableMessages, chat = chat)
+        return guardedFlow(
+            conversationMessages(messages), maxTokens, conversation = false, talk = true,
+            dryAgainst = dryAgainst, stableMessages = stableMessages, chat = chat,
+        )
     }
 
     /**
@@ -2210,8 +2180,8 @@ class LlmEngine(
         talk: Boolean = conversation,
         /**
          * Текст, против копий которого включается DRY на этот прогон (прошлые
-         * ответы агента); null — DRY выключен. Только разговору. Числа и
-         * границы — у [DRY_PARAMS_JSON].
+         * ответы агента); null — DRY выключен. Только разговорной выдаче
+         * ([talk]): экрану и чату. Числа и границы — у [DRY_PARAMS_JSON].
          */
         dryAgainst: String? = null,
         /** Вспоминание хода для прибора «Записи:»; только разговору. См. [generateConversationFlow]. */
@@ -2250,7 +2220,7 @@ class LlmEngine(
         // [withDeterministicSampling]): разрешив это, ответ разговора посреди
         // прогона судьи сбросил бы ему повторяемую выдачу.
         if (talk) withContext(Dispatchers.IO) { applyChatSampling() }
-        val dry = conversation && dryAgainst != null
+        val dry = talk && dryAgainst != null
         if (dry) withContext(Dispatchers.IO) {
             engine.updateSamplerParams(DRY_PARAMS_JSON)
             engine.setDryHistory(dryAgainst!!)
@@ -3150,15 +3120,16 @@ class LlmEngine(
          * выигрыша нет. Записано подробно, чтобы через месяц никто не
          * прошёл этот круг заново.
          *
-         * DRY ВЫКЛЮЧЕН ЗДЕСЬ ЯВНО (dry_multiplier 0). Включает его только третья
-         * попытка хода ([DRY_PARAMS_JSON]); эта строка ставится перед каждым
+         * DRY ВЫКЛЮЧЕН ЗДЕСЬ ЯВНО (dry_multiplier 0). Включают его только
+         * перехват хода — зеркало во второй попытке и третья ступень
+         * ([DRY_PARAMS_JSON], AnswerLadder); эта строка ставится перед каждым
          * ответом разговора и после повторяемой выдачи, поэтому включённый DRY не
          * переживает своего прогона ни при каком исходе.
          */
         const val SAMPLER_PARAMS_JSON = "{\"repeat_penalty\":1.05,\"penaltyLastN\":64,\"dry_multiplier\":0.0}"
 
         /**
-         * Штраф DRY для третьей попытки хода (ConversationTurns): числа те, что
+         * Штраф DRY для перехвата хода (AnswerLadder): числа те, что
          * стенды мерили на этой модели (0,8 / 1,75 / 2; окно — весь контекст).
          *
          * ЧЕГО НЕ УМЕЕТ. Включённый на любой ответ, DRY портит слова: модель

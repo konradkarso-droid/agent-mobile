@@ -1,5 +1,6 @@
 package com.uroboros.gate
 
+import com.uroboros.llm.AnswerLadder
 import java.util.Locale
 
 /**
@@ -20,12 +21,39 @@ import java.util.Locale
 object ChatTurnMeter {
 
     /**
-     * Хвост строки «Ответ (…)»: когда ответил, за сколько, сколько знаков и
-     * глядел ли на приборы ([look]). Время — всех проходов хода, со взглядом
-     * их два-три.
+     * Хвост строки «Ответ (…)»: когда ответил, за сколько, сколько знаков; к нему
+     * — [ladder], что было на лестнице ответа ([ladderNote]). Время — всех
+     * проходов хода.
      */
-    fun answered(clock: String, tookMs: Long, chars: Int, look: ChatGlance.Look = ChatGlance.Look.NONE): String =
-        "ответил $clock за ${sec(tookMs)} с, $chars зн. · ${look.words}"
+    fun answered(clock: String, tookMs: Long, chars: Int, ladder: String? = null): String =
+        "ответил $clock за ${sec(tookMs)} с, $chars зн." + (ladder?.let { " · $it" } ?: "")
+
+    /**
+     * Что было на лестнице ответа (llm.AnswerLadder) словами: глядел ли на
+     * приборы, был ли перехват и что ушло. [sentFirst] — годного ответа не
+     * нашлось, и ушёл первый (в телеграме молчания из-за перехвата нет).
+     */
+    fun ladderNote(r: AnswerLadder.Result, sentFirst: Boolean): String = listOfNotNull(
+        when {
+            r.glanceRetried -> "глянул на приборы; после доски было пусто — проход повторён"
+            r.glanced -> "глянул на приборы"
+            else -> "не глядел на приборы"
+        },
+        r.intercept?.let { i ->
+            "перехват: " + causeWords(i.cause) + " → " + when {
+                sentFirst -> "годного нет, ушёл первый ответ"
+                i.third?.chosen != null -> "ушёл вариант из трёх"
+                i.replaced -> "ушла вторая попытка"
+                else -> "вторая не лучше, ушёл первый ответ"
+            }
+        },
+    ).joinToString(" · ")
+
+    private fun causeWords(c: AnswerLadder.Cause): String = when (c) {
+        is AnswerLadder.Cause.Repeat -> "повтор «${c.sentence}»"
+        is AnswerLadder.Cause.Mirror -> "зеркало «${c.sentence}»"
+        is AnswerLadder.Cause.Damage -> "порча «${c.words.joinToString(", ")}»"
+    }
 
     /**
      * Строка «Обсчёт (…)»: [promptTokens] новых токенов запроса за
