@@ -138,6 +138,14 @@ object BuildSelfDescription {
     /** Кнопка «Стоп» (EmergencyStop). */
     const val STOP_LINE = "Остановить меня можно кнопкой «Стоп»."
 
+    /**
+     * Право промолчать грубому и навязчивому (Silence): в чате строка не
+     * уходит, на экране её видит владелец. Строка — для всех собеседников, и
+     * для владельца тоже: так решил владелец.
+     */
+    const val SILENCE_LINE =
+        "Грубому или навязчивому собеседнику я вправе промолчать: тогда отвечаю одной строкой «${Silence.MARK}: причина»."
+
     /** Удаления нет среди разрешённых действий (ActionGate); сети и писем другим нет вовсе. */
     const val CANNOT_LINE = "Удалять записи, писать другим людям, ходить в интернет, менять свои правила я не умею."
 
@@ -193,6 +201,7 @@ object BuildSelfDescription {
         add(SAVED_LINE)
         add(SHORT_SLEEP_LINE)
         add(STOP_LINE)
+        add(SILENCE_LINE)
         if (telegram) {
             add(TELEGRAM_LINE)
             add(TELEGRAM_MEMORY_LINE)

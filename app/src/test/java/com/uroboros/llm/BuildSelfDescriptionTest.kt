@@ -141,6 +141,15 @@ class BuildSelfDescriptionTest {
     }
 
     @Test
+    fun `право промолчать — в стене всегда, с той меткой, что узнаёт код`() {
+        for (telegram in listOf(false, true)) {
+            val line = BuildSelfDescription.lines(1, telegram).single { it == BuildSelfDescription.SILENCE_LINE }
+            val example = line.substringAfter("«").substringBefore("»")
+            assertEquals("причина", Silence.reasonOf(example))
+        }
+    }
+
+    @Test
     fun `строка «имя появится позже» — буква в букву из стены человека`() {
         assertTrue(BibleSoftWall.TEXT.lines().any { it.trim() == BuildSelfDescription.NAME_LATER_LINE })
     }

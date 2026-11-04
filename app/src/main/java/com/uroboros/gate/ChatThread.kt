@@ -68,6 +68,14 @@ object ChatThread {
     /** Сколько читаемых строк перед окном смотрит голова. Объявленное число, не подобранное. */
     const val HEAD_READ = 200
 
+    /**
+     * Настойчивость — сколько сообщений мне за окно времени от того, кто
+     * пишет сейчас ([insistence]). Объявленные числа, не подобранные: строка
+     * появляется от [INSIST_MIN] сообщений за [INSIST_WINDOW_MS].
+     */
+    const val INSIST_MIN = 3
+    const val INSIST_WINDOW_MS = 10 * 60_000L
+
     /** Кто писал: первые [VOICES] имён по числу строк и сколько ещё имён осталось за ними. */
     data class Voices(val names: List<String>, val more: Int)
 
@@ -121,6 +129,20 @@ object ChatThread {
         if (general.isEmpty()) return null
         val words = words(general.map { it.text }, notTopics(general, agentNames), dictionary, TAIL_WORDS, laterFirst = true)
         return Tail(general.size, voices(general), words, sinceMine = lastMine >= 0)
+    }
+
+    /**
+     * Сколько сообщений мне написал автор последней строки [lines] за
+     * [INSIST_WINDOW_MS] до неё, считая её саму; null — меньше [INSIST_MIN].
+     * Это счёт, а не приговор: навязчив ли человек, решает модель (llm.Silence).
+     */
+    fun insistence(lines: List<ChatFeed.Line>): String? {
+        val current = lines.lastOrNull() ?: return null
+        if (current.isAgent || current.sender.isEmpty()) return null
+        val n = lines.count { !it.isAgent && it.modelReads && it.sender == current.sender && current.at - it.at in 0..INSIST_WINDOW_MS }
+        if (n < INSIST_MIN) return null
+        // Род по подписи не узнать, поэтому без глагола прошедшего времени.
+        return "От «${current.signature}» мне за ${INSIST_WINDOW_MS / 60_000} минут $n ${messages(n)}."
     }
 
     /** Голова словами модели, от первого лица. [clock] — время строки «ЧЧ:ММ». */

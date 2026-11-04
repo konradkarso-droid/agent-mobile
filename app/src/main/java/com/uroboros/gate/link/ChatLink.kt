@@ -20,6 +20,7 @@ import com.uroboros.llm.ChatDatabase
 import com.uroboros.llm.ChatLine
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.Glance
+import com.uroboros.llm.Silence
 import com.uroboros.memory.ActionProvenance
 import com.uroboros.memory.ActionRequest
 import com.uroboros.memory.ActionType
@@ -148,6 +149,9 @@ object ChatLink {
     private val evals = ConcurrentHashMap<String, String>()
     private val threads = ConcurrentHashMap<String, String>()
     private val points = ConcurrentHashMap<String, String>()
+
+    /** Ответов и строк молчания в каждом чате с запуска службы — для строки «Ответ». */
+    private val decisions = ConcurrentHashMap<String, IntArray>()
 
     /** Последняя запись снимка каждого чата перед чужой работой — по отчёту движка, узнаётся на ходе чата. */
     private val saves = ConcurrentHashMap<String, String>()
@@ -384,8 +388,34 @@ object ChatLink {
         generated.why?.let { return "не отвечаю — $it" }
         val text = generated.text ?: return "не отвечаю — ответа нет"
         tallies.computeIfPresent(job.tallyKey) { _, v -> v.first to v.second.read() }
+        val count = decisions.getOrPut(job.tallyKey) { IntArray(2) }
+        // Право промолчать (Silence): решила модель — в телеграм не уходит.
+        Silence.reasonOf(text)?.let { why ->
+            keepSilence(app, job, text.trimStart().lineSequence().first().trim(), why)
+            count[1]++
+            return "промолчал сам ${clock(System.currentTimeMillis())} — $why · промолчал ${count[1]} из ${count[0] + count[1]} за запуск службы"
+        }
         send(app, job, text, ActionProvenance.MODEL_OUTPUT)?.let { return "ответ не ушёл — $it" }
+        count[0]++
         return ChatTurnMeter.answered(clock(System.currentTimeMillis()), generated.tookMs ?: 0L, text.length)
+    }
+
+    /**
+     * Строка молчания — в ленту чата своей строкой с кольцом [Silence.RING],
+     * без отправки: на следующем ходе модель видит, что промолчала и почему
+     * (Silence). Ответам ботам подряд (ChatReply.answersSinceHuman) она
+     * считается ответом — в сторону молчания, где предел безопасен.
+     */
+    private suspend fun keepSilence(app: Context, job: Job, line: String, why: String) {
+        val meId = me?.id ?: return
+        ChatDatabase.getInstance(app).chatLineDao().insert(
+            ChatLine(
+                chat = job.chat, thread = job.thread, messageId = 0L,
+                sender = GateTelegram.userKey(meId).id, name = "агент", signature = "", isBot = true, isAgent = true,
+                text = line, ring = Silence.RING, reason = why, replyTo = job.sender.id,
+                at = System.currentTimeMillis(), place = job.place.name,
+            )
+        )
     }
 
     /** Итог генерации: текст или причина, и сколько шла генерация (null — до неё не дошло). */
@@ -403,6 +433,7 @@ object ChatLink {
         } == true,
         id = l.id,
         at = l.at,
+        sender = l.sender,
     )
 
     private suspend fun generate(app: Context, job: Job, upTo: List<ChatLine>): Generated {
@@ -440,7 +471,8 @@ object ChatLink {
         val promisedText = promised?.let { ChatPromises.chatText(it, ::day) }
         val watchdog = ProcessObjects.get(app).watchdog
         val body = BodyLine.of(watchdog.power.value, watchdog.zone.value)
-        val tailBlock = listOfNotNull(tail?.let(ChatThread::tailText), promisedText, body).joinToString("\n")
+        val insist = ChatThread.insistence(upTo.map(::feedLine))
+        val tailBlock = listOfNotNull(tail?.let(ChatThread::tailText), insist, promisedText, body).joinToString("\n")
         threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm) +
             " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body"
 

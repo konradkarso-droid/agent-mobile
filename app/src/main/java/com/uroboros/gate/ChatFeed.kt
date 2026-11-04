@@ -91,6 +91,8 @@ object ChatFeed {
         val modelReads: Boolean,
         val id: Long = 0,
         val at: Long = 0,
+        /** Ключ того, кто написал (ChatLine.sender); пусто — не из базы. */
+        val sender: String = "",
     )
 
     /** Цена строки в окне: буквы текста и подписи и два знака на «: » или перенос. Мера — в шапке, «ГДЕ ВСТАЁТ НАЧАЛО». */
