@@ -920,9 +920,15 @@ class LlmEngine(
         checkpointFresh = false
         borrowReport = null
         chatPoint = ChatPoint.otherStarted()
-        loadPrint = shortHash(
-            (engine.getModelInfoJson() ?: "") + "|" + sourceIdentity + "|" + loadIdentity
-        )
+        val modelInfo = engine.getModelInfoJson() ?: ""
+        loadPrint = shortHash(modelInfo + "|" + sourceIdentity + "|" + loadIdentity)
+        // Шаблон разговора — до стены и до первой генерации: свой там, где
+        // шаблон модели теряет поданное (ChatTemplates), шаблон модели прочим.
+        // Ставится или снимается на каждой загрузке: свой шаблон в движке
+        // переживает загрузку другой модели.
+        val architecture = runCatching { JSONObject(modelInfo).optString("architecture") }.getOrNull()
+        engine.setChatTemplate(ChatTemplates.forArchitecture(architecture).orEmpty())
+        templateSource = ChatTemplates.sourceWords(architecture)
         applyRecordChunkDir()
         // Размышления (`<think>…</think>` перед ответом у моделей с таким
         // режимом, например на основе Qwen3) выключены для всей работы с
@@ -2433,15 +2439,47 @@ class LlmEngine(
             watchdog.resetInferenceTimer()
             // Чей снимок теперь в слоте — по строке лога этого хода, если ход
             // дошёл до движка; не дошёл — в слоте прежний (ChatPoint.Outcome.NONE).
+            val reached = barrierPassedText.get() + barrierPassedOther.get() > 0
             if (chat != null) {
-                val reached = barrierPassedText.get() + barrierPassedOther.get() > 0
                 val outcome = if (!reached) ChatPoint.Outcome.NONE else withContext(NonCancellable + Dispatchers.IO) {
                     runCatching { EngineLines.ribbonOutcome(lastRequestLog()) }.getOrDefault(ChatPoint.Outcome.NONE)
                 }
                 chatPoint = ChatPoint.afterChat(chatPoint, chat, outcome)
             }
+            // Дошло ли до модели всё отданное (TemplateCheck). Только запрос,
+            // дошедший до движка: иначе «последний запрос» в движке — прежний,
+            // чужой.
+            if (reached) {
+                val prompt = withContext(NonCancellable + Dispatchers.IO) {
+                    runCatching { engine.lastConversationPrompt() }.getOrDefault("")
+                }
+                val sent = runCatching {
+                    val array = JSONArray(messagesJson)
+                    (0 until array.length()).map { i -> array.getJSONObject(i).let { it.optString("role") to it.optString("content") } }
+                }.getOrDefault(emptyList())
+                val whose = when {
+                    conversation -> "лента экрана"
+                    chat != null -> "чат"
+                    else -> "прочее"
+                }
+                templateTally = TemplateCheck.add(templateTally, clockOf(endedAtMs), whose, sent, prompt)
+            }
         }
     }
+
+    /** Сверка шаблона с подъёма процесса (TemplateCheck); пишет [guardedFlow], читает экран. */
+    @Volatile
+    private var templateTally = TemplateCheck.Tally()
+
+    /** Чей шаблон собирает запрос (ChatTemplates.sourceWords); null — модель ещё не загружалась. */
+    @Volatile
+    private var templateSource: String? = null
+
+    /** Строка «Шаблон: …» для «Подробно» — дошло ли до модели всё отданное. */
+    val templateLine: String get() = TemplateCheck.line(templateTally, templateSource)
+
+    private fun clockOf(ms: Long): String =
+        java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT).format(java.util.Date(ms))
 
     /**
      * Остановка генерации вызывающим.

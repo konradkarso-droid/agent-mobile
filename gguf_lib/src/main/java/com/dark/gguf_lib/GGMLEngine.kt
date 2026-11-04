@@ -566,7 +566,12 @@ class GGMLEngine {
     /** Set the system prompt prepended to every chat. */
     fun setSystemPrompt(prompt: String) = GGUFNativeLib.nativeSetSystemPrompt(prompt)
 
-    /** Override the model's chat template (advanced — usually not needed). */
+    /**
+     * Свой шаблон разговора вместо шаблона из файла модели; пустая строка —
+     * снова шаблон модели. Разбирается при первой генерации, не здесь, и
+     * переживает загрузку другой модели — см. `nativeSetChatTemplate` в
+     * `gguf_lib.cpp`.
+     */
     fun setChatTemplate(template: String) = GGUFNativeLib.nativeSetChatTemplate(template)
 
     /**
