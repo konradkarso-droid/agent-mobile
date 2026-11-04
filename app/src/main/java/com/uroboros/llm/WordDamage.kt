@@ -299,6 +299,9 @@ class WordDamage private constructor(private val codes: Packed) {
  */
 object WordDamageHolder {
 
+    /** Трафарет детектора в app/src/main/assets — одно имя для экрана и службы. */
+    const val ASSET = "word_stencil6.bin"
+
     sealed class State {
         object Loading : State()
         data class Failed(val reason: String) : State()

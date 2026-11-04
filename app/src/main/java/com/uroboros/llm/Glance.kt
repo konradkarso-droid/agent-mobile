@@ -99,9 +99,6 @@ object Glance {
         before.trimEnd().let { if (it.isEmpty()) "" else "$it\n" } +
             "$CALL_OPEN\n{\"name\": \"$TOOL_NAME\", \"arguments\": {}}\n</tool_call>"
 
-    /** Строка числа записей — одна на доски экрана (MainActivity.deskSummary) и чата (gate.ChatGlance). */
-    fun recordsLine(count: Int): String = "Память: записей $count"
-
     /** Первая строка доски: чья она. */
     const val DESK_HEADER = "Мои приборы сейчас:"
 

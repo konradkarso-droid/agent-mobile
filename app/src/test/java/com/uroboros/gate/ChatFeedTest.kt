@@ -160,4 +160,22 @@ class ChatFeedTest {
         assertTrue(ChatFeed.placeLine(true, null, "Иван").contains("«Иван» — мой владелец"))
         assertTrue(ChatFeed.placeLine(false, "Агенты", null).contains("«Агенты»"))
     }
+
+    @Test
+    fun `ходы окна — ответ агента и реплики перед ним, без подписей`() {
+        val w = ChatFeed.window(listOf(peer("Привет"), peer("Как ты?", sig = "Аня"), agent("Хорошо."), peer("А погода?"), agent("Солнце."), peer("Пинг?")), 0)
+        val h = ChatFeed.history(w)
+        assertEquals(listOf("Хорошо.", "Солнце."), h.map { it.agentContent })
+        assertEquals(listOf("Привет\nКак ты?", "А погода?"), h.map { it.question })
+        assertEquals("Пинг?", ChatFeed.question(w))
+    }
+
+    @Test
+    fun `окно без хода — уходят ответ и реплики перед ним, текущая остаётся`() {
+        val w = ChatFeed.window(listOf(peer("Привет"), agent("Хорошо."), peer("А погода?"), agent("Солнце."), peer("Пинг?")), 0)
+        assertEquals(listOf("А погода?", "Солнце.", "Пинг?"), ChatFeed.without(w, setOf(0)).lines.map { it.text })
+        assertEquals(listOf("Привет", "Хорошо.", "Пинг?"), ChatFeed.without(w, setOf(1)).lines.map { it.text })
+        assertEquals(listOf("Пинг?"), ChatFeed.without(w, setOf(0, 1)).lines.map { it.text })
+        assertEquals(w, ChatFeed.without(w, emptySet()))
+    }
 }

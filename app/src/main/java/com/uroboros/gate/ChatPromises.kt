@@ -135,6 +135,18 @@ object ChatPromises {
         return "Что я обещал в этом чате за ${Promises.DAYS} дн.: $shown." + if (rest > 0) " Ещё обещаний: $rest." else ""
     }
 
+    /**
+     * Обещания этого чата для доски приборов (llm.GlanceDesk): [promised] — что
+     * нашлось (null — не прочиталось). Пустота и сбой сказаны словами, и
+     * по-разному: «нет обещаний» и «не видны» для модели — разное.
+     */
+    fun deskLines(promised: List<Promises.Promise>?, day: (Long) -> String): List<String> = listOf(
+        when {
+            promised == null -> "Обещания этого чата мне сейчас не видны."
+            else -> chatText(promised, day) ?: "Обещаний в этом чате за ${Promises.DAYS} дн. не нашлось."
+        },
+    )
+
     /** Владелец в строке чата — роль перед именем (см. «АДРЕС» в шапке). */
     private const val OWNER_DAT = "владельцу"
     private const val OWNER_INS = "владельцем"

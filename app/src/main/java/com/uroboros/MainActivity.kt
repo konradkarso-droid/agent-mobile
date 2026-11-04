@@ -43,7 +43,9 @@ import com.uroboros.memory.nav.OwnCorrection
 import com.uroboros.llm.EchoCheck
 import com.uroboros.llm.BibleSoftWall
 import com.uroboros.llm.Glance
+import com.uroboros.llm.GlanceDesk
 import com.uroboros.llm.EngineLines
+import com.uroboros.llm.AnswerLadder
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.ConversationTimes
 import com.uroboros.llm.CONTEXT_SIZE
@@ -304,7 +306,7 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Строка перехвата повтора к последнему ходу этого экрана (см.
-     * ConversationTurns.Intercept): что поймано, без каких ходов шла вторая
+     * AnswerLadder.Intercept): что поймано, без каких ходов шла вторая
      * попытка, чем кончилась. Живёт, пока открыт экран; после пересоздания
      * экрана строка собирается по ленте беднее — см. [interceptMeter].
      */
@@ -3252,16 +3254,19 @@ class MainActivity : AppCompatActivity() {
         val records = runCatching {
             withContext(Dispatchers.IO) { MemoryDatabase.getInstance(applicationContext).stickerDao().count() }
         }.getOrNull()
-        return listOfNotNull(
-            BodyLine.of(watchdog.power.value, watchdog.zone.value),
-            journalLine(),
-            "Модель: ${processObjects.loadedModelName ?: "?"}, контекст $CONTEXT_SIZE",
-            records?.let(Glance::recordsLine),
-            lastSpeed?.let { "Последний ход: выдача $it ток/с" },
-        ).plus(
-            // Обещания — строками доски (Desk.forAgent); сбой сборки сказан словами.
-            runCatching { deskView.forAgent() }.getOrElse { listOf("Обещания мне сейчас не видны: доска не собралась.") },
-        ).joinToString("\n")
+        // Доска одна с телеграмом (GlanceDesk); здесь — место владельца.
+        return GlanceDesk.of(
+            GlanceDesk.Readings(
+                body = BodyLine.of(watchdog.power.value, watchdog.zone.value),
+                ribbon = journalLine(),
+                model = "Модель: ${processObjects.loadedModelName ?: "?"}, контекст $CONTEXT_SIZE",
+                records = records,
+                speed = lastSpeed,
+                // Обещания — строками доски (Desk.forAgent); сбой сборки сказан словами.
+                promises = runCatching { deskView.forAgent() }.getOrElse { listOf("Обещания мне сейчас не видны: доска не собралась.") },
+            ),
+            GlanceDesk.Trust.OWNER,
+        )
     }
 
     /** Скорость выдачи прошлого хода для доски агента ([deskSummary]); null — не было. */
@@ -3306,7 +3311,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Строка перехвата по исходу хода; null у [intercept] — перехвата не было. */
     private fun interceptLineOf(
-        intercept: ConversationTurns.Intercept?,
+        intercept: AnswerLadder.Intercept?,
         rejected: String?,
         hidden: ConversationJournal.Hidden? = null,
     ): String {
@@ -3314,15 +3319,15 @@ class MainActivity : AppCompatActivity() {
         val tokens = intercept.secondTokens?.let { "$it ток." } ?: "токенов движок не назвал"
         val cause = when (val c = intercept.cause) {
             // Номера ходов — как на экране, с единицы.
-            is ConversationTurns.Cause.Repeat ->
+            is AnswerLadder.Cause.Repeat ->
                 "повтор «${c.sentence}» → вторая попытка без ходов " +
                     c.without.sorted().joinToString(", ") { (it + 1).toString() }
-            is ConversationTurns.Cause.Damage ->
+            is AnswerLadder.Cause.Damage ->
                 "порча слов «${c.words.joinToString(", ")}» → повторная выборка"
-            is ConversationTurns.Cause.Mirror ->
+            is AnswerLadder.Cause.Mirror ->
                 "зеркало «${c.sentence}» → вторая попытка, DRY против реплики"
         }
-        // Что тогда значат время и токены — у ConversationTurns.Intercept.secondGlanced.
+        // Что тогда значат время и токены — у AnswerLadder.Intercept.secondGlanced.
         val look = if (intercept.secondGlanced) " · вторая глянула на приборы" else ""
         val head = "Перехват: $cause$look · ${"%.1f".format(intercept.secondMs / 1000.0)} с, $tokens"
         val secondFaults = buildList {
@@ -4342,7 +4347,7 @@ class MainActivity : AppCompatActivity() {
         // главном потоке. Пока не загружен или не загрузился, перехват ловит
         // только повтор; строка детектора в «Подробно» говорит, какой случай.
         lifecycleScope.launch(Dispatchers.IO) {
-            WordDamageHolder.load { assets.open(WORD_STENCIL_ASSET) }
+            WordDamageHolder.load { assets.open(WordDamageHolder.ASSET) }
             withContext(Dispatchers.Main) { renderMetricsPanel() }
         }
 
@@ -5647,9 +5652,9 @@ class MainActivity : AppCompatActivity() {
                         firstTokenShown = false
                         showProgress(
                             when (cause) {
-                                is ConversationTurns.Cause.Repeat -> "Повтор — вторая попытка"
-                                is ConversationTurns.Cause.Damage -> "Испорчено слово — повторная выборка"
-                                is ConversationTurns.Cause.Mirror -> "Повторил ваши слова — вторая попытка"
+                                is AnswerLadder.Cause.Repeat -> "Повтор — вторая попытка"
+                                is AnswerLadder.Cause.Damage -> "Испорчено слово — повторная выборка"
+                                is AnswerLadder.Cause.Mirror -> "Повторил ваши слова — вторая попытка"
                             }
                         )
                         autoScrollIfAtBottom()
@@ -6114,8 +6119,6 @@ class MainActivity : AppCompatActivity() {
 
         /** Словарь начальных форм (nav.LemmaDictionary) в app/src/main/assets. */
 
-        /** Трафарет детектора порчи слов (llm.WordDamage) в app/src/main/assets. */
-        private const val WORD_STENCIL_ASSET = "word_stencil6.bin"
         /** Подписи двух частей в «Показать реплику целиком», когда записи были. */
         private const val COMPOSED_RECALL_HEAD = "[Агент вспоминает — отдельным сообщением]"
         private const val COMPOSED_USER_HEAD = "[Реплика пользователя]"
