@@ -23,6 +23,10 @@ import java.util.Locale
  *    сумеет: чаще всего сигналом 9 или «остановлен вручную», с пояснением
  *    прошивки или без; различить «смахнул владелец» и «убила прошивка» по
  *    такой записи можно не всегда, поэтому пояснение печатается как есть;
+ *  - установку новой сборки Android до 14 записывает как «остановлен вручную»
+ *    с пояснением «… installPackageLI»; по этому пояснению она и узнаётся
+ *    ([kindOf]) — другого признака в записи нет, и поменяй система текст,
+ *    установка снова станет «вручную»;
  *  - на Android 10 записей нет вовсе, и строка так и говорит.
  *
  * Чистый объект.
@@ -73,6 +77,16 @@ object ComaCause {
     /** Сколько знаков пояснения печатать. Объявленное число, не подобранное. */
     const val DESCRIPTION_CHARS = 60
 
+    /** Сколько ком перед прошлой показывать списком. Объявленное число, не подобранное. */
+    const val EARLIER_SHOWN = 4
+
+    /** Пояснение, которым Android до 14 подписывает остановку ради установки сборки. */
+    private const val INSTALL_MARK = "installPackage"
+
+    /** Причина записи с поправкой на установку сборки (шапка, «ЧЕГО НЕ УМЕЕТ»). */
+    fun kindOf(e: Exit): Kind =
+        if (e.kind == Kind.USER_REQUESTED && e.description?.contains(INSTALL_MARK) == true) Kind.PACKAGE_UPDATED else e.kind
+
     /** Причина словами — для строки прошлой комы. */
     fun word(kind: Kind, status: Int): String = when (kind) {
         Kind.EXIT_SELF -> "вышел сам (код $status)"
@@ -121,18 +135,23 @@ object ComaCause {
             else {
                 val last = list.first()
                 val head = buildString {
-                    append("Прошлая кома ").append(moment(last.atMs)).append(" — ").append(word(last.kind, last.status))
+                    append("Прошлая кома ").append(moment(last.atMs)).append(" — ").append(word(kindOf(last), last.status))
                     if (last.rssKb > 0) append(", занимал ").append(size(last.rssKb))
                     last.description?.trim()?.takeIf { it.isNotEmpty() }?.let { d ->
                         val shown = if (d.length <= DESCRIPTION_CHARS) d else d.take(DESCRIPTION_CHARS).trimEnd() + "…"
                         append(" («").append(shown).append("»)")
                     }
                 }
+                // Время и память ком перед прошлой: по ним видно, умирает агент в разговоре или в простое.
+                val earlier = list.drop(1).take(EARLIER_SHOWN).joinToString("") { e ->
+                    "\n· " + moment(e.atMs) + " " + short(kindOf(e), e.status) + (if (e.rssKb > 0) ", " + size(e.rssKb) else "")
+                }
                 // При равном счёте — что случилось позже: порядок вставки (новые первыми) сохраняется сортировкой.
                 val counts = LinkedHashMap<String, Int>()
-                for (e in list) short(e.kind, e.status).let { counts[it] = (counts[it] ?: 0) + 1 }
+                for (e in list) short(kindOf(e), e.status).let { counts[it] = (counts[it] ?: 0) + 1 }
                 val tally = counts.entries.sortedByDescending { it.value }.joinToString(", ") { "${it.key} ${it.value}" }
-                "$head\nИз последних ${list.size}: $tally"
+                val before = if (earlier.isEmpty()) "" else "\nКомы до неё:$earlier"
+                "$head$before\nИз последних ${list.size}: $tally"
             }
         }
     }

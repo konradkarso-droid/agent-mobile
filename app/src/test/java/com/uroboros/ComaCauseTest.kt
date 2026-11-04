@@ -49,13 +49,13 @@ class ComaCauseTest {
             ),
             moment,
         )
-        assertEquals("Из последних 5: память 3, вручную 1, сигнал 9 1", text.lines()[1])
+        assertEquals("Из последних 5: память 3, вручную 1, сигнал 9 1", text.lines().last())
     }
 
     @Test
     fun `при равном счёте выше та причина, что случилась позже`() {
         val text = ComaCause.lines(Reading.Exits(listOf(exit(2, Kind.CRASH_NATIVE), exit(1, Kind.LOW_MEMORY))), moment)
-        assertEquals("Из последних 2: сбой движка 1, память 1", text.lines()[1])
+        assertEquals("Из последних 2: сбой движка 1, память 1", text.lines().last())
     }
 
     @Test
@@ -106,5 +106,36 @@ class ComaCauseTest {
             assertTrue(k.name, ComaCause.word(k, 0).isNotBlank())
             assertTrue(k.name, ComaCause.short(k, 0).isNotBlank())
         }
+    }
+
+    @Test
+    fun `комы перед прошлой — списком со временем, причиной и памятью, не больше предела`() {
+        val list = (10 downTo 1).map { exit(it.toLong(), Kind.LOW_MEMORY, rssKb = 4_300_000) }
+        val lines = ComaCause.lines(Reading.Exits(list), moment).lines()
+        assertEquals("Комы до неё:", lines[1])
+        assertEquals("· t9 память, 4.1 ГБ", lines[2])
+        assertEquals(ComaCause.EARLIER_SHOWN, lines.count { it.startsWith("· ") })
+        assertEquals("Из последних 10: память 10", lines.last())
+    }
+
+    @Test
+    fun `установка сборки по пояснению Android — не «вручную»`() {
+        val install = exit(2, Kind.USER_REQUESTED, description = "stop com.uroboros due to installPackageLI", rssKb = 150_000)
+        val text = ComaCause.lines(Reading.Exits(listOf(install, exit(1, Kind.USER_REQUESTED))), moment)
+        assertTrue(text, text.lines().first().startsWith("Прошлая кома t2 — поставилась новая сборка, занимал 146 МБ"))
+        assertEquals("Из последних 2: новая сборка 1, вручную 1", text.lines().last())
+    }
+
+    @Test
+    fun `одна кома — без списка «до неё»`() {
+        val text = ComaCause.lines(Reading.Exits(listOf(exit(1, Kind.LOW_MEMORY))), moment)
+        assertFalse(text, text.contains("Комы до неё"))
+        assertEquals(2, text.lines().size)
+    }
+
+    @Test
+    fun `«вручную» без пояснения об установке остаётся «вручную»`() {
+        assertEquals(Kind.USER_REQUESTED, ComaCause.kindOf(exit(1, Kind.USER_REQUESTED, description = "remove task")))
+        assertEquals(Kind.LOW_MEMORY, ComaCause.kindOf(exit(1, Kind.LOW_MEMORY, description = "installPackageLI")))
     }
 }
