@@ -150,6 +150,12 @@ class BuildSelfDescriptionTest {
     }
 
     @Test
+    fun `в строке о праве промолчать нет слов о строках — их модель брала в обычные ответы`() {
+        assertFalse("строк" in BuildSelfDescription.SILENCE_LINE.lowercase())
+        assertTrue("весь мой ответ" in BuildSelfDescription.SILENCE_LINE)
+    }
+
+    @Test
     fun `строка «имя появится позже» — буква в букву из стены человека`() {
         assertTrue(BibleSoftWall.TEXT.lines().any { it.trim() == BuildSelfDescription.NAME_LATER_LINE })
     }
