@@ -4598,16 +4598,20 @@ class MainActivity : AppCompatActivity() {
             binding.buttonSave.isEnabled = false
             binding.textResults.text = "Выгружаю базы (чекпоинт + копирование)..."
             lifecycleScope.launch {
-                // Отчёт по каждой базе отдельно: одна выгруженная база и все
-                // выгруженные базы обязаны выглядеть по-разному, иначе пропуск
-                // неотличим от успеха. Текст собирает DatabaseExporter.describe.
-                val outcomes = DatabaseExporter.exportAllToDownloads(applicationContext)
                 // Последний запрос разговора — отдельным файлом рядом с базами:
-                // это не база, и в счёт «Выгружено баз» он не входит.
+                // это не база, и в счёт «Выгружено баз» он не входит. Пишется
+                // ПЕРВЫМ: он живёт только в памяти процесса, а копирование баз
+                // идёт долго, и если процесс за это время убьют (на телефоне
+                // на грани памяти это бывает), базы на диске уцелеют, а запрос
+                // пропадёт насовсем.
                 val prompt = DatabaseExporter.exportTextToDownloads(
                     applicationContext, "последний запрос", "posledniy_zapros",
                     llmEngine.lastConversationPrompt,
                 )
+                // Отчёт по каждой базе отдельно: одна выгруженная база и все
+                // выгруженные базы обязаны выглядеть по-разному, иначе пропуск
+                // неотличим от успеха. Текст собирает DatabaseExporter.describe.
+                val outcomes = DatabaseExporter.exportAllToDownloads(applicationContext)
                 binding.buttonSave.isEnabled = true
                 binding.textResults.text = DatabaseExporter.describe(outcomes) + "\n" +
                     (if (prompt.ok) "${prompt.label}: ${prompt.exportedName}" else "${prompt.label}: ${prompt.failure}")
