@@ -164,4 +164,13 @@ interface JournalArchiveDao {
      */
     @Query("SELECT * FROM journal_archive_turns ORDER BY archiveIndex, turnIndex")
     fun all(): List<JournalArchiveTurn>
+
+    /**
+     * Ходы разговоров, закрытых не раньше [since], по порядку. Ход сказан не
+     * позже закрытия своего разговора, поэтому ходы младше [since] здесь все;
+     * старше — тоже бывают, их отсеивает вызывающий по времени хода. Для доски
+     * обещаний (memory.desk.Promises): ей нужен срок, а не весь архив.
+     */
+    @Query("SELECT * FROM journal_archive_turns WHERE archivedAt >= :since ORDER BY archiveIndex, turnIndex")
+    fun since(since: Long): List<JournalArchiveTurn>
 }

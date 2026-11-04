@@ -738,7 +738,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Доска агента, см. Desk. Только чтение. */
-    private val deskView by lazy { DeskView(applicationContext) }
+    private val deskView by lazy { DeskView(applicationContext) { since -> deskTurns(since) } }
+
+    /**
+     * Ходы для обещаний на доске (memory.desk.Promises): архив, закрытый не
+     * раньше [since], и открытая лента. Время старого хода — как у своей речи
+     * (Coordinates.turnTime): не позже закрытия разговора. Архив не
+     * прочитался — null, доска говорит об этом словами.
+     */
+    private suspend fun deskTurns(since: Long): List<OwnSpeech.Turn>? {
+        val archive = journalStore.readArchiveSince(since) ?: return null
+        return archive.map { row ->
+            OwnSpeech.Turn(
+                answer = row.agentContent,
+                question = row.question,
+                records = journalStore.recordTexts(row),
+                at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+                serviceBlocks = journalStore.serviceBlocks(row),
+            )
+        } + journal.history().map { turn ->
+            OwnSpeech.Turn(
+                answer = turn.agentContent,
+                question = turn.question,
+                records = turn.records.map { it.text },
+                at = turn.at,
+                serviceBlocks = EchoCheck.serviceBlocks(turn),
+            )
+        }
+    }
 
     /**
      * Строка «Доска:», прочитанная из базы при последнем показе; null — ещё не
@@ -3214,6 +3241,9 @@ class MainActivity : AppCompatActivity() {
             "Модель: ${processObjects.loadedModelName ?: "?"}, контекст $CONTEXT_SIZE",
             records?.let { "Память: записей $it" },
             lastSpeed?.let { "Последний ход: выдача $it ток/с" },
+        ).plus(
+            // Обещания — строками доски (Desk.forAgent); сбой сборки сказан словами.
+            runCatching { deskView.forAgent() }.getOrElse { listOf("Обещания мне сейчас не видны: доска не собралась.") },
         ).joinToString("\n")
     }
 
