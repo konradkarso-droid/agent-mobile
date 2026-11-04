@@ -76,6 +76,33 @@ interface ChatLineDao {
     )
     suspend fun recent(chat: String, thread: Long?, limit: Int): List<ChatLine>
 
+    /**
+     * Последние [limit] читаемых строк чата и ветки перед строкой [beforeId]
+     * (её не включая), новые первыми. Читаемые — свои ответы и строки колец
+     * [rings] (то, что кольцо отдаёт модели, gate.ChatFeed).
+     */
+    @Query(
+        "SELECT * FROM chat_lines WHERE chat = :chat " +
+            "AND ((:thread IS NULL AND thread IS NULL) OR thread = :thread) " +
+            "AND id < :beforeId AND (isAgent = 1 OR ring IN (:rings)) " +
+            "ORDER BY id DESC LIMIT :limit"
+    )
+    suspend fun readBefore(chat: String, thread: Long?, beforeId: Long, rings: List<String>, limit: Int): List<ChatLine>
+
+    /**
+     * Сумма цен читаемых строк чата и ветки перед строкой [beforeId] — смещение
+     * этой строки от начала чата для сетки окна. Мера — та же, что
+     * gate.ChatFeed.cost: `LENGTH` в SQLite считает буквы (кодовые точки), и
+     * два знака на строку. Почему меры обязаны совпадать — у ChatFeed, «ГДЕ
+     * ВСТАЁТ НАЧАЛО».
+     */
+    @Query(
+        "SELECT COALESCE(SUM(LENGTH(text) + LENGTH(signature) + 2), 0) FROM chat_lines WHERE chat = :chat " +
+            "AND ((:thread IS NULL AND thread IS NULL) OR thread = :thread) " +
+            "AND id < :beforeId AND (isAgent = 1 OR ring IN (:rings))"
+    )
+    suspend fun readCostBefore(chat: String, thread: Long?, beforeId: Long, rings: List<String>): Long
+
     /** Сколько строк чата и ветки легло после строки [afterId] (своих не считая). */
     @Query(
         "SELECT COUNT(*) FROM chat_lines WHERE chat = :chat " +
