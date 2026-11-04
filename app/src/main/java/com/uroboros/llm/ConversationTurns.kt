@@ -317,8 +317,8 @@ class ConversationTurns(
      * @param selfNote строка состояния агента — отдельным сообщением перед
      *   репликой (голос и место — у [ConversationJournal.messagesFor]); null —
      *   перемен нет.
-     *   Ушла ли она, видно по [ConversationJournal.Turn.selfNote] закрытого хода:
-     *   на пустой ленте она не уходит. Сторож места ([gate]) её не считает:
+     *   Ушла ли она, видно по [ConversationJournal.Turn.selfNote] закрытого хода.
+     *   Сторож места ([gate]) её не считает:
      *   это десятки токенов против запаса на ответ.
      * @param recordMarks пометки «кто → о ком» к строкам [records] (для экрана).
      * @param dreamNote описание последней ночи — сразу за строкой о себе, по

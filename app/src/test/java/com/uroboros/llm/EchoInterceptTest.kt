@@ -168,6 +168,10 @@ class EchoInterceptTest {
     @Test
     fun `выкинуты все ходы — запрос как на пустой ленте`() {
         val journal = journalOf(turn("а", "ответ а", selfNote = "о себе"))
-        assertEquals(listOf("user" to "б"), journal.messagesFor("б", currentSelfNote = "сейчас", without = setOf(0)))
+        assertEquals(
+            listOf("assistant" to "сейчас", "user" to "б"),
+            journal.messagesFor("б", currentSelfNote = "сейчас", without = setOf(0)),
+        )
+        assertEquals(ConversationJournal().messagesFor("б", currentSelfNote = "сейчас"), journal.messagesFor("б", currentSelfNote = "сейчас", without = setOf(0)))
     }
 }

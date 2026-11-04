@@ -479,12 +479,14 @@ class ConversationJournal {
      * стены перед разбором ленты), а LlmEngine.generateConversationFlow по
      * первому системному сообщению узнаёт чужую работу (судью) и не считает
      * запрос разговором. Системное сообщение первым оставило бы модель без
-     * стены. Поэтому строки первого хода ленты на следующих ходах не ставятся,
-     * а на пустой ленте не уходят и на своём ходе: сказанное на ходе и
-     * хранимое в ленте разошлись бы, и показ состояния отметился бы на строке,
-     * которой лента не держит. [appendTurn] у первого хода их и не сохраняет.
-     * Вызывающий узнаёт, ушла ли строка, по [Turn.selfNote] и [Turn.dreamNote]
-     * закрытого хода.
+     * стены. Поэтому строки первого хода ленты на следующих ходах не ставятся
+     * вовсе: системным им первыми не встать, а голос агента в прошлом ходе
+     * стал бы образцом его речи (см. выше). На своём ходе они уходят и на
+     * пустой ленте — сообщение агента первым стоять может — и ложатся в ход,
+     * как у любого хода: по ним показ состояния отмечается, а ночь считается
+     * рассказанной. Цена: о строках первого хода модель дальше знает только
+     * по своему ответу на нём. Вызывающий узнаёт, ушла ли строка, по
+     * [Turn.selfNote] и [Turn.dreamNote] закрытого хода.
      *
      * ЗАПИСИ ПАМЯТИ — ТОЛЬКО ТЕКУЩЕГО ХОДА ([currentRecall]), сообщением
      * агента сразу перед репликой, за строками о себе и о ночи. Первым оно
@@ -542,7 +544,7 @@ class ConversationJournal {
     ): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>(turns.size * 5 + 4)
         out += pastMessages(without)
-        if (out.isNotEmpty()) ownNotes(currentSelfNote, currentDreamNote)?.let { out += ROLE_ASSISTANT to it }
+        ownNotes(currentSelfNote, currentDreamNote)?.let { out += ROLE_ASSISTANT to it }
         if (!currentRecall.isNullOrBlank()) out += ROLE_ASSISTANT to currentRecall
         out += ROLE_USER to currentUserContent
         return out
@@ -641,16 +643,16 @@ class ConversationJournal {
         rejected: String? = null,
     ) {
         val index = turns.size
-        // Строка о себе на первом ходе модели не уходила (см. [messagesFor]) —
-        // и в ход не ложится: ход хранит то, что ушло.
-        val note = selfNote?.takeIf { index > 0 && it.isNotBlank() }
+        // Ход хранит то, что ушло: на своём ходе строки уходят всегда, и на
+        // первом тоже (см. [messagesFor]).
+        val note = selfNote?.takeIf { it.isNotBlank() }
         // Новизну считает журнал, а не вызывающий. Вызывающему для счёта
         // нужен тот же ответ ([unseenRecords]), и если считать его дважды в
         // двух местах, экран однажды разойдётся с засчитанным.
         // Здесь отображение ещё хранит состояние ДО этого хода, поэтому
         // отсутствие ключа и означает «новая».
         val uses = records.map { RecordUse(it, placedRecords[it] ?: index, marks[it]) }
-        val dream = dreamNote?.takeIf { index > 0 && it.isNotBlank() }
+        val dream = dreamNote?.takeIf { it.isNotBlank() }
         turns += Turn(
             userContent, agentContent, question, uses, note, at, dream,
             recall?.takeIf { it.isNotBlank() }, rejected?.takeIf { it.isNotBlank() },

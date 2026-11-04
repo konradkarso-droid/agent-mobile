@@ -20,10 +20,6 @@ import com.uroboros.memory.dream.DreamTopic
  * Мысль этой ночи, если есть, входит в описание (DreamTopic.line) и
  * отмечается рассказанной, когда строка ушла в движок, — как в ответе на
  * реплику.
- *
- * ЧЕГО НЕ УМЕЕТ: на пустой ленте молчит — описание на пустой ленте не уходит
- * (DreamTopic.refusal, почему — у ConversationJournal.messagesFor), ждёт хода
- * владельца.
  */
 class NightSource(context: Context, private val turns: ConversationTurns) : InitiativeSource {
 
@@ -48,7 +44,6 @@ class NightSource(context: Context, private val turns: ConversationTurns) : Init
             lastNightUntold = lastTold == null || night.nightAt > lastTold,
             untold = DreamTopic.untoldNights(withTopics, lastTold),
             reply = "",
-            ribbonEmpty = ribbon.isEmpty(),
         )?.let { return InitiativeSource.Offer.Silent("ночь — $it") }
         return InitiativeSource.Offer.Say(
             line = InitiativeDecision.SILENCE_WORDS + " " + DreamTopic.FIRST_LINE,
