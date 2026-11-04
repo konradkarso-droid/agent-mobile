@@ -1,7 +1,11 @@
 package com.uroboros
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.Context
+import android.os.Build
 import android.os.PowerManager
+import androidx.annotation.RequiresApi
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -18,12 +22,12 @@ import java.util.Locale
  * с тем, что считает.
  *
  * ПОДЪЁМ — ЭТО СОЗДАНИЕ СЛУЖБЫ. Первый подъём после установки — рождение, все
- * последующие — выход из комы, какой бы ни была её причина: причины отсюда не
- * видно, видно только, что жизнь прерывалась.
+ * последующие — выход из комы, какой бы ни была её причина: счёт видит только,
+ * что жизнь прерывалась. Когда и отчего — записи Android ([comas], ComaCause).
  *
  * ЧЕГО НЕ УМЕЕТ:
- *  - не знает, сколько длилась кома: видно, когда агент поднялся, но не когда
- *    упал — упавший записать этого не успевает;
+ *  - сам не знает, когда агент упал — упавший записать этого не успевает; это
+ *    знает только Android, если сохранил ([comas]);
  *  - «Автозапуск» и ограничения батареи прошивки MIUI у системы не спросить;
  *    строка показывает только оптимизацию батареи самого Android, а настройки
  *    MIUI проверяются руками;
@@ -98,6 +102,64 @@ object AgentLife {
                 }
             )
         }
+
+    /**
+     * Прошлые комы по записям Android ([ComaCause]). Читается один раз за жизнь
+     * процесса: концы, случившиеся до его подъёма, за его жизнь не меняются, а
+     * своего конца процесс не увидит. Только главный процесс приложения.
+     */
+    fun comas(context: Context): ComaCause.Reading {
+        comas?.let { return it }
+        val read = readComas(context)
+        // Сбой запомнить нельзя: следующий показ экрана спросит снова.
+        if (read !is ComaCause.Reading.Failed) comas = read
+        return read
+    }
+
+    @Volatile
+    private var comas: ComaCause.Reading? = null
+
+    /** Строки прошлых ком для экрана — со временем в той же записи, что «Жив с». */
+    fun comaLines(context: Context): String = ComaCause.lines(comas(context), ::moment)
+
+    private fun readComas(context: Context): ComaCause.Reading =
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) ComaCause.Reading.TooOld else exitsOf(context)
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun exitsOf(context: Context): ComaCause.Reading {
+        return try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val name = context.packageName
+            val list = am.getHistoricalProcessExitReasons(name, 0, 0)
+                .filter { it.processName == name }
+                .sortedByDescending { it.timestamp }
+                .map { ComaCause.Exit(it.timestamp, kindOf(it.reason), it.status, it.description, it.rss) }
+            ComaCause.Reading.Exits(list)
+        } catch (t: Throwable) {
+            ComaCause.Reading.Failed(t.javaClass.simpleName)
+        }
+    }
+
+    /** Соответствие причин Android словам [ComaCause] — по именам, а не по числам. */
+    private fun kindOf(reason: Int): ComaCause.Kind = when (reason) {
+        ApplicationExitInfo.REASON_EXIT_SELF -> ComaCause.Kind.EXIT_SELF
+        ApplicationExitInfo.REASON_SIGNALED -> ComaCause.Kind.SIGNALED
+        ApplicationExitInfo.REASON_LOW_MEMORY -> ComaCause.Kind.LOW_MEMORY
+        ApplicationExitInfo.REASON_CRASH -> ComaCause.Kind.CRASH
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> ComaCause.Kind.CRASH_NATIVE
+        ApplicationExitInfo.REASON_ANR -> ComaCause.Kind.ANR
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> ComaCause.Kind.INITIALIZATION_FAILURE
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> ComaCause.Kind.PERMISSION_CHANGE
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> ComaCause.Kind.EXCESSIVE_RESOURCE_USAGE
+        ApplicationExitInfo.REASON_USER_REQUESTED -> ComaCause.Kind.USER_REQUESTED
+        ApplicationExitInfo.REASON_USER_STOPPED -> ComaCause.Kind.USER_STOPPED
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> ComaCause.Kind.DEPENDENCY_DIED
+        ApplicationExitInfo.REASON_FREEZER -> ComaCause.Kind.FREEZER
+        ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> ComaCause.Kind.PACKAGE_STATE_CHANGE
+        ApplicationExitInfo.REASON_PACKAGE_UPDATED -> ComaCause.Kind.PACKAGE_UPDATED
+        ApplicationExitInfo.REASON_OTHER -> ComaCause.Kind.OTHER
+        else -> ComaCause.Kind.UNKNOWN
+    }
 
     private fun moment(millis: Long): String =
         SimpleDateFormat("dd.MM HH:mm", Locale.US).format(Date(millis))

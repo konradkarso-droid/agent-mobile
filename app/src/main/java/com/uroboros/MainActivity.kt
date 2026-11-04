@@ -2999,7 +2999,10 @@ class MainActivity : AppCompatActivity() {
                 record = AgentLife.read(applicationContext),
                 batteryOptimized = AgentLife.batteryOptimized(applicationContext),
                 failure = bodyFailure,
-            )
+            ) + "\n" +
+            // Отчего прерывалась — рядом со счётом подъёмов: счёт без причины
+            // не говорит, что чинить (ComaCause).
+            AgentLife.comaLines(applicationContext)
         binding.textHardware.text = hardware
 
         // Внутрь шторки — всё, что нужно при разборе. Строка железа выше сюда
