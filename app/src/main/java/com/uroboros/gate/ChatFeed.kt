@@ -11,7 +11,8 @@ import com.uroboros.memory.nav.Prochnost
  * на стену и ленту чата. Записи с экрана — разговоры владельца; поданные
  * здесь, они ушли бы пересказом к другому человеку (агент принимает «можно
  * делиться» на свой счёт), а угонщик телеграма владельца вытянул бы память
- * вопросами. Граница — здесь: сюда не приходит ничего, кроме строк ленты чата.
+ * вопросами. Граница — здесь: сюда не приходит ничего, кроме строк ленты чата
+ * и того, что код собрал из них же (нить, [ChatThread]).
  *
  * ГОЛОСА — правило подачи моста агента: агент — ассистент; все остальные, и
  * владелец в телеграме тоже, — собеседник с подписью «Имя:». Подряд идущие
@@ -19,19 +20,47 @@ import com.uroboros.memory.nav.Prochnost
  * с первого знака (пробел перед ней сдвигает границу реплики на токен).
  *
  * ЧТО ЧИТАЕТ МОДЕЛЬ — только строки, которые кольцо отдаёт модели
- * (AddressSorter.modelReads), и свои ответы агента; общее группы — нет.
+ * (AddressSorter.modelReads), и свои ответы агента. Общее группы до модели
+ * доходит только выжимкой нити.
  *
- * ОКНО — с конца ленты, пока влезает в [budgetChars]; текущая строка — всегда.
+ * ОКНО — СКАЧКАМИ, А НЕ ПО СТРОКЕ ([window]). Начало окна стоит на месте, пока
+ * лента от него до текущей строки влезает в [BUDGET_CHARS], а когда перестаёт
+ * влезать — переезжает разом на [STEP_CHARS] вперёд. Зачем: движок берёт
+ * обсчитанное начало запроса готовым, только если оно совпало токен в токен,
+ * а модель с Mamba-слоями — только начало, снятое снимком (`gguf_lib.cpp`,
+ * «СНИМОК ЛЕНТЫ»). Окно, режущееся с конца по строке, меняет начало запроса с
+ * каждой новой репликой, как только лента длиннее окна, и совпадения не
+ * бывает никогда.
+ *
+ * ГДЕ ВСТАЁТ НАЧАЛО — на сетке шагом [STEP_CHARS] по смещению строки от начала
+ * чата: сумме [cost] всех читаемых строк перед ней. Не от того, сколько строк
+ * сейчас прочитано из базы, поэтому начало одно и то же при любом числе
+ * прочитанных строк и после перезапуска, и хранить его не нужно. Смещение до
+ * первой прочитанной строки считает база (ChatLineDao.readCostBefore) той же
+ * мерой, что [cost]: буквы как кодовые точки — так считает `LENGTH` в SQLite, —
+ * а не единицы UTF-16, как `String.length` (эмодзи — две). Разойдись меры —
+ * сетка сдвигалась бы всякий раз, когда строка уходит из прочитанного в
+ * подсчёт базы, и окно прыгало бы зря.
+ *
  * Начинается окно со строки собеседника: ответ агента без реплики, на которую
- * он отвечал, читался бы его собственной затравкой.
+ * он отвечал, читался бы его собственной затравкой. Текущая строка — всегда,
+ * даже длиннее окна.
  *
  * СТРОКИ СИСТЕМЫ — блоками «[Мне от системы: …]» в сообщении собеседника, как
- * у экрана (ConversationJournal.toAgent): где агент (первым сообщением окна) и
- * проверка на прочность (перед текущей репликой). Собирает их код, не текст
- * людей.
+ * у экрана (ConversationJournal.toAgent). Собирает их код, не текст людей.
+ * Место каждой — по тому, как часто она меняется:
+ *  - первым сообщением окна — где агент ([placeLine]) и голова нити (что ушло
+ *    за начало окна, ChatThread.headText): они меняются только со скачком
+ *    окна, и начало запроса между скачками остаётся тем же;
+ *  - перед текущей репликой — хвост нити (фон группы, ChatThread.tailText) и
+ *    проверка на прочность: они свои на каждом ходе. Поставленные в начало,
+ *    они меняли бы начало запроса каждый ход.
  *
- * ЧЕГО НЕ УМЕЕТ: окно режется по знакам, а не по токенам; длинная лента чата
- * дальше окна для модели не существует; строк о себе, снов, записей — нет.
+ * ЧЕГО НЕ УМЕЕТ: окно меряется знаками, а не токенами; что дальше окна, модель
+ * видит только выжимкой нити; строк о себе, снов, записей — нет; после скачка
+ * окна чат обсчитывается заново один раз; если читаемые строки так коротки,
+ * что прочитанные не набирают и окна, начало встаёт на первую прочитанную и
+ * съезжает вместе с ней.
  *
  * Чистый объект.
  */
@@ -40,50 +69,100 @@ object ChatFeed {
     /** Объявленное число, не подобранное: окно ленты чата для модели, знаков. */
     const val BUDGET_CHARS = 2400
 
-    /** Строка ленты для подачи: свой ответ агента или реплика с подписью. */
-    data class Line(val isAgent: Boolean, val signature: String, val text: String, val modelReads: Boolean)
+    /**
+     * Шаг сетки начала окна — половина окна: после скачка окно заполнено
+     * наполовину и растёт до следующего скачка. Объявленное число, не
+     * подобранное: меньше — чаще полный пересчёт чата, больше — меньше ленты
+     * в окне сразу после скачка.
+     */
+    const val STEP_CHARS = BUDGET_CHARS / 2
 
     /**
-     * Сообщения модели для ответа на последнюю строку [lines] (по порядку,
-     * старые первыми). [place] — строка «где я» (см. [placeLine]); [prochnost]
-     * — строка проверки на прочность к текущей реплике или null.
+     * Строка ленты для подачи: свой ответ агента или реплика с подписью.
+     * [id] — номер строки в ленте чата (llm.ChatLine.id); [at] — её время, мс.
      */
-    fun messages(lines: List<Line>, place: String, prochnost: String?, budgetChars: Int = BUDGET_CHARS): List<Pair<String, String>> {
-        require(lines.isNotEmpty() && !lines.last().isAgent) { "последней должна быть реплика собеседника" }
-        val read = lines.filter { it.isAgent || it.modelReads }.let { if (it.lastOrNull() === lines.last()) it else it + lines.last() }
-        val window = ArrayList<Line>()
-        var used = 0
-        for (line in read.asReversed()) {
-            val cost = line.text.length + line.signature.length + 2
-            if (window.isNotEmpty() && used + cost > budgetChars) break
-            window += line
-            used += cost
-        }
-        window.reverse()
-        while (window.isNotEmpty() && window.first().isAgent) window.removeAt(0)
+    data class Line(
+        val isAgent: Boolean,
+        val signature: String,
+        val text: String,
+        val modelReads: Boolean,
+        val id: Long = 0,
+        val at: Long = 0,
+    )
 
+    /** Цена строки в окне: буквы текста и подписи и два знака на «: » или перенос. Мера — в шапке, «ГДЕ ВСТАЁТ НАЧАЛО». */
+    fun cost(text: String, signature: String): Long =
+        text.codePointCount(0, text.length).toLong() + signature.codePointCount(0, signature.length) + 2
+
+    fun cost(line: Line): Long = cost(line.text, line.signature)
+
+    /**
+     * Окно модели: [lines] — строки окна по порядку; [grid] — точка сетки, от
+     * которой оно начато; [chars] — сколько в нём знаков мерой [cost].
+     */
+    data class Window(val lines: List<Line>, val grid: Long, val chars: Long) {
+        val startId: Long get() = lines.first().id
+    }
+
+    /**
+     * Окно для ответа на последнюю строку [lines] (по порядку, старые первыми).
+     * [readOffset] — смещение первой читаемой строки [lines] от начала чата:
+     * сумма [cost] всех читаемых строк чата перед ней.
+     */
+    fun window(lines: List<Line>, readOffset: Long, budgetChars: Int = BUDGET_CHARS, stepChars: Int = STEP_CHARS): Window {
+        require(lines.isNotEmpty() && !lines.last().isAgent) { "последней должна быть реплика собеседника" }
+        require(stepChars in 1..budgetChars) { "шаг сетки — от 1 до окна" }
+        val read = lines.filter { it.isAgent || it.modelReads }.let { if (it.lastOrNull() === lines.last()) it else it + lines.last() }
+        val offsets = LongArray(read.size)
+        var end = readOffset
+        for ((i, line) in read.withIndex()) {
+            offsets[i] = end
+            end += cost(line)
+        }
+        val grid = if (end <= budgetChars) 0L else ceilTo(end - budgetChars, stepChars.toLong())
+        var start = offsets.indexOfFirst { it >= grid }.let { if (it < 0) read.lastIndex else it }
+        // Последняя — реплика собеседника, так что цикл кончается на ней самое позднее.
+        while (read[start].isAgent) start++
+        return Window(read.subList(start, read.size).toList(), grid, end - offsets[start])
+    }
+
+    private fun ceilTo(x: Long, step: Long): Long = (x + step - 1) / step * step
+
+    /**
+     * Сообщения модели для ответа на последнюю строку окна [window]. [place] —
+     * строка «где я» ([placeLine]); [head] и [tail] — голова и хвост нити
+     * (ChatThread) или null; [prochnost] — строка проверки на прочность к
+     * текущей реплике или null. Места строк — в шапке, «СТРОКИ СИСТЕМЫ».
+     */
+    fun messages(window: Window, place: String, head: String?, tail: String?, prochnost: String?): List<Pair<String, String>> {
+        val lines = window.lines
+        require(lines.isNotEmpty() && !lines.last().isAgent) { "последней должна быть реплика собеседника" }
         val out = ArrayList<Pair<String, String>>()
         val pending = ArrayList<String>()
         fun flush(last: Boolean) {
             if (pending.isEmpty()) return
-            val blocks = ArrayList<String>(3)
-            if (out.isEmpty()) blocks += ConversationJournal.toAgent(place)
-            if (last && !prochnost.isNullOrBlank()) {
-                // Строка прочности — перед текущей репликой: её «ниже» указывает на неё.
+            val blocks = ArrayList<String>(6)
+            if (out.isEmpty()) {
+                blocks += ConversationJournal.toAgent(place)
+                if (!head.isNullOrBlank()) blocks += ConversationJournal.toAgent(head)
+            }
+            // Строка прочности — последней перед текущей репликой: её «ниже» указывает на неё.
+            val notes = if (last) listOfNotNull(tail?.takeIf { it.isNotBlank() }, prochnost?.takeIf { it.isNotBlank() }) else emptyList()
+            if (notes.isNotEmpty()) {
                 if (pending.size > 1) blocks += pending.dropLast(1).joinToString("\n")
-                blocks += ConversationJournal.toAgent(prochnost)
+                notes.forEach { blocks += ConversationJournal.toAgent(it) }
                 blocks += pending.last()
             } else blocks += pending.joinToString("\n")
             out += ConversationJournal.ROLE_USER to blocks.joinToString("\n\n")
             pending.clear()
         }
-        for ((i, line) in window.withIndex()) {
+        for ((i, line) in lines.withIndex()) {
             if (line.isAgent) {
                 flush(last = false)
                 out += ConversationJournal.ROLE_ASSISTANT to line.text
             } else {
                 pending += "${line.signature}: ${line.text}"
-                if (i == window.lastIndex) flush(last = true)
+                if (i == lines.lastIndex) flush(last = true)
             }
         }
         return out
