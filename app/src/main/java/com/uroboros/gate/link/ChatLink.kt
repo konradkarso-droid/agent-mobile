@@ -86,7 +86,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * скачками ([ChatFeed.window]) и нить — выжимку того, что окна не видно
  * ([ChatThread]); записей памяти нет: граница там. Ответ идёт той же
  * лестницей, что на экране (AnswerLadder): взгляд на приборы (доска этого
- * чата, GlanceDesk), перехват повтора, зеркала и порчи. Ушло — только через ворота
+ * чата, GlanceDesk; на слово о приборах в вопросе доску показывает код —
+ * Glance.asksInstruments), перехват повтора, зеркала и порчи. Ушло — только через ворота
  * действий с согласием владельца на срок ([ChatPrefs.consent]); каждое
  * отправленное — в журнале действий.
  *
@@ -681,7 +682,9 @@ object ChatLink {
         }
 
         val startedAt = System.currentTimeMillis()
-        val ran = ladder.run(ribbon, ChatFeed.question(window), desk, halt = { haltReason(app) })
+        // Слово о приборах в вопросе — доска сразу (Glance, «ДОСКА ПО СЛОВУ ВОПРОСА»).
+        val question = ChatFeed.question(window)
+        val ran = ladder.run(ribbon, question, desk, halt = { haltReason(app) }, deskFirst = Glance.asksInstruments(question))
         meterFirst()
         val tookMs = System.currentTimeMillis() - startedAt
         val said = ChatTurnMeter.ladderNote(ran, sentFirst)

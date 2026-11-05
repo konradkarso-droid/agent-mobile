@@ -16,11 +16,11 @@ class ChatTurnMeterTest {
         )
     }
 
-    private fun result(glanced: Boolean = false, retried: Boolean = false, intercept: AnswerLadder.Intercept? = null) =
+    private fun result(glanced: Boolean = false, retried: Boolean = false, intercept: AnswerLadder.Intercept? = null, deskByCode: String? = null) =
         AnswerLadder.Result(
             answer = "", tokensSeen = 1, firstTokenAtMs = null, metrics = null, generationEnd = GenerationEnd.COMPLETED,
             failure = null, intercept = intercept, hidden = false, kept = null, glanced = glanced, glanceRetried = retried,
-            loop = null, haltedBy = null,
+            loop = null, haltedBy = null, deskByCode = deskByCode,
         )
 
     private fun intercept(cause: AnswerLadder.Cause, replaced: Boolean, third: AnswerLadder.Third? = null) =
@@ -43,6 +43,16 @@ class ChatTurnMeterTest {
             "не глядел на приборы · перехват: повтор «Привет.» → годного нет, ушёл первый ответ",
             ChatTurnMeter.ladderNote(result(intercept = intercept(AnswerLadder.Cause.Repeat("Привет.", setOf(0)), replaced = false)), sentFirst = true),
         )
+    }
+
+    @Test
+    fun `доску показал код — отдельно от «глянул сам»`() {
+        assertEquals("доску показал код (слово «записей»)", ChatTurnMeter.ladderNote(result(glanced = true, deskByCode = "записей"), sentFirst = false))
+        assertEquals(
+            "доску показал код (слово «записей»); после доски было пусто — проход повторён",
+            ChatTurnMeter.ladderNote(result(glanced = true, retried = true, deskByCode = "записей"), sentFirst = false),
+        )
+        assertEquals("глянул на приборы", ChatTurnMeter.ladderNote(result(glanced = true), sentFirst = false))
     }
 
     @Test

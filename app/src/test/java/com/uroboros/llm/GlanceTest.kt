@@ -1,6 +1,7 @@
 package com.uroboros.llm
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Calendar
@@ -41,5 +42,28 @@ class GlanceTest {
     @Test
     fun `пустая доска сказана словами`() {
         assertTrue(Glance.response("").contains("Приборы мне сейчас не видны."))
+    }
+
+    @Test
+    fun `слово о приборах — доска по вопросу`() {
+        assertEquals("записей", Glance.asksInstruments("Исправляю. Сейчас тоже.\nСколько у тебя записей в памяти?"))
+        assertEquals("температура", Glance.asksInstruments("Какая у тебя температура?"))
+        assertEquals("модели", Glance.asksInstruments("На какой ты модели?"))
+        assertEquals("пообещал", Glance.asksInstruments("Что ты мне пообещал?"))
+        assertEquals("перегреваешься", Glance.asksInstruments("Ты не перегреваешься?"))
+        assertEquals("батарея", Glance.asksInstruments("Батарея не садится?"))
+        assertEquals("час", Glance.asksInstruments("Который час?"))
+        assertEquals("времени", Glance.asksInstruments("Сколько времени?"))
+        assertEquals("заряд", Glance.asksInstruments("ЗАРЯД какой?"))
+    }
+
+    @Test
+    fun `без слова о приборах — молчит`() {
+        assertNull(Glance.asksInstruments("Привет, как дела?"))
+        assertNull(Glance.asksInstruments("Пинг?"))
+        assertNull(Glance.asksInstruments("Исправляю. Сейчас тоже."))
+        assertNull(Glance.asksInstruments("Напомни мне завтра написать Насте."))
+        assertNull(Glance.asksInstruments("Часть кода готова"))
+        assertNull(Glance.asksInstruments(""))
     }
 }
