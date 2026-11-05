@@ -61,4 +61,12 @@ class EpisodesTest {
         assertEquals(Pair(0, null), Episodes.neighbours(eps, 1))
         assertEquals(Pair(null, 3), Episodes.neighbours(eps, 2))
     }
+
+    @Test
+    fun `своя тишина — порог по параметру, час по умолчанию`() {
+        val hour = 3_600_000L
+        val pts = listOf(Episodes.Point(0), Episodes.Point(2 * hour), Episodes.Point(6 * hour))
+        assertEquals(listOf(0, 1, 2), Episodes.number(pts))
+        assertEquals(listOf(0, 0, 1), Episodes.number(pts, silenceMs = 3 * hour))
+    }
 }

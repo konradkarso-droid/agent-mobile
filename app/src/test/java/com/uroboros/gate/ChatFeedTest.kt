@@ -100,6 +100,54 @@ class ChatFeedTest {
         assertEquals("граница снимка — перед последним сообщением", m7.size - 1, ChatFeed.stableMessages(m7))
     }
 
+    private val hour = 3_600_000L
+    private fun at(line: ChatFeed.Line, ms: Long) = line.copy(at = ms)
+
+    @Test
+    fun `тишина дольше трёх часов — окно с нового разговора, сетка от его начала`() {
+        val lines = listOf(
+            at(peer("Сколько у тебя записей?", id = 1), 0), at(agent("66 записей.", id = 2), 1000),
+            at(peer("Пинг?", id = 3), 4 * hour), at(agent("Тут.", id = 4), 4 * hour + 1000),
+            at(peer("Сколько у тебя записей?", id = 5), 4 * hour + 2000),
+        )
+        val w = ChatFeed.window(lines, readOffset = 50_000)
+        assertEquals(listOf(3L, 4L, 5L), w.lines.map { it.id })
+        assertEquals(0L, w.grid)
+        assertTrue(w.startsConversation)
+        assertFalse(w.opened!!.byBuild)
+        assertTrue(w.opened!!.silenceMs >= 3 * hour)
+    }
+
+    @Test
+    fun `три часа без минуты — тот же разговор, окно прежнее`() {
+        val lines = listOf(at(peer("а", id = 1), 0), at(agent("б", id = 2), 1000), at(peer("в", id = 3), 3 * hour))
+        val w = ChatFeed.window(lines, readOffset = 0)
+        assertEquals(listOf(1L, 2L, 3L), w.lines.map { it.id })
+        assertNull(w.opened)
+        assertFalse(w.startsConversation)
+    }
+
+    @Test
+    fun `установка сборки между строками — новый разговор без паузы`() {
+        val lines = listOf(at(peer("а", id = 1), 0), at(agent("б", id = 2), 1000), at(peer("в", id = 3), 5000))
+        val w = ChatFeed.window(lines, readOffset = 0, installedAt = 3000)
+        assertEquals(listOf(3L), w.lines.map { it.id })
+        assertTrue(w.opened!!.byBuild)
+        val same = ChatFeed.window(lines, readOffset = 0, installedAt = 500_000)
+        assertEquals("установка после всех строк — не граница", listOf(1L, 2L, 3L), same.lines.map { it.id })
+    }
+
+    @Test
+    fun `разговор длиннее окна — окно скачками внутри разговора`() {
+        val old = listOf(at(peer("старое", id = 1), 0), at(agent("старый ответ", id = 2), 1000))
+        val fresh = (3..41).map { i -> at(if (i % 2 == 1) peer("x".repeat(150), id = i.toLong()) else agent("y".repeat(150), id = i.toLong()), 5 * hour + i * 1000L) }
+        val w = ChatFeed.window(old + fresh, readOffset = 0)
+        assertTrue(w.lines.none { it.id <= 2 })
+        assertTrue(w.chars <= ChatFeed.BUDGET_CHARS + 200)
+        assertNotNull(w.opened)
+        assertFalse(w.startsConversation)
+    }
+
     @Test
     fun `цена строки — буквы, а не единицы UTF-16`() {
         assertEquals(3L, ChatFeed.cost("😀", ""))

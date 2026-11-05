@@ -119,20 +119,25 @@ object ChatPromises {
      * Строка модели в чате: до [Desk.WINDOW] обещаний этого чата, новые
      * первыми, и сколько ещё — как у взгляда на приборы на экране. null —
      * обещаний нет. [day] — день словами («30 октября»).
+     *
+     * ПОЧЕМУ «Я ОТВЕТИЛ …: «…»». Перед каждой цитатой стоит, кто её сказал и
+     * кому. С подписью адресата перед цитатой («владельцу Ивану, 5 ноября —
+     * «Запомню…»») модель читала цитату словами собеседника и пересказывала
+     * обещание агента как его («ты мне говорил «Запомню…»»).
      */
     fun chatText(promises: List<Promises.Promise>, day: (Long) -> String): String? {
         if (promises.isEmpty()) return null
         val shown = promises.take(Desk.WINDOW).joinToString("; ") { p ->
             val to = p.to
             val whom = when {
-                to == null -> ""
-                p.together -> "вместе ${to.chatWithWhom}, "
-                else -> "${to.chatDative}, "
+                to == null -> "я ответил"
+                p.together -> "я ответил ${to.chatDative}, обещая за нас обоих"
+                else -> "я ответил ${to.chatDative}"
             }
-            "$whom${day(p.at)} — «${p.sentence}»"
+            "${day(p.at)} $whom: «${p.sentence}»"
         }
         val rest = promises.size - Desk.WINDOW
-        return "Что я обещал в этом чате за ${Promises.DAYS} дн.: $shown." + if (rest > 0) " Ещё обещаний: $rest." else ""
+        return "Что я обещал в этом чате за ${Promises.DAYS} дн.: $shown." + if (rest > 0) " Ещё моих обещаний: $rest." else ""
     }
 
     /**

@@ -32,12 +32,14 @@ object Episodes {
      * Открывает ли [at] новый эпизод после [prevAt].
      *
      * @param closedBetween между ними лента закрывалась.
+     * @param silenceMs какая тишина открывает новый: своё число у чатов
+     *   телеграма (gate.ChatFeed.CONVERSATION_SILENCE_MS), у всех прочих — час.
      */
-    fun startsNew(prevAt: Long?, at: Long?, closedBetween: Boolean): Boolean {
+    fun startsNew(prevAt: Long?, at: Long?, closedBetween: Boolean, silenceMs: Long = EPISODE_SILENCE_MS): Boolean {
         if (closedBetween) return true
         if (prevAt == null || at == null) return false
         val pause = at - prevAt
-        return pause > EPISODE_SILENCE_MS
+        return pause > silenceMs
     }
 
     /** Точка последовательности: время и признак «перед ней лента закрывалась». */
@@ -47,12 +49,12 @@ object Episodes {
      * Номера эпизодов для последовательности в её порядке (порядок ленты, а не
      * времени). Первый — 0.
      */
-    fun number(points: List<Point>): List<Int> {
+    fun number(points: List<Point>, silenceMs: Long = EPISODE_SILENCE_MS): List<Int> {
         val out = ArrayList<Int>(points.size)
         var episode = 0
         var prevAt: Long? = null
         for ((i, p) in points.withIndex()) {
-            if (i > 0 && startsNew(prevAt, p.at, p.closedBefore)) episode++
+            if (i > 0 && startsNew(prevAt, p.at, p.closedBefore, silenceMs)) episode++
             out += episode
             if (p.at != null) prevAt = p.at
         }

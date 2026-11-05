@@ -1,6 +1,5 @@
 package com.uroboros.gate
 
-import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.WindowMap
 import com.uroboros.util.TextFold
@@ -29,8 +28,11 @@ import com.uroboros.util.TextFold
  *    этом разговоре не отвечал — с начала разговора: сколько, кто, о чём. Свой
  *    на каждом ходе.
  *
- * РАЗГОВОР — эпизод по правилу Episodes (тишина дольше часа начинает новый),
- * как у карты окна экрана.
+ * РАЗГОВОР — по правилу чата (ChatFeed.conversations: тишина дольше трёх
+ * часов или установка сборки), то же, что режет окно: голова и окно говорят
+ * об одном разговоре. Окно, начатое с разговора, головы не имеет — вместо неё
+ * выжимка прошлого разговора ([previous]): кто, сколько ответов, слова, —
+ * своей строкой «В прошлом разговоре…», чтобы прошлое не читалось нынешним.
  *
  * «О ЧЁМ» — слова-темы по правилу карты окна (WindowMap.topicWords:
  * существительные в начальных формах), только из слов людей: слова агента в
@@ -83,7 +85,7 @@ object ChatThread {
      * Голова: [since] — время первой строки этого разговора перед окном;
      * [agentAnswers] — сколько раз там отвечал агент; [words] — слова-темы.
      */
-    data class Head(val since: Long, val voices: Voices, val agentAnswers: Int, val words: List<String>)
+    data class Head(val since: Long, val voices: Voices, val agentAnswers: Int, val words: List<String>, val until: Long? = null)
 
     /**
      * Хвост: [lines] — строк общего; [sinceMine] — считано после ответа агента
@@ -96,8 +98,27 @@ object ChatThread {
      * [windowStartAt] — время первой строки окна. null — в этом разговоре
      * перед окном строк людей нет.
      */
-    fun head(before: List<ChatFeed.Line>, windowStartAt: Long, dictionary: LemmaDictionary?, agentNames: List<String> = emptyList()): Head? {
-        val episode = sameEpisode(before, windowStartAt)
+    fun head(
+        before: List<ChatFeed.Line>,
+        windowStartAt: Long,
+        dictionary: LemmaDictionary?,
+        agentNames: List<String> = emptyList(),
+        installedAt: Long? = null,
+    ): Head? = summary(sameEpisode(before, windowStartAt, installedAt), dictionary, agentNames)
+
+    /**
+     * Выжимка прошлого разговора — последнего в [before] (читаемые строки
+     * перед началом окна, по порядку), для окна, начатого с разговора
+     * ([ChatFeed.Window.startsConversation]). null — строк людей там нет.
+     */
+    fun previous(before: List<ChatFeed.Line>, dictionary: LemmaDictionary?, agentNames: List<String> = emptyList(), installedAt: Long? = null): Head? {
+        if (before.isEmpty()) return null
+        val numbers = ChatFeed.conversations(before.map { it.at }, installedAt)
+        val last = before.filterIndexed { i, _ -> numbers[i] == numbers.last() }
+        return summary(last, dictionary, agentNames)?.copy(until = last.last().at)
+    }
+
+    private fun summary(episode: List<ChatFeed.Line>, dictionary: LemmaDictionary?, agentNames: List<String>): Head? {
         val people = episode.filter { !it.isAgent }
         if (people.isEmpty()) return null
         val turns = ArrayList<String>()
@@ -121,9 +142,9 @@ object ChatThread {
      * порядку, всех колец. null — общего в этом разговоре после последнего
      * ответа агента нет.
      */
-    fun tail(lines: List<ChatFeed.Line>, dictionary: LemmaDictionary?, agentNames: List<String> = emptyList()): Tail? {
+    fun tail(lines: List<ChatFeed.Line>, dictionary: LemmaDictionary?, agentNames: List<String> = emptyList(), installedAt: Long? = null): Tail? {
         if (lines.size < 2) return null
-        val episode = sameEpisode(lines.dropLast(1), lines.last().at)
+        val episode = sameEpisode(lines.dropLast(1), lines.last().at, installedAt)
         val lastMine = episode.indexOfLast { it.isAgent }
         val general = episode.drop(lastMine + 1).filter { !it.isAgent && !it.modelReads }
         if (general.isEmpty()) return null
@@ -152,6 +173,14 @@ object ChatThread {
             wordsClause(h.words)
     }
 
+    /** Выжимка прошлого разговора ([previous]) словами модели. [day] — «4 ноября». */
+    fun previousText(h: Head, clock: (Long) -> String, day: (Long) -> String): String {
+        val answered = if (h.agentAnswers > 0) "; я ответил ${h.agentAnswers} ${times(h.agentAnswers)}" else ""
+        val until = h.until ?: h.since
+        return "В прошлом разговоре (${day(h.since)}, ${clock(h.since)}–${clock(until)}), его в ленте уже нет: писали ${names(h.voices)}$answered." +
+            wordsClause(h.words)
+    }
+
     /** Хвост словами модели, от первого лица. */
     fun tailText(t: Tail): String {
         val since = if (t.sinceMine) "после моего последнего ответа" else "в этом разговоре"
@@ -172,6 +201,7 @@ object ChatThread {
         dictionary: Boolean,
         clock: (Long) -> String,
         budgetChars: Int = ChatFeed.BUDGET_CHARS,
+        previous: Head? = null,
     ): String {
         val place = when (moved) {
             null -> "встало"
@@ -179,18 +209,22 @@ object ChatThread {
             false -> "на месте"
         }
         val before = head?.let { "с ${clock(it.since)}, ${names(it.voices)}" + it.words.joinToString(", ").let { w -> if (w.isEmpty()) "" else "; $w" } }
+            ?: previous?.let { "нет — окно с начала разговора; прошлый разговор ${clock(it.since)}–${clock(it.until ?: it.since)}, ${names(it.voices)}" + it.words.joinToString(", ").let { w -> if (w.isEmpty()) "" else "; $w" } }
             ?: "нет — в этом разговоре всё в окне"
+        val conversation = window.opened?.let { o ->
+            " · разговор с ${clock(o.at)} (" + (if (o.byBuild) "новая сборка" else "тишина ${o.silenceMs / 3_600_000} ч") + ")"
+        } ?: ""
         val background = tail?.let { "${it.lines} не мне" + it.words.joinToString(", ").let { w -> if (w.isEmpty()) "" else "; $w" } } ?: "нет"
         val dict = if (dictionary) "" else " · словаря нет — слова как написаны"
-        return "Нить ($chatName): окно ${window.chars} из $budgetChars зн., $place · раньше: $before · фон группы: $background$dict"
+        return "Нить ($chatName): окно ${window.chars} из $budgetChars зн., $place$conversation · раньше: $before · фон группы: $background$dict"
     }
 
     // --- Внутреннее ---
 
-    /** Строки [lines] того же разговора, что и момент [at] (правило Episodes). */
-    private fun sameEpisode(lines: List<ChatFeed.Line>, at: Long): List<ChatFeed.Line> {
+    /** Строки [lines] того же разговора, что и момент [at] (правило ChatFeed.conversations). */
+    private fun sameEpisode(lines: List<ChatFeed.Line>, at: Long, installedAt: Long?): List<ChatFeed.Line> {
         if (lines.isEmpty()) return emptyList()
-        val numbers = Episodes.number(lines.map { Episodes.Point(it.at) } + Episodes.Point(at))
+        val numbers = ChatFeed.conversations(lines.map { it.at } + at, installedAt)
         val current = numbers.last()
         return lines.filterIndexed { i, _ -> numbers[i] == current }
     }

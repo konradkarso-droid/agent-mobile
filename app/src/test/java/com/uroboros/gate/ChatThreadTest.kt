@@ -41,12 +41,12 @@ class ChatThreadTest {
     }
 
     @Test
-    fun `голова — только этот разговор, за часом тишины прежнего нет`() {
+    fun `голова — только этот разговор, за тремя часами тишины прежнего нет`() {
         val before = listOf(
             peer("Вчерашняя тема про рыбалку", "Петя", t0),
-            peer("Сегодня про погоду", "Аня", t0 + 120 * minute),
+            peer("Сегодня про погоду", "Аня", t0 + 200 * minute),
         )
-        val h = ChatThread.head(before, t0 + 121 * minute, null)!!
+        val h = ChatThread.head(before, t0 + 201 * minute, null)!!
         assertEquals(listOf("Аня"), h.voices.names)
         assertFalse(h.words.any { it.startsWith("рыбалк") })
         assertEquals(0, h.agentAnswers)
@@ -54,9 +54,41 @@ class ChatThreadTest {
     }
 
     @Test
+    fun `установка сборки между строками — новый разговор, голова его не видит`() {
+        val before = listOf(peer("Старая тема про рыбалку", "Петя", t0))
+        assertNull(ChatThread.head(before, t0 + 10 * minute, null, installedAt = t0 + 5 * minute))
+        assertNotNull(ChatThread.head(before, t0 + 10 * minute, null, installedAt = t0 - minute))
+    }
+
+    @Test
+    fun `прошлый разговор — последний перед окном, своей строкой`() {
+        val before = listOf(
+            peer("Самый старый про грибы", "Вика", t0),
+            peer("Поедем в отпуск на море", "Петя", t0 + 300 * minute),
+            agent("Хорошая мысль.", t0 + 301 * minute),
+            peer("Море того стоит", "Петя", t0 + 302 * minute),
+        )
+        val p = ChatThread.previous(before, null)!!
+        assertEquals(t0 + 300 * minute, p.since)
+        assertEquals(t0 + 302 * minute, p.until)
+        assertEquals(listOf("Петя"), p.voices.names)
+        assertEquals(1, p.agentAnswers)
+        val text = ChatThread.previousText(p, clock) { "4 ноября" }
+        assertTrue(text, text.startsWith("В прошлом разговоре (4 ноября, ЧЧ:300–ЧЧ:302), его в ленте уже нет: писали Петя; я ответил 1 раз."))
+        assertFalse(text, text.contains("Раньше в этом разговоре"))
+    }
+
+    @Test
+    fun `прошлого разговора нет — пусто или одни свои ответы`() {
+        assertNull(ChatThread.previous(emptyList(), null))
+        assertNull(ChatThread.previous(listOf(agent("я", t0)), null))
+    }
+
+    @Test
     fun `головы нет — перед окном пусто или всё из прошлого разговора`() {
         assertNull(ChatThread.head(emptyList(), t0, null))
-        assertNull(ChatThread.head(listOf(peer("давно", "Петя", t0)), t0 + 90 * minute, null))
+        assertNull(ChatThread.head(listOf(peer("давно", "Петя", t0)), t0 + 190 * minute, null))
+        assertNotNull("полтора часа — тот же разговор чата", ChatThread.head(listOf(peer("недавно", "Петя", t0)), t0 + 90 * minute, null))
         assertNull("одни свои ответы — людей нет", ChatThread.head(listOf(agent("я", t0)), t0 + minute, null))
     }
 
@@ -131,7 +163,7 @@ class ChatThreadTest {
         assertNull(ChatThread.tail(direct, null))
         val before = listOf(general("болтовня", "Аня", t0), agent("ответ", t0 + minute), peer("вопрос", "Петя", t0 + 2 * minute))
         assertNull(ChatThread.tail(before, null))
-        val old = listOf(general("вчерашнее", "Аня", t0), peer("сегодня вопрос", "Петя", t0 + 90 * minute))
+        val old = listOf(general("вчерашнее", "Аня", t0), peer("сегодня вопрос", "Петя", t0 + 190 * minute))
         assertNull(ChatThread.tail(old, null))
         assertNull("одна текущая строка", ChatThread.tail(listOf(peer("вопрос", "Петя", t0)), null))
     }

@@ -65,7 +65,7 @@ class ChatPromisesTest {
     fun `строка чата не говорит владельцу «вам» — модель читала это как слова собеседника`() {
         val f = ok(listOf(peer(petya, "Иван", "Глянь вечером почту"), agent("Хорошо, посмотрю после ужина.", petya)), owner = petya)
         val text = ChatPromises.chatText(f.promises) { "4 ноября" }!!
-        assertEquals("Что я обещал в этом чате за ${Promises.DAYS} дн.: владельцу Ивану, 4 ноября — «Хорошо, посмотрю после ужина.».", text)
+        assertEquals("Что я обещал в этом чате за ${Promises.DAYS} дн.: 4 ноября я ответил владельцу Ивану: «Хорошо, посмотрю после ужина.».", text)
         assertTrue("вам" !in text.split(Regex("""[^\p{L}]+""")))
     }
 
@@ -118,7 +118,7 @@ class ChatPromisesTest {
     fun `строка модели в чате — кому, когда, что, а пусто — строки нет`() {
         val f = ok(listOf(peer(petya, "Петя", "Не забудь про билеты"), agent("Я напомню завтра.", petya)))
         val text = ChatPromises.chatText(f.promises) { "3 ноября" }
-        assertEquals("Что я обещал в этом чате за ${Promises.DAYS} дн.: Пете, 3 ноября — «Я напомню завтра.».", text)
+        assertEquals("Что я обещал в этом чате за ${Promises.DAYS} дн.: 3 ноября я ответил Пете: «Я напомню завтра.».", text)
         assertNull(ChatPromises.chatText(emptyList()) { "" })
     }
 

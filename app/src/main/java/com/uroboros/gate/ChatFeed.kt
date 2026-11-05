@@ -2,6 +2,7 @@ package com.uroboros.gate
 
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.Glance
+import com.uroboros.memory.nav.Episodes
 import com.uroboros.memory.nav.Prochnost
 
 /**
@@ -60,6 +61,16 @@ import com.uroboros.memory.nav.Prochnost
  *    они свои на каждом ходе.
  *    Поставленные в начало, они меняли бы начало запроса каждый ход.
  *
+ * РАЗГОВОР — ОКНО НЕ ЗАХОДИТ ЗА ЕГО НАЧАЛО ([conversations]). Новый разговор
+ * открывают тишина дольше [CONVERSATION_SILENCE_MS] между читаемыми строками и
+ * установка сборки между ними (как «Начать заново» у эпизода экрана,
+ * memory.nav.Episodes). Зачем: малая модель повторяет свои старые ответы из
+ * ленты слово в слово — и ошибочные, и написанные прежней сборкой, — а видя
+ * в ленте ответы о приборах без вызова, сама приборы не зовёт. На чистой
+ * ленте этого нет. Строки прежних разговоров остаются в ленте чатов (подхват,
+ * обещания, суд читают её целиком); модель видит от них только выжимку нити
+ * (ChatThread). Сетка окна внутри разговора — от его начала.
+ *
  * ЧЕГО НЕ УМЕЕТ: окно меряется знаками, а не токенами; что дальше окна, модель
  * видит только выжимкой нити; строк о себе, снов, записей — нет; после скачка
  * окна чат обсчитывается заново один раз; если читаемые строки так коротки,
@@ -80,6 +91,32 @@ object ChatFeed {
      * в окне сразу после скачка.
      */
     const val STEP_CHARS = BUDGET_CHARS / 2
+
+    /**
+     * Тишина в чате, после которой начинается новый разговор, — 3 часа.
+     * Объявленное число, не подобранное (решение владельца), больше часа
+     * эпизода экрана: в телеграме отвечают с перерывами, и разговор не должен
+     * рваться на каждом. Короче — агент чаще теряет начатое; длиннее — дольше
+     * живут в окне старые ответы.
+     */
+    const val CONVERSATION_SILENCE_MS = 3 * 60 * 60_000L
+
+    /**
+     * Номера разговоров для строк [ats] (время строк по порядку ленты):
+     * тишина дольше [CONVERSATION_SILENCE_MS] или установка сборки в
+     * [installedAt] между двумя строками открывают новый. null — время
+     * установки не известно, делит только тишина.
+     */
+    fun conversations(ats: List<Long>, installedAt: Long?): List<Int> =
+        Episodes.number(
+            ats.mapIndexed { i, at ->
+                Episodes.Point(at, closedBefore = i > 0 && installedAt != null && ats[i - 1] < installedAt && at >= installedAt)
+            },
+            CONVERSATION_SILENCE_MS,
+        )
+
+    /** Почему начался разговор окна: с чего и когда. [byBuild] — установка сборки, иначе тишина [silenceMs]. */
+    data class Opened(val at: Long, val byBuild: Boolean, val silenceMs: Long)
 
     /**
      * Строка ленты для подачи: свой ответ агента или реплика с подписью.
@@ -106,21 +143,44 @@ object ChatFeed {
      * Окно модели: [lines] — строки окна по порядку; [grid] — точка сетки, от
      * которой оно начато; [chars] — сколько в нём знаков мерой [cost].
      */
-    data class Window(val lines: List<Line>, val grid: Long, val chars: Long) {
+    data class Window(val lines: List<Line>, val grid: Long, val chars: Long, val opened: Opened? = null) {
         val startId: Long get() = lines.first().id
+
+        /** Окно начинается с начала разговора: перед ним — только прежние разговоры. */
+        val startsConversation: Boolean get() = opened != null && opened.at == lines.first().at
     }
 
     /**
      * Окно для ответа на последнюю строку [lines] (по порядку, старые первыми).
      * [readOffset] — смещение первой читаемой строки [lines] от начала чата:
-     * сумма [cost] всех читаемых строк чата перед ней.
+     * сумма [cost] всех читаемых строк чата перед ней. [installedAt] — когда
+     * установлена сборка (для [conversations]), null — не известно.
+     *
+     * Начало разговора ищется среди [lines]: найдено не первой строкой — окно
+     * и сетка от него, иначе — от начала чата, как до разговоров. Поэтому
+     * разговор длиннее прочитанного однажды переедет с сетки разговора на
+     * сетку чата: один лишний скачок окна.
      */
-    fun window(lines: List<Line>, readOffset: Long, budgetChars: Int = BUDGET_CHARS, stepChars: Int = STEP_CHARS): Window {
+    fun window(
+        lines: List<Line>,
+        readOffset: Long,
+        budgetChars: Int = BUDGET_CHARS,
+        stepChars: Int = STEP_CHARS,
+        installedAt: Long? = null,
+    ): Window {
         require(lines.isNotEmpty() && !lines.last().isAgent) { "последней должна быть реплика собеседника" }
         require(stepChars in 1..budgetChars) { "шаг сетки — от 1 до окна" }
-        val read = lines.filter { it.isAgent || it.modelReads }.let { if (it.lastOrNull() === lines.last()) it else it + lines.last() }
+        val all = lines.filter { it.isAgent || it.modelReads }.let { if (it.lastOrNull() === lines.last()) it else it + lines.last() }
+        val numbers = conversations(all.map { it.at }, installedAt)
+        val from = numbers.indexOfFirst { it == numbers.last() }
+        val opened = if (from > 0) {
+            val prev = all[from - 1].at
+            val at = all[from].at
+            Opened(at, byBuild = installedAt != null && prev < installedAt && at >= installedAt, silenceMs = at - prev)
+        } else null
+        val read = if (from > 0) all.subList(from, all.size) else all
         val offsets = LongArray(read.size)
-        var end = readOffset
+        var end = if (from > 0) 0L else readOffset
         for ((i, line) in read.withIndex()) {
             offsets[i] = end
             end += cost(line)
@@ -129,7 +189,7 @@ object ChatFeed {
         var start = offsets.indexOfFirst { it >= grid }.let { if (it < 0) read.lastIndex else it }
         // Последняя — реплика собеседника, так что цикл кончается на ней самое позднее.
         while (read[start].isAgent) start++
-        return Window(read.subList(start, read.size).toList(), grid, end - offsets[start])
+        return Window(read.subList(start, read.size).toList(), grid, end - offsets[start], opened)
     }
 
     private fun ceilTo(x: Long, step: Long): Long = (x + step - 1) / step * step
