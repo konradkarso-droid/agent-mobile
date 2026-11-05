@@ -133,6 +133,7 @@ import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.memory.nav.WindowMap
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.HomeEventStore
+import com.uroboros.safety.MemoryWatch
 import com.uroboros.safety.HomeEvents
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -3217,7 +3218,7 @@ class MainActivity : AppCompatActivity() {
                 start, metrics.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
-        group("Комы", AgentLife.comaLines(applicationContext))
+        group("Комы", AgentLife.comaLines(applicationContext) + "\n" + MemoryWatch.meterLine(applicationContext))
         group(
             "Сторож",
             // Наблюдение за зоной стоит последним: смотрят на него не при
@@ -6079,6 +6080,13 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         presenceLock.onScreenShown()
+        // При открытом экране модель по сигналу памяти не выгружается, а
+        // выгруженная, пока экрана не было, поднимается здесь (safety.MemoryWatch).
+        MemoryWatch.screenShown = true
+        if (MemoryWatch.unloadedBySignal && ::llmEngine.isInitialized && !llmEngine.isLoaded) {
+            MemoryWatch.unloadedBySignal = false
+            tryAutoLoadOnStartup()
+        }
         // Поднять тело при каждом показе экрана: у живой службы это ничего не
         // меняет, а после комы, из которой она не встала сама, это последний
         // подъём, который у неё есть. Экран на виду, и Android такой запуск
@@ -6089,6 +6097,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        MemoryWatch.screenShown = false
         // Первой строкой, до выхода по пустой ленте: замок встаёт при любом
         // уходе с экрана, а не только когда есть что сохранять.
         presenceLock.onScreenLeft()

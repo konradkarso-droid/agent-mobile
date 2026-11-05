@@ -120,7 +120,13 @@ object AgentLife {
     private var comas: ComaCause.Reading? = null
 
     /** Строки прошлых ком для экрана — со временем в той же записи, что «Жив с». */
-    fun comaLines(context: Context): String = ComaCause.lines(comas(context), ::moment)
+    fun comaLines(context: Context): String {
+        val reading = comas(context)
+        val lastAt = (reading as? ComaCause.Reading.Exits)?.list?.firstOrNull()?.atMs
+        // Замер памяти перед прошлой смертью — было ли «мало» (safety.MemoryPressure.beforeComa).
+        val before = lastAt?.let { com.uroboros.safety.MemoryPressure.beforeComa(com.uroboros.safety.MemoryWatch.beforeDeath(context), it) }
+        return ComaCause.lines(reading, ::moment) + (before?.let { "\n$it" } ?: "")
+    }
 
     private fun readComas(context: Context): ComaCause.Reading =
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) ComaCause.Reading.TooOld else exitsOf(context)

@@ -508,8 +508,11 @@ object ChatLink {
         wake.acquire(WAKE_MS)
         val generated = try {
             objects.turns.aside {
-                // За замком — заново: пока ждали, мог начаться суд, сработать стоп или нагреться телефон.
-                haltReason(app)?.let { Generated(null, it) } ?: generate(app, job, upTo)
+                // За замком — заново: пока ждали, мог начаться суд, сработать стоп,
+                // нагреться телефон или выгрузиться модель по сигналу памяти (safety.MemoryWatch).
+                haltReason(app)?.let { Generated(null, it) }
+                    ?: ensureModel(app, objects)?.let { Generated(null, it) }
+                    ?: generate(app, job, upTo)
             }
         } finally {
             if (wake.isHeld) wake.release()

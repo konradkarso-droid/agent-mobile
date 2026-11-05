@@ -915,6 +915,7 @@ class LlmEngine(
      *        см. [loadIdentity]. Тоже входит в отпечаток загрузки.
      */
     private fun configureAfterLoad(sourceIdentity: String, loadIdentity: String) {
+        loadedAtMs = System.currentTimeMillis()
         // Свежая модель пуста: записывать как точку разговора нечего.
         stateIsConversation = false
         checkpointFresh = false
@@ -2767,6 +2768,29 @@ class LlmEngine(
     fun isEngineAutoModeEnabled(): Boolean = engine.isAutoModeEnabled()
 
     suspend fun unload() = engine.unload()
+
+    /**
+     * Когда модель последний раз загружена, мс эпохи; 0 — не загружалась.
+     * По нему выгрузка по сигналу памяти не трогает только что поднятую
+     * (safety.MemoryWatch.FRESH_MS).
+     */
+    @Volatile
+    var loadedAtMs: Long = 0L
+        private set
+
+    /**
+     * Выгрузить модель по сигналу памяти (safety.MemoryWatch): освободить её
+     * память и забыть, откуда она, — следующее дело поднимет её заново тем же
+     * путём, что после комы. Под замком загрузки: посреди загрузки не
+     * выгружает. Замок хода держит зовущий. false — выгружать было нечего.
+     */
+    suspend fun unloadForMemory(): Boolean = loadLock.withLock {
+        if (!engine.isLoaded) return@withLock false
+        engine.unload()
+        loadedSource = null
+        loadedAdapterKey = null
+        true
+    }
 
     /** Короткий отпечаток строки — только для имени папки, не для безопасности. */
     private fun shortHash(input: String): String =
