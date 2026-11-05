@@ -217,6 +217,17 @@ object ChatLink {
     /** День для модели: «30 октября» — как у доски экрана. */
     private fun day(ms: Long) = SimpleDateFormat("d MMMM", Locale("ru")).format(Date(ms))
 
+    /**
+     * Когда установлена нынешняя сборка — граница разговора чата
+     * (ChatFeed.conversations). Не меняется, пока жив процесс: установка
+     * сборки процесс убивает. null — система не ответила, делит только тишина.
+     */
+    @Volatile private var installedAtCache: Long? = null
+    private fun installedAt(app: Context): Long? = installedAtCache ?: runCatching {
+        @Suppress("DEPRECATION")
+        app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime
+    }.getOrNull()?.also { installedAtCache = it }
+
     /** Сообщение без файла из канала. Зовёт опрос [GateLink] на своём потоке. */
     suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
         this.me = me
@@ -571,14 +582,17 @@ object ChatLink {
         val readRaw = dao.readBefore(job.chat, job.thread, job.lineId + 1, readRings, WINDOW_READ).asReversed()
         if (readRaw.lastOrNull()?.id != job.lineId) return Generated(null, "строки нет среди читаемых моделью")
         val offset = dao.readCostBefore(job.chat, job.thread, readRaw.first().id, readRings)
-        val window = ChatFeed.window(readRaw.map(::feedLine), offset)
+        // Разговор — окно не заходит за его начало (ChatFeed, «РАЗГОВОР»).
+        val installedAt = installedAt(app)
+        val window = ChatFeed.window(readRaw.map(::feedLine), offset, installedAt = installedAt)
 
         // Голова нити — из строк перед началом окна, хвост — из последних строк всех колец.
         val before = dao.readBefore(job.chat, job.thread, window.startId, readRings, ChatThread.HEAD_READ)
             .asReversed().map(::feedLine)
         val agentNames = ChatPrefs.names(app)
-        val head = ChatThread.head(before, window.lines.first().at, dictionary, agentNames)
-        val tail = ChatThread.tail(upTo.map(::feedLine), dictionary, agentNames)
+        val head = ChatThread.head(before, window.lines.first().at, dictionary, agentNames, installedAt)
+        val previous = if (window.startsConversation) ChatThread.previous(before, dictionary, agentNames, installedAt) else null
+        val tail = ChatThread.tail(upTo.map(::feedLine), dictionary, agentNames, installedAt)
         val moved = windowStarts.put(job.tallyKey, window.startId)?.let { it != window.startId }
 
         // Конец нити — ещё что я обещал в этом чате. Тела здесь нет: о нём
@@ -593,7 +607,7 @@ object ChatLink {
         val body = BodyLine.of(watchdog.power.value, watchdog.zone.value)
         val insist = ChatThread.insistence(upTo.map(::feedLine))
         val tailBlock = listOfNotNull(tail?.let(ChatThread::tailText), insist, promisedText).joinToString("\n")
-        threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm) +
+        threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm, previous = previous) +
             " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body"
 
         // Подпись владельца — по окну: строка «где я» стоит первой и должна меняться только вместе с окном.
@@ -601,7 +615,7 @@ object ChatLink {
         val place = ChatFeed.placeLine(job.place == Place.DIRECT, job.chatTitle, ownerSignature)
         val selfLines = ChatFeed.selfLines(engine.wallFor())
         val note = ChatFeed.prochnostNote(upTo.last().text, upTo.filter { it.isAgent }.map { it.text }, selfLines)
-        val headText = head?.let { ChatThread.headText(it, hhmm) }
+        val headText = head?.let { ChatThread.headText(it, hhmm) } ?: previous?.let { ChatThread.previousText(it, hhmm, ::day) }
 
         // Детектор порчи грузит и экран, но служба после комы поднимается без
         // экрана — без этой строки порча в чате молча не проверялась бы.
