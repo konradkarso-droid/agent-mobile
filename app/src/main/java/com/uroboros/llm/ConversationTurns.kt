@@ -419,10 +419,18 @@ class ConversationTurns(
         // в неё парой с репликой, а годного ответа нет — ход скрывается
         // (ConversationJournal.Hidden): на экране вопрос и заглушка, модели не
         // подаётся ни то, ни другое.
+        // Строки вспоминания, выкинутые из запроса второй попытки (см.
+        // AnswerLadder.Ribbon.messages): ход, закрытый её ответом, хранит
+        // вспоминание без них.
+        var recallDropped = emptySet<String>()
         val ribbon = object : AnswerLadder.Ribbon {
             override fun history() = journal.history()
-            override fun messages(without: Set<Int>) =
-                journal.messagesFor(content, selfNote, dreamNote, recall, without = without)
+            override fun messages(without: Set<Int>) = messages(without, emptySet())
+            override fun ownSpeech() = EchoIntercept.ownSpeech(recall)
+            override fun messages(without: Set<Int>, withoutRecall: Set<String>): List<Pair<String, String>> {
+                if (withoutRecall.isNotEmpty()) recallDropped = withoutRecall
+                return journal.messagesFor(content, selfNote, dreamNote, EchoIntercept.recallWithout(recall, withoutRecall), without = without)
+            }
             override fun stableMessages(without: Set<Int>) = if (without.isEmpty()) journal.stableMessageCount() else null
             override fun close(answer: String, rejected: String?) {
                 journal.appendTurn(
@@ -434,7 +442,7 @@ class ConversationTurns(
                     at = startMs,
                     dreamNote = dreamNote,
                     marks = recordMarks,
-                    recall = recall,
+                    recall = if (rejected != null) EchoIntercept.recallWithout(recall, recallDropped) else recall,
                     rejected = rejected,
                 )
                 appended = true

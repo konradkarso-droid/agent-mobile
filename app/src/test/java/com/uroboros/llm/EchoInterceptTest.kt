@@ -174,4 +174,50 @@ class EchoInterceptTest {
         )
         assertEquals(ConversationJournal().messagesFor("б", currentSelfNote = "сейчас"), journal.messagesFor("б", currentSelfNote = "сейчас", without = setOf(0)))
     }
+
+    // Копия записи своей речи — случай с телефона: на «Что снилось?» записи
+    // «твои слова» и «я говорил» из одного прошлого разговора, и ответ — та
+    // самая прошлая реплика агента слово в слово.
+
+    private val ownLine = "Я говорил в прошлом разговоре, на днях: «Из бесед помню не всё — сон выбирает самое важное, и иногда снилось недёшево.»."
+    private val userLine = "Твои слова в прошлом разговоре, с неделю назад: «Да, это из давнего разговора. Приснилось неважное, такое бывает. Что-нибудь ещë снилось?»."
+    private val recall = userLine + "\n" + ownLine
+
+    @Test
+    fun `копия записи своей речи — вторая попытка без этой строки вспоминания`() {
+        val answer = "Из бесед помню не всё — сон выбирает самое важное, и иногда снилось недёшево. В этот раз приснилось неважное, такое бывает."
+        val retry = EchoIntercept.decide(answer, "Что снилось?", emptyList(), EchoIntercept.ownSpeech(recall))
+        assertNotNull(retry)
+        assertEquals(emptySet<Int>(), retry!!.without)
+        assertEquals(setOf(ownLine), retry.withoutRecall)
+        assertEquals(userLine, EchoIntercept.recallWithout(recall, retry.withoutRecall))
+    }
+
+    @Test
+    fun `копия своей записи и названные сны — тоже перехват`() {
+        val answer = "Из бесед помню не всё — сон выбирает самое важное, и иногда снилось недёшево. Этой ночью мне приснилось: запись, стихи и температура."
+        assertNotNull(EchoIntercept.decide(answer, "Что снилось?", emptyList(), EchoIntercept.ownSpeech(recall)))
+    }
+
+    /** Проверка на молчание: ответ по строке о ночи рядом с теми же записями не перехватывается. */
+    @Test
+    fun `ответ своими словами рядом с записью своей речи — перехвата нет`() {
+        val answer = "Мне приснилось: запись, стихи и температура."
+        assertNull(EchoIntercept.decide(answer, "Что снилось?", emptyList(), EchoIntercept.ownSpeech(recall)))
+    }
+
+    /** Проверка на молчание: слова владельца из записи — не своя речь, их копия этим перехватом не ловится. */
+    @Test
+    fun `своя речь — только строки «Я говорил»`() {
+        assertEquals(listOf(ownLine), EchoIntercept.ownSpeech(recall))
+        assertEquals(emptyList<String>(), EchoIntercept.ownSpeech(null))
+        assertNull(EchoIntercept.decide("Да, это из давнего разговора. Приснилось неважное, такое бывает.", "Что снилось?", emptyList(), EchoIntercept.ownSpeech(userLine)))
+    }
+
+    @Test
+    fun `вспоминание без последней строки — null, без строк — прежнее`() {
+        assertNull(EchoIntercept.recallWithout(ownLine, setOf(ownLine)))
+        assertEquals(recall, EchoIntercept.recallWithout(recall, emptySet()))
+        assertEquals("Из бесед помню не всё — сон выбирает самое важное, и иногда снилось недёшево.", EchoIntercept.quoteOf(ownLine))
+    }
 }

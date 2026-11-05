@@ -3322,8 +3322,10 @@ class MainActivity : AppCompatActivity() {
         val cause = when (val c = intercept.cause) {
             // Номера ходов — как на экране, с единицы.
             is AnswerLadder.Cause.Repeat ->
-                "повтор «${c.sentence}» → вторая попытка без ходов " +
-                    c.without.sorted().joinToString(", ") { (it + 1).toString() }
+                "повтор «${c.sentence}» → вторая попытка без " + listOfNotNull(
+                    c.without.takeIf { it.isNotEmpty() }?.sorted()?.joinToString(", ", prefix = "ходов ") { (it + 1).toString() },
+                    c.withoutRecall.takeIf { it.isNotEmpty() }?.let { "записей своей речи: ${it.size}" },
+                ).joinToString(" и ")
             is AnswerLadder.Cause.Damage ->
                 "порча слов «${c.words.joinToString(", ")}» → повторная выборка"
             is AnswerLadder.Cause.Mirror ->
