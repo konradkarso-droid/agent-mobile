@@ -32,7 +32,10 @@ import kotlinx.coroutines.flow.transformWhile
  *     ещё ОДИН раз (зерно у каждого запроса своё, LlmEngine.guardedFlow), и
  *     только если прошлый кончился сам или обрезан на вызове: оборванный
  *     сторожем или сбоем — это нагрев или поломка, от которых и обрывали.
- *     Третьего прохода нет намеренно: каждый — полный обсчёт хвоста запроса;
+ *     Третьего прохода нет намеренно: каждый — полный обсчёт хвоста запроса.
+ *     Канал вправе показать доску сам, до первого прохода (`deskFirst`, см.
+ *     Glance, «ДОСКА ПО СЛОВУ ВОПРОСА»): тогда первый проход — уже по доске,
+ *     с теми же правилами второго вызова и пустоты;
  *  2. готовый ответ меряется ([causeOf]) — повтор, зеркало, порча; петля до
  *     потолка ([loopAtCeiling]) ход скрывает без второй попытки;
  *  3. пойманный — вторая попытка ([secondAttempt]), негодная вторая — три
@@ -218,6 +221,9 @@ class AnswerLadder(
      * @property kept ответ, отданный [Ribbon.close], дословно; null — не отдан.
      * @property glanced агент глянул на приборы — первым проходом или во второй попытке.
      * @property glanceRetried после доски ответа не было, и проход со взглядом повторён.
+     * @property deskByCode доску показал код до первого прохода, по слову вопроса
+     *   (`deskFirst` у [run]), — это слово; null — не показывал. [glanced] при
+     *   этом true: модель отвечала по доске, хотя сама её не звала.
      * @property loop петля до потолка ([loopAtCeiling]); null — не было.
      * @property haltedBy лестница остановлена перед очередным проходом — чем; null — нет.
      */
@@ -235,6 +241,7 @@ class AnswerLadder(
         val glanceRetried: Boolean,
         val loop: EchoCheck.Result?,
         val haltedBy: String?,
+        val deskByCode: String? = null,
     )
 
     /**
@@ -252,7 +259,11 @@ class AnswerLadder(
      *   события пойдут в [onEvent] так же. Экрану — убрать показанный первый ответ.
      * @param onThird вторая тоже не годна, сейчас три варианта. Их текст в
      *   [onEvent] не идёт; экрану — убрать показанную вторую попытку.
-     * @param onGlance агент позвал приборы, сейчас доска.
+     * @param onGlance агент позвал приборы (или доску показывает код), сейчас доска.
+     * @param deskFirst слово вопроса о приборах (Glance.asksInstruments): доска
+     *   показывается до первого прохода, и первый проход уже отвечает по ней;
+     *   null — решает модель. Без [desk] не действует. Почему — у Glance,
+     *   «ДОСКА ПО СЛОВУ ВОПРОСА».
      */
     suspend fun run(
         ribbon: Ribbon,
@@ -265,6 +276,7 @@ class AnswerLadder(
         onRetry: (Cause) -> Unit = {},
         onThird: () -> Unit = {},
         onGlance: () -> Unit = {},
+        deskFirst: String? = null,
     ): Result {
         val startMs = System.currentTimeMillis()
         val messages = ribbon.messages(emptySet())
@@ -323,41 +335,62 @@ class AnswerLadder(
         var glanced = false
         var glanceRetried = false
         var cutByCall = false
-        try {
-            val before = pass(messages, first = true)
-            if (before != null) {
-                glanced = true
-                if (stopped()) {
-                    // Доски не будет: ход ложится сказанным до вызова.
+        val deskByCode = deskFirst?.takeIf { desk != null }
+
+        // Проход по доске: [glanceTail] уже собран. Второй вызов подряд доску
+        // снова не показывает — ответ режется по нему; пусто после доски — ещё
+        // один такой же проход (см. ПОРЯДОК ХОДА, п. 1).
+        suspend fun answerByDesk(first: Boolean) {
+            answer.clear()
+            tokensSeen = 0
+            firstTokenAtMs = null
+            metrics = null
+            var again = pass(messages + glanceTail, first)
+            if (again != null) {
+                cutByCall = true
+                if (cutAtCall(answer, again)) tokensSeen = 0
+            }
+            if (answer.isBlank() && (again != null || engine.lastEnd == GenerationEnd.COMPLETED) && !stopped()) {
+                glanceRetried = true
+                answer.clear()
+                tokensSeen = 0
+                firstTokenAtMs = null
+                metrics = null
+                cutByCall = false
+                again = pass(messages + glanceTail)
+                if (again != null) {
                     cutByCall = true
-                    cutAtCall(answer, before)
-                } else {
-                    onGlance()
-                    glanceTail = listOf(
-                        ConversationJournal.ROLE_ASSISTANT to Glance.callMessage(before),
-                        ConversationJournal.ROLE_USER to Glance.response(desk?.invoke().orEmpty()),
-                    )
-                    answer.clear()
-                    tokensSeen = 0
-                    firstTokenAtMs = null
-                    metrics = null
-                    var again = pass(messages + glanceTail)
-                    if (again != null) {
+                    if (cutAtCall(answer, again)) tokensSeen = 0
+                }
+            }
+        }
+
+        try {
+            if (deskByCode != null) {
+                // Доску показывает код: вызов стоит в запросе так, будто его
+                // написала модель, — та же форма, что после её собственного вызова.
+                glanced = true
+                onGlance()
+                glanceTail = listOf(
+                    ConversationJournal.ROLE_ASSISTANT to Glance.callMessage(""),
+                    ConversationJournal.ROLE_USER to Glance.response(desk?.invoke().orEmpty()),
+                )
+                answerByDesk(first = true)
+            } else {
+                val before = pass(messages, first = true)
+                if (before != null) {
+                    glanced = true
+                    if (stopped()) {
+                        // Доски не будет: ход ложится сказанным до вызова.
                         cutByCall = true
-                        if (cutAtCall(answer, again)) tokensSeen = 0
-                    }
-                    if (answer.isBlank() && (again != null || engine.lastEnd == GenerationEnd.COMPLETED) && !stopped()) {
-                        glanceRetried = true
-                        answer.clear()
-                        tokensSeen = 0
-                        firstTokenAtMs = null
-                        metrics = null
-                        cutByCall = false
-                        again = pass(messages + glanceTail)
-                        if (again != null) {
-                            cutByCall = true
-                            if (cutAtCall(answer, again)) tokensSeen = 0
-                        }
+                        cutAtCall(answer, before)
+                    } else {
+                        onGlance()
+                        glanceTail = listOf(
+                            ConversationJournal.ROLE_ASSISTANT to Glance.callMessage(before),
+                            ConversationJournal.ROLE_USER to Glance.response(desk?.invoke().orEmpty()),
+                        )
+                        answerByDesk(first = false)
                     }
                 }
             }
@@ -414,6 +447,7 @@ class AnswerLadder(
             glanceRetried = glanceRetried,
             loop = loop,
             haltedBy = haltedBy,
+            deskByCode = deskByCode,
         )
     }
 

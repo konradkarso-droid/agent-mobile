@@ -78,7 +78,8 @@ class AnswerLadderTest {
         desk: String = "Память: записей 677",
         halt: () -> String? = { null },
         damage: WordDamage? = words,
-    ) = runBlocking { ladder(engine, damage).run(ribbon, question, { desk }, halt) }
+        deskFirst: String? = null,
+    ) = runBlocking { ladder(engine, damage).run(ribbon, question, { desk }, halt, deskFirst = deskFirst) }
 
     private val call = "<tool_call>\n{\"name\": \"look_at_instruments\", \"arguments\": {}}\n</tool_call>"
 
@@ -108,6 +109,56 @@ class AnswerLadderTest {
         assertTrue(second[2].second.startsWith("<tool_response>\n${Glance.DESK_HEADER}\n"))
         assertTrue("Память: записей 677" in second[2].second)
         assertFalse(e.calls[1].first)
+    }
+
+    @Test
+    fun `доска по слову вопроса — уже в первом проходе, проход один`() {
+        val e = FakeEngine(Reply("В памяти у меня 677 записей."))
+        val r = FakeRibbon()
+        val res = run(e, r, question = "Сколько записей?", deskFirst = "записей")
+        assertEquals("В памяти у меня 677 записей." to null, r.closed)
+        assertEquals(1, e.calls.size)
+        assertTrue(e.calls[0].first)
+        assertEquals(0, e.calls[0].stable)
+        val msgs = e.calls[0].messages
+        assertEquals(ConversationJournal.ROLE_ASSISTANT to Glance.callMessage(""), msgs[1])
+        assertTrue(msgs[2].second.startsWith("<tool_response>\n${Glance.DESK_HEADER}\n"))
+        assertTrue("Память: записей 677" in msgs[2].second)
+        assertTrue(res.glanced)
+        assertEquals("записей", res.deskByCode)
+        assertFalse(res.glanceRetried)
+    }
+
+    @Test
+    fun `доска по слову — вызов модели после неё режется, пусто — один повтор`() {
+        val e = FakeEngine(Reply(call), Reply("В памяти у меня 677 записей. $call"))
+        val r = FakeRibbon()
+        val res = run(e, r, deskFirst = "записей")
+        assertTrue(res.glanceRetried)
+        assertEquals("В памяти у меня 677 записей." to null, r.closed)
+        assertEquals(GenerationEnd.COMPLETED, res.generationEnd)
+        assertEquals(2, e.calls.size)
+    }
+
+    @Test
+    fun `без слова доска не показывается, и пометки нет`() {
+        val e = FakeEngine(Reply("Привет! Всё хорошо."))
+        val res = run(e)
+        assertEquals(1, e.calls.size)
+        assertEquals(1, e.calls[0].messages.size)
+        assertFalse(res.glanced)
+        assertNull(res.deskByCode)
+    }
+
+    @Test
+    fun `доска по слову и перехват — вторая попытка видит ту же доску`() {
+        val e = FakeEngine(Reply("Записей у меня повторяюек много."), Reply("В памяти у меня 677 записей."))
+        val r = FakeRibbon()
+        val res = run(e, r, deskFirst = "записей")
+        assertTrue(res.intercept?.cause is AnswerLadder.Cause.Damage)
+        assertEquals(2, e.calls.size)
+        assertEquals(e.calls[0].messages, e.calls[1].messages)
+        assertEquals("В памяти у меня 677 записей." to "Записей у меня повторяюек много.", r.closed)
     }
 
     @Test
