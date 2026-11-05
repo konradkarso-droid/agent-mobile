@@ -55,6 +55,7 @@ import com.uroboros.memory.dream.SleepDecision
 import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.SelfJudgeDecision
+import com.uroboros.safety.MemoryWatch
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -299,6 +300,8 @@ class AgentService : Service() {
             _initiativeTallyLines.value = InitiativeTally.meter(tallyStore.read(), System.currentTimeMillis())
         }
         scope.launch { sleepLoop() }
+        // Память телефона: замер раз в 15 с и выгрузка модели по сигналу (safety.MemoryPressure).
+        scope.launch { MemoryWatch.run(applicationContext) }
         // Канал врат живёт, пока живо тело: опрос телеграма (gate.link.GateLink).
         GateLink.start(applicationContext, scope)
     }
@@ -1217,6 +1220,12 @@ class AgentService : Service() {
         selfRun = false
         stepsRun = false
         finish()
+    }
+
+    /** Сигнал системы о памяти — до ближайшего замера (safety.MemoryWatch). */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        MemoryWatch.onTrim(level)
     }
 
     override fun onDestroy() {
