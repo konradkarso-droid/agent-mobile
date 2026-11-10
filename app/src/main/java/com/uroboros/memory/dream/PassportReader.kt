@@ -15,24 +15,30 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Чтение и предложение паспорта ([Passport]): своя речь агента из архива и
+ * Чтение и укладка паспорта ([Passport]): своя речь агента из архива и
  * ленты, слова владельца из памяти, строки паспорта в базе. Правило — в
- * [Passport]; здесь только чтение и вставка предложенного в очередь.
+ * [Passport]; здесь только чтение и вставка.
  *
  * Ничего не хранит: читает при каждом вызове.
  */
 class PassportReader(private val context: Context, private val mediator: TrustedMediator) {
 
+    /** Строка прибора и сколько строк встало в стену на этом вызове (тогда стену надо перечитать). */
+    data class Outcome(val line: String, val changed: Int)
+
     /**
-     * Предложить недостающие строки паспорта и вернуть строку прибора.
+     * Положить недостающие строки паспорта и вернуть строку прибора.
      * [archive] null — архив ленты не прочитался: имени не ищется.
      */
-    suspend fun proposeAndMeter(archive: List<JournalArchiveTurn>?, ribbon: List<ConversationJournal.Turn>): String =
-        // Два показа подряд (раскрытие шторки и конец хода) иначе предложили бы одну строку дважды.
-        lock.withLock { proposeLocked(archive, ribbon) }
+    suspend fun placeAndMeter(archive: List<JournalArchiveTurn>?, ribbon: List<ConversationJournal.Turn>): Outcome =
+        // Два показа подряд (раскрытие шторки и конец хода) иначе положили бы одну строку дважды.
+        lock.withLock { placeLocked(archive, ribbon) }
 
-    private suspend fun proposeLocked(archive: List<JournalArchiveTurn>?, ribbon: List<ConversationJournal.Turn>): String {
+    private suspend fun placeLocked(archive: List<JournalArchiveTurn>?, ribbon: List<ConversationJournal.Turn>): Outcome {
         val dao = MemoryDatabase.getInstance(context).stickerDao()
+        // Строки, ждавшие решения человека с прежнего порядка, — принять: иначе
+        // они держали бы свой вид паспорта занятым и в стену не вставали.
+        val woke = mediator.acceptWaitingPassport()
         val said = archive.orEmpty().map { Passport.Said(it.agentContent, it.question) } +
             ribbon.map { Passport.Said(it.agentContent, it.question) }
         val namings = Passport.namings(said)
@@ -43,10 +49,11 @@ class PassportReader(private val context: Context, private val mediator: Trusted
             Passport.Existing(it.content, pending = it.reviewPending, rejected = it.rejectedAt != null)
         }
         val proposed = Passport.proposals(Passport.chosenName(namings), owner, nickname, existing)
-        for (text in proposed) mediator.proposePassportLine(text)
-        val after = existing + proposed.map { Passport.Existing(it, pending = true, rejected = false) }
-        return Passport.meterLine(namings, owner, nickname, after) +
+        val placed = proposed.map { text -> mediator.placePassportLine(text) to text }
+        val after = existing + proposed.map { Passport.Existing(it, pending = false, rejected = false) }
+        val line = Passport.meterLine(namings, owner, nickname, after) + Passport.placedNote(placed, woke) +
             (if (archive == null) " · архив ленты не прочитался — имя искалось только в открытой ленте" else "")
+        return Outcome(line, placed.size + woke)
     }
 
     private companion object {

@@ -551,6 +551,19 @@ interface StickerDao {
     )
     suspend fun passportWall(): List<String>
 
+    /**
+     * Принять все ждущие строки паспорта (dream.Passport) разом; возвращает,
+     * сколько снято. Только паспорт — метка identity без основания; строки о
+     * себе (с основанием) и обычные записи в очереди не задевает, отвергнутые
+     * тоже. Почему паспорт принимается без человека — у dream.Passport,
+     * «ПУТЬ СТРОКИ».
+     */
+    @Query(
+        "UPDATE stickers SET reviewPending = 0 WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId IS NULL " +
+            "AND reviewPending = 1 AND rejectedAt IS NULL"
+    )
+    suspend fun acceptPendingPassport(): Int
+
     /** Все строки паспорта — принятые, ждущие и отвергнутые: что уже предлагалось. */
     @Query("SELECT * FROM stickers WHERE tag = '" + Prism.IDENTITY_TAG + "' AND basedOnId IS NULL ORDER BY createdAt ASC, id ASC")
     suspend fun passportAll(): List<Sticker>

@@ -314,6 +314,7 @@ class FakeStickerDao : StickerDao {
     override suspend fun saidIn(chat: String, limit: Int): List<Sticker> = unprepared("saidIn")
     override suspend fun passportWall(): List<String> = unprepared("passportWall")
     override suspend fun passportAll(): List<Sticker> = unprepared("passportAll")
+    override suspend fun acceptPendingPassport(): Int = unprepared("acceptPendingPassport")
 
     override suspend fun reassignProvenanceByPrefix(
         contentPrefix: String,

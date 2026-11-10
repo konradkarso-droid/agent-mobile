@@ -260,29 +260,41 @@ class TrustedMediator(context: Context) {
     }
 
     /**
-     * Предложить строку паспорта (dream.Passport) — сразу красной и сразу на
-     * проверке, без основания: по нему её и отличают от строки о себе
-     * (StickerDao). Принимает только человек, тем же [acceptFromReview], что и
-     * всё в очереди. Вставка — мимо сверок записи, почему — у
+     * Положить строку паспорта (dream.Passport) — сразу красной и сразу
+     * принятой, без основания: по нему её и отличают от строки о себе
+     * (StickerDao). В очередь проверки она не идёт — почему, у dream.Passport,
+     * «ПУТЬ СТРОКИ». Вставка — мимо сверок записи, почему — у
      * HourglassMemory.insertPassportLine.
      *
      * Провенанс — вывод агента: строку собрал код (имя — из своей речи агента,
      * владелец — из слов владельца, род — решением владельца), а говорит она от
      * лица агента.
      *
+     * ЭТО НЕ ПУТЬ ПРИЁМА ДЛЯ АГЕНТА. [acceptFromReview] по-прежнему зовёт
+     * только человек: здесь нет ни очереди, ни выбора между записями — код
+     * кладёт строку, которую сам же собрал по объявленному правилу. Убрать её
+     * человек может тем же [reject], что любую запись.
+     *
      * @return номер записи.
      */
-    suspend fun proposePassportLine(text: String): Long =
+    suspend fun placePassportLine(text: String): Long =
         hourglass.insertPassportLine(
             Sticker(
                 content = text,
                 tag = Prism.IDENTITY_TAG,
                 source = SourceKind.AGENT_INFERRED.name,
                 confidence = ConfidenceLevel.INFERRED.name,
-                reviewPending = true,
+                reviewPending = false,
                 basedOnId = null,
             )
         )
+
+    /**
+     * Принять строки паспорта, оставшиеся ждать решения с тех пор, когда их
+     * принимал человек; возвращает, сколько принято. Проброс — см.
+     * StickerDao.acceptPendingPassport.
+     */
+    suspend fun acceptWaitingPassport(): Int = dao.acceptPendingPassport()
 
     /**
      * Достать текст похожей записи по номеру.
