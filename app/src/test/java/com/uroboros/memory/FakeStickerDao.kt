@@ -312,6 +312,7 @@ class FakeStickerDao : StickerDao {
         unprepared("settledIdentityBasedOn")
     override suspend fun passportWall(): List<String> = unprepared("passportWall")
     override suspend fun passportAll(): List<Sticker> = unprepared("passportAll")
+    override suspend fun acceptPendingPassport(): Int = unprepared("acceptPendingPassport")
 
     override suspend fun reassignProvenanceByPrefix(
         contentPrefix: String,

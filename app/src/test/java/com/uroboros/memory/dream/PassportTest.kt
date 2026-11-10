@@ -110,4 +110,31 @@ class PassportTest {
         assertTrue(Passport.hasName(listOf(Passport.GENDER_LINE, Passport.nameLine("Александр"))))
         assertFalse(Passport.hasName(listOf(Passport.GENDER_LINE)))
     }
+
+    @Test
+    fun `встало само называет номер строки, чтобы её можно было отвергнуть`() {
+        val note = Passport.placedNote(listOf(648L to Passport.nameLine("Александр")), woke = 0)
+        assertTrue(note.contains("встало само: №648 «Меня зовут Александр. Это имя я выбрал себе сам.»"))
+        assertTrue(note.contains("«Отвергнуть»"))
+    }
+
+    @Test
+    fun `принятое из ждавших считается отдельно от нового`() {
+        val note = Passport.placedNote(emptyList(), woke = 2)
+        assertTrue(note.contains("принято из ждавших: 2"))
+        assertFalse(note.contains("встало само"))
+    }
+
+    @Test
+    fun `ничего не встало — хвоста нет`() {
+        assertEquals("", Passport.placedNote(emptyList(), woke = 0))
+    }
+
+    @Test
+    fun `строка прибора молчит о ждущих, когда их нет`() {
+        val existing = listOf(Passport.Existing(Passport.nameLine("Александр"), pending = false, rejected = false))
+        val line = Passport.meterLine(Passport.namings(emptyList()), null, null, existing)
+        assertTrue(line.contains("в стене 1"))
+        assertFalse(line.contains("ждут решения"))
+    }
 }

@@ -626,7 +626,7 @@ class MainActivity : AppCompatActivity() {
         refreshPassport()
     }
 
-    /** Паспорт агента: чтение и предложение строк в очередь (dream.Passport). */
+    /** Паспорт агента: чтение и укладка строк (dream.Passport). */
     private val passportReader by lazy { PassportReader(applicationContext, mediator) }
 
     /**
@@ -636,15 +636,18 @@ class MainActivity : AppCompatActivity() {
     private var passportLine: String? = null
 
     /**
-     * Предложить недостающие строки паспорта и перечитать строку прибора —
+     * Положить недостающие строки паспорта и перечитать строку прибора —
      * вместе с «Нажитым о себе»: тем же движением и по тем же поводам. Сбой
-     * называется в самой строке.
+     * называется в самой строке. Встала новая строка — стена перечитывается
+     * сразу, как после решения человека ([refreshWallLearned]).
      */
     private suspend fun refreshPassport() {
         // Лента — здесь, на главном потоке, где она и меняется; разбор архива — в стороне.
         val ribbon = journal.history()
         passportLine = runCatching {
-            withContext(Dispatchers.Default) { passportReader.proposeAndMeter(journalStore.readArchive(), ribbon) }
+            val outcome = withContext(Dispatchers.Default) { passportReader.placeAndMeter(journalStore.readArchive(), ribbon) }
+            if (outcome.changed > 0) refreshWallLearned()
+            outcome.line
         }.getOrElse { "Паспорт: не прочитался — ${it.javaClass.simpleName}" }
     }
 
