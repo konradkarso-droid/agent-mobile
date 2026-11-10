@@ -7,6 +7,7 @@ import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.memory.nav.SubjectWords
 import com.uroboros.memory.nav.MirrorFilter
 import com.uroboros.memory.nav.OwnCorrection
 import com.uroboros.memory.nav.RetellHolder
@@ -444,6 +445,8 @@ internal sealed class SelectionSummary {
         val requestsFiltered: Int = 0,
         /** Сколько отсеяно как «один обычай» там же (RiskTrigger.isOnlySocial). */
         val socialFiltered: Int = 0,
+        /** Сколько отсеяно там же как пришедшие только по словам без предмета (nav.SubjectWords). */
+        val noSubject: Int = 0,
     ) : SelectionSummary() {
 
         val rejected: Int get() = tooNarrow + tooExpensive + tooBoth
@@ -465,7 +468,8 @@ internal sealed class SelectionSummary {
                 val filtered = (if (questionsFiltered > 0)
                     " · отсеяно вопросов $questionsFiltered" else "") +
                     (if (requestsFiltered > 0) " · отсеяно просьб $requestsFiltered" else "") +
-                    (if (socialFiltered > 0) " · отсеяно обычаев $socialFiltered" else "")
+                    (if (socialFiltered > 0) " · отсеяно обычаев $socialFiltered" else "") +
+                    (if (noSubject > 0) " · отсеяно без предмета $noSubject" else "")
                 return head + trim + why + filtered + " · скрыто карантином $hidden"
             }
     }
@@ -1568,6 +1572,10 @@ class HourglassMemory(
         var questionsFiltered = 0
         var requestsFiltered = 0
         var socialFiltered = 0
+        // Запись, пришедшая только по словам без предмета, — тоже только на
+        // пути ответа и по той же причине; правило и его цена — у nav.SubjectWords.
+        var noSubject = 0
+        val dictionary = lemmas()
         val totalWords = words.size
 
         val passed = mutableListOf<Scored>()
@@ -1592,6 +1600,11 @@ class HourglassMemory(
             }
 
             val matched = hits[sticker.id].orEmpty()
+            if (purpose == RetrievalPurpose.ANSWERING_USER && !SubjectWords.hasSubject(matched.keys, dictionary)) {
+                noSubject++
+                trace += "id=${sticker.id} снята: совпала только словами без предмета ${matched.keys}"
+                continue
+            }
             val score = rule(matched, totalWords, sticker.content.length)
 
             trace += "id=${sticker.id} слов ${score.matchedWords}/$totalWords " +
@@ -1651,6 +1664,7 @@ class HourglassMemory(
                 questionsFiltered = questionsFiltered,
                 requestsFiltered = requestsFiltered,
                 socialFiltered = socialFiltered,
+                noSubject = noSubject,
             )
         )
     }
