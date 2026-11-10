@@ -114,28 +114,30 @@ object ChatOwnSpeech {
     /**
      * Где и кому сказан [answer] — для того, кто смотрит.
      *
-     * Сказанное в этом же чате — «в этом чате»: собеседник тот же. Имя
-     * собеседника берётся из его подписи как есть, без падежа — «(личка,
-     * собеседник — Пётр)»: падеж по словарю есть не у всякого имени, а
-     * подпись без имени оставила бы модель гадать, кому это сказано.
+     * Сказанное в этом же чате — «в этом чате я сказал»: собеседник тот же.
+     * Имя собеседника берётся из его подписи как есть и встаёт в скобках
+     * после слова «собеседнику»: падеж по словарю есть не у всякого имени, а
+     * подпись без имени оставила бы модель гадать, кому это сказано. Почему
+     * «я сказал собеседнику (…)», а не имя рядом с местом, — у
+     * ProvenanceLabels.ownSpeechForModel.
      */
     internal fun where(viewer: Viewer, answer: ChatPromises.Line, chatLines: List<ChatPromises.Line>, ownerKey: String?): String {
         if (viewer.scope != null && answer.chat == viewer.chat) return IN_THIS_CHAT
         val to = answer.replyTo
         if (viewer.scope == ChatRecall.Scope.PERSON) return TO_YOU_IN_GROUP
-        val place = if (answer.direct) "личка" else "группа"
+        val place = if (answer.direct) "в телеграме" else "в группе телеграма"
         val name = chatLines.lastOrNull { !it.isAgent && it.sender == to }?.signature?.trim()?.takeIf { it.isNotEmpty() }
         val whom = when {
             to != null && to == ownerKey -> if (name != null) "мой владелец $name" else "мой владелец"
             name != null -> name
             else -> null
         }
-        return if (whom != null) "в телеграме ($place, собеседник — $whom)" else "в телеграме ($place)"
+        return if (whom != null) "$place я сказал собеседнику ($whom)" else "$place я сказал собеседнику"
     }
 
-    const val IN_THIS_CHAT = "в этом чате"
-    const val TO_YOU_IN_GROUP = "тебе в группе"
-    const val ON_SCREEN = "на экране телефона, моему владельцу"
+    const val IN_THIS_CHAT = "в этом чате я сказал"
+    const val TO_YOU_IN_GROUP = "в группе я сказал тебе"
+    const val ON_SCREEN = "в разговоре на экране телефона я сказал"
 
     /**
      * Сколько мест из [ChatRecall.NARROW_SEATS] узкого отбора отдаётся своей
