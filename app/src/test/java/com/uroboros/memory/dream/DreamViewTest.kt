@@ -323,4 +323,12 @@ class DreamViewTest {
         )
         assertFalse(text, text.contains("различных"))
     }
+
+    @Test
+    fun `при потолке сказано, сколько записей прошло очередь, без потолка — молчит`() {
+        val hit = DreamView.render(night(dreams = 60, dreamers = 480, ceilingHit = true), emptyList(), 0, 160, repeats = 0, queued = 215)
+        assertTrue(hit, hit.contains("Очередь записей: за последние ${DreamWeaver.QUEUE_NIGHTS} ночей снились 215 из 480 участвующих."))
+        val free = DreamView.render(night(dreams = 6, dreamers = 4), emptyList(), 0, 4, repeats = 0, queued = 4)
+        assertFalse(free, free.contains("Очередь записей"))
+    }
 }

@@ -883,9 +883,10 @@ class AgentService : Service() {
         val rows = night?.let { db.dreamDao().ofNight(it.nightAt) } ?: emptyList()
         // Ночи перед последней — см. SleepPressure.measure.
         val earlier = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) } ?: emptyList()
+        val queue = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 1) } ?: emptyList()
         // Пробное плетение — вне главного потока: при большой памяти это
         // заметный счёт, а на главном он подвешивал бы экран.
-        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier) }
+        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier, queue) }
         SleepDecision.decide(pressure.changed)?.let {
             showSleepLine(it)
             return

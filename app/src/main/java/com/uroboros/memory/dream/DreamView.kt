@@ -74,7 +74,8 @@ class DreamView(
         // Ночи перед показанной: из них и давление (см. SleepPressure.measure),
         // и строка повторов (см. DreamWeaver.repeatsLine).
         val earlier = night?.let { dreams.ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) } ?: emptyList()
-        val pressure = SleepPressure.line(SleepPressure.measure(all, night, rows, earlier))
+        val queue = night?.let { dreams.ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 1) } ?: emptyList()
+        val pressure = SleepPressure.line(SleepPressure.measure(all, night, rows, earlier, queue))
         if (night == null) return NO_NIGHT + "\n\n" + pressure
         val byId = all.associateBy { it.id }
 
@@ -93,7 +94,9 @@ class DreamView(
         }
         val before = DreamWeaver.chainsOf(earlier)
         val repeats = DreamWeaver.chainsOf(rows).count { it in before }
-        return render(night, collapse(visible), silent, dreamt.size, repeats) + "\n\n" + pressure
+        // Очередь записей — вместе с показанной ночью: сколько записей уже прошло круг.
+        val queued = DreamWeaver.lastDreamtOf(queue + rows).size
+        return render(night, collapse(visible), silent, dreamt.size, repeats, queued) + "\n\n" + pressure
     }
 
     /**
@@ -173,6 +176,8 @@ class DreamView(
          *
          * [repeats] — сколько снов ночи снилось и в ночи до неё (см.
          * [DreamWeaver.repeatsLine]); null — не посчитано, строки нет.
+         * [queued] — сколько записей снилось за ночи очереди
+         * ([DreamWeaver.queueLine]); null — не посчитано, строки нет.
          */
         fun render(
             night: DreamNight,
@@ -180,6 +185,7 @@ class DreamView(
             silent: Int,
             dreamtRecords: Int,
             repeats: Int? = null,
+            queued: Int? = null,
         ): String = buildString {
             append("СНЫ\n")
             append("Ночь: ").append(moment(night.nightAt))
@@ -236,6 +242,7 @@ class DreamView(
             if (night.ceilingHit) {
                 append("Потолок снов сработал — до длинных сюжетов дело не дошло.\n")
                 if (repeats != null) append(DreamWeaver.repeatsLine(night.dreams, repeats)).append("\n")
+                if (queued != null) append(DreamWeaver.queueLine(queued, night.dreamers)).append("\n")
             }
             if (silent > 0) {
                 append("Не показано снов: ").append(silent)
