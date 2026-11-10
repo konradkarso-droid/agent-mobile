@@ -254,7 +254,7 @@ class AnchorWindowTest {
 
     @Test
     fun `без просьбы горячее по якорям нашло хоть одну — холоду одно место`() = runBlocking {
-        val hot = (1L..5L).map { sticker(it, "говорил долго $it") } + sticker(6, "Praxis сегодня молчит")
+        val hot = (1L..5L).map { sticker(it, "Praxis говорил долго $it") } + sticker(6, "Praxis сегодня молчит")
         val cold = (11L..14L).map { sticker(it, "Praxis говорил про реку $it", Layer.BLUE) }
         val result = withDictionary(dao(*(hot + cold).toTypedArray()))
             .getContextWithSummary(RetrievalPurpose.ANSWERING_USER, "Что говорил Praxis?", 5)
