@@ -55,6 +55,7 @@ import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
 import com.uroboros.llm.RecordSplit
 import com.uroboros.llm.RecordChunkStore
+import com.uroboros.memory.RecallLines
 import com.uroboros.memory.RecordChunks
 import com.uroboros.llm.WordDamageHolder
 import com.uroboros.memory.AcceptCheck
@@ -5055,25 +5056,14 @@ class MainActivity : AppCompatActivity() {
                 // (RecordChunks): те же части, из которых собраны строки ниже.
                 val chunkCandidates = ArrayList<RecordChunks.Candidate>()
                 val stickerLines = stickers.map { sticker ->
-                    val recordEpisode = episodeClock.episodeAt(sticker.createdAt)
-                    val shown = MirrorFilter.shown(sticker, address, retell)
-                    RecordChunks.candidate(
-                        if (shown != null && shown.retold) ProvenanceLabels.retoldParts(shown.text)
-                        else ProvenanceLabels.recordParts(if (shown == null) sticker else sticker.copy(content = shown.text)),
-                        sticker.createdAt,
-                    )?.let { chunkCandidates += it }
-                    if (shown != null && shown.retold) {
-                        retoldCount++
-                        ProvenanceLabels.retoldForModel(
-                            sticker, shown.text, recordsAt,
-                            recordEpisode = recordEpisode, currentEpisode = currentEpisode,
-                        )
-                    } else {
-                        ProvenanceLabels.recordForModel(
-                            if (shown == null) sticker else sticker.copy(content = shown.text), recordsAt,
-                            recordEpisode = recordEpisode, currentEpisode = currentEpisode,
-                        )
-                    }
+                    // Строка — общим правилом с личкой владельца в телеграме (memory.RecallLines).
+                    val line = RecallLines.of(
+                        sticker, address, retell, recordsAt,
+                        recordEpisode = episodeClock.episodeAt(sticker.createdAt), currentEpisode = currentEpisode,
+                    )
+                    RecordChunks.candidate(line.parts, sticker.createdAt)?.let { chunkCandidates += it }
+                    if (line.retold) retoldCount++
+                    line.text
                 }
                 val portraitNotFed: String? = when {
                     portraitReason == Portrait.Reason.NONE -> null

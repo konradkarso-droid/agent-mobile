@@ -310,6 +310,8 @@ class FakeStickerDao : StickerDao {
     override suspend fun pendingIdentity(): Sticker? = unprepared("pendingIdentity")
     override suspend fun settledIdentityBasedOn(baseId: Long): List<Sticker> =
         unprepared("settledIdentityBasedOn")
+    override suspend fun saidBy(speaker: String, limit: Int): List<Sticker> = unprepared("saidBy")
+    override suspend fun saidIn(chat: String, limit: Int): List<Sticker> = unprepared("saidIn")
     override suspend fun passportWall(): List<String> = unprepared("passportWall")
     override suspend fun passportAll(): List<Sticker> = unprepared("passportAll")
 
