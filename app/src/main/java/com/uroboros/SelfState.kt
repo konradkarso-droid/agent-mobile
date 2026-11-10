@@ -121,8 +121,9 @@ object SelfState {
         val rows = night?.let { db.dreamDao().ofNight(it.nightAt) }.orEmpty()
         // Ночи перед последней — см. SleepPressure.measure.
         val earlier = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) }.orEmpty()
+        val queue = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 1) }.orEmpty()
         val records = db.stickerDao().getAll()
-        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier) }
+        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier, queue) }
         return Snapshot(
             starts = life.starts,
             aliveSince = life.lastStartAt,

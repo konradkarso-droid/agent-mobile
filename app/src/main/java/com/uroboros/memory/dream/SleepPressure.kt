@@ -32,7 +32,8 @@ import com.uroboros.memory.Sticker
  * с той же памятью о недавнем, что у следующей ночи, поэтому отличалась бы от
  * прошлой всегда, без единой новой записи, и агент засыпал бы при каждой
  * тишине. Перебор снов по кругу — не перемена материала. Поэтому проба
- * плетётся так, как плелась сама прошлая ночь: с ночами ДО неё. При тех же
+ * плетётся так, как плелась сама прошлая ночь: с ночами ДО неё — и свежесть
+ * снов, и очередь записей (DreamWeaver.fairShare). При тех же
  * записях она повторяет прошлую ночь точно, и давление — ноль; новая запись
  * даёт давление, а уже настоящая ночь выведет вперёд свежие сны. Перебор по
  * кругу идёт только в ночи, которые случились бы и так.
@@ -82,6 +83,10 @@ object SleepPressure {
      *        [lastNight], без неё самой (`ofRecentNights(FRESH_NIGHTS, 1)`):
      *        ровно то, что помнила о недавнем сама прошлая ночь. Почему не
      *        ночи вместе с ней — «ПРОБА ПЛЕТЁТСЯ С ПАМЯТЬЮ ПРОШЛОЙ НОЧИ» выше.
+     * @param queueDreams сны [DreamWeaver.QUEUE_NIGHTS] ночей перед
+     *        [lastNight], без неё самой (`ofRecentNights(QUEUE_NIGHTS, 1)`) —
+     *        очередь записей, какой её видела прошлая ночь. Значения по
+     *        умолчанию нет по той же причине, что у [earlierDreams].
      *        Значения по умолчанию нет намеренно: забытое — это давление
      *        после каждой ночи с потолком.
      *
@@ -92,8 +97,9 @@ object SleepPressure {
         lastNight: DreamNight?,
         lastDreams: List<Dream>,
         earlierDreams: List<Dream>,
+        queueDreams: List<Dream>,
     ): Reading {
-        val woven = DreamWeaver.weave(records, DreamWeaver.chainsOf(earlierDreams))
+        val woven = DreamWeaver.weave(records, DreamWeaver.chainsOf(earlierDreams), DreamWeaver.lastDreamtOf(queueDreams))
         val now = woven.dreams.map { it.recordIds }.toSet()
         if (lastNight == null) {
             return Reading(

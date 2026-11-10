@@ -53,7 +53,8 @@ object DreamRunner {
             // Недавние — ночи перед этой; сама она ещё не записана, пропускать
             // нечего. Давление сна берёт ночи на одну дальше, см. SleepPressure.measure.
             val recent = DreamWeaver.chainsOf(db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 0))
-            val night = DreamWeaver.weave(records, recent)
+            val queue = DreamWeaver.lastDreamtOf(db.dreamDao().ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 0))
+            val night = DreamWeaver.weave(records, recent, queue)
             // Притоки реки — вспомненные сны прошлой ночи (см. DreamRiver).
             val previous = db.dreamDao().lastNight()
             val tributaries = previous?.let { db.dreamDao().ofNight(it.nightAt) }

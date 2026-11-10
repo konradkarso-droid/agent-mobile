@@ -389,4 +389,96 @@ class DreamWeaverTest {
         assertEquals(1, row.dreamersCold)
         assertTrue("холодная запись в чём-то снилась", row.coldDreams > 0)
     }
+
+    // --- Очередь записей между ночами ---
+
+    @Test
+    fun `не снившаяся запись получает место раньше снившихся`() {
+        val dreams = listOf(
+            DreamWeaver.Woven(listOf(1L, 2L), Kind.TIME),
+            DreamWeaver.Woven(listOf(3L, 4L), Kind.TIME),
+            DreamWeaver.Woven(listOf(5L, 6L), Kind.TIME),
+        )
+        // Без очереди место взял бы первый сон — прежний порядок.
+        assertEquals(listOf(dreams[0]), DreamWeaver.fairShare(dreams, 1))
+        // Записи 1–4 снились, 5 и 6 — ни разу.
+        val last = mapOf(1L to 10L, 2L to 10L, 3L to 20L, 4L to 20L)
+        assertEquals(listOf(dreams[2]), DreamWeaver.fairShare(dreams, 1, lastDreamt = last))
+    }
+
+    @Test
+    fun `из снившихся первой идёт та, что ждёт дольше`() {
+        val dreams = listOf(
+            DreamWeaver.Woven(listOf(1L, 2L), Kind.TIME),
+            DreamWeaver.Woven(listOf(3L, 4L), Kind.TIME),
+        )
+        val last = mapOf(1L to 30L, 2L to 30L, 3L to 20L, 4L to 30L)
+        assertEquals(listOf(dreams[1]), DreamWeaver.fairShare(dreams, 1, lastDreamt = last))
+    }
+
+    @Test
+    fun `очередь выбирает среди равных, свежесть и делёж поровну — раньше неё`() {
+        val dreams = listOf(
+            DreamWeaver.Woven(listOf(1L, 2L), Kind.TIME),
+            DreamWeaver.Woven(listOf(1L, 3L), Kind.TIME),
+            DreamWeaver.Woven(listOf(4L, 5L), Kind.TIME),
+        )
+        // Запись 3 не снилась ни разу — её сон берётся первым; второй сон
+        // записи 1 после этого не берётся: поровну — раньше очереди.
+        val last = mapOf(1L to 10L, 2L to 10L, 4L to 10L, 5L to 10L)
+        assertEquals(listOf(dreams[1], dreams[2]), DreamWeaver.fairShare(dreams, 2, lastDreamt = last))
+        // Сон 4–5 не снился вовсе, но он недавний повтор: свежесть — раньше очереди.
+        assertEquals(
+            listOf(dreams[0], dreams[1]),
+            DreamWeaver.fairShare(dreams, 2, setOf(listOf(4L, 5L)), mapOf(1L to 10L, 2L to 10L, 3L to 10L)),
+        )
+    }
+
+    @Test
+    fun `мест хватает — очередь ничего не меняет`() {
+        val records = listOf(
+            rec(1, "Алеет солнце на закате", at = 0),
+            rec(2, "Бетономешалка мешает бетон", at = minute),
+            rec(3, "Чёрный чай заваривают кипятком", at = 2 * minute),
+        )
+        assertEquals(DreamWeaver.weave(records).dreams, DreamWeaver.weave(records, lastDreamt = mapOf(1L to 5L)).dreams)
+    }
+
+    @Test
+    fun `за несколько ночей с очередью снятся все записи, без неё — одни и те же`() {
+        // 200 несвязанных слов в одну минуту: мест за ночь — 60 снов, 120 записей.
+        val letters = "бвгджзкл"
+        val records = (0 until 200).map {
+            rec(it + 1L, "${letters[it % 8]}о${letters[it / 8 % 8]}и${letters[it / 64]}ка", at = 0)
+        }
+        fun nights(queue: Boolean): Set<Long> {
+            val rows = ArrayList<Dream>()
+            val seen = HashSet<Long>()
+            for (n in 1..4) {
+                val stamps = rows.map { it.nightAt }.distinct().sorted().takeLast(DreamWeaver.FRESH_NIGHTS)
+                val night = DreamWeaver.weave(
+                    records,
+                    DreamWeaver.chainsOf(rows.filter { it.nightAt in stamps }),
+                    if (queue) DreamWeaver.lastDreamtOf(rows) else emptyMap(),
+                )
+                night.dreams.forEach { d ->
+                    seen += d.recordIds
+                    rows += Dream(n.toLong(), d.recordIds.joinToString(","), d.kind.name)
+                }
+            }
+            return seen
+        }
+        assertEquals("с очередью приснились все", 200, nights(queue = true).size)
+        assertTrue("без очереди — не все: ${nights(queue = false).size}", nights(queue = false).size < 200)
+    }
+
+    @Test
+    fun `когда запись снилась — по последней ночи, сны реки не в счёт`() {
+        val rows = listOf(
+            Dream(10L, "1,2", Kind.TIME.name),
+            Dream(20L, "2,3", Kind.TIME.name),
+            Dream(30L, "1,4", DreamRiver.KIND),
+        )
+        assertEquals(mapOf(1L to 10L, 2L to 20L, 3L to 20L), DreamWeaver.lastDreamtOf(rows))
+    }
 }
