@@ -86,7 +86,8 @@ object OwnSpeech {
         /** Служебные блоки реплики этого хода (EchoCheck.serviceBlocks). */
         val serviceBlocks: List<String> = emptyList(),
         /**
-         * Где и кому сказано — словами для подписи
+         * Где и кому сказано — словами для подписи, после времени и перед
+         * цитатой: «в телеграме я сказал собеседнику (Пётр)»
          * (ProvenanceLabels.ownSpeechForModel); null — в прошлом разговоре
          * там же, где идёт нынешний.
          */
