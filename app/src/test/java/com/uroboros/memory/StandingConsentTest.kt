@@ -83,4 +83,27 @@ class StandingConsentTest {
         assertFalse(AddressSorter.judgedRecord("GENERAL"))
         assertFalse("незнакомое — не судится", AddressSorter.judgedRecord("SOMETHING"))
     }
+
+    @Test
+    fun `согласие без срока не истекает, а стоп и чужой компонент его по-прежнему не пускают`() {
+        val open = StandingConsent.grantedByOwner(ActionType.SEND_MESSAGE, who, "в", t0, termMs = StandingConsent.NO_TERM)
+        assertTrue(open.openEnded)
+        val farFuture = t0 + 3650L * 24 * 3600_000
+        assertEquals(GateResult.ALLOW, ActionGate.evaluate(reply(), now = farFuture, consent = open).result)
+        assertEquals(GateResult.DENY, ActionGate.evaluate(reply(by = "TermuxKotlinCompiler"), now = farFuture, consent = open).result)
+        EmergencyStop.clear()
+        try {
+            EmergencyStop.triggerManual("тест")
+            assertEquals(GateResult.DENY, ActionGate.evaluate(reply(), now = farFuture, consent = open).result)
+        } finally {
+            EmergencyStop.clear()
+        }
+    }
+
+    @Test
+    fun `согласие на срок бессрочным не считается и восстанавливается без срока только целым`() {
+        assertFalse(consent.openEnded)
+        assertNotNull(StandingConsent.restored(ActionType.SEND_MESSAGE, who, "в", t0, StandingConsent.NO_TERM, t0 + 10))
+        assertNull("начало далеко в будущем", StandingConsent.restored(ActionType.SEND_MESSAGE, who, "в", t0 + 3L * 24 * 3600_000, StandingConsent.NO_TERM, t0))
+    }
 }
