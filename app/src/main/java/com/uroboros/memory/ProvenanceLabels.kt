@@ -150,7 +150,9 @@ object ProvenanceLabels {
      * известно — «когда-то». Своя речь ищется только в архиве, то есть всегда
      * в прошлом эпизоде ([pastEpisode] по умолчанию истина). [drift] —
      * поправка на дрейф показаний (nav.Drift), встаёт за цитатой; пусто — без
-     * поправки.
+     * поправки. [where] — где и кому сказано, если не в прошлом разговоре
+     * там же, где идёт нынешний (nav.OwnSpeech.Turn.where): встаёт на место
+     * слов о прошлом разговоре — «Я говорил в телеграме, вчера вечером: «…».».
      */
     fun ownSpeechForModel(
         sentence: String,
@@ -159,9 +161,14 @@ object ProvenanceLabels {
         zone: ZoneId = ZoneId.systemDefault(),
         pastEpisode: Boolean = true,
         drift: String = "",
+        where: String? = null,
     ): String {
         val age = at?.let { ageForModel(it, now, zone) } ?: "когда-то"
-        val time = if (pastEpisode) "$PAST_EPISODE, $age" else age
+        val time = when {
+            where != null -> "$where, $age"
+            pastEpisode -> "$PAST_EPISODE, $age"
+            else -> age
+        }
         return "$OWN_SPEECH_FOR_MODEL $time: «$sentence».$drift"
     }
 
