@@ -157,25 +157,23 @@ class GateActivity : AppCompatActivity() {
     }
 
     /**
-     * Согласие агенту отвечать в телеграме — на срок ([com.uroboros.memory.StandingConsent]).
+     * Согласие агенту отвечать в телеграме — без срока ([com.uroboros.memory.StandingConsent]).
      * Здесь и только здесь оно даётся и снимается.
      */
     private fun consentDialog() {
-        val now = System.currentTimeMillis()
-        val held = ChatPrefs.consent(this, now)
-        val days = com.uroboros.memory.StandingConsent.DEFAULT_TERM_MS / (24 * 60 * 60 * 1000)
+        val held = ChatPrefs.consent(this)
         val b = AlertDialog.Builder(this).setTitle("Ответы в телеграме")
         if (held == null) {
             b.setMessage(
-                "Разрешить агенту отвечать в телеграме на $days дней? Он отвечает обращённым к нему, " +
-                    "опираясь на свою стену и ленту чата; ваша память с экрана туда не идёт. " +
-                    "Каждое сообщение — в журнале действий. Снять можно здесь же или аварийным стопом."
+                "Разрешить агенту отвечать в телеграме? Разрешение без срока — до «Снять» здесь же или аварийного стопа. " +
+                    "Он отвечает обращённым к нему. Память вспоминает по границе: вам в личке («Мой тг») — всю, " +
+                    "другому собеседнику — только сказанное им самим, группе — только сказанное в ней. " +
+                    "Каждое сообщение — в журнале действий."
             )
                 .setPositiveButton("Разрешить") { _, _ -> ChatPrefs.grantConsent(this); ChatLink.refresh(this) }
                 .setNegativeButton("Отмена", null)
         } else {
-            b.setMessage("Разрешено до ${java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.ROOT).format(java.util.Date(held.expiresAt))}.")
-                .setPositiveButton("Продлить на $days дней") { _, _ -> ChatPrefs.grantConsent(this); ChatLink.refresh(this) }
+            b.setMessage("Разрешено без срока. Снять — здесь или аварийным стопом.")
                 .setNeutralButton("Снять") { _, _ -> ChatPrefs.revokeConsent(this); ChatLink.refresh(this) }
                 .setNegativeButton("Отмена", null)
         }

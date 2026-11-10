@@ -33,16 +33,29 @@ object ChatPrefs {
 
     // --- Согласие отвечать ---
 
-    /** Действующее согласие или null (не давали, истекло, снято). */
+    /**
+     * Действующее согласие или null (не давали, снято, истекло).
+     *
+     * Согласие, данное на срок до того, как срок сняли (StandingConsent,
+     * «ЗАЧЕМ»), и ещё не истёкшее, здесь же становится бессрочным: владелец
+     * его давал, и нажимать ещё раз ради того же решения не должен. Истёкшее
+     * не оживает — его даёт только кнопка.
+     */
     fun consent(context: Context, now: Long = System.currentTimeMillis()): StandingConsent? {
         val p = prefs(context)
         val at = p.getLong(CONSENT_AT, 0L).takeIf { it > 0 } ?: return null
-        return StandingConsent.restored(ActionType.SEND_MESSAGE, ChatLink.REQUESTED_BY, GRANTED_BY, at, p.getLong(CONSENT_UNTIL, 0L), now)
+        val held = StandingConsent.restored(ActionType.SEND_MESSAGE, ChatLink.REQUESTED_BY, GRANTED_BY, at, p.getLong(CONSENT_UNTIL, 0L), now)
+            ?: return null
+        if (held.openEnded) return held
+        p.edit().putLong(CONSENT_UNTIL, StandingConsent.NO_TERM).apply()
+        return StandingConsent.restored(ActionType.SEND_MESSAGE, ChatLink.REQUESTED_BY, GRANTED_BY, at, StandingConsent.NO_TERM, now)
     }
 
-    /** Только кнопка владельца на экране врат. */
+    /** Только кнопка владельца на экране врат. Без срока — до «Снять» или аварийного стопа. */
     fun grantConsent(context: Context, now: Long = System.currentTimeMillis()): StandingConsent {
-        val c = StandingConsent.grantedByOwner(ActionType.SEND_MESSAGE, ChatLink.REQUESTED_BY, GRANTED_BY, now)
+        val c = StandingConsent.grantedByOwner(
+            ActionType.SEND_MESSAGE, ChatLink.REQUESTED_BY, GRANTED_BY, now, termMs = StandingConsent.NO_TERM,
+        )
         prefs(context).edit().putLong(CONSENT_AT, c.grantedAt).putLong(CONSENT_UNTIL, c.expiresAt).apply()
         return c
     }
