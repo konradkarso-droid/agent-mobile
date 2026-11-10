@@ -40,7 +40,8 @@ object ChatPromises {
     /**
      * Строка ленты чата для обещаний: [chat] — ключ чата с веткой
      * (TgWords.chatRefOf); [replyTo] — у своего ответа агента — кому ответ;
-     * [direct] — личка.
+     * [direct] — личка; [records] — у своего ответа — тексты записей памяти,
+     * поданных в этот ход (llm.ChatLine.recall).
      */
     data class Line(
         val chat: String,
@@ -51,6 +52,7 @@ object ChatPromises {
         val at: Long,
         val replyTo: String?,
         val direct: Boolean,
+        val records: List<String> = emptyList(),
     )
 
     /** Строка ленты чатов (llm.ChatLine) — для [find]. */
@@ -63,7 +65,40 @@ object ChatPromises {
         at = l.at,
         replyTo = l.replyTo,
         direct = l.place == Place.DIRECT.name,
+        records = ChatOwnSpeech.unpack(l.recall),
     )
+
+    /**
+     * Ходы одного чата [chatLines] (по порядку): свой ответ агента и ход, в
+     * котором он дан, — что такое ход и откуда строка прочности, см. «ХОД» и
+     * «НАЖИМ» в шапке. Ответ без «кому» ходом не считается.
+     */
+    fun turnsOf(chatLines: List<Line>, selfLines: List<String>): List<Pair<Line, OwnSpeech.Turn>> {
+        val out = ArrayList<Pair<Line, OwnSpeech.Turn>>()
+        val pending = HashMap<String, MutableList<String>>()
+        val last = HashMap<String, String>()
+        val said = ArrayList<String>()
+        for (line in chatLines) {
+            if (!line.isAgent) {
+                pending.getOrPut(line.sender) { ArrayList() } += line.text
+                last[line.sender] = line.text
+                continue
+            }
+            val to = line.replyTo ?: continue
+            val question = pending.remove(to)?.joinToString("\n") ?: last[to].orEmpty()
+            // На ходе строка прочности строится по последней строке собеседника.
+            val note = ChatFeed.prochnostNote(question.substringAfterLast('\n'), said.toList(), selfLines)
+            said += line.text
+            out += line to OwnSpeech.Turn(
+                answer = line.text,
+                question = question,
+                records = line.records,
+                at = line.at,
+                serviceBlocks = listOfNotNull(note),
+            )
+        }
+        return out
+    }
 
     /**
      * Обещания в строках [lines] (все чаты, по порядку) за срок до [now].
@@ -76,27 +111,8 @@ object ChatPromises {
         var undated = 0
         var pressured = 0
         for ((_, chatLines) in lines.groupBy { it.chat }) {
-            val pending = HashMap<String, MutableList<String>>()
-            val last = HashMap<String, String>()
-            val said = ArrayList<String>()
-            for (line in chatLines) {
-                if (!line.isAgent) {
-                    pending.getOrPut(line.sender) { ArrayList() } += line.text
-                    last[line.sender] = line.text
-                    continue
-                }
+            for ((line, turn) in turnsOf(chatLines, selfLines)) {
                 val to = line.replyTo ?: continue
-                val question = pending.remove(to)?.joinToString("\n") ?: last[to].orEmpty()
-                // На ходе строка прочности строится по последней строке собеседника.
-                val note = ChatFeed.prochnostNote(question.substringAfterLast('\n'), said.toList(), selfLines)
-                said += line.text
-                val turn = OwnSpeech.Turn(
-                    answer = line.text,
-                    question = question,
-                    records = emptyList(),
-                    at = line.at,
-                    serviceBlocks = listOfNotNull(note),
-                )
                 when (val f = Promises.find(listOf(turn), now, dictionary)) {
                     is Promises.Found.Silent -> return f
                     is Promises.Found.Ok -> {

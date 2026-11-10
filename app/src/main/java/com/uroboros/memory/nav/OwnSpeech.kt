@@ -18,6 +18,11 @@ import com.uroboros.memory.RiskTrigger
  * же правило, что у записей памяти с текстом реплик ленты (excludedTexts в
  * HourglassMemory.getContextWithSummary).
  *
+ * ОТВЕТЫ В ТЕЛЕГРАМЕ — ТА ЖЕ СВОЯ РЕЧЬ. Ходы чатов собирает
+ * gate.ChatOwnSpeech и отдаёт сюда вместе с ходами экрана: правило одно, а
+ * кто какие ходы вправе увидеть, решается там, до этого объекта. У такого
+ * хода есть [Turn.where] — где и кому сказано.
+ *
  * СВОИМ СЧИТАЕТСЯ НЕ ВСЁ, ЧТО АГЕНТ СКАЗАЛ: эхо реплики владельца и пересказ
  * поданных записей — слова владельца (см. EchoCheck.ownSentences).
  *
@@ -80,10 +85,16 @@ object OwnSpeech {
         val at: Long?,
         /** Служебные блоки реплики этого хода (EchoCheck.serviceBlocks). */
         val serviceBlocks: List<String> = emptyList(),
+        /**
+         * Где и кому сказано — словами для подписи
+         * (ProvenanceLabels.ownSpeechForModel); null — в прошлом разговоре
+         * там же, где идёт нынешний.
+         */
+        val where: String? = null,
     )
 
-    /** Предложение своей речи и время хода, где оно сказано. */
-    data class Said(val sentence: String, val at: Long?)
+    /** Предложение своей речи, время хода, где оно сказано, и место ([Turn.where]). */
+    data class Said(val sentence: String, val at: Long?, val where: String? = null)
 
     /**
      * Своя речь, сколько предложений отсеяно как служебный текст и сколько
@@ -108,7 +119,7 @@ object OwnSpeech {
                     if (service) dropped++
                     !service
                 }
-                .map { Said(it, turn.at) }
+                .map { Said(it, turn.at, turn.where) }
         }
         return Sifted(said, dropped, pressured)
     }

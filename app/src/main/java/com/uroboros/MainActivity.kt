@@ -101,6 +101,7 @@ import com.uroboros.memory.dream.ConclusionView
 import com.uroboros.memory.desk.DeskView
 import com.uroboros.memory.desk.Promises
 import com.uroboros.gate.ChatFeed
+import com.uroboros.gate.ChatOwnSpeech
 import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.llm.ChatDatabase
@@ -752,6 +753,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Доска агента, см. Desk. Только чтение. */
+    /**
+     * Ходы своей речи агента из чатов телеграма — для окна своей речи экрана
+     * (gate.ChatOwnSpeech); лента чатов не прочиталась — сбой с причиной,
+     * своя речь ищется без неё, прибор говорит об этом.
+     */
+    private suspend fun chatOwnTurns(): Result<List<OwnSpeech.Turn>> = runCatching {
+        val rings = AddressSorter.Ring.entries.filter(AddressSorter::modelReads).map { it.name }
+        val lines = withContext(Dispatchers.IO) {
+            ChatDatabase.getInstance(applicationContext).chatLineDao().readLast(rings, ChatOwnSpeech.READ_LINES)
+        }.asReversed()
+        ChatOwnSpeech.turns(
+            lines.map(ChatPromises::lineOf), ChatOwnSpeech.Viewer(scope = null),
+            ChatPrefs.owner(applicationContext)?.key?.id, ChatFeed.selfLines(llmEngine.wallFor()),
+        )
+    }
+
     private val deskView by lazy { DeskView(applicationContext, { since -> deskTurns(since) }, { since -> deskChatPromises(since) }) }
 
     /**
@@ -4818,8 +4835,11 @@ class MainActivity : AppCompatActivity() {
                 // Своя речь агента — окно архива ленты, на вопрос к агенту или
                 // с просьбой вспомнить (см. OwnSpeech, RecallRequest). Время
                 // старого хода — не позже закрытия разговора (Coordinates.turnTime).
+                // Туда же — ответы агента в телеграме (gate.ChatOwnSpeech).
+                val ownAsked = address == Coordinates.Address.AGENT || recallPlan != null
+                val chatOwn = if (ownAsked && archive != null) chatOwnTurns() else null
                 val ownSifted =
-                    if ((address != Coordinates.Address.AGENT && recallPlan == null) || archive == null) null
+                    if (!ownAsked || archive == null) null
                     else OwnSpeech.sift(archive.map { row ->
                         OwnSpeech.Turn(
                             answer = row.agentContent,
@@ -4828,10 +4848,19 @@ class MainActivity : AppCompatActivity() {
                             at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
                             serviceBlocks = journalStore.serviceBlocks(row),
                         )
-                    })
+                    } + chatOwn?.getOrNull().orEmpty())
                 val ownSaid =
                     if (ownSifted == null) emptyList()
                     else OwnSpeech.search(ownSifted.said, RecallRequest.topicText(userText, recallPlan))
+                // Прибор: что из телеграма дошло до окна своей речи. Встаёт в
+                // конец строки круга; не искалась — строки нет.
+                val chatOwnPart = chatOwn?.let { read ->
+                    " · из телеграма — " + ChatOwnSpeech.screenMeter(
+                        read.exceptionOrNull()?.javaClass?.simpleName,
+                        ownSifted?.said.orEmpty().count { it.where != null },
+                        ownSaid.count { it.where != null },
+                    )
+                }.orEmpty()
                 // Проверка на прочность (nav.Prochnost). Реплику с экрана
                 // набрал владелец, но от него она, только если вся — его своя
                 // речь: подпись или пересказ («Клод: тебя зовут Вася») —
@@ -4946,7 +4975,7 @@ class MainActivity : AppCompatActivity() {
                         )
                     }.getOrElse { Clouds.addressLine(address, null, null, it.javaClass.simpleName) }
                 }
-                circleLine = contextResult.circle
+                circleLine = contextResult.circle + chatOwnPart
                 // Прибор «смысл» (nav.Meaning): что прибавил бы к кругу поиск по
                 // смыслу. Модели не подаётся, отбор не меняет. Считается в
                 // стороне от ответа, чтобы не задерживать его, — строка встанет
@@ -5036,7 +5065,9 @@ class MainActivity : AppCompatActivity() {
                     ownSeated.zip(drifts).mapNotNull { (said, c) -> c?.let { said.sentence to it } },
                 )
                 val ownLines = ownSeated.mapIndexed { i, said ->
-                    ProvenanceLabels.ownSpeechForModel(said.sentence, said.at, recordsAt, drift = drifts[i]?.forModel.orEmpty())
+                    ProvenanceLabels.ownSpeechForModel(
+                        said.sentence, said.at, recordsAt, drift = drifts[i]?.forModel.orEmpty(), where = said.where,
+                    )
                 }
                 // Эпизод записи — по часам эпизодов из времён ходов ленты и
                 // архива и закрытий лент (Episodes.Clock): запись из прошлого
@@ -5873,7 +5904,7 @@ class MainActivity : AppCompatActivity() {
                         )
                         val coldOutcome = agentRecaller.recall(coldUsed.map { it.id })
                         DolmenCircle.coldUse(coldRecords.size, coldOutcome.recalled, coldOutcome.warmed)
-                            ?.let { circleLine = contextResult.circle + " · " + it }
+                            ?.let { circleLine = contextResult.circle + chatOwnPart + " · " + it }
                     }
                     // Ход закрыт: поданное на нём владелец может подхватить
                     // следующей репликой (см. DreamPickup). Спрошенный сон

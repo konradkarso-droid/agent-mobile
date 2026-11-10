@@ -39,6 +39,10 @@ import androidx.room.Query
  * @property replyTo ключ автора сообщения, на которое это ответ; null — не ответ.
  * @property at время сервера телеграма, мс (у своих — время отправки).
  * @property place имя memory.nav.Place: DIRECT или GROUP.
+ * @property recall у своего ответа — тексты записей памяти, поданных модели
+ *   в этот ход (gate.ChatOwnSpeech.pack); null — записей не было или строка
+ *   легла до появления поля. Нужны, чтобы пересказ поданной записи не
+ *   читался потом своей речью агента (memory.nav.OwnSpeech).
  */
 @Entity(tableName = "chat_lines", indices = [Index(value = ["chat", "thread", "id"])])
 data class ChatLine(
@@ -58,6 +62,7 @@ data class ChatLine(
     val replyTo: String?,
     val at: Long,
     val place: String,
+    val recall: String? = null,
 )
 
 /** Последний собеседник в личке — для отметки «это я» на экране врат. */
@@ -110,6 +115,13 @@ interface ChatLineDao {
      */
     @Query("SELECT * FROM chat_lines WHERE at >= :since AND (isAgent = 1 OR ring IN (:rings)) ORDER BY id")
     suspend fun readSince(since: Long, rings: List<String>): List<ChatLine>
+
+    /**
+     * Последние [limit] читаемых строк всех чатов, новые первыми, — для своей
+     * речи агента (gate.ChatOwnSpeech).
+     */
+    @Query("SELECT * FROM chat_lines WHERE isAgent = 1 OR ring IN (:rings) ORDER BY id DESC LIMIT :limit")
+    suspend fun readLast(rings: List<String>, limit: Int): List<ChatLine>
 
     /** То же, что [readSince], для одного чата и ветки — обещания этого чата в конце нити. */
     @Query(

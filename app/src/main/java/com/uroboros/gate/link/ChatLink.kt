@@ -9,6 +9,7 @@ import com.uroboros.AgentService
 import com.uroboros.ModelPrefs
 import com.uroboros.ProcessObjects
 import com.uroboros.gate.ChatFeed
+import com.uroboros.gate.ChatOwnSpeech
 import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.ChatQuiet
 import com.uroboros.gate.ChatRecall
@@ -23,6 +24,7 @@ import com.uroboros.llm.AnswerLadder
 import com.uroboros.llm.ChatDatabase
 import com.uroboros.llm.ChatLine
 import com.uroboros.llm.ConversationJournal
+import com.uroboros.llm.EchoCheck
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.Glance
 import com.uroboros.llm.GlanceDesk
@@ -39,6 +41,7 @@ import com.uroboros.memory.GatedAction
 import com.uroboros.memory.desk.Promises
 import com.uroboros.memory.Heard
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.ProvenanceLabels
 import com.uroboros.memory.RecallLines
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.SourceKind
@@ -46,8 +49,10 @@ import com.uroboros.memory.nav.AddressSorter
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Place
+import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
 import com.uroboros.safety.SafetyZone
@@ -539,7 +544,7 @@ object ChatLink {
             count[1]++
             return "промолчал сам ${clock(System.currentTimeMillis())} — $why · промолчал ${count[1]} из ${count[0] + count[1]} за запуск службы"
         }
-        send(app, job, text, ActionProvenance.MODEL_OUTPUT)?.let { return "ответ не ушёл — $it" }
+        send(app, job, text, ActionProvenance.MODEL_OUTPUT, generated.records)?.let { return "ответ не ушёл — $it" }
         count[0]++
         return ChatTurnMeter.answered(clock(System.currentTimeMillis()), generated.tookMs ?: 0L, text.length, generated.ladder)
     }
@@ -566,7 +571,14 @@ object ChatLink {
      * Итог генерации: текст или причина, сколько шла генерация (null — до неё
      * не дошло) и что было на лестнице ответа словами (ChatTurnMeter.ladderNote).
      */
-    private class Generated(val text: String?, val why: String?, val tookMs: Long? = null, val ladder: String? = null)
+    private class Generated(
+        val text: String?,
+        val why: String?,
+        val tookMs: Long? = null,
+        val ladder: String? = null,
+        /** Тексты записей памяти, поданных модели в этот ход (см. [Recall]). */
+        val records: List<String> = emptyList(),
+    )
 
     /** Имена колец, строки которых модель читает (AddressSorter.modelReads), — для запросов к ленте чата. */
     private val readRings: List<String> = AddressSorter.Ring.entries.filter(AddressSorter::modelReads).map { it.name }
@@ -732,11 +744,79 @@ object ChatLink {
         if (text.isEmpty()) {
             return Generated(null, if (ran.glanced) "глянул на приборы, после доски ответа нет" else "модель не выдала ни знака", tookMs, said)
         }
-        return Generated(text, null, tookMs, said)
+        return Generated(text, null, tookMs, said, recall.records)
     }
 
-    /** Записи памяти хода: сообщение агента для модели (null — подавать нечего) и строка экрана врат. */
-    private class Recall(val message: String?, val meter: String)
+    /**
+     * Записи памяти хода: сообщение агента для модели (null — подавать
+     * нечего), строка экрана врат и тексты поданных записей — они ложатся в
+     * ленту чатов рядом с ответом (llm.ChatLine.recall).
+     */
+    private class Recall(val message: String?, val meter: String, val records: List<String> = emptyList())
+
+    /** Своя речь хода: найденное к вопросу, лучшее первым, и часть строки экрана врат о ней. */
+    private class OwnFound(val said: List<OwnSpeech.Said>, val serviceDropped: Int, val asked: Boolean, val meter: (fed: Int) -> String)
+
+    /**
+     * Своя речь агента для этого хода — по той же границе чата, что записи
+     * (gate.ChatOwnSpeech): ответы в чатах, а владельцу в личке ещё и
+     * сказанное на экране (архив ленты и открытая лента — в окне чата модель
+     * их не видит). Ищется на вопрос к агенту или просьбу вспомнить, как на
+     * экране. Не прочиталась — ход идёт без неё, строка говорит почему.
+     * Поправки на дрейф показаний (nav.Drift) здесь нет.
+     */
+    private suspend fun ownSpeechFor(
+        app: Context,
+        job: Job,
+        window: ChatFeed.Window,
+        scope: ChatRecall.Scope,
+        topic: String,
+        asked: Boolean,
+        owner: ChatPrefs.Owner?,
+    ): OwnFound {
+        if (!asked) return OwnFound(emptyList(), 0, false) { ChatOwnSpeech.meter(false, null, 0, 0, 0, 0) }
+        return try {
+            val objects = ProcessObjects.get(app)
+            val lines = ChatDatabase.getInstance(app).chatLineDao().readLast(readRings, ChatOwnSpeech.READ_LINES)
+                .asReversed().map(ChatPromises::lineOf)
+            val viewer = ChatOwnSpeech.Viewer(
+                scope, job.tallyKey, job.sender.id, window.lines.filter { it.isAgent }.map { it.text }.toSet(),
+            )
+            val inChats = ChatOwnSpeech.turns(lines, viewer, owner?.key?.id, ChatFeed.selfLines(objects.llmEngine.wallFor()))
+            val onScreen = if (scope != ChatRecall.Scope.OWNER) emptyList() else {
+                val store = objects.turns.store
+                val archive = store.readArchive().orEmpty().map { row ->
+                    OwnSpeech.Turn(
+                        answer = row.agentContent,
+                        question = row.question,
+                        records = store.recordTexts(row),
+                        at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
+                        serviceBlocks = store.serviceBlocks(row),
+                    )
+                }
+                val open = objects.turns.journal.history().map { turn ->
+                    OwnSpeech.Turn(
+                        answer = turn.agentContent,
+                        question = turn.question,
+                        records = turn.records.map { it.text },
+                        at = turn.at,
+                        serviceBlocks = EchoCheck.serviceBlocks(turn),
+                    )
+                }
+                ChatOwnSpeech.screenTurns(archive + open)
+            }
+            val sifted = OwnSpeech.sift(onScreen + inChats)
+            val found = OwnSpeech.search(sifted.said, topic)
+            val fromChats = sifted.said.count { it.where != ChatOwnSpeech.ON_SCREEN }
+            OwnFound(found, sifted.serviceDropped, true) { fed ->
+                ChatOwnSpeech.meter(true, null, sifted.said.size, fromChats, found.size, fed)
+            }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            OwnFound(emptyList(), 0, true) { ChatOwnSpeech.meter(true, t.javaClass.simpleName, 0, 0, 0, 0) }
+        }
+    }
 
     /**
      * Что память даёт этому ходу — по границе чата ([ChatRecall]): владельцу
@@ -765,10 +845,19 @@ object ChatLink {
         val scope = ChatRecall.scope(job.place == Place.DIRECT, owner?.key == job.sender)
         val conversationStart = window.opened?.at ?: window.lines.first().at
         val shown = ChatRecall.shownTexts(window.lines, owner?.key?.id)
+        val asked = window.lines.takeLastWhile { !it.isAgent }
+        val earlier = window.lines.dropLast(asked.size).filter { !it.isAgent }
+        val address = Coordinates.addressInRibbon(earlier.map { it.text to it.at }, question, now)
+        // Своя речь — на вопрос к агенту или просьбу вспомнить (gate.ChatOwnSpeech).
+        val recallPlan = RecallRequest.plan(question, earlier.map { it.text }, dictionary, address)
+        val own = ownSpeechFor(
+            app, job, window, scope, RecallRequest.topicText(question, recallPlan),
+            address == Coordinates.Address.AGENT || recallPlan != null, owner,
+        )
+        fun ownLines(seated: Int) = own.said.take(seated).map {
+            ProvenanceLabels.ownSpeechForModel(it.sentence, it.at, now, where = it.where)
+        }
         if (scope == ChatRecall.Scope.OWNER) {
-            val asked = window.lines.takeLastWhile { !it.isAgent }
-            val earlier = window.lines.dropLast(asked.size).filter { !it.isAgent }
-            val address = Coordinates.addressInRibbon(earlier.map { it.text to it.at }, question, now)
             val found = ProcessObjects.get(app).mediator.getContextWithSummary(
                 purpose = RetrievalPurpose.ANSWERING_USER,
                 query = question,
@@ -778,20 +867,33 @@ object ChatLink {
                 previousAnswer = window.lines.lastOrNull { it.isAgent }?.text,
                 address = address,
                 seats = DolmenCircle.circleSeats(0),
+                ownSpeechFound = if (own.asked) own.said.size else null,
+                ownSpeechServiceDropped = own.serviceDropped,
             )
             val lines = found.stickers.map {
                 RecallLines.of(it, address, RetellHolder.table, now, if (it.createdAt < conversationStart) 0 else 1, 1).text
             }
-            Recall(ChatRecall.message(lines), ChatRecall.ownerMeter(chatName, lines.size, found.circle))
+            val mine = ownLines(found.ownSpeechSeated)
+            Recall(
+                ChatRecall.message(lines + mine),
+                ChatRecall.ownerMeter(chatName, lines.size, found.circle) + " · " + own.meter(mine.size),
+                found.stickers.map { it.content },
+            )
         } else {
             val dao = MemoryDatabase.getInstance(app).stickerDao()
             val pool = withContext(Dispatchers.IO) {
                 if (scope == ChatRecall.Scope.PERSON) dao.saidBy(job.sender.id, ChatRecall.POOL) else dao.saidIn(job.tallyKey, ChatRecall.POOL)
             }.filter { ChatRecall.visible(scope, it, job.sender.id, job.tallyKey) }
-            val lines = ChatRecall.pick(question, pool, dictionary, shown).map {
+            val mine = ownLines(ChatOwnSpeech.NARROW_SEATS)
+            val picked = ChatRecall.pick(question, pool, dictionary, shown, ChatRecall.NARROW_SEATS - mine.size)
+            val lines = picked.map {
                 ChatRecall.narrowLine(it, scope, now, it.createdAt < conversationStart, owner?.key?.id, owner?.name)
             }
-            Recall(ChatRecall.message(lines), ChatRecall.narrowMeter(chatName, scope, pool.size, lines.size))
+            Recall(
+                ChatRecall.message(lines + mine),
+                ChatRecall.narrowMeter(chatName, scope, pool.size, lines.size) + " · " + own.meter(mine.size),
+                picked.map { it.content },
+            )
         }
     } catch (c: CancellationException) {
         throw c
@@ -816,9 +918,16 @@ object ChatLink {
 
     /**
      * Отправить [text] ответом на сообщение задания: ворота с согласием, пауза
-     * чата, канал, строка ленты. null — ушло; иначе причина.
+     * чата, канал, строка ленты. null — ушло; иначе причина. [records] —
+     * тексты записей памяти, поданных модели в этот ход.
      */
-    private suspend fun send(app: Context, job: Job, text: String, provenance: ActionProvenance): String? {
+    private suspend fun send(
+        app: Context,
+        job: Job,
+        text: String,
+        provenance: ActionProvenance,
+        records: List<String> = emptyList(),
+    ): String? {
         val consent = ChatPrefs.consent(app)
         val verdict = GatedAction.evaluate(
             app,
@@ -845,6 +954,7 @@ object ChatLink {
                 chat = job.chat, thread = job.thread, messageId = sent.messageId ?: 0L,
                 sender = GateTelegram.userKey(meId).id, name = "агент", signature = "", isBot = true, isAgent = true,
                 text = text, ring = null, reason = null, replyTo = job.sender.id, at = now, place = job.place.name,
+                recall = ChatOwnSpeech.pack(records),
             )
         )
         return null
