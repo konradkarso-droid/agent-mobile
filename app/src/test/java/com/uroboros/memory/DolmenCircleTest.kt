@@ -226,13 +226,13 @@ class DolmenCircleTest {
     @Test
     fun `строка записей хода складывает источники, своя речь не считается дважды`() {
         assertEquals(
-            "Записи хода: портрет 6 · круг 0 (из них своя речь 0) · дверь сна 0 · ассоциация 0 — всего 6 из 6" +
+            "Записи хода: портрет 6 · круг 0 (из них своя речь 0) · дверь сна 0 · ассоциация 0 — всего 6 из ${DolmenCircle.RECORDS_CEILING}" +
                 " · не влезло 2",
             DolmenCircle.sourcesLine(portrait = 6, circle = 0, ownSpeech = 0, door = 0, association = 0, notFitted = 2),
         )
         assertTrue(
             DolmenCircle.sourcesLine(portrait = 0, circle = 3, ownSpeech = 1, door = 2, association = 1, notFitted = 0)
-                .contains("— всего 6 из 6"),
+                .contains("— всего 6 из ${DolmenCircle.RECORDS_CEILING}"),
         )
     }
 
@@ -242,14 +242,17 @@ class DolmenCircleTest {
      */
     @Test
     fun `портрет занимает места общего потолка раньше круга`() {
-        assertEquals(0, DolmenCircle.circleSeats(portrait = 6))
-        assertEquals(0, DolmenCircle.left(6 + 0))
+        val ceiling = DolmenCircle.RECORDS_CEILING
+        assertEquals(0, DolmenCircle.circleSeats(portrait = ceiling))
+        assertEquals(0, DolmenCircle.left(ceiling + 0))
         assertEquals(DolmenCircle.CIRCLE_SEATS, DolmenCircle.circleSeats(portrait = 0))
-        assertEquals(2, DolmenCircle.circleSeats(portrait = 4))
-        // Ход «Назови температуру и заряд»: круг 3 — дверь и ассоциация делят 3.
-        assertEquals(3, DolmenCircle.left(0 + 3))
+        assertEquals(2, DolmenCircle.circleSeats(portrait = ceiling - 2))
+        // Портрет в шесть строк больше не выселяет круг: остаток делят круг, дверь и ассоциация.
+        assertEquals(4, DolmenCircle.circleSeats(portrait = 6))
+        // Круг больше своих мест не берёт, сколько бы потолок ни оставил.
+        assertEquals(DolmenCircle.CIRCLE_SEATS, DolmenCircle.circleSeats(portrait = 1))
         // Лишнее не уходит в минус.
-        assertEquals(0, DolmenCircle.left(9))
+        assertEquals(0, DolmenCircle.left(ceiling + 3))
     }
 
     /** При урезанных местах первым остаётся без места холод, потом тема. */
