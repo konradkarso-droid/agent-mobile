@@ -103,9 +103,9 @@ class ChatOwnSpeechTest {
     @Test
     fun `экрану сказано, где и кому — с ролью владельца и именем собеседника`() {
         val screen = ChatOwnSpeech.Viewer(scope = null)
-        assertEquals("в телеграме (личка, собеседник — мой владелец Иван)", whereOf(screen, "Зелёный чай бодрит мягче чёрного."))
-        assertEquals("в телеграме (личка, собеседник — Пётр)", whereOf(screen, "Рубанок точат на камне под постоянным углом."))
-        assertEquals("в телеграме (группа, собеседник — Маша)", whereOf(screen, "Липа режется легче берёзы."))
+        assertEquals("в телеграме я сказал собеседнику (мой владелец Иван)", whereOf(screen, "Зелёный чай бодрит мягче чёрного."))
+        assertEquals("в телеграме я сказал собеседнику (Пётр)", whereOf(screen, "Рубанок точат на камне под постоянным углом."))
+        assertEquals("в группе телеграма я сказал собеседнику (Маша)", whereOf(screen, "Липа режется легче берёзы."))
     }
 
     @Test
@@ -115,13 +115,13 @@ class ChatOwnSpeechTest {
         assertEquals(ChatOwnSpeech.TO_YOU_IN_GROUP, whereOf(petyaView, "Стамеску правят на коже с пастой."))
         val ownerView = ChatOwnSpeech.Viewer(ChatRecall.Scope.OWNER, ownerChat, owner)
         assertEquals(ChatOwnSpeech.IN_THIS_CHAT, whereOf(ownerView, "Зелёный чай бодрит мягче чёрного."))
-        assertEquals("в телеграме (личка, собеседник — Пётр)", whereOf(ownerView, "Рубанок точат на камне под постоянным углом."))
+        assertEquals("в телеграме я сказал собеседнику (Пётр)", whereOf(ownerView, "Рубанок точат на камне под постоянным углом."))
     }
 
     @Test
     fun `владелец не отмечен — роль не выдумывается`() {
         val turns = ChatOwnSpeech.turns(lines, ChatOwnSpeech.Viewer(scope = null), null, emptyList())
-        assertEquals("в телеграме (личка, собеседник — Иван)", turns.first { "чай" in it.answer }.where)
+        assertEquals("в телеграме я сказал собеседнику (Иван)", turns.first { "чай" in it.answer }.where)
     }
 
     @Test
@@ -136,12 +136,13 @@ class ChatOwnSpeechTest {
     fun `место доходит до найденного предложения и до подписи`() {
         val turns = ChatOwnSpeech.turns(lines, ChatOwnSpeech.Viewer(scope = null), owner, emptyList())
         val found = OwnSpeech.search(OwnSpeech.sift(turns).said, "рубанок")
-        assertEquals("в телеграме (личка, собеседник — Пётр)", found.single().where)
+        assertEquals("в телеграме я сказал собеседнику (Пётр)", found.single().where)
         val label = ProvenanceLabels.ownSpeechForModel(
             found.single().sentence, 0L, 3_600_000L, ZoneId.of("UTC"), where = found.single().where,
         )
-        assertTrue(label, label.startsWith("Я говорил в телеграме (личка, собеседник — Пётр), "))
-        assertFalse(label, label.contains("в прошлом разговоре"))
+        assertTrue(label, label.contains(" в телеграме я сказал собеседнику (Пётр): «"))
+        assertTrue(label, label.first().isUpperCase())
+        assertFalse(label, label.contains("в прошлом разговоре") || label.contains("Я говорил"))
     }
 
     @Test

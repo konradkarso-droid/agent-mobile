@@ -151,8 +151,12 @@ object ProvenanceLabels {
      * в прошлом эпизоде ([pastEpisode] по умолчанию истина). [drift] —
      * поправка на дрейф показаний (nav.Drift), встаёт за цитатой; пусто — без
      * поправки. [where] — где и кому сказано, если не в прошлом разговоре
-     * там же, где идёт нынешний (nav.OwnSpeech.Turn.where): встаёт на место
-     * слов о прошлом разговоре — «Я говорил в телеграме, вчера вечером: «…».».
+     * там же, где идёт нынешний (nav.OwnSpeech.Turn.where). Тогда подпись
+     * строится иначе — время, место, «я сказал», кому: «Вчера вечером в
+     * телеграме я сказал собеседнику (Пётр): «…».». С адресатом в скобках
+     * после слов «Я говорил в телеграме» модель читала цитату словами этого
+     * адресата («мне Пётр рассказывал…»); при «я сказал собеседнику (Пётр)»
+     * — своими словами, сказанными ему.
      */
     fun ownSpeechForModel(
         sentence: String,
@@ -164,11 +168,8 @@ object ProvenanceLabels {
         where: String? = null,
     ): String {
         val age = at?.let { ageForModel(it, now, zone) } ?: "когда-то"
-        val time = when {
-            where != null -> "$where, $age"
-            pastEpisode -> "$PAST_EPISODE, $age"
-            else -> age
-        }
+        if (where != null) return "${age.replaceFirstChar { it.uppercase() }} $where: «${sentence.trim()}».$drift"
+        val time = if (pastEpisode) "$PAST_EPISODE, $age" else age
         return "$OWN_SPEECH_FOR_MODEL $time: «$sentence».$drift"
     }
 
