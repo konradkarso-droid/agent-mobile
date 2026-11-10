@@ -11,6 +11,7 @@ import com.uroboros.ProcessObjects
 import com.uroboros.gate.ChatFeed
 import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.ChatQuiet
+import com.uroboros.gate.ChatRecall
 import com.uroboros.gate.ChatReply
 import com.uroboros.gate.ChatRevive
 import com.uroboros.gate.ChatThread
@@ -31,17 +32,23 @@ import com.uroboros.memory.ActionProvenance
 import com.uroboros.memory.ActionRequest
 import com.uroboros.memory.ActionType
 import com.uroboros.memory.ConfidenceLevel
+import com.uroboros.memory.DolmenCircle
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.desk.Promises
 import com.uroboros.memory.Heard
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.RecallLines
+import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.nav.AddressSorter
+import com.uroboros.memory.nav.Coordinates
+import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Place
+import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
@@ -83,8 +90,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * ОТВЕТ ([work]) — по одному, в очереди, под замком хода
  * (ConversationTurns.aside), с решением [ChatReply.decide] до хода и
  * повторной проверкой после замка. Модель читает стену, ленту чата окном
- * скачками ([ChatFeed.window]) и нить — выжимку того, что окна не видно
- * ([ChatThread]); записей памяти нет: граница там. Ответ идёт той же
+ * скачками ([ChatFeed.window]), нить — выжимку того, что окна не видно
+ * ([ChatThread]), — и записи памяти, дозволенные этому чату: владельцу в
+ * личке — вся память тем же отбором, что на экране, остальным — только своё
+ * (граница и её цена — у [ChatRecall]). Ответ идёт той же
  * лестницей, что на экране (AnswerLadder): взгляд на приборы (доска этого
  * чата, GlanceDesk; на слово о приборах в вопросе доску показывает код —
  * Glance.asksInstruments), перехват повтора, зеркала и порчи. Ушло — только через ворота
@@ -170,6 +179,9 @@ object ChatLink {
 
     /** Скорость выдачи прошлого ответа в каждом чате, ток/с, — для доски чата (GlanceDesk). */
     private val speeds = ConcurrentHashMap<String, String>()
+
+    /** Строка «Записи (…)» каждого чата: что память дала последнему ходу и по какой границе (ChatRecall). */
+    private val recalls = ConcurrentHashMap<String, String>()
 
     /** Начало окна прошлого ответа в чате — для «на месте / сдвинулось» на экране врат. */
     private val windowStarts = ConcurrentHashMap<String, Long>()
@@ -626,6 +638,12 @@ object ChatLink {
         // Загружен — второй раз не грузится.
         withContext(Dispatchers.IO) { WordDamageHolder.load { app.assets.open(WordDamageHolder.ASSET) } }
 
+        // Записи памяти этого хода — по границе чата (ChatRecall). Не прочитались —
+        // ход идёт без них, строка экрана говорит почему.
+        val question = ChatFeed.question(window)
+        val recall = recallFor(app, job, window, question, owner, dictionary, chatName, now)
+        recalls[job.tallyKey] = recall.meter
+
         // Лента чата для лестницы ответа (AnswerLadder): запрос — окно чата,
         // ходы для мер перехвата — ответы агента в окне. Годного ответа нет —
         // уходит первый: скрыть ход в телеграме значит промолчать человеку
@@ -637,9 +655,9 @@ object ChatLink {
         val ribbon = object : AnswerLadder.Ribbon {
             override fun history() = turnsOfWindow
             override fun messages(without: Set<Int>) =
-                ChatFeed.messages(ChatFeed.without(window, without), place, headText, tailBlock, note)
+                ChatFeed.messages(ChatFeed.without(window, without), place, headText, tailBlock, note, recall.message)
             override fun stableMessages(without: Set<Int>) =
-                if (without.isEmpty()) ChatFeed.stableMessages(messages(without)) else null
+                if (without.isEmpty()) ChatFeed.stableMessages(messages(without), recall = recall.message != null) else null
             override fun close(answer: String, rejected: String?) {
                 chosen = answer
             }
@@ -700,7 +718,6 @@ object ChatLink {
 
         val startedAt = System.currentTimeMillis()
         // Слово о приборах в вопросе — доска сразу (Glance, «ДОСКА ПО СЛОВУ ВОПРОСА»).
-        val question = ChatFeed.question(window)
         val ran = ladder.run(ribbon, question, desk, halt = { haltReason(app) }, deskFirst = Glance.asksInstruments(question))
         meterFirst()
         val tookMs = System.currentTimeMillis() - startedAt
@@ -716,6 +733,70 @@ object ChatLink {
             return Generated(null, if (ran.glanced) "глянул на приборы, после доски ответа нет" else "модель не выдала ни знака", tookMs, said)
         }
         return Generated(text, null, tookMs, said)
+    }
+
+    /** Записи памяти хода: сообщение агента для модели (null — подавать нечего) и строка экрана врат. */
+    private class Recall(val message: String?, val meter: String)
+
+    /**
+     * Что память даёт этому ходу — по границе чата ([ChatRecall]): владельцу
+     * в личке — круг, как на экране (тот же вызов и те же подписи,
+     * memory.RecallLines); остальным — узкий отбор из дозволенного. Сбой
+     * чтения ход не роняет: ответ идёт без записей.
+     *
+     * Запись из прошлого разговора чата подписывается так (номера разговоров
+     * для подписи: 0 — до начала нынешнего, 1 — нынешний): начало разговора —
+     * как у окна (ChatFeed, «РАЗГОВОР»).
+     *
+     * Ход владельца считается обращением к памяти, как ход на экране: записи
+     * получают касание и прогрев (HourglassMemory.getContextWithSummary), и
+     * строка «Касания:» экрана показывает этот ход, если он был последним.
+     */
+    private suspend fun recallFor(
+        app: Context,
+        job: Job,
+        window: ChatFeed.Window,
+        question: String,
+        owner: ChatPrefs.Owner?,
+        dictionary: LemmaDictionary?,
+        chatName: String,
+        now: Long,
+    ): Recall = try {
+        val scope = ChatRecall.scope(job.place == Place.DIRECT, owner?.key == job.sender)
+        val conversationStart = window.opened?.at ?: window.lines.first().at
+        val shown = ChatRecall.shownTexts(window.lines, owner?.key?.id)
+        if (scope == ChatRecall.Scope.OWNER) {
+            val asked = window.lines.takeLastWhile { !it.isAgent }
+            val earlier = window.lines.dropLast(asked.size).filter { !it.isAgent }
+            val address = Coordinates.addressInRibbon(earlier.map { it.text to it.at }, question, now)
+            val found = ProcessObjects.get(app).mediator.getContextWithSummary(
+                purpose = RetrievalPurpose.ANSWERING_USER,
+                query = question,
+                limit = DolmenCircle.CIRCLE_SEATS,
+                recentQuestions = earlier.map { it.text },
+                excludedTexts = shown,
+                previousAnswer = window.lines.lastOrNull { it.isAgent }?.text,
+                address = address,
+                seats = DolmenCircle.circleSeats(0),
+            )
+            val lines = found.stickers.map {
+                RecallLines.of(it, address, RetellHolder.table, now, if (it.createdAt < conversationStart) 0 else 1, 1).text
+            }
+            Recall(ChatRecall.message(lines), ChatRecall.ownerMeter(chatName, lines.size, found.circle))
+        } else {
+            val dao = MemoryDatabase.getInstance(app).stickerDao()
+            val pool = withContext(Dispatchers.IO) {
+                if (scope == ChatRecall.Scope.PERSON) dao.saidBy(job.sender.id, ChatRecall.POOL) else dao.saidIn(job.tallyKey, ChatRecall.POOL)
+            }.filter { ChatRecall.visible(scope, it, job.sender.id, job.tallyKey) }
+            val lines = ChatRecall.pick(question, pool, dictionary, shown).map {
+                ChatRecall.narrowLine(it, scope, now, it.createdAt < conversationStart, owner?.key?.id, owner?.name)
+            }
+            Recall(ChatRecall.message(lines), ChatRecall.narrowMeter(chatName, scope, pool.size, lines.size))
+        }
+    } catch (c: CancellationException) {
+        throw c
+    } catch (t: Throwable) {
+        Recall(null, ChatRecall.failedMeter(chatName, t.javaClass.simpleName))
     }
 
     /** Загрузить последнюю выбранную модель, если её нет; null — готово, иначе причина. */
@@ -803,6 +884,7 @@ object ChatLink {
             answers[key]?.let { out += it }
             evals[key]?.let { out += it }
             threads[key]?.let { out += it }
+            recalls[key]?.let { out += it }
             points[key]?.let { out += it }
             saves[key]?.let { out += "Снимок чата (${v.first}): последняя запись — $it" }
         }

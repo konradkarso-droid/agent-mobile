@@ -293,6 +293,30 @@ interface StickerDao {
     suspend fun getAll(): List<Sticker>
 
     /**
+     * Видимые записи, сказанные одним собеседником ([speaker] — его ключ, как
+     * его пишет дверь записи, memory.Heard), свежие первыми. Для узкого отбора
+     * чата телеграма (gate.ChatRecall): чужому собеседнику видно только это.
+     * Ничего не греет и обращением не считается — как [getById]. Красного
+     * слоя нет: он подаётся стеной.
+     */
+    @Query(
+        "SELECT * FROM stickers WHERE speaker = :speaker AND reviewPending = 0 AND rejectedAt IS NULL " +
+            "AND layer != 'RED' ORDER BY createdAt DESC LIMIT :limit"
+    )
+    suspend fun saidBy(speaker: String, limit: Int): List<Sticker>
+
+    /**
+     * Видимые записи, прозвучавшие в одном чате ([chat] — ключ чата и ветки,
+     * memory.Heard), свежие первыми. Для группы: ей видно только сказанное в
+     * ней. В остальном — как [saidBy].
+     */
+    @Query(
+        "SELECT * FROM stickers WHERE chat = :chat AND reviewPending = 0 AND rejectedAt IS NULL " +
+            "AND layer != 'RED' ORDER BY createdAt DESC LIMIT :limit"
+    )
+    suspend fun saidIn(chat: String, limit: Int): List<Sticker>
+
+    /**
      * Пул сравнения по тегу и слоям: с ним сверяют при сохранении, перед приёмом
      * и при показе спора. Записи из очереди в нём есть — спор с ними ещё не
      * решён. Отвергнутых нет: они больше не часть памяти, с которой спорят.

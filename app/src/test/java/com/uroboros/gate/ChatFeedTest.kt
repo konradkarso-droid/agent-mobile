@@ -226,4 +226,30 @@ class ChatFeedTest {
         assertEquals(listOf("Пинг?"), ChatFeed.without(w, setOf(0, 1)).lines.map { it.text })
         assertEquals(w, ChatFeed.without(w, emptySet()))
     }
+
+    @Test
+    fun `записи хода стоят сообщением агента сразу перед текущей репликой`() {
+        val w = ChatFeed.window(listOf(peer("Привет"), agent("Здравствуй."), peer("Что там с билетом?")), 0)
+        val m = ChatFeed.messages(w, place, null, null, null, recall = "Твои слова на днях: «Билет до моря».")
+        assertEquals(listOf("user", "assistant", "assistant", "user"), m.map { it.first })
+        assertEquals("Твои слова на днях: «Билет до моря».", m[2].second)
+        assertEquals("Денис: Что там с билетом?", m[3].second)
+        assertEquals("граница снимка — перед записями", 2, ChatFeed.stableMessages(m, recall = true))
+    }
+
+    @Test
+    fun `записи перед первой репликой не отнимают у неё строку «где я»`() {
+        val w = ChatFeed.window(listOf(peer("Что там с билетом?")), 0)
+        val m = ChatFeed.messages(w, place, null, null, null, recall = "Твои слова на днях: «Билет до моря».")
+        assertEquals(listOf("assistant", "user"), m.map { it.first })
+        assertTrue(m[1].second.contains(place))
+        assertEquals(0, ChatFeed.stableMessages(m, recall = true))
+    }
+
+    @Test
+    fun `нет записей — запрос прежний`() {
+        val w = ChatFeed.window(listOf(peer("Привет"), agent("Здравствуй."), peer("Как дела?")), 0)
+        assertEquals(ChatFeed.messages(w, place, null, null, null), ChatFeed.messages(w, place, null, null, null, recall = null))
+        assertEquals(ChatFeed.messages(w, place, null, null, null), ChatFeed.messages(w, place, null, null, null, recall = " "))
+    }
 }
