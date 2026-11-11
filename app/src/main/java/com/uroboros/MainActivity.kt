@@ -4949,10 +4949,12 @@ class MainActivity : AppCompatActivity() {
                 // чтение базы: записи не греются. Сбой поиска — словами в
                 // строке прибора, ход идёт без портрета.
                 // Имя собеседника (NameClaim) — тем же чтением, по тем же записям.
+                // Ключ владельца в телеграме — чьи записи из канала его (Coordinates.speakerOf).
+                val ownerKey = ChatPrefs.owner(applicationContext)?.key?.id
                 val portraitFound: Result<Triple<Portrait.Result, List<Sticker>, NameClaim.Result>> =
                     runCatching {
                         val all = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
-                        Triple(Portrait.of(all, current = userText), all, NameClaim.of(all))
+                        Triple(Portrait.of(all, current = userText, ownerKey = ownerKey), all, NameClaim.of(all, ownerKey = ownerKey))
                     }
                 val portrait = portraitFound.getOrNull()?.first
                 val portraitAsks = Portrait.asksAbout(userText)
@@ -4961,7 +4963,7 @@ class MainActivity : AppCompatActivity() {
                 val lemmaDictionary = LemmaHolder.loaded
                 val portraitTopicFound: Result<Portrait.Topic>? =
                     if (portraitAsks || portrait == null || lemmaDictionary == null) null else runCatching {
-                        Portrait.topic(portrait, portraitFound.getOrThrow().second, userText, lemmaDictionary)
+                        Portrait.topic(portrait, portraitFound.getOrThrow().second, userText, lemmaDictionary, ownerKey = ownerKey)
                     }
                 val portraitTopic = portraitTopicFound?.getOrNull()
                 val portraitReason = Portrait.reasonOf(portraitAsks, portraitTopic)

@@ -1,6 +1,7 @@
 package com.uroboros.memory.nav
 
 import com.uroboros.memory.SourceKind
+import com.uroboros.memory.Sticker
 
 /**
  * Координаты реплики и записи — СЧИТАЮТСЯ НА ЛЕТУ, А НЕ ХРАНЯТСЯ.
@@ -21,6 +22,23 @@ object Coordinates {
      * Кто сказал запись памяти — по её `source`. null — не ясно: распознанное
      * на картинке («я» там — ни владелец, ни агент) и незнакомое значение.
      */
+    /**
+     * Кто сказал запись памяти — персоной. Записи из канала (телеграм) несут
+     * ключ говорящего ([Sticker.speaker], `tg:user:<номер>`): это и есть
+     * персона, ключ [ownerKey] — владелец. Владельцем его делает только
+     * отметка «это я» на экране врат — слияние персон ставит лишь владелец
+     * (Docking, PersonMerge); не отмечен ([ownerKey] null) — его слова из
+     * телеграма числятся отдельной персоной, ошибка в безопасную сторону.
+     * Записи без ключа — с экрана: по [speakerOf] от `source`.
+     *
+     * ЗАЧЕМ НЕ ПО `source`. У чужих слов из телеграма `source` тот же, что у
+     * слов владельца, — «со слов пользователя», — и по нему одному слова
+     * другого человека считались бы словами владельца: попадали бы в его
+     * облако, портрет и имя.
+     */
+    fun speakerOf(record: Sticker, ownerKey: String?): PersonKey? =
+        record.speaker?.let { if (it == ownerKey) PersonKey.OWNER else PersonKey(it) } ?: speakerOf(record.source)
+
     fun speakerOf(source: String): PersonKey? = when (source) {
         SourceKind.USER_STATED.name -> PersonKey.OWNER
         SourceKind.AGENT_INFERRED.name -> PersonKey.AGENT

@@ -1,6 +1,7 @@
 package com.uroboros.memory.dream
 
 import android.content.Context
+import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.llm.JournalStore
@@ -37,7 +38,8 @@ class SelfGapReader(private val context: Context, private val store: JournalStor
         val (kept, assertsNothing) = db.stickerDao().getAll()
             .filter { !it.reviewPending && it.rejectedAt == null }
             .partition { Clouds.keepsRecord(it.content) }
-        kept.mapTo(out) { Clouds.fromRecord(it.content, it.source, it.createdAt) }
+        val ownerKey = ChatPrefs.owner(context)?.key?.id
+        kept.mapTo(out) { Clouds.fromRecord(it, ownerKey) }
         db.conclusionDao().accepted().mapTo(out) { Clouds.ofAgent(it.text, it.nightAt) }
         for (night in db.dreamDao().nightsWithTopics()) {
             DreamTopic.load(night.dreamTopics).mapTo(out) { Clouds.ofAgent(it, night.nightAt) }
