@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.documentfile.provider.DocumentFile
 import com.uroboros.gate.ChatQuiet
+import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.gate.link.GateLink
 import com.uroboros.initiative.CuriositySource
 import com.uroboros.initiative.FirstOfSources
@@ -41,6 +42,7 @@ import com.uroboros.memory.dream.Conclusion
 import com.uroboros.memory.dream.ConclusionStep
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.dream.DreamTopicStep
+import com.uroboros.memory.dream.FactMarkStep
 import com.uroboros.memory.dream.RecordChunkStep
 import com.uroboros.llm.RecordChunkStore
 import com.uroboros.memory.dream.DreamWeaver
@@ -832,6 +834,9 @@ class AgentService : Service() {
                 if (missing.dreamTopics) {
                     outcomes += DreamTopicStep.run(db, objects.llmEngine, nightAt) { why() }
                 }
+                // Факты о собеседниках — после тем снов, на каждом заходе: шаг
+                // размечает то, что ещё не размечено (см. FactMarkStep).
+                outcomes += FactMarkStep.run(db, objects.llmEngine, ChatPrefs.owner(applicationContext)?.key?.id) { why() }
                 // Куски записей — последними и на дневной загрузке (см.
                 // RecordChunkStep); finally ниже вернёт её ещё раз даром.
                 backToDay()
@@ -1086,6 +1091,14 @@ class AgentService : Service() {
                 } else {
                     null
                 }
+                // Факты о собеседниках — после тем снов и при тех же условиях (см. FactMarkStep).
+                val facts = if (dreamFirst) {
+                    FactMarkStep.run(db, objects.llmEngine, ChatPrefs.owner(applicationContext)?.key?.id) {
+                        whyModelCannotRun(applicationContext)
+                    }
+                } else {
+                    null
+                }
                 // Куски записей — последними и на дневной загрузке (см.
                 // RecordChunkStep); finally ниже вернёт её ещё раз даром.
                 val chunks = if (dreamFirst) {
@@ -1096,7 +1109,7 @@ class AgentService : Service() {
                 } else {
                     null
                 }
-                listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics, chunks).joinToString("\n\n")
+                listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics, facts, chunks).joinToString("\n\n")
             } catch (failed: NightLoadFailed) {
                 NIGHT_LOAD_FAILED
             } catch (cancelled: CancellationException) {

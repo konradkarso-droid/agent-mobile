@@ -73,9 +73,15 @@ import com.uroboros.util.TextFold
  *     о собеседнике, а о ходе разговора (TalkRemark: признаки, порог и чего
  *     он не умеет — там).
  *
- * ПОРЯДОК — два рода мест, и разведены они намеренно:
- *  - первые [FRESH] мест — самые свежие записи, по одному предложению с
- *    каждой: люди меняются, свежее сказанное о себе актуальнее;
+ * ПОРЯДОК — сначала факты, потом два рода мест:
+ *  - ФАКТЫ — строки, которые ночью отмечены «факт» (PersonFacts): устойчивое
+ *    о собеседнике — работа, увлечения, привычки. Порядок между ними — по
+ *    касаниям, при равенстве свежие выше; одинаковые по тексту встают один
+ *    раз. Слой в порядок не входит, и холодный факт доходит наравне с
+ *    тёплым — портрет читает все слои. Почему не по весу облака — у
+ *    PersonFacts;
+ *  - первые [FRESH] мест среди остального — самые свежие записи, по одному
+ *    предложению с каждой: люди меняются, свежее сказанное о себе актуальнее;
  *  - остальные — по касаниям (Sticker.userMatchCount: сколько раз запись
  *    совпала со словами реплик собеседника), при равенстве свежие выше:
  *    факт, к которому разговор возвращается, держится в портрете, даже когда
@@ -193,6 +199,8 @@ object Portrait {
         val createdAt: Long,
         val fromArchive: Boolean,
         val touches: Int = 0,
+        /** Ночная отметка (PersonFacts): да — факт, нет — момент, null — не размечена. */
+        val fact: Boolean? = null,
     )
 
     /**
@@ -321,7 +329,13 @@ object Portrait {
      * [current] — текущая реплика: её предложения в портрет не берутся
      * (описание объекта, «ПОВТОР РЕПЛИКИ»).
      */
-    fun of(records: List<Sticker>, person: PersonKey = PersonKey.OWNER, current: String = "", ownerKey: String? = null): Result {
+    fun of(
+        records: List<Sticker>,
+        person: PersonKey = PersonKey.OWNER,
+        current: String = "",
+        ownerKey: String? = null,
+        marks: Map<PersonFacts.Key, Boolean> = emptyMap(),
+    ): Result {
         val repeatKeys = Sentences.split(current).map { sentenceKey(it) }.filter { it.isNotEmpty() }.toSet()
         var repeats = 0
         val own = ownRecords(records, person, ownerKey)
@@ -355,6 +369,7 @@ object Portrait {
                         record.id, s.sentence, record.createdAt,
                         fromArchive = record.layer == Layer.PURPLE.name,
                         touches = record.userMatchCount,
+                        fact = marks[PersonFacts.Key(record.id, s.sentence)],
                     )
                 }
             }
@@ -436,11 +451,14 @@ object Portrait {
      * остаются выше.
      */
     private fun choose(passed: List<Line>): List<Line> {
-        val fresh = passed.distinctBy { it.recordId }.take(FRESH)
-        val rest = passed.filter { it !in fresh }.sortedByDescending { it.touches }
+        // passed — свежие первыми, сортировка устойчива: при равных касаниях свежий выше.
+        val facts = passed.filter { it.fact == true }.distinctBy { sentenceKey(it.sentence) }.sortedByDescending { it.touches }
+        val others = passed.filter { it.fact != true }
+        val fresh = others.distinctBy { it.recordId }.take(FRESH)
+        val rest = others.filter { it !in fresh }.sortedByDescending { it.touches }
         val perRecord = HashMap<Long, Int>()
         val out = ArrayList<Line>()
-        for (line in fresh + rest) {
+        for (line in facts + fresh + rest) {
             if (out.size >= LIMIT) break
             val n = perRecord[line.recordId] ?: 0
             if (n >= PER_RECORD) continue
@@ -486,7 +504,8 @@ object Portrait {
                     " · снято: столбиком ${result.inColumn}, чужая речь ${result.foreign}, обращение к агенту ${result.toAgent}, вопрос/просьба/«мы» ${result.notStatement}," +
                     " без «я/мой» ${result.noFirstPronoun}, о разговоре ${result.aboutTalk}" +
                     repeats +
-                    " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" + feeding
+                    " · прошло ${result.passed.size}, в портрет ${result.chosen.size} (из архива $archive)" +
+                    " · " + PersonFacts.marksLine(result) + feeding
             }
             Reason.TOPIC ->
                 "тема: ${topic!!.words.joinToString(", ")} → строк ${topic.lines.size}" +
