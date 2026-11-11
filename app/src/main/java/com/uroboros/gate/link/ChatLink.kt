@@ -9,6 +9,7 @@ import com.uroboros.AgentService
 import com.uroboros.ModelPrefs
 import com.uroboros.ProcessObjects
 import com.uroboros.gate.ChatFeed
+import com.uroboros.gate.CrossChannel
 import com.uroboros.gate.ChatOwnSpeech
 import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.ChatQuiet
@@ -634,9 +635,11 @@ object ChatLink {
         val watchdog = ProcessObjects.get(app).watchdog
         val body = BodyLine.of(watchdog.power.value, watchdog.zone.value)
         val insist = ChatThread.insistence(upTo.map(::feedLine))
-        val tailBlock = listOfNotNull(tail?.let(ChatThread::tailText), insist, promisedText).joinToString("\n")
+        // Где ещё я говорил с прошлой реплики здесь — только личке владельца (CrossChannel).
+        val cross = crossFor(app, job, owner, upTo.last().at, dictionary, agentNames, installedAt)
+        val tailBlock = listOfNotNull(cross.first, tail?.let(ChatThread::tailText), insist, promisedText).joinToString("\n")
         threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm, previous = previous) +
-            " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body"
+            " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body · ${cross.second}"
 
         // Подпись владельца — по окну: строка «где я» стоит первой и должна меняться только вместе с окном.
         val ownerSignature = owner?.let { o -> readRaw.lastOrNull { it.id >= window.startId && it.sender == o.key.id }?.signature }
@@ -815,6 +818,44 @@ object ChatLink {
             throw c
         } catch (t: Throwable) {
             OwnFound(emptyList(), 0, true) { ChatOwnSpeech.meter(true, t.javaClass.simpleName, 0, 0, 0, 0) }
+        }
+    }
+
+    /**
+     * Строка между каналами для этого хода (CrossChannel): текст модели (null —
+     * нечего или не положено) и строка прибора. Чужому чату ленты не читаются
+     * вовсе. Сбой чтения ход не роняет: ход идёт без строки, прибор говорит почему.
+     */
+    private suspend fun crossFor(
+        app: Context,
+        job: Job,
+        owner: ChatPrefs.Owner?,
+        now: Long,
+        dictionary: LemmaDictionary?,
+        agentNames: List<String>,
+        installedAt: Long?,
+    ): Pair<String?, String> {
+        val viewer = if (ChatRecall.scope(job.place == Place.DIRECT, owner?.key == job.sender) == ChatRecall.Scope.OWNER)
+            CrossChannel.Viewer.OWNER_DM else CrossChannel.Viewer.OTHER
+        if (viewer == CrossChannel.Viewer.OTHER) return null to CrossChannel.meter(CrossChannel.Result.NotAllowed, null, ::clock)
+        return try {
+            val objects = ProcessObjects.get(app)
+            val rows = ChatDatabase.getInstance(app).chatLineDao().readLast(readRings, ChatOwnSpeech.READ_LINES).asReversed()
+            val chats = CrossChannel.chatPlaces(rows, owner?.key?.id)
+            val store = objects.turns.store
+            val screen = CrossChannel.screenPlace(
+                store.readArchive().orEmpty().map { Triple(it.question, it.agentContent, it.at) } +
+                    objects.turns.journal.history().map { Triple(it.question, it.agentContent, it.at) },
+            )
+            val hereLastAt = chats.firstOrNull { it.key == job.tallyKey }?.lines
+                ?.lastOrNull { !it.isAgent && it.id < job.lineId }?.at
+            val result = CrossChannel.find(viewer, job.tallyKey, hereLastAt, now, chats + screen, dictionary, agentNames, installedAt)
+            val text = (result as? CrossChannel.Result.Fed)?.let { CrossChannel.text(viewer, it.seen, now) }
+            text to CrossChannel.meter(result, null, ::clock)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            null to CrossChannel.meter(null, t.javaClass.simpleName, ::clock)
         }
     }
 

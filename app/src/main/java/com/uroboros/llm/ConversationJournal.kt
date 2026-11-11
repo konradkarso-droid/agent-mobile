@@ -408,9 +408,15 @@ class ConversationJournal {
         curiosityAsk: String? = null,
         prochnost: String? = null,
         recallAsk: String? = null,
+        crossChannel: String? = null,
     ): String {
         val blocks = ArrayList<String>(8)
         if (turns.lastOrNull()?.records?.isEmpty() == true) blocks += ANSWER_WITHOUT_SUPPORT
+        // Строка между каналами (gate.CrossChannel) — где ещё я говорил перед
+        // этим. Она о том, что было до вопроса, а не о вопросе, поэтому первой
+        // из строк системы: строки ниже указывают «ниже» на вопрос и должны
+        // стоять у него.
+        if (!crossChannel.isNullOrBlank()) blocks += toAgent(crossChannel)
         // Предложение спросить о сне — сразу за пометкой и до сверки: оно
         // агенту о нём самом, а не о вопросе, и не должно стоять между
         // сверкой и вопросом, на который указывает её «ниже» (см.
