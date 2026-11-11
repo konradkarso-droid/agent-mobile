@@ -60,7 +60,7 @@ object ChatPortrait {
      * (nav.NameClaim); [question] — реплики этого хода; [table] — таблица
      * разворота (без неё портрет модели не подаётся — цитатой малая модель
      * переворачивает «я» собеседника в своё); [marks] — ночные отметки
-     * (PersonFacts); [conversationStart] — начало нынешнего разговора чата:
+     * (PersonFacts) и [outdated] — устаревшие строки (FactAging); [conversationStart] — начало нынешнего разговора чата:
      * запись раньше него подписывается «в прошлом разговоре».
      */
     fun of(
@@ -76,11 +76,12 @@ object ChatPortrait {
         now: Long,
         conversationStart: Long,
         chatName: String,
+        outdated: Set<PersonFacts.Key> = emptySet(),
     ): Fed {
         val head = "Портрет ($chatName): "
         val person = personOf(scope, sender)
             ?: return Fed(emptyList(), emptyList(), emptyList(), Portrait.Reason.NONE, false, null, head + "группе не положен")
-        val result = Portrait.of(records, person, current = question, ownerKey = ownerKey, marks = marks)
+        val result = Portrait.of(records, person, current = question, ownerKey = ownerKey, marks = marks, outdated = outdated)
         val asks = Portrait.asksAbout(question)
         val topic = if (asks || dictionary == null) null else Portrait.topic(result, records, question, dictionary, person, ownerKey)
         val reason = Portrait.reasonOf(asks, topic)

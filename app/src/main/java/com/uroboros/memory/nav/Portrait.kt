@@ -72,6 +72,8 @@ import com.uroboros.util.TextFold
  *  4. НЕ ЗАМЕЧАНИЕ О РАЗГОВОРЕ — «Я спросил кто я, а не что я говорил» не
  *     о собеседнике, а о ходе разговора (TalkRemark: признаки, порог и чего
  *     он не умеет — там).
+ *  5. НЕ УСТАРЕЛО — новое слово собеседника о себе его не отменило
+ *     (FactAging). Запись при этом остаётся в памяти.
  *
  * ПОРЯДОК — сначала факты, потом два рода мест:
  *  - ФАКТЫ — строки, которые ночью отмечены «факт» (PersonFacts): устойчивое
@@ -225,6 +227,8 @@ object Portrait {
         val repeats: Int = 0,
         /** Снято проверкой 0 — чужая речь (ForeignSpeech.ownSentences). */
         val foreign: Int = 0,
+        /** Снято как устаревшее: новое слово собеседника его отменило (FactAging). */
+        val outdated: Int = 0,
     )
 
     /** Подпись над строками портрета в записях хода, когда имя не задано. */
@@ -335,6 +339,7 @@ object Portrait {
         current: String = "",
         ownerKey: String? = null,
         marks: Map<PersonFacts.Key, Boolean> = emptyMap(),
+        outdated: Set<PersonFacts.Key> = emptySet(),
     ): Result {
         val repeatKeys = Sentences.split(current).map { sentenceKey(it) }.filter { it.isNotEmpty() }.toSet()
         var repeats = 0
@@ -347,6 +352,7 @@ object Portrait {
         var inColumn = 0
         var aboutTalk = 0
         var foreign = 0
+        var stale = 0
         val passed = ArrayList<Line>()
         for (record in own) {
             val text = ownText(record, person)
@@ -366,6 +372,7 @@ object Portrait {
                     !hasFirstPronoun(s.sentence) -> noFirst++
                     TalkRemark.isRemark(s.sentence) -> aboutTalk++
                     sentenceKey(s.sentence) in repeatKeys -> repeats++
+                    PersonFacts.Key(record.id, s.sentence) in outdated -> stale++
                     else -> passed += Line(
                         record.id, s.sentence, record.createdAt,
                         fromArchive = record.layer == Layer.PURPLE.name,
@@ -377,7 +384,7 @@ object Portrait {
         }
         return Result(
             own.size, sentences, toAgent, notStatement, noFirst, passed, choose(passed), inColumn, aboutTalk, repeats,
-            foreign,
+            foreign, stale,
         )
     }
 
