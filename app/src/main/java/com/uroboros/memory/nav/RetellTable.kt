@@ -258,6 +258,9 @@ class RetellTable private constructor(
  */
 object RetellHolder {
 
+    /** Файл таблицы в assets приложения. */
+    const val ASSET = "verb_person_stems.txt"
+
     const val ENABLED = true
 
     const val MIXED = false

@@ -349,10 +349,11 @@ object Portrait {
         var foreign = 0
         val passed = ArrayList<Line>()
         for (record in own) {
-            val column = inColumn(record.content)
+            val text = ownText(record, person)
+            val column = inColumn(text)
             // Столбиком — запись снята целиком, разбирать её речь незачем.
-            val mine = if (column) emptyList() else ForeignSpeech.ownSentences(record.content)
-            for ((i, s) in PersonForm.of(record.content).sentences.withIndex()) {
+            val mine = if (column) emptyList() else ForeignSpeech.ownSentences(text)
+            for ((i, s) in PersonForm.of(text).sentences.withIndex()) {
                 sentences++
                 val p = s.persons
                 when {
@@ -422,6 +423,23 @@ object Portrait {
         val analyses = dictionary.analyze(word)
         if (analyses.any { it.partOfSpeech in FUNCTION_WORDS }) return emptySet()
         return analyses.filter { it.partOfSpeech == "NOUN" }.mapTo(LinkedHashSet()) { it.lemma }
+    }
+
+    /**
+     * Текст записи как речь самого [person]. Слова другого человека из канала
+     * лежат в памяти с его подписью («Пракс: …», gate.TgWords.memoryText),
+     * чтобы экран владельца читал их чужой речью. Для портрета этого человека
+     * подпись — его собственная: она снимается, и дальше текст проходит те же
+     * проверки, что слова владельца. Подпись снимается, только если вся запись —
+     * прямая речь одного подписанта: иначе запись берётся как есть, и чужая
+     * речь в ней остаётся чужой. У владельца записи без подписи — как есть.
+     */
+    private fun ownText(record: Sticker, person: PersonKey): String {
+        if (person == PersonKey.OWNER || record.speaker == null) return record.content
+        val read = ForeignSpeech.ofRecord(record.content)
+        val signer = read.firstOrNull()?.takeIf { it.kind == ForeignSpeech.Kind.DIRECT }?.speaker ?: return record.content
+        if (read.any { it.kind != ForeignSpeech.Kind.DIRECT || it.speaker != signer }) return record.content
+        return record.content.substringAfter(':').trimStart()
     }
 
     /** Записи собеседника [person]; кто сказал — Coordinates.speakerOf с ключом владельца [ownerKey]. */

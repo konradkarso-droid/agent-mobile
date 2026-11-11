@@ -4389,7 +4389,7 @@ class MainActivity : AppCompatActivity() {
         // не загрузилась, зеркало снимает смешанные записи, как без разворота;
         // причина видна в строке «Зеркало в отборе:».
         lifecycleScope.launch(Dispatchers.IO) {
-            RetellHolder.load { assets.open(RETELL_TABLE_ASSET) }
+            RetellHolder.load { assets.open(RetellHolder.ASSET) }
             withContext(Dispatchers.Main) { renderMetricsPanel() }
         }
 
@@ -6201,7 +6201,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         /** Таблица глаголов для разворота (nav.RetellTable) в app/src/main/assets. */
-        private const val RETELL_TABLE_ASSET = "verb_person_stems.txt"
 
         /** Словарь начальных форм (nav.LemmaDictionary) в app/src/main/assets. */
 
