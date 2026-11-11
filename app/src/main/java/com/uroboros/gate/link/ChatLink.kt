@@ -11,6 +11,7 @@ import com.uroboros.ProcessObjects
 import com.uroboros.gate.ChatFeed
 import com.uroboros.gate.CrossChannel
 import com.uroboros.gate.ChatOwnSpeech
+import com.uroboros.gate.ChatPortrait
 import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.ChatQuiet
 import com.uroboros.gate.ChatRecall
@@ -50,9 +51,12 @@ import com.uroboros.memory.nav.AddressSorter
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
+import com.uroboros.memory.nav.PersonFacts
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Place
+import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
@@ -898,16 +902,18 @@ object ChatLink {
         fun ownLines(seated: Int) = own.said.take(seated).map {
             ProvenanceLabels.ownSpeechForModel(it.sentence, it.at, now, where = it.where)
         }
+        // Портрет собеседника — первым из записей хода, как на экране (gate.ChatPortrait).
+        val portrait = portraitFor(app, scope, job, question, owner, dictionary, now, conversationStart, chatName)
         if (scope == ChatRecall.Scope.OWNER) {
             val found = ProcessObjects.get(app).mediator.getContextWithSummary(
                 purpose = RetrievalPurpose.ANSWERING_USER,
                 query = question,
-                limit = DolmenCircle.CIRCLE_SEATS,
+                limit = DolmenCircle.circleSeats(portrait.lines.size),
                 recentQuestions = earlier.map { it.text },
-                excludedTexts = shown,
+                excludedTexts = shown + portrait.records,
                 previousAnswer = window.lines.lastOrNull { it.isAgent }?.text,
                 address = address,
-                seats = DolmenCircle.circleSeats(0),
+                seats = DolmenCircle.circleSeats(portrait.lines.size),
                 ownSpeechFound = if (own.asked) own.said.size else null,
                 ownSpeechServiceDropped = own.serviceDropped,
             )
@@ -916,30 +922,71 @@ object ChatLink {
             }
             val mine = ownLines(found.ownSpeechSeated)
             Recall(
-                ChatRecall.message(lines + mine),
-                ChatRecall.ownerMeter(chatName, lines.size, found.circle) + " · " + own.meter(mine.size),
-                found.stickers.map { it.content },
+                ChatPortrait.message(portrait, lines + mine),
+                ChatRecall.ownerMeter(chatName, lines.size, found.circle) + " · " + own.meter(mine.size) + "\n" + portrait.meter,
+                portrait.texts + found.stickers.map { it.content },
             )
         } else {
             val dao = MemoryDatabase.getInstance(app).stickerDao()
             val pool = withContext(Dispatchers.IO) {
                 if (scope == ChatRecall.Scope.PERSON) dao.saidBy(job.sender.id, ChatRecall.POOL) else dao.saidIn(job.tallyKey, ChatRecall.POOL)
-            }.filter { ChatRecall.visible(scope, it, job.sender.id, job.tallyKey) }
+            }.filter { ChatRecall.visible(scope, it, job.sender.id, job.tallyKey) && it.content !in portrait.records }
             val mine = ownLines(ChatOwnSpeech.NARROW_SEATS)
             val picked = ChatRecall.pick(question, pool, dictionary, shown, ChatRecall.NARROW_SEATS - mine.size)
             val lines = picked.map {
                 ChatRecall.narrowLine(it, scope, now, it.createdAt < conversationStart, owner?.key?.id, owner?.name)
             }
             Recall(
-                ChatRecall.message(lines + mine),
-                ChatRecall.narrowMeter(chatName, scope, pool.size, lines.size) + " · " + own.meter(mine.size),
-                picked.map { it.content },
+                ChatPortrait.message(portrait, lines + mine),
+                ChatRecall.narrowMeter(chatName, scope, pool.size, lines.size) + " · " + own.meter(mine.size) + "\n" + portrait.meter,
+                portrait.texts + picked.map { it.content },
             )
         }
     } catch (c: CancellationException) {
         throw c
     } catch (t: Throwable) {
         Recall(null, ChatRecall.failedMeter(chatName, t.javaClass.simpleName))
+    }
+
+    /**
+     * Портрет собеседника этого хода (gate.ChatPortrait) — по границе чата.
+     * Сбой чтения памяти ход не роняет: ход идёт без портрета, строка экрана
+     * врат говорит почему.
+     */
+    private suspend fun portraitFor(
+        app: Context,
+        scope: ChatRecall.Scope,
+        job: Job,
+        question: String,
+        owner: ChatPrefs.Owner?,
+        dictionary: LemmaDictionary?,
+        now: Long,
+        conversationStart: Long,
+        chatName: String,
+    ): ChatPortrait.Fed {
+        if (ChatPortrait.personOf(scope, job.sender.id) == null) {
+            return ChatPortrait.of(scope, job.sender.id, emptyList(), null, null, question, null, null, emptyMap(), now, conversationStart, chatName)
+        }
+        return try {
+            // Таблица разворота — её грузит экран; служба после комы поднимается без экрана.
+            withContext(Dispatchers.IO) { RetellHolder.load { app.assets.open(RetellHolder.ASSET) } }
+            val db = MemoryDatabase.getInstance(app)
+            val (records, marks) = withContext(Dispatchers.IO) {
+                db.stickerDao().getAll() to db.factMarkDao().all().associate {
+                    PersonFacts.Key(it.recordId, it.sentence) to (it.verdict == PersonFacts.Verdict.FACT.name)
+                }
+            }
+            val ownerKey = owner?.key?.id
+            val ownerName = if (scope == ChatRecall.Scope.OWNER) NameClaim.of(records, ownerKey = ownerKey).found?.name else null
+            ChatPortrait.of(
+                scope, job.sender.id, records, ownerKey, ownerName, question, dictionary, RetellHolder.loaded, marks,
+                now, conversationStart, chatName,
+            )
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            ChatPortrait.Fed(emptyList(), emptyList(), emptyList(), Portrait.Reason.NONE, false, null, "Портрет ($chatName): не посчитался — ${t.javaClass.simpleName}")
+        }
     }
 
     /** Загрузить последнюю выбранную модель, если её нет; null — готово, иначе причина. */
