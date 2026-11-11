@@ -42,6 +42,7 @@ import com.uroboros.memory.dream.Conclusion
 import com.uroboros.memory.dream.ConclusionStep
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.dream.DreamTopicStep
+import com.uroboros.memory.dream.FactAgingStep
 import com.uroboros.memory.dream.FactMarkStep
 import com.uroboros.memory.dream.RecordChunkStep
 import com.uroboros.llm.RecordChunkStore
@@ -837,6 +838,9 @@ class AgentService : Service() {
                 // Факты о собеседниках — после тем снов, на каждом заходе: шаг
                 // размечает то, что ещё не размечено (см. FactMarkStep).
                 outcomes += FactMarkStep.run(db, objects.llmEngine, ChatPrefs.owner(applicationContext)?.key?.id) { why() }
+                // Устаревшее — сразу за разметкой: пары только из строк «факт» (см. FactAgingStep).
+                withContext(Dispatchers.IO) { LemmaHolder.load { assets.open(LemmaHolder.ASSET) } }
+                outcomes += FactAgingStep.run(db, objects.llmEngine, ChatPrefs.owner(applicationContext)?.key?.id, LemmaHolder.loaded) { why() }
                 // Куски записей — последними и на дневной загрузке (см.
                 // RecordChunkStep); finally ниже вернёт её ещё раз даром.
                 backToDay()
@@ -1099,6 +1103,15 @@ class AgentService : Service() {
                 } else {
                     null
                 }
+                // Устаревшее — сразу за разметкой и при тех же условиях (см. FactAgingStep).
+                val aging = if (dreamFirst) {
+                    withContext(Dispatchers.IO) { LemmaHolder.load { assets.open(LemmaHolder.ASSET) } }
+                    FactAgingStep.run(db, objects.llmEngine, ChatPrefs.owner(applicationContext)?.key?.id, LemmaHolder.loaded) {
+                        whyModelCannotRun(applicationContext)
+                    }
+                } else {
+                    null
+                }
                 // Куски записей — последними и на дневной загрузке (см.
                 // RecordChunkStep); finally ниже вернёт её ещё раз даром.
                 val chunks = if (dreamFirst) {
@@ -1109,7 +1122,7 @@ class AgentService : Service() {
                 } else {
                     null
                 }
-                listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics, facts, chunks).joinToString("\n\n")
+                listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics, facts, aging, chunks).joinToString("\n\n")
             } catch (failed: NightLoadFailed) {
                 NIGHT_LOAD_FAILED
             } catch (cancelled: CancellationException) {

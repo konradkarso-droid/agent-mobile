@@ -97,6 +97,7 @@ import com.uroboros.memory.dream.CuriosityPressure
 import com.uroboros.memory.dream.DreamPickup
 import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
+import com.uroboros.memory.dream.FactsReader
 import com.uroboros.memory.dream.ConclusionView
 import com.uroboros.memory.desk.DeskView
 import com.uroboros.memory.desk.Promises
@@ -4956,11 +4957,12 @@ class MainActivity : AppCompatActivity() {
                     runCatching {
                         val db = MemoryDatabase.getInstance(applicationContext)
                         val all = db.stickerDao().getAll()
-                        // Ночные отметки «факт» ставят факты первыми (nav.PersonFacts).
-                        val marks = db.factMarkDao().all().associate {
-                            PersonFacts.Key(it.recordId, it.sentence) to (it.verdict == PersonFacts.Verdict.FACT.name)
-                        }
-                        Triple(Portrait.of(all, current = userText, ownerKey = ownerKey, marks = marks), all, NameClaim.of(all, ownerKey = ownerKey))
+                        // Ночные отметки: факты первыми, устаревшее — вон из портрета (dream.FactsReader).
+                        val night = FactsReader.read(db, all)
+                        Triple(
+                            Portrait.of(all, current = userText, ownerKey = ownerKey, marks = night.marks, outdated = night.outdated),
+                            all, NameClaim.of(all, ownerKey = ownerKey),
+                        )
                     }
                 val portrait = portraitFound.getOrNull()?.first
                 val portraitAsks = Portrait.asksAbout(userText)

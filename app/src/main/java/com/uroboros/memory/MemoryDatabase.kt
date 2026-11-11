@@ -16,6 +16,8 @@ import com.uroboros.memory.dream.DreamNight
 import com.uroboros.memory.dream.DreamServedDao
 import com.uroboros.memory.dream.FactMarkDao
 import com.uroboros.memory.dream.FactMarkRow
+import com.uroboros.memory.dream.FactPairDao
+import com.uroboros.memory.dream.FactPairRow
 import com.uroboros.memory.dream.MirrorDao
 import com.uroboros.memory.dream.MirrorVariant
 import com.uroboros.memory.judge.JudgeSieveDao
@@ -28,9 +30,9 @@ import com.uroboros.util.TextFold
     entities = [
         Sticker::class, ActionEvidence::class, LastStableSnapshot::class, JudgeVerdict::class,
         Dream::class, DreamNight::class, MirrorVariant::class, ConclusionRow::class, JudgeSieveRow::class,
-        FactMarkRow::class,
+        FactMarkRow::class, FactPairRow::class,
     ],
-    version = 32,
+    version = 33,
     exportSchema = false
 )
 abstract class MemoryDatabase : RoomDatabase() {
@@ -45,6 +47,7 @@ abstract class MemoryDatabase : RoomDatabase() {
     abstract fun mirrorDao(): MirrorDao
     abstract fun conclusionDao(): ConclusionDao
     abstract fun factMarkDao(): FactMarkDao
+    abstract fun factPairDao(): FactPairDao
 
     companion object {
         // Item 6b/8 (2026-08-17): новая таблица для снимка последнего стабильного
@@ -437,6 +440,26 @@ abstract class MemoryDatabase : RoomDatabase() {
             }
         }
 
+        // Спрошенные пары фактов: отменяет ли новый старый (см. dream.FactPairRow).
+        // Только новая таблица, пустая — пары ещё никто не спрашивал.
+        val MIGRATION_32_33 = object : Migration(32, 33) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fact_pairs` (
+                        `oldRecordId` INTEGER NOT NULL,
+                        `oldSentence` TEXT NOT NULL,
+                        `newRecordId` INTEGER NOT NULL,
+                        `newSentence` TEXT NOT NULL,
+                        `verdict` TEXT NOT NULL,
+                        `askedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`oldRecordId`, `oldSentence`, `newRecordId`, `newSentence`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         /**
          * Один проход при открытии базы: записям с `contentFolded IS NULL`
          * пишется приведённое содержимое. Тихо, итог — в лог. Сюда попадают
@@ -492,7 +515,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     context.applicationContext,
                     MemoryDatabase::class.java,
                     "uroboros_memory.db"
-                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32)
+                ).addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32, MIGRATION_32_33)
                  .addCallback(FILL_FOLDED)
                  .build().also { INSTANCE = it }
             }

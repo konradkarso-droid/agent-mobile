@@ -125,7 +125,8 @@ object PersonFacts {
         val facts = result.passed.count { it.fact == true }
         val unmarked = result.passed.count { it.fact == null }
         val chosenFacts = result.chosen.count { it.fact == true }
-        return "фактов $facts, не размечено $unmarked, в портрете фактов $chosenFacts"
+        val stale = if (result.outdated > 0) ", устаревших ${result.outdated}" else ""
+        return "фактов $facts, не размечено $unmarked, в портрете фактов $chosenFacts$stale"
     }
 
     /** Отметка строки для показа: «факт», «момент», «не размечена». */

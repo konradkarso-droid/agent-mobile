@@ -41,6 +41,7 @@ import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.desk.Promises
+import com.uroboros.memory.dream.FactsReader
 import com.uroboros.memory.Heard
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.ProvenanceLabels
@@ -53,7 +54,6 @@ import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
-import com.uroboros.memory.nav.PersonFacts
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Place
 import com.uroboros.memory.nav.Portrait
@@ -971,16 +971,15 @@ object ChatLink {
             // Таблица разворота — её грузит экран; служба после комы поднимается без экрана.
             withContext(Dispatchers.IO) { RetellHolder.load { app.assets.open(RetellHolder.ASSET) } }
             val db = MemoryDatabase.getInstance(app)
-            val (records, marks) = withContext(Dispatchers.IO) {
-                db.stickerDao().getAll() to db.factMarkDao().all().associate {
-                    PersonFacts.Key(it.recordId, it.sentence) to (it.verdict == PersonFacts.Verdict.FACT.name)
-                }
+            val (records, night) = withContext(Dispatchers.IO) {
+                val all = db.stickerDao().getAll()
+                all to FactsReader.read(db, all)
             }
             val ownerKey = owner?.key?.id
             val ownerName = if (scope == ChatRecall.Scope.OWNER) NameClaim.of(records, ownerKey = ownerKey).found?.name else null
             ChatPortrait.of(
-                scope, job.sender.id, records, ownerKey, ownerName, question, dictionary, RetellHolder.loaded, marks,
-                now, conversationStart, chatName,
+                scope, job.sender.id, records, ownerKey, ownerName, question, dictionary, RetellHolder.loaded, night.marks,
+                now, conversationStart, chatName, night.outdated,
             )
         } catch (c: CancellationException) {
             throw c
