@@ -56,6 +56,7 @@ object ChatTurnMeter {
         is AnswerLadder.Cause.Repeat -> "повтор «${c.sentence}»"
         is AnswerLadder.Cause.Mirror -> "зеркало «${c.sentence}»"
         is AnswerLadder.Cause.Damage -> "порча «${c.words.joinToString(", ")}»"
+        is AnswerLadder.Cause.Appropriated -> "чужое «я» «${c.sentence}»"
     }
 
     /**

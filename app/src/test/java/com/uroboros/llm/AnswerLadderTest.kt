@@ -44,11 +44,13 @@ class AnswerLadderTest {
     private class FakeRibbon(
         private val turns: List<ConversationJournal.Turn> = emptyList(),
         private val own: List<String> = emptyList(),
+        private val theirs: List<String> = emptyList(),
     ) : AnswerLadder.Ribbon {
         var closed: Pair<String, String?>? = null
         var hidden: Pair<String, String>? = null
         override fun history() = turns
         override fun ownSpeech() = own
+        override fun theirWords() = theirs
         override fun messages(without: Set<Int>) =
             listOf(ConversationJournal.ROLE_USER to "Иван: вопрос" + if (without.isEmpty()) "" else " (без $without)")
         override fun messages(without: Set<Int>, withoutRecall: Set<String>) =
@@ -82,6 +84,51 @@ class AnswerLadderTest {
     ) = runBlocking { ladder(engine, damage).run(ribbon, question, { desk }, halt, deskFirst = deskFirst) }
 
     private val call = "<tool_call>\n{\"name\": \"look_at_instruments\", \"arguments\": {}}\n</tool_call>"
+
+    // --- Чужое «я» ---
+
+    private val fencing = listOf("Я состою в клубе исторического фехтования.")
+
+    @Test
+    fun `чужое «я» — вторая попытка с DRY против фраз собеседника, ложится вторая`() {
+        val e = FakeEngine(Reply("Я состою в клубе исторического фехтования."), Reply("Ты состоишь в клубе фехтования."))
+        val r = FakeRibbon(theirs = fencing)
+        val res = run(e, r, damage = null)
+        val cause = res.intercept?.cause
+        assertTrue(cause.toString(), cause is AnswerLadder.Cause.Appropriated)
+        assertEquals(fencing.single(), e.calls[1].dry)
+        assertEquals("Ты состоишь в клубе фехтования." to "Я состою в клубе исторического фехтования.", r.closed)
+        assertFalse(res.intercept!!.secondAppropriates)
+    }
+
+    @Test
+    fun `чужое «я» и во второй — три варианта, вариант с копией бракуется`() {
+        val e = FakeEngine(
+            Reply("Я состою в клубе исторического фехтования."),
+            Reply("- Я состою в клубе исторического фехтования."),
+            Reply("1. Я состою в клубе исторического фехтования.\n2. Ты фехтуешь в клубе.\n3. Привет."),
+        )
+        val r = FakeRibbon(theirs = fencing)
+        val res = run(e, r, damage = null)
+        assertTrue(res.intercept!!.secondAppropriates)
+        val third = res.intercept!!.third!!
+        assertEquals("чужое «я»", third.variants.first().second)
+        assertEquals("Ты фехтуешь в клубе.", third.chosen)
+    }
+
+    @Test
+    fun `без фраз собеседника чужое «я» не ловится`() {
+        val e = FakeEngine(Reply("Я состою в клубе исторического фехтования."))
+        val r = FakeRibbon()
+        assertNull(run(e, r, damage = null).intercept)
+    }
+
+    @Test
+    fun `цитата в кавычках — не присвоение`() {
+        val e = FakeEngine(Reply("Ты говорил: «Я состою в клубе исторического фехтования»."))
+        val r = FakeRibbon(theirs = fencing)
+        assertNull(run(e, r, damage = null).intercept)
+    }
 
     @Test
     fun `чистый ответ — один проход, ложится как есть, перехвата нет`() {
