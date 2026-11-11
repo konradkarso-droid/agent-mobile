@@ -127,6 +127,7 @@ import com.uroboros.memory.nav.Prochnost
 import com.uroboros.memory.nav.Razvilka
 import com.uroboros.memory.nav.RazvilkaHolder
 import com.uroboros.memory.nav.ForeignSpeech
+import com.uroboros.memory.nav.PersonFacts
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.Retelling
@@ -4953,8 +4954,13 @@ class MainActivity : AppCompatActivity() {
                 val ownerKey = ChatPrefs.owner(applicationContext)?.key?.id
                 val portraitFound: Result<Triple<Portrait.Result, List<Sticker>, NameClaim.Result>> =
                     runCatching {
-                        val all = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
-                        Triple(Portrait.of(all, current = userText, ownerKey = ownerKey), all, NameClaim.of(all, ownerKey = ownerKey))
+                        val db = MemoryDatabase.getInstance(applicationContext)
+                        val all = db.stickerDao().getAll()
+                        // Ночные отметки «факт» ставят факты первыми (nav.PersonFacts).
+                        val marks = db.factMarkDao().all().associate {
+                            PersonFacts.Key(it.recordId, it.sentence) to (it.verdict == PersonFacts.Verdict.FACT.name)
+                        }
+                        Triple(Portrait.of(all, current = userText, ownerKey = ownerKey, marks = marks), all, NameClaim.of(all, ownerKey = ownerKey))
                     }
                 val portrait = portraitFound.getOrNull()?.first
                 val portraitAsks = Portrait.asksAbout(userText)
@@ -5189,7 +5195,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 portraitShown = portraitFed.takeIf { it.isNotEmpty() }?.map {
                     "№${it.recordId} · ${ProvenanceLabels.ageForModel(it.createdAt, recordsAt)}" +
-                        " · касаний ${it.touches}" +
+                        " · касаний ${it.touches} · ${PersonFacts.label(it)}" +
                         (if (it.fromArchive) " · из архива" else "") + " · ${it.sentence}"
                 }
                 mirrorSelectionLine = "Зеркало в отборе: " + MirrorFilter.meterLine(
