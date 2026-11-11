@@ -1,6 +1,7 @@
 package com.uroboros.memory.dream
 
 import android.content.Context
+import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.memory.MemoryDatabase
@@ -43,8 +44,9 @@ class PassportReader(private val context: Context, private val mediator: Trusted
             ribbon.map { Passport.Said(it.agentContent, it.question) }
         val namings = Passport.namings(said)
         val records = dao.getAll()
-        val owner = NameClaim.of(records).found?.name
-        val nickname = Passport.nickname(ownerSentences(records))
+        val ownerKey = ChatPrefs.owner(context)?.key?.id
+        val owner = NameClaim.of(records, ownerKey = ownerKey).found?.name
+        val nickname = Passport.nickname(ownerSentences(records, ownerKey))
         val existing = dao.passportAll().map {
             Passport.Existing(it.content, pending = it.reviewPending, rejected = it.rejectedAt != null)
         }
@@ -62,9 +64,9 @@ class PassportReader(private val context: Context, private val mediator: Trusted
     }
 
     /** Свои предложения владельца в его записях — как их видит nav.NameClaim. */
-    private fun ownerSentences(records: List<Sticker>): List<String> =
+    private fun ownerSentences(records: List<Sticker>, ownerKey: String?): List<String> =
         records.filter {
-            Coordinates.speakerOf(it.source) == PersonKey.OWNER && !it.reviewPending && it.rejectedAt == null
+            Coordinates.speakerOf(it, ownerKey) == PersonKey.OWNER && !it.reviewPending && it.rejectedAt == null
         }.sortedBy { it.createdAt }.flatMap { r ->
             val mine = ForeignSpeech.ownSentences(r.content)
             PersonForm.of(r.content).sentences.withIndex()

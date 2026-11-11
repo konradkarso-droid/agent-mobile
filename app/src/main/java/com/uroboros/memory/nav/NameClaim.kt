@@ -78,11 +78,12 @@ object NameClaim {
 
     /**
      * Последнее заявление имени собеседника [person] в его записях. Записи,
-     * ждущие проверки и отвергнутые, не смотрятся — как в портрете.
+     * ждущие проверки и отвергнутые, не смотрятся — как в портрете. Кто
+     * сказал — Coordinates.speakerOf с ключом владельца [ownerKey].
      */
-    fun of(records: List<Sticker>, person: PersonKey = PersonKey.OWNER): Result {
+    fun of(records: List<Sticker>, person: PersonKey = PersonKey.OWNER, ownerKey: String? = null): Result {
         val own = records.filter {
-            Coordinates.speakerOf(it.source) == person && !it.reviewPending && it.rejectedAt == null
+            Coordinates.speakerOf(it, ownerKey) == person && !it.reviewPending && it.rejectedAt == null
         }
         val claims = own.mapNotNull { r ->
             val mine = ForeignSpeech.ownSentences(r.content)

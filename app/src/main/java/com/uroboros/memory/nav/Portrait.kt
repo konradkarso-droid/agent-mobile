@@ -321,10 +321,10 @@ object Portrait {
      * [current] — текущая реплика: её предложения в портрет не берутся
      * (описание объекта, «ПОВТОР РЕПЛИКИ»).
      */
-    fun of(records: List<Sticker>, person: PersonKey = PersonKey.OWNER, current: String = ""): Result {
+    fun of(records: List<Sticker>, person: PersonKey = PersonKey.OWNER, current: String = "", ownerKey: String? = null): Result {
         val repeatKeys = Sentences.split(current).map { sentenceKey(it) }.filter { it.isNotEmpty() }.toSet()
         var repeats = 0
-        val own = ownRecords(records, person)
+        val own = ownRecords(records, person, ownerKey)
             .sortedByDescending { it.createdAt }
         var sentences = 0
         var toAgent = 0
@@ -377,12 +377,13 @@ object Portrait {
         reply: String,
         dictionary: LemmaDictionary,
         person: PersonKey = PersonKey.OWNER,
+        ownerKey: String? = null,
     ): Topic {
         val nouns = LinkedHashSet<String>()
         for (word in words(reply)) nouns += nounLemmas(word, dictionary)
         if (nouns.isEmpty()) return Topic(emptyList(), emptyList(), emptyList(), emptyList())
         val counts = HashMap<String, Int>()
-        for (record in ownRecords(records, person)) {
+        for (record in ownRecords(records, person, ownerKey)) {
             lemmasOf(record.content, dictionary).filter { it in nouns }.forEach { counts[it] = (counts[it] ?: 0) + 1 }
         }
         val rare = nouns.filter { (counts[it] ?: 0) in 1..RARE }
@@ -408,8 +409,9 @@ object Portrait {
         return analyses.filter { it.partOfSpeech == "NOUN" }.mapTo(LinkedHashSet()) { it.lemma }
     }
 
-    private fun ownRecords(records: List<Sticker>, person: PersonKey): List<Sticker> =
-        records.filter { Coordinates.speakerOf(it.source) == person && !it.reviewPending && it.rejectedAt == null }
+    /** Записи собеседника [person]; кто сказал — Coordinates.speakerOf с ключом владельца [ownerKey]. */
+    private fun ownRecords(records: List<Sticker>, person: PersonKey, ownerKey: String?): List<Sticker> =
+        records.filter { Coordinates.speakerOf(it, ownerKey) == person && !it.reviewPending && it.rejectedAt == null }
 
     // Слово для словаря — буквы и дефис («когда-нибудь» в словаре одним словом).
     private val WORD = Regex("[\\p{L}-]+")

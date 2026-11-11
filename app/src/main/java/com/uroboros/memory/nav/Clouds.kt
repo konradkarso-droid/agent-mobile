@@ -1,6 +1,7 @@
 package com.uroboros.memory.nav
 
 import com.uroboros.memory.RiskTrigger
+import com.uroboros.memory.Sticker
 import com.uroboros.memory.nav.Coordinates.Address
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -174,11 +175,19 @@ object Clouds {
         return cloud.elements.filter { it.stem !in skip }.take(count).map { it.form }
     }
 
-    /** Источник из записи памяти: кто сказал — по `source`, о ком — по форме. */
-    fun fromRecord(content: String, source: String, createdAt: Long): Source {
-        val speaker = Coordinates.speakerOf(source)
-        return Source(content, speaker, Coordinates.aboutOf(content, speaker).persons, createdAt)
-    }
+    /**
+     * Источник из записи памяти: кто сказал — Coordinates.speakerOf с ключом
+     * владельца [ownerKey], о ком — по форме.
+     */
+    fun fromRecord(record: Sticker, ownerKey: String?): Source =
+        source(record.content, Coordinates.speakerOf(record, ownerKey), record.createdAt)
+
+    /** Источник из записи с экрана (без ключа канала): кто сказал — по `source`. */
+    fun fromRecord(content: String, source: String, createdAt: Long): Source =
+        source(content, Coordinates.speakerOf(source), createdAt)
+
+    private fun source(content: String, speaker: PersonKey?, at: Long): Source =
+        Source(content, speaker, Coordinates.aboutOf(content, speaker).persons, at)
 
     /** Источник, заведомо об агенте и его словами: выводы, темы снов, своя речь. */
     fun ofAgent(text: String, at: Long): Source = Source(text, PersonKey.AGENT, setOf(PersonKey.AGENT), at)
