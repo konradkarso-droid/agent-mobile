@@ -103,6 +103,7 @@ import com.uroboros.memory.desk.Promises
 import com.uroboros.gate.ChatFeed
 import com.uroboros.gate.ChatOwnSpeech
 import com.uroboros.gate.ChatPromises
+import com.uroboros.gate.CrossChannel
 import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.llm.ChatDatabase
 import com.uroboros.memory.nav.AddressSorter
@@ -731,6 +732,9 @@ class MainActivity : AppCompatActivity() {
      */
     private var windowMapLine: String? = null
 
+    /** Строка прибора «Между каналами:» последнего хода (gate.CrossChannel); null — хода на экране не было. */
+    private var crossChannelLine: String? = null
+
     /**
      * Строка хода «Записи хода:» — из каких источников сложились записи хода
      * (DolmenCircle.sourcesLine). null — хода в этом запуске не было.
@@ -767,6 +771,39 @@ class MainActivity : AppCompatActivity() {
             lines.map(ChatPromises::lineOf), ChatOwnSpeech.Viewer(scope = null),
             ChatPrefs.owner(applicationContext)?.key?.id, ChatFeed.selfLines(llmEngine.wallFor()),
         )
+    }
+
+    /**
+     * Строка между каналами для хода экрана (gate.CrossChannel): текст модели
+     * или null; строку прибора кладёт в [crossChannelLine]. [archive] — архив
+     * ленты, уже прочитанный ходом (null — не прочитался: ходы архива не
+     * видны, «прошлая реплика здесь» — из открытой ленты). Сбой чтения ленты
+     * чатов ход не роняет.
+     */
+    private suspend fun crossChannelFor(archive: List<JournalArchiveTurn>?): String? {
+        val now = System.currentTimeMillis()
+        val hhmm: (Long) -> String = { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it)) }
+        return try {
+            val rings = AddressSorter.Ring.entries.filter(AddressSorter::modelReads).map { it.name }
+            val rows = withContext(Dispatchers.IO) {
+                ChatDatabase.getInstance(applicationContext).chatLineDao().readLast(rings, ChatOwnSpeech.READ_LINES)
+            }.asReversed()
+            val turns = archive.orEmpty().map { Triple(it.question, it.agentContent, it.at) } +
+                journal.history().map { Triple(it.question, it.agentContent, it.at) }
+            val hereLastAt = turns.lastOrNull { it.first.isNotBlank() && it.third != null }?.third
+            val result = CrossChannel.find(
+                CrossChannel.Viewer.SCREEN, CrossChannel.SCREEN_KEY, hereLastAt, now,
+                CrossChannel.chatPlaces(rows, ChatPrefs.owner(applicationContext)?.key?.id) + CrossChannel.screenPlace(turns),
+                LemmaHolder.loaded, ChatPrefs.names(applicationContext),
+            )
+            crossChannelLine = CrossChannel.meter(result, null, hhmm)
+            (result as? CrossChannel.Result.Fed)?.let { CrossChannel.text(CrossChannel.Viewer.SCREEN, it.seen, now) }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            crossChannelLine = CrossChannel.meter(null, t.javaClass.simpleName, hhmm)
+            null
+        }
     }
 
     private val deskView by lazy { DeskView(applicationContext, { since -> deskTurns(since) }, { since -> deskChatPromises(since) }) }
@@ -3195,7 +3232,8 @@ class MainActivity : AppCompatActivity() {
         // глаголов на -у/-ю в адресе (nav.RetellHolder.meterLine).
         group(
             "Память", recordsQuestionsLine, circleLine, meaningLine ?: "Смысл: чисел хода на экране нет",
-            windowMapLine ?: "Карта окна: чисел хода на экране нет", recordsSources, mirrorSelection, drift, portraitMeter,
+            windowMapLine ?: "Карта окна: чисел хода на экране нет",
+            crossChannelLine ?: "Между каналами: чисел хода на экране нет", recordsSources, mirrorSelection, drift, portraitMeter,
             nameMeter, RetellHolder.meterLine(), LemmaHolder.meterLine(), MeaningHolder.meterLine(),
             edgesLine ?: "Края разговоров: чисел хода на экране нет", cloud,
             touchesLine, selfLeader, passportMeter,
@@ -3546,6 +3584,7 @@ class MainActivity : AppCompatActivity() {
         circleLine = null
         meaningLine = null
         windowMapLine = null
+        crossChannelLine = null
         mirrorSelectionLine = null
         driftLine = null
         gapsLine = null
@@ -5382,8 +5421,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 // Строки о себе здесь нет: она уходит отдельным сообщением
                 // (selfNote в turns.run ниже).
+                // Где ещё я говорил с прошлой реплики на экране (gate.CrossChannel).
+                val crossChannel = crossChannelFor(archive)
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
+                    crossChannel = crossChannel,
                     prochnost = prochnostNote,
                     recallAsk = RecallRequest.ASK_BACK.takeIf { recallPlan?.askBack == true },
                     curiosityAsk = selfGapLine
