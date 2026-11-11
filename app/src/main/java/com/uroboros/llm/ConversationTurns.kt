@@ -427,6 +427,7 @@ class ConversationTurns(
             override fun history() = journal.history()
             override fun messages(without: Set<Int>) = messages(without, emptySet())
             override fun ownSpeech() = EchoIntercept.ownSpeech(recall)
+            override fun theirWords() = ForeignSelf.theirWords(recall)
             override fun messages(without: Set<Int>, withoutRecall: Set<String>): List<Pair<String, String>> {
                 if (withoutRecall.isNotEmpty()) recallDropped = withoutRecall
                 return journal.messagesFor(content, selfNote, dreamNote, EchoIntercept.recallWithout(recall, withoutRecall), without = without)

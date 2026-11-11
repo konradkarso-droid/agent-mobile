@@ -27,6 +27,7 @@ import com.uroboros.llm.ChatDatabase
 import com.uroboros.llm.ChatLine
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.EchoCheck
+import com.uroboros.llm.ForeignSelf
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.Glance
 import com.uroboros.llm.GlanceDesk
@@ -673,6 +674,7 @@ object ChatLink {
         var sentFirst = false
         val ribbon = object : AnswerLadder.Ribbon {
             override fun history() = turnsOfWindow
+            override fun theirWords() = ForeignSelf.theirWords(recall.message)
             override fun messages(without: Set<Int>) =
                 ChatFeed.messages(ChatFeed.without(window, without), place, headText, tailBlock, note, recall.message)
             override fun stableMessages(without: Set<Int>) =

@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.transformWhile
  * Лестница ответа — одна на всех, кто отвечает собеседнику: на экран
  * (ConversationTurns) и в чаты телеграма (gate.link.ChatLink). Первый проход
  * с ловлей вызова приборов, взгляд на приборы, перехват готового ответа
- * (повтор, зеркало, порча слов), вторая попытка, три варианта.
+ * (повтор, зеркало, чужое «я», порча слов), вторая попытка, три варианта.
  *
  * ПОЧЕМУ ОДНА. Две лестницы — две копии одних правил, и разошлись бы они
  * молча: на экране перехват есть, в телеграме нет, а с виду и там и там
@@ -36,7 +36,7 @@ import kotlinx.coroutines.flow.transformWhile
  *     Канал вправе показать доску сам, до первого прохода (`deskFirst`, см.
  *     Glance, «ДОСКА ПО СЛОВУ ВОПРОСА»): тогда первый проход — уже по доске,
  *     с теми же правилами второго вызова и пустоты;
- *  2. готовый ответ меряется ([causeOf]) — повтор, зеркало, порча; петля до
+ *  2. готовый ответ меряется ([causeOf]) — повтор, зеркало, чужое «я», порча; петля до
  *     потолка ([loopAtCeiling]) ход скрывает без второй попытки;
  *  3. пойманный — вторая попытка ([secondAttempt]), негодная вторая — три
  *     варианта ([thirdAttempt]).
@@ -101,6 +101,12 @@ class AnswerLadder(
          */
         fun messages(without: Set<Int>, withoutRecall: Set<String>): List<Pair<String, String>> = messages(without)
 
+        /**
+         * Фразы собеседника о себе из записей этого хода ([ForeignSelf.theirWords]):
+         * по ним ловится чужое «я» ([Cause.Appropriated]); пусто — не ловится.
+         */
+        fun theirWords(): List<String> = emptyList()
+
         /** Ход ложится ответом [answer]; [rejected] — отброшенный первый ответ или null. */
         fun close(answer: String, rejected: String?)
 
@@ -136,6 +142,15 @@ class AnswerLadder(
          * отвечают. [sentence] — первое отражённое предложение.
          */
         data class Mirror(val sentence: String) : Cause()
+
+        /**
+         * Чужое «я» ([ForeignSelf]): агент произнёс от себя фразу собеседника о
+         * нём самом из записей хода. Вторая попытка на том же запросе, со
+         * штрафом DRY против этих фраз: убрать запись из запроса нельзя — она
+         * нужна для ответа, ошибка в том, чьим голосом она сказана.
+         * [sentence] — предложение ответа с копией.
+         */
+        data class Appropriated(val sentence: String) : Cause()
     }
 
     /**
@@ -159,6 +174,7 @@ class AnswerLadder(
      *   работает).
      * @property secondMirrors второй ответ — зеркало реплики собеседника
      *   ([EchoCheck.mirrorOf]).
+     * @property secondAppropriates во втором ответе снова чужое «я» ([ForeignSelf]).
      * @property third третья ступень — три варианта; null — не понадобилась
      *   (вторая чиста) или вторая не состоялась.
      * @property secondGlanced вторая попытка позвала приборы, хотя первый проход
@@ -177,6 +193,7 @@ class AnswerLadder(
         val third: Third? = null,
         val secondGlanced: Boolean = false,
         val secondMirrors: Boolean = false,
+        val secondAppropriates: Boolean = false,
     )
 
     /**
@@ -414,7 +431,7 @@ class AnswerLadder(
                 // Петля до потолка проверяется раньше перехвата: такой ответ
                 // скрывается, а не переспрашивается (см. [loopAtCeiling]).
                 loop = if (finished) loopAtCeiling(answer.toString(), metrics?.tokensPredicted ?: tokensSeen, answerLimit) else null
-                cause = if (finished && loop == null) causeOf(answer.toString(), question, ribbon.history(), ribbon.ownSpeech()) { request } else null
+                cause = if (finished && loop == null) causeOf(answer.toString(), question, ribbon.history(), ribbon.ownSpeech(), ribbon.theirWords()) { request } else null
                 val looped = loop
                 when {
                     looped != null -> hide(
@@ -462,10 +479,12 @@ class AnswerLadder(
         question: String,
         history: List<ConversationJournal.Turn>,
         ownSpeech: List<String>,
+        theirs: List<String>,
         request: () -> Set<String>,
     ): Cause? {
         EchoIntercept.decide(answer, question, history, ownSpeech)?.let { return Cause.Repeat(it.sentence, it.without, it.withoutRecall) }
         EchoCheck.mirrorToIntercept(answer, question)?.let { return Cause.Mirror(it) }
+        ForeignSelf.find(answer, theirs)?.let { return Cause.Appropriated(it) }
         val found = damage()?.check(answer, request()).orEmpty()
         return if (found.isEmpty()) null else Cause.Damage(found)
     }
@@ -549,10 +568,11 @@ class AnswerLadder(
      * Вторая попытка после перехвата. При повторе — запрос без ходов-образцов
      * ([Ribbon.messages], `without`); при порче — тот же запрос, то есть
      * повторная выборка; при зеркале — тот же запрос со штрафом DRY против
-     * реплики собеседника ([Cause.Mirror]). Закрывает ход сама — при любом
+     * реплики собеседника ([Cause.Mirror]); при чужом «я» — против его фраз о
+     * себе из записей хода ([Cause.Appropriated]). Закрывает ход сама — при любом
      * исходе, в том числе при отмене.
      *
-     * ЧТО ЛОЖИТСЯ В ЛЕНТУ. Второй ответ выдан до конца — при ПОВТОРЕ и ЗЕРКАЛЕ он,
+     * ЧТО ЛОЖИТСЯ В ЛЕНТУ. Второй ответ выдан до конца — при ПОВТОРЕ, ЗЕРКАЛЕ и ЧУЖОМ «Я» он,
      * а первый отброшенным. При ПОРЧЕ второй берётся, только если он чист: без
      * порчи, не повтор и не зеркало. Иначе остаётся первый — повторная выборка,
      * давшая повтор вместо порчи, хуже: копия размножается по ленте, а порча —
@@ -597,7 +617,12 @@ class AnswerLadder(
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
         val withoutRecall = (cause as? Cause.Repeat)?.withoutRecall ?: emptySet()
         val ownSpeech = ribbon.ownSpeech()
-        val dry = if (cause is Cause.Mirror) question else null
+        val theirs = ribbon.theirWords()
+        val dry = when (cause) {
+            is Cause.Mirror -> question
+            is Cause.Appropriated -> theirs.joinToString("\n")
+            else -> null
+        }
         // Доска взгляда — и сюда: повторная попытка отвечает на тот же вопрос
         // о приборах и без доски назвала бы числа из головы.
         val base = ribbon.messages(without, withoutRecall)
@@ -618,6 +643,7 @@ class AnswerLadder(
         var replaced = false
         var repeats = false
         var mirrors = false
+        var appropriates = false
         var found = emptyList<String>()
         var needThird = false
         // Слова доски — тоже запрос: своя доска попытки дописывается к ним,
@@ -663,12 +689,13 @@ class AnswerLadder(
             if (done) {
                 repeats = EchoIntercept.decide(second.toString(), question, history, ownSpeech) != null
                 mirrors = EchoCheck.mirrorToIntercept(second.toString(), question) != null
+                appropriates = ForeignSelf.find(second.toString(), theirs) != null
                 found = dmg?.check(second.toString(), requestHere()).orEmpty()
             }
-            needThird = done && (repeats || mirrors || found.isNotEmpty())
+            needThird = done && (repeats || mirrors || appropriates || found.isNotEmpty())
             replaced = when (cause) {
-                is Cause.Repeat, is Cause.Mirror -> done
-                is Cause.Damage -> done && !repeats && !mirrors && found.isEmpty()
+                is Cause.Repeat, is Cause.Mirror, is Cause.Appropriated -> done
+                is Cause.Damage -> done && !repeats && !mirrors && !appropriates && found.isEmpty()
             }
             // Остановленная лестница третьей ступени не зовёт: ход ложится тем, что есть.
             if (needThird && halt()) needThird = false
@@ -699,6 +726,7 @@ class AnswerLadder(
             third = third,
             secondGlanced = glancedHere,
             secondMirrors = mirrors,
+            secondAppropriates = appropriates,
         )
     }
 
@@ -751,12 +779,14 @@ class AnswerLadder(
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
         val withoutRecall = (cause as? Cause.Repeat)?.withoutRecall ?: emptySet()
         val ownSpeech = ribbon.ownSpeech()
+        val theirs = ribbon.theirWords()
         val sources = if (without.isNotEmpty()) {
             without.sorted().map { history[it].agentContent }
         } else {
             history.takeLast(EchoCheck.EARLIER_ANSWERS).map { it.agentContent }
         } + withoutRecall.map { EchoIntercept.quoteOf(it) } +
-            (if (cause is Cause.Mirror) listOf(question) else emptyList())
+            (if (cause is Cause.Mirror) listOf(question) else emptyList()) +
+            (if (cause is Cause.Appropriated) theirs else emptyList())
         val startedAt = System.currentTimeMillis()
         val text = StringBuilder()
         var metrics: DecodingMetrics? = null
@@ -804,6 +834,7 @@ class AnswerLadder(
                         v.endsWith(":") -> "вступление"
                         EchoIntercept.decide(v, question, history, ownSpeech) != null -> "повтор"
                         EchoCheck.mirrorToIntercept(v, question) != null -> "зеркало"
+                        ForeignSelf.find(v, theirs) != null -> "чужое «я»"
                         else -> dmg?.check(v, request())?.takeIf { it.isNotEmpty() }
                             ?.let { "порча «${it.joinToString(", ")}»" }
                     }
@@ -837,6 +868,7 @@ class AnswerLadder(
         is Cause.Repeat -> "повтор «${cause.sentence}»"
         is Cause.Damage -> "порча слов «${cause.words.joinToString(", ")}»"
         is Cause.Mirror -> "зеркало «${cause.sentence}»"
+        is Cause.Appropriated -> "чужое «я» «${cause.sentence}»"
     }
 
     /**

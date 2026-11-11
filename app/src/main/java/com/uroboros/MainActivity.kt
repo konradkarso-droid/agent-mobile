@@ -3392,6 +3392,8 @@ class MainActivity : AppCompatActivity() {
                 "порча слов «${c.words.joinToString(", ")}» → повторная выборка"
             is AnswerLadder.Cause.Mirror ->
                 "зеркало «${c.sentence}» → вторая попытка, DRY против реплики"
+            is AnswerLadder.Cause.Appropriated ->
+                "чужое «я» «${c.sentence}» → вторая попытка, DRY против ваших слов из записей"
         }
         // Что тогда значат время и токены — у AnswerLadder.Intercept.secondGlanced.
         val look = if (intercept.secondGlanced) " · вторая глянула на приборы" else ""
@@ -3399,6 +3401,7 @@ class MainActivity : AppCompatActivity() {
         val secondFaults = buildList {
             if (intercept.secondRepeats) add("тоже повтор")
             if (intercept.secondMirrors) add("тоже зеркало")
+            if (intercept.secondAppropriates) add("тоже чужое «я»")
             if (intercept.secondDamage.isNotEmpty()) add("порча «${intercept.secondDamage.joinToString(", ")}»")
         }.joinToString(", ")
         val third = intercept.third
@@ -5736,6 +5739,7 @@ class MainActivity : AppCompatActivity() {
                                 is AnswerLadder.Cause.Repeat -> "Повтор — вторая попытка"
                                 is AnswerLadder.Cause.Damage -> "Испорчено слово — повторная выборка"
                                 is AnswerLadder.Cause.Mirror -> "Повторил ваши слова — вторая попытка"
+                                is AnswerLadder.Cause.Appropriated -> "Сказал ваши слова о вас от себя — вторая попытка"
                             }
                         )
                         autoScrollIfAtBottom()
