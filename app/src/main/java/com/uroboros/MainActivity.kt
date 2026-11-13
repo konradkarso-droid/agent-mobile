@@ -65,6 +65,7 @@ import com.uroboros.memory.DisputeCluster
 import com.uroboros.memory.DisputeNotice
 import com.uroboros.memory.DolmenCircle
 import com.uroboros.memory.EmergencyStop
+import com.uroboros.move.MoveState
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.Prism
@@ -3279,7 +3280,7 @@ class MainActivity : AppCompatActivity() {
                 start, metrics.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
-        group("Комы", AgentLife.comaLines(applicationContext) + "\n" + MemoryWatch.meterLine(applicationContext))
+        group("Комы", AgentLife.comaLines(applicationContext) + "\n" + MemoryWatch.meterLine(applicationContext), MoveState.meterLine(applicationContext))
         group(
             "Сторож",
             // Наблюдение за зоной стоит последним: смотрят на него не при
@@ -4639,6 +4640,10 @@ class MainActivity : AppCompatActivity() {
         // двухэтажный текст поверх новой вёрстки.
 
         binding.buttonSave.setOnClickListener {
+            MoveState.holdReason(this)?.let {
+                Toast.makeText(this, "Не сохраняю: $it", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             val text = binding.editTextInput.text.toString()
             if (text.isBlank()) {
                 Toast.makeText(this, "Введите текст", Toast.LENGTH_SHORT).show()
@@ -4735,6 +4740,11 @@ class MainActivity : AppCompatActivity() {
         // ничего не делает с устройством, зато остаётся единственным способом
         // что-то спросить у системы, пока она стоит.
         binding.buttonSend.setOnClickListener {
+            // Переезд (move.MoveState): память должна остаться той, что уехала или едет.
+            MoveState.holdReason(this)?.let {
+                Toast.makeText(this, "Не отвечаю: $it", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             // Хвост 20: числа прошлого прогона стираются ДО всех проверок.
             // Иначе несостоявшийся запуск оставляет их на экране, и они
             // читаются как относящиеся к нынешнему.

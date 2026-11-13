@@ -20,6 +20,8 @@ import com.uroboros.access.PresenceLock
 import com.uroboros.gate.GateBotApi
 import com.uroboros.gate.store.GateTokenStore
 import com.uroboros.memory.EmergencyStop
+import com.uroboros.move.MoveCode
+import com.uroboros.move.MoveRunner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -34,7 +36,8 @@ import kotlinx.coroutines.withContext
  *
  * РАСКЛАДКА ДЛЯ ЛЕВШИ: главные действия («Послать», «Познакомиться») внизу
  * слева; «Токен», «Отвечать», «Мой тг», «Имена» — вверху справа: это решения
- * владельца о канале ([ChatPrefs]), их нельзя нажать случайно.
+ * владельца о канале ([ChatPrefs]), их нельзя нажать случайно. Там же
+ * «Принять агента» и «Переехать» — переезд на другой телефон ([com.uroboros.move.Move]).
  *
  * ЧЕГО НЕ УМЕЕТ: подтверждений владельца (доверенность, знакомство, новый ключ
  * подписи) нет; «Мой тг» предлагает только тех, кто уже писал боту в личку;
@@ -45,6 +48,7 @@ class GateActivity : AppCompatActivity() {
     private lateinit var lock: PresenceLock
     private lateinit var statusView: TextView
     private lateinit var linesView: TextView
+    private lateinit var moveRow: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,9 +58,20 @@ class GateActivity : AppCompatActivity() {
         }
         setContentView(build())
         lifecycleScope.launch {
-            combine(GateLink.status, ChatLink.status, GateLink.lines) { s, w, l -> Triple(s, w, l) }.collect { (s, w, l) ->
-                statusView.text = (s + w).joinToString("\n")
+            combine(GateLink.status, ChatLink.status, GateLink.lines, MoveRunner.view) { s, w, l, m -> listOf(s, w, l, m) }.collect { (s, w, l, m) ->
+                statusView.text = (m + s + w).joinToString("\n")
                 linesView.text = if (l.isEmpty()) "Событий пока нет." else l.joinToString("\n")
+            }
+        }
+        lifecycleScope.launch {
+            MoveRunner.running.collect { running ->
+                moveRow.removeAllViews()
+                if (running) {
+                    moveRow.addView(moveButton("Прервать переезд") { MoveRunner.cancel() })
+                } else {
+                    moveRow.addView(moveButton("Принять агента") { MoveRunner.receive(this@GateActivity) })
+                    moveRow.addView(moveButton("Переехать") { moveDialog() })
+                }
             }
         }
     }
@@ -107,6 +122,8 @@ class GateActivity : AppCompatActivity() {
         top2.addView(topButton("Имена") { namesDialog() })
         top2.addView(topButton("Мой тг") { ownerDialog() })
         root.addView(top2)
+        moveRow = LinearLayout(this).apply { gravity = Gravity.END }
+        root.addView(moveRow)
 
         statusView = text(13f)
         linesView = text(12f, mono = true).apply { setPadding(0, dp(8), 0, 0) }
@@ -259,6 +276,58 @@ class GateActivity : AppCompatActivity() {
             // Строки о телеграме в стене (llm.BuildSelfDescription) — по ключу бота.
             if (error == null) ProcessObjects.get(applicationContext).llmEngine.refreshBuildLines()
         }
+    }
+
+    private fun moveButton(label: String, onClick: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        setOnClickListener { onClick() }
+    }
+
+    /**
+     * Переезд отсюда: адрес и код с экрана нового телефона. Поле адреса
+     * начинается с начала своего адреса — в одной сети обычно отличается
+     * только последнее число.
+     */
+    private fun moveDialog() {
+        val prefix = MoveRunner.localAddresses().firstOrNull()?.let(MoveCode::prefixOf).orEmpty()
+        val address = EditText(this).apply {
+            hint = "адрес нового телефона"
+            inputType = InputType.TYPE_CLASS_PHONE
+            setSingleLine()
+            setText(prefix)
+            setSelection(prefix.length)
+        }
+        val code = EditText(this).apply {
+            hint = "код с экрана нового телефона"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine()
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), 0, dp(16), 0)
+            addView(address)
+            addView(code)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Переезд на другой телефон")
+            .setMessage(
+                "На новом телефоне: врата → «Принять агента». Введите адрес и код с его экрана. " +
+                    "На время передачи агент здесь замирает; когда новый примет всё, агент здесь замрёт насовсем — " +
+                    "копия памяти останется, стереть её можно потом.",
+            )
+            .setView(box)
+            .setPositiveButton("Переехать") { _, _ ->
+                val a = MoveCode.parseAddress(address.text.toString())
+                val c = MoveCode.parse(code.text.toString())
+                when {
+                    a == null -> statusView.append("\nПереезд не начат: «${address.text}» — не адрес домашней сети")
+                    c == null -> statusView.append("\nПереезд не начат: код — ${MoveCode.DIGITS} цифр")
+                    else -> MoveRunner.send(this, a, c)
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun clearToken() {

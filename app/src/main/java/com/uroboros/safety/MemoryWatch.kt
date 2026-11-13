@@ -28,7 +28,8 @@ import java.util.Locale
  */
 object MemoryWatch {
 
-    private const val PREFS = "uroboros_memory_pressure"
+    /** Замеры памяти этого телефона: переезд их не везёт (move.MoveAndroid). */
+    internal const val PREFS = "uroboros_memory_pressure"
     private const val LAST = "last"
     private const val BEFORE_DEATH = "before_death"
     private const val UNLOADS = "unloads"
