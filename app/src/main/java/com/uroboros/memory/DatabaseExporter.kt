@@ -3,6 +3,7 @@ package com.uroboros.memory
 import android.content.ContentValues
 import android.content.Context
 import android.provider.MediaStore
+import androidx.room.RoomDatabase
 import com.uroboros.gate.store.GateDatabase
 import com.uroboros.llm.ChatDatabase
 import com.uroboros.llm.JournalDatabase
@@ -57,69 +58,79 @@ import java.util.Locale
 object DatabaseExporter {
 
     /** Имя файла базы памяти (Sticker/ActionEvidence/LastStableSnapshot). */
-    private const val MEMORY_DB_FILE_NAME = "uroboros_memory.db"
+    internal const val MEMORY_DB_FILE_NAME = "uroboros_memory.db"
 
     /**
      * Одна выгружаемая база: как называется на диске, как называется для
-     * человека и как до неё дотянуться, чтобы снять чекпоинт.
+     * человека и как до неё дотянуться — снять чекпоинт или снимок для
+     * переезда ([snapshot]).
      *
      * Ярлык идёт на экран, поэтому это слово обиходного языка, а не имя
      * файла: человеку, читающему отчёт, имя файла ничего не говорит.
      */
-    private class Source(
+    internal class Source(
         val label: String,
         val fileName: String,
-        val checkpoint: (Context) -> Unit
-    )
+        val open: (Context) -> RoomDatabase,
+    ) {
+        fun checkpoint(context: Context) {
+            open(context).openHelper.writableDatabase
+                .query("PRAGMA wal_checkpoint(FULL)")
+                .use { it.moveToFirst() }
+        }
+    }
 
     /**
      * Порядок здесь — порядок строк в отчёте. Память первой: она старше и
      * при чтении отчёта ищется первой.
      */
-    private val SOURCES = listOf(
-        Source(
-            label = "память",
-            fileName = MEMORY_DB_FILE_NAME,
-            checkpoint = { context ->
-                MemoryDatabase.getInstance(context)
-                    .openHelper.writableDatabase
-                    .query("PRAGMA wal_checkpoint(FULL)")
-                    .use { it.moveToFirst() }
-            }
-        ),
-        Source(
-            label = "лента разговора",
-            fileName = JournalDatabase.FILE_NAME,
-            checkpoint = { context ->
-                JournalDatabase.getInstance(context)
-                    .openHelper.writableDatabase
-                    .query("PRAGMA wal_checkpoint(FULL)")
-                    .use { it.moveToFirst() }
-            }
-        ),
-        Source(
-            label = "врата",
-            fileName = GateDatabase.FILE_NAME,
-            checkpoint = { context ->
-                GateDatabase.getInstance(context)
-                    .openHelper.writableDatabase
-                    .query("PRAGMA wal_checkpoint(FULL)")
-                    .use { it.moveToFirst() }
-            }
-        ),
+    internal val SOURCES = listOf(
+        Source("память", MEMORY_DB_FILE_NAME) { MemoryDatabase.getInstance(it) },
+        Source("лента разговора", JournalDatabase.FILE_NAME) { JournalDatabase.getInstance(it) },
+        Source("врата", GateDatabase.FILE_NAME) { GateDatabase.getInstance(it) },
         // Переписка в телеграме: в выгрузке — чужие сообщения. Учить на ней
         // модели нельзя (условия телеграма, см. llm.ChatDatabase).
-        Source(
-            label = "чаты телеграма",
-            fileName = ChatDatabase.FILE_NAME,
-            checkpoint = { context ->
-                ChatDatabase.getInstance(context)
-                    .openHelper.writableDatabase
-                    .query("PRAGMA wal_checkpoint(FULL)")
-                    .use { it.moveToFirst() }
-            }
-        )
+        Source("чаты телеграма", ChatDatabase.FILE_NAME) { ChatDatabase.getInstance(it) },
     )
+
+    /** Снимок одной базы для переезда: номер схемы, строки таблиц, файлы снимка. */
+    class Snap(val fileName: String, val label: String, val version: Int, val counts: Map<String, Long>, val files: List<File>)
+
+    /**
+     * Снимок всех баз в папку [dir] для переезда (move.MoveAndroid): файл базы
+     * и, если он не пуст, её журнал `-wal`. Копия идёт внутри транзакции:
+     * пока она открыта, писать в базу не может никто, и пара «база + журнал»
+     * согласована, кто бы ни пытался писать. Чекпоинт перед ней сводит
+     * журнал, так что чаще всего копируется один файл.
+     *
+     * Строки таблиц («файл/таблица» → число) считаются в той же транзакции:
+     * новый телефон сверяет с тем же состоянием, что скопировано.
+     */
+    fun snapshot(context: Context, dir: File): List<Snap> = SOURCES.map { source ->
+        source.checkpoint(context)
+        val db = source.open(context)
+        val file = context.getDatabasePath(source.fileName)
+        lateinit var snap: Snap
+        db.runInTransaction {
+            val sql = db.openHelper.writableDatabase
+            val tables = sql.query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' " +
+                    "AND name NOT IN ('android_metadata', 'room_master_table')",
+            ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+            val counts = tables.associate { t ->
+                "${source.fileName}/$t" to sql.query("SELECT COUNT(*) FROM `$t`").use { c -> c.moveToFirst(); c.getLong(0) }
+            }
+            val files = mutableListOf(File(dir, source.fileName).also { file.copyTo(it, overwrite = true) })
+            val wal = File(file.path + "-wal")
+            if (wal.isFile && wal.length() > 0) files += File(dir, source.fileName + "-wal").also { wal.copyTo(it, overwrite = true) }
+            snap = Snap(source.fileName, source.label, sql.version, counts, files)
+        }
+        snap
+    }
+
+    /** Номер схемы каждой базы в этой сборке: имя файла → номер. Открывает базы. */
+    fun versions(context: Context): Map<String, Int> =
+        SOURCES.associate { it.fileName to it.open(context).openHelper.readableDatabase.version }
 
     /**
      * Исход по одной базе. Заполнено ровно одно из двух полей:

@@ -317,6 +317,13 @@ class AgentService : Service() {
     private suspend fun sleepLoop() {
         while (true) {
             delay(SLEEP_CHECK_MS)
+            // Переезд (move.MoveState): ни сна, ни ночи, ни суда, ни «пишу
+            // первым» — память должна остаться той, что уехала или едет.
+            val moveHold = com.uroboros.move.MoveState.holdReason(applicationContext)
+            if (moveHold != null) {
+                showSleepLine("Не сплю: $moveHold.")
+                continue
+            }
             try {
                 checkSleep()
             } catch (cancelled: CancellationException) {

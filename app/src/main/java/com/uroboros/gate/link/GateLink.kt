@@ -72,6 +72,16 @@ object GateLink {
     /** Состояние канала: опрос, мой бот, мои ключи, база. */
     val status: StateFlow<List<String>> get() = _status
 
+    private val _idle = MutableStateFlow(true)
+
+    /**
+     * Опрос не идёт: цикл стоит на стопе, без токена или служба не запущена.
+     * Выставляется в тех ветках, где опроса не будет, и снимается перед
+     * опросом. Переезд ждёт его после стопа ([com.uroboros.move.MoveRunner]):
+     * сообщение, принятое уже после снимка, на новый телефон бы не попало.
+     */
+    val idle: StateFlow<Boolean> get() = _idle
+
     private val _lines = MutableStateFlow<List<String>>(emptyList())
 
     /** Последние события: пришло, ушло, отказы, тревоги. Новые — сверху. */
@@ -106,6 +116,7 @@ object GateLink {
                 loop(app)
             } finally {
                 session = null
+                _idle.value = true
                 _status.value = listOf("Телеграм: не опрашиваю — служба агента остановлена")
             }
         }
@@ -134,6 +145,7 @@ object GateLink {
         var cleanedAt = 0L
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
             if (EmergencyStop.isActive()) {
+                _idle.value = true
                 status(session, "Телеграм: не опрашиваю — аварийный стоп")
                 delay(10_000)
                 continue
@@ -141,21 +153,25 @@ object GateLink {
             val token = try {
                 GateTokenStore.read(app)
             } catch (e: Exception) {
+                _idle.value = true
                 status(null, "Телеграм: не опрашиваю — токен не читается: ${e.javaClass.simpleName}")
                 delay(60_000)
                 continue
             }
             if (token == null) {
+                _idle.value = true
                 session = null
                 status(null, "Телеграм: не опрашиваю — нет токена (ввести — кнопка «Токен» вверху справа)")
                 delay(5_000)
                 continue
             }
             if (token == refusedToken) {
+                _idle.value = true
                 status(null, "Телеграм: не опрашиваю — токен не принят телеграмом; введите другой")
                 delay(5_000)
                 continue
             }
+            _idle.value = false
             val held = session
             val s: Session = if (held != null && held.token == token) held else {
                 val opened = try {

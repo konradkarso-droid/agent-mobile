@@ -18,16 +18,20 @@
     <!-- Подъём тела агента после перезагрузки телефона (BootReceiver). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Сеть — только для врат, только к api.telegram.org: адрес держит код
-         (gate.GateBotApi), система этого не ограничивает. Открытый HTTP
-         выключен ниже (usesCleartextTraffic). -->
+    <!-- Сеть — для врат, только к api.telegram.org: адрес держит код
+         (gate.GateBotApi), система этого не ограничивает. И для переезда
+         агента между двумя телефонами — только частные адреса локальной сети
+         (move.Move, свой закрытый канал). Открытый HTTP выключен ниже
+         (usesCleartextTraffic); переезд идёт не по HTTP. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>
         <package android:name="com.termux" />
     </queries>
 
+    <!-- UroborosApp: переезд агента применяется раньше любой базы (move.Move). -->
     <application
+        android:name=".UroborosApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="@string/app_name"

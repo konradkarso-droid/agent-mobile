@@ -19,7 +19,10 @@ import javax.crypto.spec.GCMParameterSpec
  *  - не лежит ни в одной базе — поэтому не попадает в выгрузку
  *    ([com.uroboros.memory.DatabaseExporter] кладёт только базы); в облако и на
  *    другое устройство файлы приложения не уходят
- *    (`res/xml/data_extraction_rules.xml`);
+ *    (`res/xml/data_extraction_rules.xml`). Единственный путь на другой
+ *    телефон — переезд агента в закрытом канале ([com.uroboros.move.Move]):
+ *    там токен закрывается ключом хранилища уже нового телефона ([seal]), а на
+ *    старом прячется ([park]) — опрос его больше не видит;
  *  - не идёт ни в модель, ни в память, ни в строки прибора; текст ошибок сети
  *    чистится от него ([com.uroboros.gate.GateBotApi.scrub]).
  *
@@ -38,8 +41,15 @@ object GateTokenStore {
     /** Файл: IV AES-GCM (12 байт), затем закрытый токен. */
     const val FILE_NAME = "gate_tg_token.bin"
 
-    fun read(context: Context): String? {
-        val file = File(context.filesDir, FILE_NAME)
+    /** Токен спрятанный: агент переехал на другой телефон, опрос этот файл не читает. */
+    const val PARKED_FILE_NAME = "gate_tg_token.moved.bin"
+
+    fun read(context: Context): String? = readFile(File(context.filesDir, FILE_NAME))
+
+    /** Спрятанный при переезде токен — для повторной передачи; null — не прятался. */
+    fun readParked(context: Context): String? = readFile(File(context.filesDir, PARKED_FILE_NAME))
+
+    private fun readFile(file: File): String? {
         if (!file.exists()) return null
         val bytes = file.readBytes()
         if (bytes.size <= 12) return null
@@ -51,12 +61,31 @@ object GateTokenStore {
     }
 
     fun write(context: Context, token: String) {
-        val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
-        val sealed = c.doFinal(token.toByteArray(Charsets.UTF_8))
         val file = File(context.filesDir, FILE_NAME)
         val tmp = File(file.path + ".tmp")
-        tmp.writeBytes(c.iv + sealed)
+        tmp.writeBytes(seal(token))
         check(tmp.renameTo(file)) { "файл токена не записался" }
+    }
+
+    /** Токен, закрытый ключом хранилища этого телефона, — вид файла [FILE_NAME]. */
+    fun seal(token: String): ByteArray {
+        val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        val sealed = c.doFinal(token.toByteArray(Charsets.UTF_8))
+        return c.iv + sealed
+    }
+
+    /** Положить на место токен, закрытый этим телефоном ([seal]) при приёме переезда. */
+    fun install(context: Context, sealed: File) {
+        val file = File(context.filesDir, FILE_NAME)
+        val tmp = File(file.path + ".tmp")
+        sealed.copyTo(tmp, overwrite = true)
+        check(tmp.renameTo(file)) { "файл токена не записался" }
+    }
+
+    /** Спрятать токен после переезда: опрос телеграма с этого телефона прекращается. */
+    fun park(context: Context) {
+        val file = File(context.filesDir, FILE_NAME)
+        if (file.exists()) check(file.renameTo(File(context.filesDir, PARKED_FILE_NAME))) { "токен не спрятался" }
     }
 
     fun clear(context: Context) {
