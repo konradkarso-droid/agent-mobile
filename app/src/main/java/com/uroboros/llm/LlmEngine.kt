@@ -784,6 +784,7 @@ class LlmEngine(
     private var loadedAdapterKey: String? = null
 
     suspend fun loadModel(modelPath: String): Boolean = loadLock.withLock {
+        if (cpuRefusal() != null) return@withLock false
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
         // Модель по пути к файлу — не из папки моделей: накладку не ищем, и
@@ -856,6 +857,10 @@ class LlmEngine(
             engine.orderAdapter(context, null)
             loadedNight = adapter.night
             return@withLock true
+        }
+        if (cpuRefusal() != null) {
+            engine.orderAdapter(context, null)
+            return@withLock false
         }
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
@@ -2044,6 +2049,36 @@ class LlmEngine(
      */
     private fun applyThreadMode() {
         engine.setThreadMode(THREAD_MODE_PERFORMANCE)
+        engine.setGenerationThreads(GenerationThreads.get(context))
+    }
+
+    /**
+     * Потоков на выдачу — выбор человека ([GenerationThreads]): запомнить и
+     * поставить сразу. Посреди генерации движок дождётся её конца.
+     */
+    fun setGenerationThreads(n: Int) {
+        GenerationThreads.set(context, n)
+        engine.setGenerationThreads(n)
+    }
+
+    /** Сколько потоков стоит на выдаче на деле; 0 — модель не загружалась. */
+    fun generationThreadsNow(): Int = runCatching { engine.getGenerationThreads() }.getOrDefault(0)
+
+    /**
+     * Почему последняя загрузка отказана до чтения файла; null — не отказана.
+     * Сейчас одна причина — процессор без команды, которой собран движок
+     * (cpu_missing_for_build в gguf_lib.cpp, там же почему отказ, а не падение).
+     */
+    @Volatile
+    var lastLoadRefusal: String? = null
+        private set
+
+    /** Отказ загрузки по процессору словами; null — процессор годен. */
+    private fun cpuRefusal(): String? {
+        val missing = runCatching { engine.cpuMissingForBuild() }.getOrDefault("")
+        val why = if (missing.isEmpty()) null else "сборка требует команды процессора $missing, у этого процессора её нет"
+        lastLoadRefusal = why
+        return why
     }
 
     /**

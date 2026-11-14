@@ -108,6 +108,15 @@ internal object GGUFNativeLib {
     /** Обсчёт запроса только на быстрых ядрах (см. apply_thread_mode в gguf_lib.cpp). */
     external fun nativeSetBatchOnFastCores(on: Boolean)
 
+    /** Потоков на выдачу; 0 — как решил движок (apply_thread_mode в gguf_lib.cpp). */
+    external fun nativeSetGenerationThreads(n: Int)
+
+    /** Сколько потоков стоит на выдаче на деле; 0 — пулы ещё не собирались. */
+    external fun nativeGetGenerationThreads(): Int
+
+    /** Какой команды процессора не хватает сборке; пусто — всё есть (cpu_missing_for_build). */
+    external fun nativeCpuMissingForBuild(): String
+
     // ── Power engine / decode diagnostics ──────────────────────────────────
     //
     // The thermal/auto-mode surface lives outside the load path so the host
