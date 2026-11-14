@@ -2808,7 +2808,7 @@ class MainActivity : AppCompatActivity() {
             counts.active > 0 -> "Лента на диске: ходов ${counts.active}"
             counts.archived > 0 -> "Лента на диске: пусто · в архиве ${counts.archived}"
             else -> "Лента на диске: пусто"
-        }
+        } + (journalStore.setAsideLine?.let { "\n$it" } ?: "")
         renderMetricsPanel()
     }
 

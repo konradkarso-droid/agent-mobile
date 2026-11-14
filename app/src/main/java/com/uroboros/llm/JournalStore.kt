@@ -286,25 +286,89 @@ class JournalStore(context: Context) {
         fingerprint: String?,
     ): Boolean = gate.withLock {
         withContext(Dispatchers.IO) {
-            runCatching {
-                dao.insert(
-                    JournalTurn(
-                        turnIndex = index,
-                        userContent = turn.userContent,
-                        agentContent = turn.agentContent,
-                        question = turn.question,
-                        recordsJson = renderRecords(turn.records),
-                        promptTokens = promptTokens,
-                        fingerprint = fingerprint ?: "",
-                        selfNote = turn.selfNote,
-                        at = turn.at,
-                        dreamNote = turn.dreamNote,
-                        recall = turn.recall,
-                        rejected = turn.rejected,
+            // Строка экрана ставится только после удачной транзакции: при
+            // откате архива не было, и сказать «ушёл в архив» было бы враньём.
+            var aside: String? = null
+            val ok = runCatching {
+                db.runInTransaction {
+                    // ЧУЖАЯ ЛЕНТА ПОД НОМЕРОМ — В АРХИВ, А НЕ ПОД ЗАМЕНУ. Запись
+                    // по занятому номеру заменила бы ход молча (REPLACE). Живая
+                    // лента дописывается только в конец, а отрезание хвоста
+                    // ([dropFrom]) стирает ходы до перезаписи, — значит занятый
+                    // номер бывает лишь тогда, когда на диске лежит другой
+                    // разговор: подъём его отказал ([load]), и лента в памяти
+                    // начала нумерацию заново. Без этого новый разговор затирал
+                    // бы старый ход за ходом, а смесь двух разговоров больше не
+                    // поднималась бы никогда («собран из разных запусков»).
+                    // Прежний разговор уходит в архив целиком, как при закрытии.
+                    val rows = dao.all()
+                    if (JournalOverwrite.occupied(rows.map { it.turnIndex }, index)) {
+                        val archiveIndex = moveToArchive(rows)
+                        dao.clearAll()
+                        aside = JournalOverwrite.line(rows.size, archiveIndex, System.currentTimeMillis())
+                    }
+                    dao.insert(
+                        JournalTurn(
+                            turnIndex = index,
+                            userContent = turn.userContent,
+                            agentContent = turn.agentContent,
+                            question = turn.question,
+                            recordsJson = renderRecords(turn.records),
+                            promptTokens = promptTokens,
+                            fingerprint = fingerprint ?: "",
+                            selfNote = turn.selfNote,
+                            at = turn.at,
+                            dreamNote = turn.dreamNote,
+                            recall = turn.recall,
+                            rejected = turn.rejected,
+                        )
                     )
-                )
+                }
             }.isSuccess
+            if (ok) aside?.let { setAsideLine = it }
+            ok
         }
+    }
+
+    /**
+     * Что сделала последняя запись поверх чужой ленты, строкой для экрана;
+     * null — в этом процессе такого не было. Причина — в [append].
+     */
+    @Volatile
+    var setAsideLine: String? = null
+        private set
+
+    /**
+     * Перенести [rows] в архив одним новым номером; вернуть номер. Только
+     * внутри транзакции: очистку активной таблицы делает вызывающий в той же
+     * транзакции. Строки переносятся как есть, без разбора recordsJson:
+     * разбор при переносе дал бы порче одного хода власть отменить перенос
+     * всего разговора.
+     */
+    private fun moveToArchive(rows: List<JournalTurn>): Int {
+        val archiveIndex = archiveDao.nextArchiveIndex()
+        val archivedAt = System.currentTimeMillis()
+        archiveDao.insertAll(
+            rows.map { row ->
+                JournalArchiveTurn(
+                    archiveIndex = archiveIndex,
+                    turnIndex = row.turnIndex,
+                    userContent = row.userContent,
+                    agentContent = row.agentContent,
+                    question = row.question,
+                    recordsJson = row.recordsJson,
+                    promptTokens = row.promptTokens,
+                    fingerprint = row.fingerprint,
+                    archivedAt = archivedAt,
+                    selfNote = row.selfNote,
+                    at = row.at,
+                    dreamNote = row.dreamNote,
+                    recall = row.recall,
+                    rejected = row.rejected,
+                )
+            }
+        )
+        return archiveIndex
     }
 
     /**
@@ -402,32 +466,7 @@ class JournalStore(context: Context) {
                     val rows = dao.all()
                     if (rows.isEmpty()) return@runInTransaction ArchiveResult.Empty
 
-                    val archiveIndex = archiveDao.nextArchiveIndex()
-                    val archivedAt = System.currentTimeMillis()
-
-                    // Строки переносятся как есть, без разбора recordsJson:
-                    // разбор при переносе дал бы порче одного хода власть
-                    // отменить закрытие всего разговора.
-                    archiveDao.insertAll(
-                        rows.map { row ->
-                            JournalArchiveTurn(
-                                archiveIndex = archiveIndex,
-                                turnIndex = row.turnIndex,
-                                userContent = row.userContent,
-                                agentContent = row.agentContent,
-                                question = row.question,
-                                recordsJson = row.recordsJson,
-                                promptTokens = row.promptTokens,
-                                fingerprint = row.fingerprint,
-                                archivedAt = archivedAt,
-                                selfNote = row.selfNote,
-                                at = row.at,
-                                dreamNote = row.dreamNote,
-                                recall = row.recall,
-                                rejected = row.rejected,
-                            )
-                        }
-                    )
+                    val archiveIndex = moveToArchive(rows)
                     dao.clearAll()
 
                     ArchiveResult.Archived(rows.size, archiveIndex)
