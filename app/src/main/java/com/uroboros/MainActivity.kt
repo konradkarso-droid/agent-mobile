@@ -52,6 +52,7 @@ import com.uroboros.llm.CONTEXT_SIZE
 import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.JournalArchiveTurn
 import com.uroboros.llm.JournalStore
+import com.uroboros.llm.GenerationThreads
 import com.uroboros.llm.LlmEngine
 import com.uroboros.llm.RecordSplit
 import com.uroboros.llm.RecordChunkStore
@@ -3143,7 +3144,35 @@ class MainActivity : AppCompatActivity() {
         val chunksNight = chunkStore.nightLine ?: "Куски ночи: ещё не собирала"
         // Шаблон — у движка, общего с телеграмом: строка сверяет запросы обоих.
         val templateLine = if (::llmEngine.isInitialized) llmEngine.templateLine else null
-        group("Движок и стена", engineParamsLine, adapterNow, promptCacheLine, templateLine, buildSelf, turns.wallChangeLine, spliceLine, chunksNight)
+        // Потоки на выдачу — ссылкой «сменить», как склейка: число ищется
+        // замером по строке «выдача … ток/с» (llm.GenerationThreads, зачем).
+        val genChosen = GenerationThreads.get(applicationContext)
+        val genActual = if (::llmEngine.isInitialized) llmEngine.generationThreadsNow() else 0
+        val genLine = GenerationThreads.line(genChosen, genActual) + " — $GEN_THREADS_WORD"
+        group("Движок и стена", engineParamsLine, genLine, adapterNow, promptCacheLine, templateLine, buildSelf, turns.wallChangeLine, spliceLine, chunksNight)
+        run {
+            val at = metrics.lastIndexOf(genLine)
+            if (at >= 0 && ::llmEngine.isInitialized) {
+                val end = at + genLine.length
+                metrics.setSpan(
+                    object : ClickableSpan() {
+                        override fun onClick(widget: View) {
+                            val next = GenerationThreads.next(GenerationThreads.get(applicationContext))
+                            // Движок ждёт конца идущей генерации — не на главном потоке.
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                llmEngine.setGenerationThreads(next)
+                                withContext(Dispatchers.Main) { renderMetricsPanel() }
+                            }
+                        }
+                        override fun updateDrawState(ds: TextPaint) {
+                            ds.color = colorRecordsLink
+                            ds.isUnderlineText = false
+                        }
+                    },
+                    end - GEN_THREADS_WORD.length, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+        }
         run {
             val at = metrics.lastIndexOf(spliceLine)
             if (at >= 0) {
@@ -3913,7 +3942,8 @@ class MainActivity : AppCompatActivity() {
                 processObjects.loadedModelName = displayName
                 showLoadedModel(displayName)
             } else {
-                binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""
+                binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\"" +
+                    (llmEngine.lastLoadRefusal?.let { ": $it" } ?: "")
             }
         }
     }
@@ -6230,6 +6260,7 @@ class MainActivity : AppCompatActivity() {
         /** Слова-ссылки выключателя склейки записей (см. RecordChunkStore.on). */
         private const val SPLICE_ON_WORD = "включить"
         private const val SPLICE_OFF_WORD = "выключить"
+        private const val GEN_THREADS_WORD = "сменить"
         private const val BUILD_SELF_LINK = " — $BUILD_SELF_LINK_WORD"
 
         private const val KEY_MODEL_FOLDER_URI = ModelFolder.KEY_MODEL_FOLDER_URI

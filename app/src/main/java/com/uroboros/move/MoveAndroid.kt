@@ -8,6 +8,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.uroboros.ModelPrefs
 import com.uroboros.gate.store.GateTokenStore
 import com.uroboros.llm.AdapterFile
+import com.uroboros.llm.GenerationThreads
 import com.uroboros.llm.ModelFolder
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.safety.MemoryWatch
@@ -35,7 +36,7 @@ import java.util.UUID
  */
 object MoveAndroid {
 
-    val SKIP_FILES = setOf(MoveState.PREFS, MemoryWatch.PREFS)
+    val SKIP_FILES = setOf(MoveState.PREFS, MemoryWatch.PREFS, GenerationThreads.PREFS)
     val DEVICE_KEYS = mapOf(ModelPrefs.NAME to setOf(ModelFolder.KEY_MODEL_FOLDER_URI, ModelPrefs.KEY_LAST_MODEL_URI))
 
     private const val OUT_DIR = "move_out"

@@ -41,6 +41,16 @@
 #include "record_splice/record_splice.h"
 #include "state_read/state_read.h"
 #include "error_tracker.h"
+#include <sys/auxv.h>
+#if defined(__aarch64__)
+#include <asm/hwcap.h>
+#endif
+#ifndef HWCAP2_I8MM
+#define HWCAP2_I8MM (1 << 13)
+#endif
+#ifndef HWCAP_ASIMDDP
+#define HWCAP_ASIMDDP (1 << 20)
+#endif
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
@@ -450,6 +460,12 @@ static struct {
     // Обсчёт запроса только на быстрых ядрах (см. apply_thread_mode).
     bool batch_on_fast_cores = true;
 
+    // Потоков на выдачу, заданных снаружи (nativeSetGenerationThreads);
+    // 0 — сколько решил движок по режиму. gen_threads_applied — сколько
+    // стоит на деле после последнего apply_thread_mode.
+    int gen_threads_override = 0;
+    int gen_threads_applied  = 0;
+
     // Explicit ggml threadpool, pre-spawned at model load and re-spawned on
     // setThreadMode. nullptr = let ggml create an implicit on-demand pool
     // (the historical behavior — slower because threads are spawned each
@@ -467,6 +483,37 @@ static struct {
 } g_state;
 
 static void kv_evict_streaming();
+
+// ЧЕГО СБОРКА ТРЕБУЕТ ОТ ПРОЦЕССОРА — и есть ли это у нынешнего. Требования
+// объявляет CMakeLists.txt (UROBOROS_CPU_NEEDS_*, рядом с GGML_CPU_ARM_ARCH,
+// там же почему). Ядра ggml собраны с этими командами, и процессор без них
+// падает с SIGILL посреди счёта — приложение просто закрывается. Проверка
+// стоит перед каждой загрузкой модели: на чужом процессоре загрузка
+// отказывается, и причина видна словами. Пустая строка — всё есть.
+// Чего не умеет: проверяет только объявленное; команды, добавленные во
+// флаги сборки без объявления здесь, не сверяются.
+static const char * cpu_missing_for_build() {
+#if defined(__aarch64__)
+#  if defined(UROBOROS_CPU_NEEDS_DOTPROD)
+    if (!(getauxval(AT_HWCAP) & HWCAP_ASIMDDP)) return "dotprod";
+#  endif
+#  if defined(UROBOROS_CPU_NEEDS_I8MM)
+    if (!(getauxval(AT_HWCAP2) & HWCAP2_I8MM)) return "i8mm";
+#  endif
+#endif
+    return "";
+}
+
+// Отказ загрузки на чужом процессоре: запись для ErrorTracker и true.
+static bool cpu_refuses_load(const char * where) {
+    const char * missing = cpu_missing_for_build();
+    if (!*missing) return false;
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Сборка требует команды процессора %s, у этого процессора её нет", missing);
+    tn_error_set_last(TN_ERR_MODEL_LOAD, where, msg);
+    LOGE("%s: %s", where, msg);
+    return true;
+}
 
 static float read_proc_status_mb(const char * key) {
     FILE * f = fopen("/proc/self/status", "r");
@@ -626,6 +673,32 @@ static void apply_thread_mode(int mode) {
             if (c >= 0 && c < TN_MAX_CPUS) cfg.cpumask_batch[c] = true;
         }
     }
+
+    // ПОТОКИ НА ВЫДАЧУ — ЧИСЛОМ СНАРУЖИ. Режим «производительность» движка
+    // ставит выдаче не больше трёх потоков на любом процессоре
+    // (thread-engine.cpp, TN_THREAD_PERFORMANCE). Где потолок скорости
+    // выдачи, зависит от памяти и ядер конкретного телефона и находится
+    // только замером, поэтому число задаёт приложение. Ядра — сперва быстрые,
+    // за ними медленные; больше ядер, чем есть, не ставится.
+    // Чего не умеет: выбрать число само — ищет его человек по скорости выдачи.
+    if (g_state.gen_threads_override > 0) {
+        int np = cfg.n_perf_core_ids;
+        int ne = cfg.n_efficiency_core_ids;
+        int total = np + ne > 0 ? np + ne : g_state.gen_threads_override;
+        int n = std::min(g_state.gen_threads_override, total);
+        cfg.n_threads_generation = n;
+        std::memset(cfg.cpumask_generation, 0, sizeof(cfg.cpumask_generation));
+        int put = 0;
+        for (int i = 0; i < np && put < n; i++, put++) {
+            int c = (int)cfg.perf_core_ids[i];
+            if (c >= 0 && c < TN_MAX_CPUS) cfg.cpumask_generation[c] = true;
+        }
+        for (int i = 0; i < ne && put < n; i++, put++) {
+            int c = (int)cfg.efficiency_core_ids[i];
+            if (c >= 0 && c < TN_MAX_CPUS) cfg.cpumask_generation[c] = true;
+        }
+    }
+    g_state.gen_threads_applied = cfg.n_threads_generation;
 
     // Detach + free old pools first. detach must precede free or llama_context
     // ends up with dangling pool pointers.
@@ -1672,6 +1745,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadModel(
         jboolean opOffload) {
 
     ensure_backend_init();
+    if (cpu_refuses_load("ModelLoad")) return JNI_FALSE;
 
     {
         const char * peek = env->GetStringUTFChars(jpath, nullptr);
@@ -3807,6 +3881,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadEmbeddingModel(
         JNIEnv * env, jobject,
         jstring jpath, jint nThreads, jint nCtx) {
 
+    if (cpu_refuses_load("EmbeddingLoad")) return JNI_FALSE;
     std::lock_guard<std::mutex> lock(g_embed.mutex);
 
     if (g_embed.ctx) { llama_free(g_embed.ctx); g_embed.ctx = nullptr; }
@@ -3987,6 +4062,28 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetThreadMode(JNIEnv *, jobject, jin
     apply_thread_mode(effective);
     LOGI("Thread mode set: requested=%d effective=%d auto=%d",
          mode, effective, (int)g_state.auto_mode);
+}
+
+// Потоков на выдачу (см. apply_thread_mode, «ПОТОКИ НА ВЫДАЧУ»); 0 — как
+// решил движок. Применяется сразу, но не посреди генерации: ждёт её замка.
+extern "C" JNIEXPORT void JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetGenerationThreads(JNIEnv *, jobject, jint n) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    g_state.gen_threads_override = n > 0 ? (int)n : 0;
+    apply_thread_mode(g_state.thread_mode);
+}
+
+// Сколько потоков стоит на выдаче на деле; 0 — пулы ещё не собирались.
+extern "C" JNIEXPORT jint JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetGenerationThreads(JNIEnv *, jobject) {
+    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    return (jint)g_state.gen_threads_applied;
+}
+
+// Чего сборке не хватает у процессора, словом; пусто — всё есть (cpu_missing_for_build).
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeCpuMissingForBuild(JNIEnv * env, jobject) {
+    return env->NewStringUTF(cpu_missing_for_build());
 }
 
 // Обсчёт запроса только на быстрых ядрах (см. apply_thread_mode). Применяется
@@ -4192,6 +4289,7 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadRagModel(
         JNIEnv * env, jobject, jstring jpath) {
 
+    if (cpu_refuses_load("RagLoad")) return JNI_FALSE;
     std::lock_guard<std::mutex> lock(g_rag.mutex);
 
     if (!g_rag.engine) {
@@ -4216,6 +4314,7 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLoadRagModelFromFd(
         JNIEnv *, jobject, jint fd) {
 
+    if (cpu_refuses_load("RagLoad")) return JNI_FALSE;
     std::lock_guard<std::mutex> lock(g_rag.mutex);
 
     if (!g_rag.engine) {

@@ -203,6 +203,15 @@ class GGMLEngine {
     /** Обсчёт запроса только на быстрых ядрах; по умолчанию включено (см. gguf_lib.cpp). */
     fun setBatchOnFastCores(on: Boolean) = GGUFNativeLib.nativeSetBatchOnFastCores(on)
 
+    /** Потоков на выдачу; 0 — как решил движок. Ждёт конца идущей генерации. */
+    fun setGenerationThreads(n: Int) = GGUFNativeLib.nativeSetGenerationThreads(n)
+
+    /** Сколько потоков стоит на выдаче на деле; 0 — пулы ещё не собирались. */
+    fun getGenerationThreads(): Int = GGUFNativeLib.nativeGetGenerationThreads()
+
+    /** Какой команды процессора не хватает сборке; пусто — всё есть. */
+    fun cpuMissingForBuild(): String = GGUFNativeLib.nativeCpuMissingForBuild()
+
     // ── Power engine + decode diagnostics ──────────────────────────────────
 
     /**

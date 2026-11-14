@@ -65,14 +65,23 @@ set(GGML_LTO             ON  CACHE BOOL "" FORCE)
 set(GGML_VULKAN          OFF CACHE BOOL "" FORCE)
 
 if(ANDROID_ABI STREQUAL "arm64-v8a")
-    # armv8.2-a+dotprod: команда скалярного произведения нужна собственным
-    # ядрам ggml (сжатые веса × сжатые активации, внимание по q8_0). На
-    # armv8-a их собирали без неё, и обсчёт запроса шёл лишь вдвое быстрее
-    # выдачи. KleidiAI добирает dotprod/i8mm на лету только в своих ядрах.
-    # Граница: устройства без dotprod (ARMv8.0: Cortex-A53/A57/A72/A73)
-    # упадут с SIGILL. armv8.6-a тоже нельзя: требует i8mm, которой нет у
-    # Cortex-A76/A77 (Snapdragon 865), — на нём был SIGILL.
-    set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod" CACHE STRING "" FORCE)
+    # armv8.2-a+dotprod+i8mm. dotprod (скалярное произведение) нужен
+    # собственным ядрам ggml: сжатые веса × сжатые активации, внимание по
+    # q8_0; без него обсчёт запроса шёл лишь вдвое быстрее выдачи. i8mm
+    # (умножение матриц восьмибитными) даёт собственным ядрам ggml то, что
+    # KleidiAI и так добирает на лету в своих: веса, которые KleidiAI не
+    # взял, и обсчёт запроса считаются матричной командой, а не скалярной.
+    #
+    # Граница: процессор без i8mm (Cortex-A76/A77 и старше, например
+    # Snapdragon 865) или без dotprod (Cortex-A53/A57/A72/A73) падал бы с
+    # SIGILL посреди счёта. Поэтому сборка объявляет, чего требует
+    # (UROBOROS_CPU_NEEDS_*), и gguf_lib.cpp сверяет это с процессором
+    # перед любой загрузкой модели: на чужом процессоре загрузка
+    # отказывается словами, а не роняет приложение (cpu_missing_for_build).
+    # Целиком armv8.6-a не берётся: набор шире нужного, и сверять пришлось
+    # бы каждую его команду.
+    set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+i8mm" CACHE STRING "" FORCE)
+    set(UROBOROS_CPU_NEEDS "UROBOROS_CPU_NEEDS_DOTPROD=1;UROBOROS_CPU_NEEDS_I8MM=1")
     set(GGML_CPU_KLEIDIAI ON CACHE BOOL "" FORCE)
 else()
     set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
@@ -168,6 +177,11 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # -Wno-cast-qual silences vendored stb_image / miniaudio warnings used by VLM.
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -O3 -DNDEBUG -Wno-cast-qual)
+# Чего сборка требует от процессора — сверяется перед загрузкой модели
+# (см. GGML_CPU_ARM_ARCH выше и cpu_missing_for_build в gguf_lib.cpp).
+if(UROBOROS_CPU_NEEDS)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ${UROBOROS_CPU_NEEDS})
+endif()
 
 target_link_libraries(${CMAKE_PROJECT_NAME}
     llama
