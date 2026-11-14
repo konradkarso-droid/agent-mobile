@@ -462,9 +462,10 @@ static struct {
 
     // Потоков на выдачу, заданных снаружи (nativeSetGenerationThreads);
     // 0 — сколько решил движок по режиму. gen_threads_applied — сколько
-    // стоит на деле после последнего apply_thread_mode.
+    // стоит на деле после последнего apply_thread_mode; атомарное, потому что
+    // читается без gen_mutex (см. nativeGetGenerationThreads).
     int gen_threads_override = 0;
-    int gen_threads_applied  = 0;
+    std::atomic<int> gen_threads_applied{0};
 
     // Explicit ggml threadpool, pre-spawned at model load and re-spawned on
     // setThreadMode. nullptr = let ggml create an implicit on-demand pool
@@ -4074,10 +4075,12 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetGenerationThreads(JNIEnv *, jobje
 }
 
 // Сколько потоков стоит на выдаче на деле; 0 — пулы ещё не собирались.
+// БЕЗ gen_mutex: генерация держит его всё время ответа (минуты), а читает
+// это экран со своего главного потока. Ожидание замка вешало экран, и
+// система закрывала приложение («не отвечал системе»).
 extern "C" JNIEXPORT jint JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetGenerationThreads(JNIEnv *, jobject) {
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
-    return (jint)g_state.gen_threads_applied;
+    return (jint)g_state.gen_threads_applied.load();
 }
 
 // Чего сборке не хватает у процессора, словом; пусто — всё есть (cpu_missing_for_build).
