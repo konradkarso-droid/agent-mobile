@@ -116,7 +116,6 @@ object MemoryWatch {
                 }
                 if (done) {
                     unloadedBySignal = true
-                    objects.loadedModelName = null
                     val all = (times(p.getString(UNLOADS, null)) + reading.at).takeLast(UNLOADS_KEPT)
                     p.edit().putString(UNLOADS, all.joinToString(",")).remove(HOLD).apply()
                 }

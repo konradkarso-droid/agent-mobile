@@ -10,7 +10,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
-import androidx.documentfile.provider.DocumentFile
 import com.uroboros.gate.ChatQuiet
 import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.gate.link.GateLink
@@ -467,8 +466,6 @@ class AgentService : Service() {
                 showInitiative("модель не загрузилась", first.times)
                 return Checked(InitiativeTally.Outcome.LOAD_FAILED)
             }
-            objects.loadedModelName = DocumentFile.fromSingleUri(applicationContext, uri)?.name
-                ?: uri.lastPathSegment
         }
 
         // Лента поднимается следом за моделью: без загруженной модели
@@ -709,8 +706,6 @@ class AgentService : Service() {
                 showJudgeLine("Не сужу: модель не загрузилась, следующая попытка через полчаса.")
                 return
             }
-            objects.loadedModelName = DocumentFile.fromSingleUri(applicationContext, uri)?.name
-                ?: uri.lastPathSegment
         }
         // Загрузка шла десятки секунд: за это время могли снять с зарядки или
         // заговорить с агентом. Переспрашиваются условия, которые могли
@@ -773,8 +768,6 @@ class AgentService : Service() {
                 showStepsLine(NightSteps.HEAD + "модель не загрузилась, следующая попытка через полчаса.")
                 return
             }
-            objects.loadedModelName = DocumentFile.fromSingleUri(applicationContext, uri)?.name
-                ?: uri.lastPathSegment
         }
         // Загрузка шла десятки секунд: за это время могли заговорить с агентом
         // или телефон мог нагреться и разрядиться.
