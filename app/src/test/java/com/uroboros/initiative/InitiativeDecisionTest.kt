@@ -20,7 +20,6 @@ class InitiativeDecisionTest {
         running = false,
         emergencyStop = false,
         powerKnown = true,
-        zoneNormal = true,
         watchdogRefusal = null,
         engineBusy = false,
         timesUnreadable = null,
@@ -47,11 +46,6 @@ class InitiativeDecisionTest {
     @Test
     fun `без показаний батареи не пишет`() {
         assertEquals("сторож ещё не прислал показаний батареи", refusal(ready.copy(powerKnown = false)))
-    }
-
-    @Test
-    fun `зона не норма - не пишет`() {
-        assertEquals("зона не «норма»", refusal(ready.copy(zoneNormal = false)))
     }
 
     @Test
@@ -133,7 +127,6 @@ class InitiativeDecisionTest {
             running = true,
             emergencyStop = true,
             powerKnown = false,
-            zoneNormal = false,
             engineBusy = true,
             ownerReplyAt = null,
             sourceRefusal = "нечего",
@@ -180,7 +173,6 @@ class InitiativeDecisionTest {
             ready.copy(running = true) to InitiativeDecision.Kind.RUNNING,
             ready.copy(emergencyStop = true) to InitiativeDecision.Kind.EMERGENCY_STOP,
             ready.copy(powerKnown = false) to InitiativeDecision.Kind.POWER_UNKNOWN,
-            ready.copy(zoneNormal = false) to InitiativeDecision.Kind.ZONE,
             ready.copy(watchdogRefusal = "заряд 20%") to InitiativeDecision.Kind.WATCHDOG,
             ready.copy(engineBusy = true) to InitiativeDecision.Kind.ENGINE_BUSY,
             ready.copy(timesUnreadable = "сбой") to InitiativeDecision.Kind.TIMES_UNREADABLE,

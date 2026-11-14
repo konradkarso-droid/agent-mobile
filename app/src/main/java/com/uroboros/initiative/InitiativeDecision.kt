@@ -60,9 +60,10 @@ object InitiativeDecision {
         val emergencyStop: Boolean,
         /** Прислал ли сторож хоть одно показание батареи. */
         val powerKnown: Boolean,
-        /** Зона сторожа — «норма». */
-        val zoneNormal: Boolean,
-        /** Отказ сторожа словами (DeviceSafetyWatchdog.longRunBlockReason); null — можно. */
+        /**
+         * Отказ сторожа словами (DeviceSafetyWatchdog.longRunBlockReason); null — можно.
+         * Своего порога зоны здесь нет: правило одно для всех путей (safety.SafetyZone).
+         */
         val watchdogRefusal: String?,
         val engineBusy: Boolean,
         /** Почему не прочитались времена с диска; null — прочитались. */
@@ -83,7 +84,7 @@ object InitiativeDecision {
      * Порядок и слова — одни, в [check]; вид здесь только называет условие.
      */
     enum class Kind {
-        RUNNING, EMERGENCY_STOP, POWER_UNKNOWN, ZONE, WATCHDOG, ENGINE_BUSY,
+        RUNNING, EMERGENCY_STOP, POWER_UNKNOWN, WATCHDOG, ENGINE_BUSY,
         TIMES_UNREADABLE, OWNER_NEVER, SILENCE_SHORT, AWAITING, NOTHING_TO_SAY, NO_MODEL,
     }
 
@@ -100,7 +101,6 @@ object InitiativeDecision {
             i.running -> Refusal(Kind.RUNNING, "идёт разбор памяти или сон")
             i.emergencyStop -> Refusal(Kind.EMERGENCY_STOP, "взведён аварийный стоп")
             !i.powerKnown -> Refusal(Kind.POWER_UNKNOWN, "сторож ещё не прислал показаний батареи")
-            !i.zoneNormal -> Refusal(Kind.ZONE, "зона не «норма»")
             i.watchdogRefusal != null -> Refusal(Kind.WATCHDOG, i.watchdogRefusal)
             i.engineBusy -> Refusal(Kind.ENGINE_BUSY, "модель занята")
             i.timesUnreadable != null ->

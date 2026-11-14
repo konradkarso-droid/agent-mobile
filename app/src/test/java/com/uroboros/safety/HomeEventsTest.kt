@@ -131,6 +131,13 @@ class HomeEventsTest {
     }
 
     @Test
+    fun `нагрев ход не сбавлял - так и не говорится, утомление - говорится`() {
+        assertTrue(!HomeEvents.tell(listOf(warm), null, time)!!.line.contains("сбавлял"))
+        val tired = HomeEvents.Event(HomeEvents.Kind.ZONE, 30, 40, SafetyZone.FATIGUE, 46.0, null)
+        assertTrue(HomeEvents.tell(listOf(tired), null, time)!!.line.contains("— устал, сторож сбавлял мне ход."))
+    }
+
+    @Test
     fun `худшее — фактом, остальное — числом, опасная зона — «пришлось остановиться»`() {
         val tell = HomeEvents.tell(listOf(crit, warm), null, time)!!
         assertEquals("пришлось остановиться", tell.what)

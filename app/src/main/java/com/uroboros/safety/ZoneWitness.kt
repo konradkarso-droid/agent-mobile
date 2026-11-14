@@ -113,6 +113,15 @@ data class ZoneWitnessSnapshot(
     val worstBatteryTemperature: SafetyZone?,
     /** Худшая зона, которую называл уровень заряда. */
     val worstCharge: SafetyZone?,
+    /** Самый строгий статус системы как есть (ThermalStatus), либо null. */
+    val worstThermalRaw: Int? = null,
+    /** Сколько раз спрашивали тепловой запас. */
+    val headroomPolls: Int = 0,
+    /** Последний ответ-число; null — числа не было ни разу. */
+    val headroomLast: Float? = null,
+    /** Наибольший запас за сеанс и когда; null — числа не было ни разу. */
+    val headroomMax: Float? = null,
+    val headroomMaxAtMs: Long? = null,
 ) {
     /** Сколько длится наблюдение. Никогда не отрицательно — см. [ZoneWitness.spanMs]. */
     val observedForMs: Long get() = ZoneWitness.spanMs(startedAtMs, takenAtMs)
@@ -144,6 +153,13 @@ class ZoneWitness(private val startedAtMs: Long) {
     @Volatile private var thermalLastAtMs: Long? = null
     @Volatile private var worstThermalStatus: SafetyZone? = null
 
+    @Volatile private var worstThermalRaw: Int? = null
+
+    @Volatile private var headroomPolls: Int = 0
+    @Volatile private var headroomLast: Float? = null
+    @Volatile private var headroomMax: Float? = null
+    @Volatile private var headroomMaxAtMs: Long? = null
+
     @Volatile private var powerEvents: Int = 0
     @Volatile private var powerLastAtMs: Long? = null
     @Volatile private var worstBatteryTemperature: SafetyZone? = null
@@ -156,10 +172,29 @@ class ZoneWitness(private val startedAtMs: Long) {
      * @param atMs когда событие пришло; время передаётся снаружи, чтобы прибор
      *             можно было проверить, не дожидаясь настоящих минут.
      */
-    fun recordThermalStatus(zone: SafetyZone, atMs: Long) {
+    fun recordThermalStatus(zone: SafetyZone, atMs: Long, rawStatus: Int? = null) {
         thermalEvents++
         thermalLastAtMs = atMs
         worstThermalStatus = stricter(worstThermalStatus, zone)
+        // Сырой статус хранится рядом, потому что зона его схлопывает: «нет» и
+        // «слабый» — одна «норма». Числа статусов растут со строгостью.
+        if (rawStatus != null && (worstThermalRaw ?: -1) < rawStatus) worstThermalRaw = rawStatus
+    }
+
+    /**
+     * Ответ на опрос теплового запаса. «Не число» (телефон не даёт или
+     * спросили слишком часто) засчитывается в опросы, но не в показания —
+     * иначе отказ читался бы как запас.
+     */
+    fun recordHeadroom(value: Float, atMs: Long) {
+        headroomPolls++
+        if (value.isNaN()) return
+        headroomLast = value
+        val max = headroomMax
+        if (max == null || value > max) {
+            headroomMax = value
+            headroomMaxAtMs = atMs
+        }
     }
 
     /**
@@ -197,6 +232,11 @@ class ZoneWitness(private val startedAtMs: Long) {
         powerLastAtMs = powerLastAtMs,
         worstBatteryTemperature = worstBatteryTemperature,
         worstCharge = worstCharge,
+        worstThermalRaw = worstThermalRaw,
+        headroomPolls = headroomPolls,
+        headroomLast = headroomLast,
+        headroomMax = headroomMax,
+        headroomMaxAtMs = headroomMaxAtMs,
     )
 
     /**
@@ -224,6 +264,8 @@ class ZoneWitness(private val startedAtMs: Long) {
             span = span,
             label = label,
         )
+        snapshot.worstThermalRaw?.let { lines[lines.size - 1] += " (у системы «${ThermalStatus.word(it)}»)" }
+        lines += headroomLine(snapshot, span)
         lines += sourceLine(
             title = "Батарея",
             // А здесь подпись обязательна: в одной строке стоят показания
@@ -253,6 +295,24 @@ class ZoneWitness(private val startedAtMs: Long) {
             )
 
         return lines.joinToString("\n")
+    }
+
+    /**
+     * Строка теплового запаса. Опросов нет — Android ниже 11 или опрос ещё не
+     * шёл; опросы есть, а чисел нет — телефон запаса не даёт.
+     */
+    private fun headroomLine(snapshot: ZoneWitnessSnapshot, span: String): String {
+        val head = "  Тепловой запас (1.00 — «сильный» у системы): "
+        val max = snapshot.headroomMax
+        return head + when {
+            snapshot.headroomPolls == 0 -> "опросов не было за $span"
+            max == null -> "опросов ${snapshot.headroomPolls}, телефон не даёт числа"
+            else -> {
+                val ago = snapshot.headroomMaxAtMs?.let { " (${humanSpan(spanMs(it, snapshot.takenAtMs))} назад)" } ?: ""
+                "сейчас ${ThermalStatus.headroom(snapshot.headroomLast ?: max)}, " +
+                    "наибольшее ${ThermalStatus.headroom(max)}$ago · опросов ${snapshot.headroomPolls}"
+            }
+        }
     }
 
     private fun sourceLine(
