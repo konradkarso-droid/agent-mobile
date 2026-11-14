@@ -3,7 +3,6 @@ package com.uroboros.gate.link
 import android.content.Context
 import android.net.Uri
 import android.os.PowerManager
-import androidx.documentfile.provider.DocumentFile
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.AgentService
 import com.uroboros.ModelPrefs
@@ -1000,7 +999,6 @@ object ChatLink {
             failedUri = uri
             return "модель не загрузилась"
         }
-        objects.loadedModelName = DocumentFile.fromSingleUri(app, parsed)?.name ?: parsed.lastPathSegment
         return null
     }
 

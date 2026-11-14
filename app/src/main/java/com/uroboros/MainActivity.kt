@@ -3910,7 +3910,6 @@ class MainActivity : AppCompatActivity() {
             binding.buttonLoadModel.isEnabled = true
             if (ok) {
                 prefs.edit().putString(KEY_LAST_MODEL_URI, uri.toString()).apply()
-                processObjects.loadedModelName = displayName
                 showLoadedModel(displayName)
             } else {
                 binding.textModelStatus.text = "Ошибка загрузки модели \"$displayName\""

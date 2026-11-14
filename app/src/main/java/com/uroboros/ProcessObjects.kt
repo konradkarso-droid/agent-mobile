@@ -57,15 +57,8 @@ object ProcessObjects {
         /** Ход разговора и лента с её хранилищем — см. [ConversationTurns]. */
         val turns: ConversationTurns,
     ) {
-        /**
-         * Имя модели, загруженной в [llmEngine], для строки на экране.
-         *
-         * Нужен потому, что экран, созданный заново при уже загруженной модели,
-         * грузить её второй раз не должен, а имени файла движок не хранит.
-         * `null` — ни одна загрузка в этом процессе не удалась.
-         */
-        @Volatile
-        var loadedModelName: String? = null
+        /** Имя модели в [llmEngine] для экрана; null — не загружена (LlmEngine.loadedModelName, почему там). */
+        val loadedModelName: String? get() = llmEngine.loadedModelName
     }
 
     /**

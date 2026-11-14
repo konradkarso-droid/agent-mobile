@@ -2,6 +2,7 @@ package com.uroboros.llm
 
 import android.content.Context
 import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.GenerationEvent
 import com.uroboros.safety.DeviceSafetyWatchdog
@@ -647,6 +648,20 @@ class LlmEngine(
     private var loadedSource: String? = null
 
     /**
+     * Имя файла нынешней модели — для экрана; null — модель не загружена.
+     *
+     * Живёт здесь, рядом с [loadedSource], а не у тех, кто зовёт загрузку:
+     * зовущих много (экран, тело агента днём и ночью, телеграм), и имя,
+     * которое каждый должен был не забыть записать, терялось у тех, кто
+     * забыл, — модель была, а экран писал «имя не сохранилось».
+     */
+    @Volatile
+    private var loadedName: String? = null
+
+    val loadedModelName: String?
+        get() = if (engine.isLoaded) loadedName else null
+
+    /**
      * Накладка (LoRA) при нынешней загрузке — что нашлось и что сказал движок.
      * Как она ищется и чего не проверяет — у [AdapterFile] и [ModelFolder].
      */
@@ -803,6 +818,7 @@ class LlmEngine(
         if (ok) {
             val file = File(modelPath)
             loadedSource = modelPath
+            loadedName = file.name
             adapterOutcome = AdapterFile.Outcome.NoFolder
             loadedAdapterKey = null
             loadedNight = null
@@ -818,7 +834,7 @@ class LlmEngine(
                 ),
             )
         }
-        if (!ok) loadedSource = null
+        if (!ok) { loadedSource = null; loadedName = null }
         liveEtalonAfterLoad(ok, AdapterFile.Role.DAY)
         ok
     }
@@ -873,6 +889,7 @@ class LlmEngine(
         )
         if (ok) {
             loadedSource = uri.toString()
+            loadedName = DocumentFile.fromSingleUri(context, uri)?.name ?: uri.lastPathSegment
             adapterOutcome = adapter.outcome(engine.adapterState)
             loadedAdapterKey = adapter.key
             loadedNight = adapter.night
@@ -890,7 +907,7 @@ class LlmEngine(
                 ),
             )
         }
-        if (!ok) loadedSource = null
+        if (!ok) { loadedSource = null; loadedName = null }
         liveEtalonAfterLoad(ok, role)
         ok
     }
@@ -2788,6 +2805,7 @@ class LlmEngine(
         if (!engine.isLoaded) return@withLock false
         engine.unload()
         loadedSource = null
+        loadedName = null
         loadedAdapterKey = null
         true
     }
