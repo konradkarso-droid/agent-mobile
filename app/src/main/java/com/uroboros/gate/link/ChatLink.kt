@@ -61,7 +61,6 @@ import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
-import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -455,11 +454,11 @@ object ChatLink {
         )
     }
 
+    /** Отказ сторожа — общее правило для всех путей (safety.SafetyZone), своего порога зоны у телеграма нет. */
     private fun watchdogRefusal(app: Context): String? {
         val watchdog = ProcessObjects.get(app).watchdog
         return when {
             watchdog.zoneObservation().powerLastAtMs == null -> "нет показаний батареи"
-            watchdog.zone.value != SafetyZone.COMFORT -> "зона ${watchdog.zone.value} — не «норма»"
             else -> watchdog.longRunBlockReason()
         }
     }

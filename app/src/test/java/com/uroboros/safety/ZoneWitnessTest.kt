@@ -225,3 +225,51 @@ class ZoneWitnessTest {
         assertTrue(!text.contains("-"))
     }
 }
+
+class ZoneWitnessThermalTest {
+
+    private fun label(zone: SafetyZone): String = if (zone == SafetyZone.COMFORT) "норма" else zone.name
+
+    @Test
+    fun `слабый статус виден словом рядом с нормой`() {
+        val witness = ZoneWitness(startedAtMs = 0L)
+        witness.recordThermalStatus(SafetyZone.COMFORT, atMs = 1_000L, rawStatus = ThermalStatus.LIGHT)
+        witness.recordThermalStatus(SafetyZone.COMFORT, atMs = 2_000L, rawStatus = ThermalStatus.NONE)
+        val text = witness.format(witness.snapshot(nowMs = 60_000L), ::label)
+        assertTrue(text, text.contains("худшее «норма» (у системы «слабый»)"))
+    }
+
+    @Test
+    fun `без сырого статуса приписки нет`() {
+        val witness = ZoneWitness(startedAtMs = 0L)
+        witness.recordThermalStatus(SafetyZone.COMFORT, atMs = 1_000L)
+        val text = witness.format(witness.snapshot(nowMs = 60_000L), ::label)
+        assertTrue(text, !text.contains("(у системы"))
+    }
+
+    @Test
+    fun `запас - опросов не было, телефон не даёт, наибольшее`() {
+        val w = ZoneWitness(startedAtMs = 0L)
+        assertTrue(w.format(w.snapshot(60_000L), ::label).contains("Тепловой запас (1.00 — «сильный» у системы): опросов не было"))
+
+        w.recordHeadroom(Float.NaN, 1_000L)
+        val nan = w.format(w.snapshot(60_000L), ::label)
+        assertTrue(nan, nan.contains("опросов 1, телефон не даёт числа"))
+        assertNull("отказ не читается как запас", w.snapshot(60_000L).headroomMax)
+
+        w.recordHeadroom(0.81f, 2_000L)
+        w.recordHeadroom(0.42f, 62_000L)
+        val s = w.snapshot(122_000L)
+        assertEquals(0.81f, s.headroomMax!!, 0f)
+        assertEquals(2_000L, s.headroomMaxAtMs)
+        val text = w.format(s, ::label)
+        assertTrue(text, text.contains("сейчас 0.42, наибольшее 0.81 (2 мин назад) · опросов 3"))
+    }
+
+    @Test
+    fun `запас на зону не влияет`() {
+        val w = ZoneWitness(startedAtMs = 0L)
+        w.recordHeadroom(1.5f, 1_000L)
+        assertNull(w.snapshot(2_000L).worstOverall)
+    }
+}

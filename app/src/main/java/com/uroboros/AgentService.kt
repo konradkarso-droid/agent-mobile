@@ -412,7 +412,6 @@ class AgentService : Service() {
                 running = working || job?.isActive == true || nightLock.isLocked,
                 emergencyStop = EmergencyStop.isActive(),
                 powerKnown = watchdog.zoneObservation().powerLastAtMs != null,
-                zoneNormal = watchdog.zone.value == SafetyZone.COMFORT,
                 watchdogRefusal = watchdog.longRunBlockReason(),
                 // Замок хода — тоже занятость: экран может вести ход или
                 // поднимать ленту, ещё не дойдя до движка.

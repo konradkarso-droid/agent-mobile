@@ -35,7 +35,7 @@ class InitiativeTallyTest {
 
     @Test
     fun `первая проверка паузы не даёт`() {
-        val s = add(InitiativeTally.EMPTY, t0, Outcome.ZONE)
+        val s = add(InitiativeTally.EMPTY, t0, Outcome.WATCHDOG)
         assertEquals(0L, s.today!!.longestGapMs)
     }
 

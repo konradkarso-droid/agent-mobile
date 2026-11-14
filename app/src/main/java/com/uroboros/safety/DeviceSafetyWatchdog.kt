@@ -9,6 +9,9 @@ import android.os.Build
 import android.os.PowerManager
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
@@ -30,8 +33,8 @@ import kotlinx.coroutines.flow.stateIn
  * сообщения ACTION_BATTERY_CHANGED читаются ещё уровень заряда и факт
  * подключения к зарядке — новых разрешений и подписок не нужно.
  *
- * ВАЖНО про семантику зон: WARNING/FATIGUE — это лекарства ОТ ЖАРЫ (меньше
- * потоков, паузы в выдаче). К севшей батарее они неприменимы и даже
+ * ВАЖНО про семантику зон: FATIGUE — это лекарство ОТ ЖАРЫ (паузы в
+ * выдаче), WARNING только отмечает нагрев. К севшей батарее они неприменимы и даже
  * вредны: задержки растягивают работу во времени и тратят больше заряда на ту
  * же задачу. Поэтому низкий заряд НЕ участвует в «мягких» зонах, а только в
  * одном крайнем случае — CRITICAL, где нужное действие совпадает: полный стоп.
@@ -58,11 +61,29 @@ import kotlinx.coroutines.flow.stateIn
  * поворот экрана, если он не объявлен в манифесте как обрабатываемый вручную)
  * заводит новый сторож с чистым счётом.
  */
+/**
+ * Зона сторожа и что она делает. ОДНО ПРАВИЛО ДЛЯ ВСЕХ ПУТЕЙ — экрана,
+ * телеграма, «пишу первым», ночи и разбора памяти: своих порогов зоны у путей
+ * нет. Начинать работу модели или нет, решает [DeviceSafetyWatchdog.longRunBlockReason]
+ * (критическая зона и низкий заряд); обрывает идущую работу
+ * llm.LlmEngine.barrierStopReason (критическая зона и потолок непрерывной
+ * работы); паузы в выдаче — там же, в утомлении.
+ *
+ * Почему одно. Разные пороги у разных путей давали не осторожность, а
+ * молчание: необязательная работа (телеграм) замолкала от лёгкого нагрева,
+ * который экран спокойно переживал, — то есть защищала железо от нагрузки
+ * меньшей, чем та, что шла рядом без защиты. Выход из нормы у необязательной
+ * работы не теряется: каждый эпизод пишется в «дом» (HomeEvents), и агент о
+ * нём рассказывает.
+ *
+ * Чем зона вызвана — у [ThermalStatus] (статус системы) и у
+ * DeviceSafetyWatchdog.zoneFromBatteryTemp (батарея).
+ */
 enum class SafetyZone {
-    COMFORT,   // < 40°C — полная мощность
-    WARNING,   // 40-45°C — снизить число потоков
-    FATIGUE,   // 45-49°C — придерживает выдачу паузой (не на токен, см. ниже)
-    CRITICAL   // > 50°C ИЛИ заряд < 15% без зарядки — полный стоп, заморозка контекста
+    COMFORT,   // работа без ограничений
+    WARNING,   // ничего не останавливает — отмечается в «доме» как нагрев
+    FATIGUE,   // придерживает выдачу паузой (не на токен, см. ниже)
+    CRITICAL   // не начинать и обрывать любую работу модели
 }
 
 /*
@@ -242,13 +263,8 @@ class DeviceSafetyWatchdog(
             )
         )
 
-    private fun zoneFromThermalStatus(status: Int): SafetyZone = when (status) {
-        PowerManager.THERMAL_STATUS_NONE -> SafetyZone.COMFORT
-        PowerManager.THERMAL_STATUS_LIGHT,
-        PowerManager.THERMAL_STATUS_MODERATE -> SafetyZone.WARNING
-        PowerManager.THERMAL_STATUS_SEVERE -> SafetyZone.FATIGUE
-        else -> SafetyZone.CRITICAL
-    }
+    /** Перевод статуса системы в зону — у [ThermalStatus], там же почему так. */
+    private fun zoneFromThermalStatus(status: Int): SafetyZone = ThermalStatus.zone(status)
 
     /**
      * Оценка по температуре батареи, либо null, если температуры в сообщении
@@ -338,6 +354,7 @@ class DeviceSafetyWatchdog(
             witness.recordThermalStatus(
                 zone = zoneFromThermalStatus(status),
                 atMs = System.currentTimeMillis(),
+                rawStatus = status,
             )
         },
         power
@@ -352,6 +369,56 @@ class DeviceSafetyWatchdog(
         started = SharingStarted.Eagerly,
         initialValue = SafetyZone.COMFORT
     )
+
+    /**
+     * Тепловой запас — третье показание производителя рядом со статусом:
+     * число, где 1.0 — статус «сильный», выше — тяжелее, а ниже растёт
+     * примерно вместе с температурой. Статус ступенчатый и о приближении к
+     * ступени молчит; запас показывает, сколько до неё осталось. Нужен прибору
+     * для подбора порогов — НА ЗОНУ НЕ ВЛИЯЕТ: какое значение запаса считать
+     * поводом что-то менять, пока не измерено.
+     *
+     * Опрос раз в [HEADROOM_POLL_MS], а не по событию: подписки на запас до
+     * Android 15 нет. Чаще раза в секунду спрашивать бесполезно — по описанию
+     * Android запас считается по медленным датчикам, а слишком частый вызов
+     * отвечает «не число».
+     *
+     * Чего не умеет: телефон без поддержки отвечает «не число» всегда — это
+     * видно на приборе как «не даёт»; наибольшее за сеанс между двумя опросами
+     * может быть пропущено.
+     */
+    @Suppress("unused")
+    private val headroomPoll = externalScope.launch {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return@launch
+        while (isActive) {
+            val value = try {
+                powerManager.getThermalHeadroom(0)
+            } catch (t: Throwable) {
+                Float.NaN
+            }
+            witness.recordHeadroom(value, System.currentTimeMillis())
+            delay(HEADROOM_POLL_MS)
+        }
+    }
+
+    /**
+     * Пороги запаса, заданные производителем для каждого статуса, — строкой.
+     *
+     * Вызов через отражение: метод есть с Android 15, а сборка идёт против
+     * Android 14 (compileSdk 34). Поднимать compileSdk ради одной строки
+     * прибора — правка всей сборки; отражение здесь ничего не решает, только
+     * показывает, и при любой ошибке говорит её словами.
+     */
+    private fun headroomThresholdsText(): String {
+        if (Build.VERSION.SDK_INT < 35) return "только с Android 15"
+        return try {
+            val raw = PowerManager::class.java.getMethod("getThermalHeadroomThresholds").invoke(powerManager) as Map<*, *>
+            val map = raw.entries.mapNotNull { (k, v) -> ((k as? Int) ?: return@mapNotNull null) to ((v as? Float) ?: return@mapNotNull null) }.toMap()
+            ThermalStatus.thresholdsLine(map)
+        } catch (t: Throwable) {
+            "не прочитались — ${(t.cause ?: t).javaClass.simpleName}"
+        }
+    }
 
     /**
      * Снимок наблюдения: сколько событий пришло от каждого источника, когда
@@ -409,14 +476,15 @@ class DeviceSafetyWatchdog(
 
         val polledThermal = probeThermalStatus()
         val deliveredThermal = lastThermalStatus
+        // Рядом с зоной — статус словом самой системы: «слабый» и «нет» дают
+        // одну зону «норма», а различать их нужно, когда подбираются пороги.
+        fun thermal(status: Int) = "«${label(zoneFromThermalStatus(status))}» (у системы «${ThermalStatus.word(status)}»)"
         lines += "  Тепловой статус: " + when {
             polledThermal == null -> "опросить нечем на этой версии Android"
-            deliveredThermal == null ->
-                "по подписке не приходило, опрос «${label(zoneFromThermalStatus(polledThermal))}»"
-            else ->
-                "по подписке «${label(zoneFromThermalStatus(deliveredThermal))}», " +
-                    "опрос «${label(zoneFromThermalStatus(polledThermal))}»"
+            deliveredThermal == null -> "по подписке не приходило, опрос ${thermal(polledThermal)}"
+            else -> "по подписке ${thermal(deliveredThermal)}, опрос ${thermal(polledThermal)}"
         }
+        lines += "  Пороги запаса у производителя: " + headroomThresholdsText()
 
         val polledPower = probePowerState()
         lines += "  Батарея: " + if (polledPower == null) {
@@ -563,6 +631,9 @@ class DeviceSafetyWatchdog(
 
     companion object {
         private const val HARD_TIMEOUT_MS = 5 * 60 * 1000L // 5 минут
+
+        /** Как часто спрашивать тепловой запас. Объявленное число, не подобранное. */
+        const val HEADROOM_POLL_MS = 15_000L
 
         /** Ниже этого заряда без зарядки не НАЧИНАТЬ длинную работу. */
         const val START_RUN_MIN_PERCENT = 30

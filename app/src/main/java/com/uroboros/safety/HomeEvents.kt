@@ -187,8 +187,12 @@ object HomeEvents {
                 "${time(e.at)} я слишком долго работал без перерыва, и сторож оборвал работу — я устал."
             e.zone == SafetyZone.CRITICAL ->
                 "с ${time(e.at)} по ${time(doneAt(e))} я был в опасной зоне$temp$charge — пришлось остановиться."
-            else ->
+            // Ход сбавляется только в утомлении (паузы в выдаче, SafetyZone);
+            // нагрев ничего не сбавляет, и сказать так значило бы соврать.
+            e.zone == SafetyZone.FATIGUE ->
                 "с ${time(e.at)} по ${time(doneAt(e))} я грелся$temp$charge — устал, сторож сбавлял мне ход."
+            else ->
+                "с ${time(e.at)} по ${time(doneAt(e))} я грелся$temp$charge — устал."
         }
     }
 

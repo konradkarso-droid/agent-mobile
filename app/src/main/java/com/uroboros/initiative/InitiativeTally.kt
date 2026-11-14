@@ -43,7 +43,6 @@ object InitiativeTally {
         OWNER_NEVER("владелец ещё не писал"),
         RUNNING("шёл разбор или сон"),
         ENGINE_BUSY("модель занята"),
-        ZONE("зона не «норма»"),
         WATCHDOG("сторож против"),
         POWER_UNKNOWN("нет показаний батареи"),
         EMERGENCY_STOP("аварийный стоп"),
@@ -58,7 +57,6 @@ object InitiativeTally {
                 InitiativeDecision.Kind.RUNNING -> RUNNING
                 InitiativeDecision.Kind.EMERGENCY_STOP -> EMERGENCY_STOP
                 InitiativeDecision.Kind.POWER_UNKNOWN -> POWER_UNKNOWN
-                InitiativeDecision.Kind.ZONE -> ZONE
                 InitiativeDecision.Kind.WATCHDOG -> WATCHDOG
                 InitiativeDecision.Kind.ENGINE_BUSY -> ENGINE_BUSY
                 InitiativeDecision.Kind.TIMES_UNREADABLE -> TIMES_UNREADABLE
