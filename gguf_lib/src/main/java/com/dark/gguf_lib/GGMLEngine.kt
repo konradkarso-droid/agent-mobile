@@ -277,6 +277,14 @@ class GGMLEngine {
         /** Ядер в телефоне всего и быстрых по делению движка; -1 / 0 — не известно. */
         val cpusAll: Int = -1,
         val fastAll: Int = 0,
+        /**
+         * Потоков обсчёта по режиму — до поправки по данным ядрам; потоков
+         * выдачи на деле и по режиму. -1 / 0 — не известно. Поправка —
+         * «ПОТОКИ ПО ДАННЫМ ЯДРАМ» в `gguf_lib.cpp`.
+         */
+        val batchThreadsCfg: Int = -1,
+        val genThreads: Int = -1,
+        val genThreadsCfg: Int = -1,
     )
 
     fun getLastDecodeBreakdown(): DecodeBreakdown {
@@ -306,6 +314,9 @@ class GGMLEngine {
             placeEndFast = j.optInt("place_end_fast", -1),
             cpusAll = j.optInt("cpus_all", -1),
             fastAll = j.optInt("fast_all", 0),
+            batchThreadsCfg = j.optInt("batch_threads_cfg", -1),
+            genThreads = j.optInt("gen_threads", -1),
+            genThreadsCfg = j.optInt("gen_threads_cfg", -1),
         )
     }
 

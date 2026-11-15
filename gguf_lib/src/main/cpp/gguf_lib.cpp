@@ -353,7 +353,8 @@ static bool ensure_embed_callback_methods(JNIEnv * env, jobject callback) {
  * своих наборов ядер у них нет: в ggml просьба о ядрах собирается только при
  * __gnu_linux__, а компилятор Android его не объявляет, так что маска
  * build_threadpool ни на что не ставит. Поэтому «быстрых N» значит «N
- * быстрых ядер разрешено», а не «обсчёт шёл на них». Не
+ * быстрых ядер разрешено», а не «обсчёт шёл на них». По этому чтению
+ * движок и урезает потоки на ход — «ПОТОКИ ПО ДАННЫМ ЯДРАМ». Не
  * прочиталось — поле пустое или -1, и строка экрана так и говорит.
  *
  * Поля простые (массив знаков, а не std::string): разбивку последней
@@ -504,10 +505,19 @@ static struct {
 
     // Потоков на выдачу, заданных снаружи (nativeSetGenerationThreads);
     // 0 — сколько решил движок по режиму. gen_threads_applied — сколько
-    // стоит на деле после последнего apply_thread_mode; атомарное, потому что
-    // читается без gen_mutex (см. nativeGetGenerationThreads).
+    // поставил последний apply_thread_mode (на отдельный ход его может
+    // урезать fit_threads_to_place); атомарное, потому что читается без
+    // gen_mutex (см. nativeGetGenerationThreads).
     int gen_threads_override = 0;
     std::atomic<int> gen_threads_applied{0};
+
+    // Потоков по режиму (apply_thread_mode) — и сколько стоит на деле после
+    // поправки по данным ядрам (fit_threads_to_place). Атомарные: разбивка
+    // читается без gen_mutex.
+    std::atomic<int> threads_gen_cfg{0};
+    std::atomic<int> threads_batch_cfg{0};
+    std::atomic<int> threads_gen_now{0};
+    std::atomic<int> threads_batch_now{0};
 
     // Explicit ggml threadpool, pre-spawned at model load and re-spawned on
     // setThreadMode. nullptr = let ggml create an implicit on-demand pool
@@ -745,6 +755,10 @@ static void apply_thread_mode(int mode) {
         }
     }
     g_state.gen_threads_applied = cfg.n_threads_generation;
+    g_state.threads_gen_cfg = cfg.n_threads_generation;
+    g_state.threads_batch_cfg = cfg.n_threads_batch;
+    g_state.threads_gen_now = cfg.n_threads_generation;
+    g_state.threads_batch_now = cfg.n_threads_batch;
 
     // Detach + free old pools first. detach must precede free or llama_context
     // ends up with dangling pool pointers.
@@ -811,6 +825,43 @@ static cpu_place cpu_place_read() {
         }
     }
     return p;
+}
+
+/*
+ * ПОТОКИ ПО ДАННЫМ ЯДРАМ. Потоки обсчёта и выдачи ждут друг друга на каждом
+ * шаге, поэтому поток сверх данных ядер не прибавляет, а отнимает: он стоит
+ * в очереди за ядром, а остальные ждут его. В фоне система даёт процессу
+ * меньше ядер (см. «ГДЕ ШЁЛ ОБСЧЁТ»), и перед каждым ходом число потоков
+ * урезается до числа данных быстрых ядер; быстрых не дано вовсе — до числа
+ * данных ядер. Больше, чем велел режим (apply_thread_mode), не ставится
+ * никогда, так что на экране, где ядер хватает, всё как было.
+ *
+ * Почему по быстрым, а не по всем данным: каждый шаг кончается, когда
+ * кончит самый медленный поток, а работа делится поровну, так что поток на
+ * медленном ядре тянет всех. Это рассуждение, а не замер; замер — строка
+ * «Ядра» с числами потоков и скоростью обсчёта.
+ *
+ * ЧЕГО НЕ УМЕЕТ. Читает ядра один раз, в начале хода: ушёл агент с экрана
+ * посреди хода — ход доходит со старым числом. Пулы потоков не
+ * пересобираются: лишние потоки пула просто не зовутся на работу. Частоты
+ * не видит. Зовётся на каждом входе, который считает моделью
+ * (nativeGenerateStream, nativeGenerateStreamMultiTurn,
+ * nativeVlmGenerateStream, nativeBuildRecordChunks, nativeReadLayerMean,
+ * nativeWarmUp); новый такой вход должен звать и его.
+ */
+static void fit_threads_to_place(const cpu_place & p) {
+    if (!g_state.ctx) return;
+    const int want_gen = g_state.threads_gen_cfg.load();
+    const int want_batch = g_state.threads_batch_cfg.load();
+    if (want_gen <= 0 || want_batch <= 0) return;
+    const int cap = p.fast > 0 ? p.fast : p.cpus;   // -1 — не прочиталось, не урезаем
+    const int gen = cap > 0 ? std::min(want_gen, cap) : want_gen;
+    const int batch = cap > 0 ? std::min(want_batch, cap) : want_batch;
+    if (gen != (int)llama_n_threads(g_state.ctx) || batch != (int)llama_n_threads_batch(g_state.ctx)) {
+        llama_set_n_threads(g_state.ctx, gen, batch);
+    }
+    g_state.threads_gen_now = gen;
+    g_state.threads_batch_now = batch;
 }
 
 // rebuild_sampler(force=false) skips the rebuild if only simple knobs (temp,
@@ -2368,6 +2419,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
     jni_progress_ctx progress_ctx = { env, callback };
     g_state.eval_place_start = cpu_place_read();
     g_state.eval_place_end = cpu_place();
+    fit_threads_to_place(g_state.eval_place_start);
     auto t_eval0 = std::chrono::high_resolution_clock::now();
     if (!new_tokens.empty() && !eval_tokens(new_tokens, g_state.n_past,
                                              jni_eval_progress, &progress_ctx)) {
@@ -3078,6 +3130,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     jni_progress_ctx mt_progress = { env, callback };
     g_state.eval_place_start = cpu_place_read();
     g_state.eval_place_end = cpu_place();
+    fit_threads_to_place(g_state.eval_place_start);
     auto t_eval0 = std::chrono::high_resolution_clock::now();
     bool evaluated;
     size_t evaluated_tokens = new_tokens.size();
@@ -3665,6 +3718,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeBuildRecordChunks(
         return safe_new_string_utf(env, out.dump().c_str());
     };
     if (!g_state.model || !g_state.ctx) return reply("модель не загружена");
+    fit_threads_to_place(cpu_place_read());
     if (!g_state.splice_ready) return reply("у модели Mamba-слои: куски не вставить");
     if (g_state.chunk_dir.empty()) return reply("папка кусков не задана");
     if (g_state.system_prompt.empty()) return reply("стены нет");
@@ -3736,6 +3790,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeReadLayerMean(
         return env->NewFloatArray(0);
     };
     if (!g_state.model || !g_state.ctx) return fail("модель не загружена");
+    fit_threads_to_place(cpu_place_read());
 
     const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
     const state_read::Split cut = state_read::split(vocab, wall, head, tail);
@@ -4289,7 +4344,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env,
         "\"prompt_tokens\":%llu,\"prompt_us\":%llu,\"batch_threads\":%d,"
         "\"place_group\":\"%s\",\"place_cpus\":%d,\"place_fast\":%d,"
         "\"place_end_group\":\"%s\",\"place_end_cpus\":%d,\"place_end_fast\":%d,"
-        "\"cpus_all\":%ld,\"fast_all\":%d}",
+        "\"cpus_all\":%ld,\"fast_all\":%d,"
+        "\"batch_threads_cfg\":%d,\"gen_threads\":%d,\"gen_threads_cfg\":%d}",
         (unsigned long long)g_state.last_decode_tokens,
         (unsigned long long)g_state.last_sample_us,
         (unsigned long long)g_state.last_detok_us,
@@ -4303,10 +4359,11 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env,
         (unsigned long long)g_state.last_gloss_spans,
         (unsigned long long)g_state.last_prompt_eval_tokens,
         (unsigned long long)g_state.last_prompt_eval_us,
-        g_state.ctx ? (int)llama_n_threads_batch(g_state.ctx) : -1,
+        g_state.ctx ? g_state.threads_batch_now.load() : -1,
         g_state.eval_place_start.group, g_state.eval_place_start.cpus, g_state.eval_place_start.fast,
         g_state.eval_place_end.group, g_state.eval_place_end.cpus, g_state.eval_place_end.fast,
-        sysconf(_SC_NPROCESSORS_CONF), g_state.fast_cores_n);
+        sysconf(_SC_NPROCESSORS_CONF), g_state.fast_cores_n,
+        g_state.threads_batch_cfg.load(), g_state.threads_gen_now.load(), g_state.threads_gen_cfg.load());
     return env->NewStringUTF(buf);
 }
 
@@ -4329,6 +4386,7 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeWarmUp(JNIEnv *, jobject) {
     std::lock_guard<std::mutex> lock(g_state.gen_mutex);
     if (!g_state.model || !g_state.ctx) return JNI_FALSE;
+    fit_threads_to_place(cpu_place_read());
 
     const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
     llama_token bos = llama_vocab_bos(vocab);
@@ -5587,6 +5645,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeVlmGenerateStream(
         LOGE("VLM: text model not loaded");
         return JNI_FALSE;
     }
+    fit_threads_to_place(cpu_place_read());
     if (!g_vlm.ctx) {
         LOGE("VLM: projector not loaded");
         return JNI_FALSE;

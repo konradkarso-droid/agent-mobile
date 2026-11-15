@@ -73,7 +73,40 @@ class EvalCoresTest {
     }
 
     @Test
+    fun `движок урезал потоки по ядрам — строка говорит сколько из скольких, предупреждения нет`() {
+        val bg = Reading("h-background", 4, 2)
+        assertEquals(
+            "Ядра: в фоне (h-background), дано 4 из 8, быстрых 2 из 6 · потоков взято по ядрам: обсчёт 2 из 6, выдача 2 из 3",
+            EvalCores.line(bg, bg, 8, 6, 2, batchThreadsCfg = 6, genThreads = 2, genThreadsCfg = 3),
+        )
+    }
+
+    @Test
+    fun `урезана только выдача — в строке только выдача`() {
+        val fg = Reading("foreground", 8, 2)
+        assertEquals(
+            "Ядра: не на экране, служба (foreground), дано 8 из 8, быстрых 2 из 6 · потоков взято по ядрам: выдача 2 из 3",
+            EvalCores.line(fg, fg, 8, 6, 2, batchThreadsCfg = 2, genThreads = 2, genThreadsCfg = 3),
+        )
+    }
+
+    @Test
+    fun `на экране не урезано — про потоки молчит`() {
+        val top = Reading("top-app", 8, 6)
+        val line = EvalCores.line(top, top, 8, 6, 6, batchThreadsCfg = 6, genThreads = 3, genThreadsCfg = 3)
+        assertEquals("Ядра: на экране (top-app), дано 8 из 8, быстрых 6 из 6", line)
+        assertFalse(line.contains("потоков"))
+    }
+
+    @Test
+    fun `режим не известен — про урезание молчит`() {
+        val bg = Reading("background", 4, 2)
+        assertFalse(EvalCores.line(bg, bg, 8, 6, 2, batchThreadsCfg = -1, genThreads = 2, genThreadsCfg = -1).contains("взято"))
+    }
+
+    @Test
     fun `группа словами и чужое слово системы как есть`() {
+        assertEquals("в фоне (h-background)", EvalCores.where("h-background"))
         assertEquals("в системном фоне (system-background)", EvalCores.where("system-background"))
         assertEquals("под ограничением системы (restricted)", EvalCores.where("restricted"))
         assertEquals("без группы", EvalCores.where("root"))
