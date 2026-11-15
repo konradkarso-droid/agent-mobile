@@ -262,6 +262,21 @@ class GGMLEngine {
         val promptUs: Long = 0,
         /** Потоков обсчёта запроса фактически; -1 — модель не загружена. */
         val batchThreads: Int = -1,
+        /**
+         * Где шёл обсчёт запроса — в начале и в конце: группа процесса словом
+         * системы (top-app, foreground, background…; пусто — не прочиталась),
+         * сколько ядер разрешено всего и из быстрых (-1 — не прочиталось).
+         * Смысл и границы — «ГДЕ ШЁЛ ОБСЧЁТ» в `gguf_lib.cpp`.
+         */
+        val placeGroup: String = "",
+        val placeCpus: Int = -1,
+        val placeFast: Int = -1,
+        val placeEndGroup: String = "",
+        val placeEndCpus: Int = -1,
+        val placeEndFast: Int = -1,
+        /** Ядер в телефоне всего и быстрых по делению движка; -1 / 0 — не известно. */
+        val cpusAll: Int = -1,
+        val fastAll: Int = 0,
     )
 
     fun getLastDecodeBreakdown(): DecodeBreakdown {
@@ -283,6 +298,14 @@ class GGMLEngine {
             promptTokens = j.optLong("prompt_tokens"),
             promptUs = j.optLong("prompt_us"),
             batchThreads = j.optInt("batch_threads", -1),
+            placeGroup = j.optString("place_group"),
+            placeCpus = j.optInt("place_cpus", -1),
+            placeFast = j.optInt("place_fast", -1),
+            placeEndGroup = j.optString("place_end_group"),
+            placeEndCpus = j.optInt("place_end_cpus", -1),
+            placeEndFast = j.optInt("place_end_fast", -1),
+            cpusAll = j.optInt("cpus_all", -1),
+            fastAll = j.optInt("fast_all", 0),
         )
     }
 
