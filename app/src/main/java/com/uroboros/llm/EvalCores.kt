@@ -11,7 +11,9 @@ import com.dark.gguf_lib.GGMLEngine
  * разы. Без этой строки медленный обсчёт из-за урезанных ядер и медленный по
  * другой причине выглядят одинаково — просто малым числом ток/с.
  *
- * Что значат числа и чего они не умеют — «ГДЕ ШЁЛ ОБСЧЁТ» в `gguf_lib.cpp`.
+ * Что значат числа и чего они не умеют — «ГДЕ ШЁЛ ОБСЧЁТ» в `gguf_lib.cpp`;
+ * почему движок урезает потоки по данным ядрам — «ПОТОКИ ПО ДАННЫМ ЯДРАМ»
+ * там же. Урезал — строка говорит, сколько из скольких.
  * Главное: частоты ядер здесь не видно, поэтому «дано все» при медленном
  * обсчёте не значит, что дело не в фоне.
  *
@@ -27,14 +29,29 @@ object EvalCores {
     /**
      * Строка целиком. [start] и [end] — в начале и в конце обсчёта;
      * [cpusAll] и [fastAll] — ядер в телефоне всего и быстрых (-1 / 0 — не
-     * известно); [batchThreads] — потоков обсчёта (≤ 0 — не известно).
+     * известно); [batchThreads] — потоков обсчёта на деле, [batchThreadsCfg]
+     * — по режиму, [genThreads] и [genThreadsCfg] — то же для выдачи (≤ 0 —
+     * не известно).
      */
-    fun line(start: Reading, end: Reading, cpusAll: Int, fastAll: Int, batchThreads: Int): String {
+    fun line(
+        start: Reading, end: Reading, cpusAll: Int, fastAll: Int, batchThreads: Int,
+        batchThreadsCfg: Int = -1, genThreads: Int = -1, genThreadsCfg: Int = -1,
+    ): String {
         if (!start.read) return "Ядра: не прочитались"
         val head = "Ядра: " + place(start, cpusAll, fastAll)
         val moved = end.read && end != start
         val tail = if (moved) " → к концу обсчёта: " + place(end, cpusAll, fastAll) else ""
-        return head + tail + (overload(listOf(start, end).filter { it.read }, batchThreads)?.let { " · $it" } ?: "")
+        val cut = cut(batchThreads, batchThreadsCfg, genThreads, genThreadsCfg)?.let { " · $it" } ?: ""
+        return head + tail + cut + (overload(listOf(start, end).filter { it.read }, batchThreads)?.let { " · $it" } ?: "")
+    }
+
+    /** Движок урезал потоки по данным ядрам — сколько из скольких. Молчит, когда не урезал или не известно. */
+    private fun cut(batch: Int, batchCfg: Int, gen: Int, genCfg: Int): String? {
+        val parts = buildList {
+            if (batch > 0 && batchCfg > batch) add("обсчёт $batch из $batchCfg")
+            if (gen > 0 && genCfg > gen) add("выдача $gen из $genCfg")
+        }
+        return if (parts.isEmpty()) null else "потоков взято по ядрам: " + parts.joinToString(", ")
     }
 
     /** Строка по разбивке последней генерации движка. */
@@ -42,6 +59,7 @@ object EvalCores {
         Reading(b.placeGroup, b.placeCpus, b.placeFast),
         Reading(b.placeEndGroup, b.placeEndCpus, b.placeEndFast),
         b.cpusAll, b.fastAll, b.batchThreads,
+        b.batchThreadsCfg, b.genThreads, b.genThreadsCfg,
     )
 
     /** Группа словами; слово системы — в скобках, чтобы его можно было искать. */
@@ -53,7 +71,9 @@ object EvalCores {
         "system-background" -> "в системном фоне (system-background)"
         "restricted" -> "под ограничением системы (restricted)"
         "root" -> "без группы"
-        else -> "группа «$group»"
+        // Свои имена прошивки (у vivo — «h-background»): слово системы
+        // остаётся в скобках, словами — только то, что в нём сказано.
+        else -> if (group.endsWith("background")) "в фоне ($group)" else "группа «$group»"
     }
 
     private fun place(r: Reading, cpusAll: Int, fastAll: Int): String {
