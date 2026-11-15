@@ -63,8 +63,10 @@ object ChatTurnMeter {
      * Строка «Обсчёт (…)»: [promptTokens] новых токенов запроса за
      * [promptUs] мкс (сверх взятого готовым); [reuse] — что движок взял
      * готовым, словами (LlmEngine.promptReuseReport). [clock] — когда ответ.
+     * [cores] — где шёл обсчёт и сколько ядер дала система (llm.EvalCores);
+     * null — не известно, хвоста нет.
      */
-    fun evalLine(chatName: String, clock: String, promptTokens: Long, promptUs: Long, reuse: String): String {
+    fun evalLine(chatName: String, clock: String, promptTokens: Long, promptUs: Long, reuse: String, cores: String? = null): String {
         val eval = when {
             promptTokens <= 0 -> "новых токенов нет — всё взято готовым"
             promptUs <= 0 -> "$promptTokens новых ток."
@@ -73,7 +75,7 @@ object ChatTurnMeter {
                 "$promptTokens новых ток. за ${sec(promptUs / 1000)} с (${one(promptTokens / s)} ток/с)"
             }
         }
-        return "Обсчёт ($chatName, $clock): $eval · $reuse"
+        return "Обсчёт ($chatName, $clock): $eval · $reuse" + (cores?.let { " · $it" } ?: "")
     }
 
     /** Строка «Обсчёт (…)», когда генерация до ответа не дошла и чисел этого хода нет. */

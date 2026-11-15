@@ -24,6 +24,7 @@ import com.uroboros.gate.TgWords
 import com.uroboros.llm.AnswerLadder
 import com.uroboros.llm.ChatDatabase
 import com.uroboros.llm.ChatLine
+import com.uroboros.llm.EvalCores
 import com.uroboros.llm.ConversationJournal
 import com.uroboros.llm.EchoCheck
 import com.uroboros.llm.ForeignSelf
@@ -698,7 +699,7 @@ object ChatLink {
             val at = hhmm(System.currentTimeMillis())
             evals[job.tallyKey] = if (firstReached) {
                 val b = runCatching { engine.getLastDecodeBreakdown() }.getOrNull()
-                ChatTurnMeter.evalLine(chatName, at, b?.promptTokens ?: 0L, b?.promptUs ?: 0L, engine.promptReuseReport())
+                ChatTurnMeter.evalLine(chatName, at, b?.promptTokens ?: 0L, b?.promptUs ?: 0L, engine.promptReuseReport(), b?.let(EvalCores::of))
             } else ChatTurnMeter.noEvalLine(chatName, at)
             points[job.tallyKey] = "Снимок чата ($chatName, $at): перед ответом — ${engine.chatLiftReport ?: "не поднимался"}"
             engine.chatSaveReport?.let { (key, line) -> saves[key] = line }

@@ -334,6 +334,38 @@ static bool ensure_embed_callback_methods(JNIEnv * env, jobject callback) {
     return g_embed_onComplete && g_embed_onError;
 }
 
+/*
+ * ГДЕ ШЁЛ ОБСЧЁТ. Android держит процесс в группе по тому, что он сейчас
+ * для человека: «top-app» — на экране, «foreground» — служба без экрана,
+ * «background» и прочие — фон. Каждой группе разрешён свой набор ядер; какой —
+ * решает прошивка телефона, и в фоне он бывает уже, чем на экране. Потоки
+ * обсчёта ждут друг друга на каждом шаге, поэтому если их больше, чем
+ * разрешённых ядер, обсчёт замедляется не пропорционально, а в разы.
+ *
+ * Здесь записывается то, что сказала система в момент обсчёта: имя группы
+ * потока, который обсчитывает, и сколько ядер ему разрешено — всех и из
+ * быстрых (как их делит движок, apply_thread_mode).
+ *
+ * ЧЕГО НЕ УМЕЕТ. Частоты ядер не видит: в фоне прошивка может не урезать
+ * ядра, а только не поднимать частоты, и тогда «дано все» при медленном
+ * обсчёте значит именно это. Читается поток, который зовёт обсчёт. Рабочие
+ * потоки движка живут в той же группе (Android переводит процесс целиком), и
+ * своих наборов ядер у них нет: в ggml просьба о ядрах собирается только при
+ * __gnu_linux__, а компилятор Android его не объявляет, так что маска
+ * build_threadpool ни на что не ставит. Поэтому «быстрых N» значит «N
+ * быстрых ядер разрешено», а не «обсчёт шёл на них». Не
+ * прочиталось — поле пустое или -1, и строка экрана так и говорит.
+ *
+ * Поля простые (массив знаков, а не std::string): разбивку последней
+ * генерации экран читает без gen_mutex, пока идёт следующая, — недочитанная
+ * строка даст неверное слово, но не падение. Последний знак имени всегда ноль.
+ */
+struct cpu_place {
+    char group[32] = {0};   // имя группы из /proc/thread-self/cpuset, без «/»; пусто — не прочиталось
+    int  cpus      = -1;    // разрешено ядер всего; -1 — не прочиталось
+    int  fast      = -1;    // из них быстрых; -1 — не прочиталось или быстрые не известны
+};
+
 // Singleton engine state. One model at a time. gen_mutex guards everything;
 // the cancel_flag is the only field touched outside the mutex (atomic).
 static struct {
@@ -456,6 +488,16 @@ static struct {
     // last_decode_* — то выдача ответа, у них разная природа и скорость.
     uint64_t last_prompt_eval_us     = 0;
     uint64_t last_prompt_eval_tokens = 0;
+
+    // Где шёл обсчёт запроса последнего вызова — в начале и в конце (за
+    // обсчёт процесс может уйти с экрана или вернуться). См. «ГДЕ ШЁЛ ОБСЧЁТ».
+    cpu_place eval_place_start;
+    cpu_place eval_place_end;
+    // Быстрые ядра по делению движка; пусто — устройство без деления.
+    // Ставится в apply_thread_mode (под gen_mutex); fast_cores_n — их число
+    // для разбивки, которая читается без замка.
+    std::vector<int> fast_cores;
+    int fast_cores_n = 0;
 
     // Обсчёт запроса только на быстрых ядрах (см. apply_thread_mode).
     bool batch_on_fast_cores = true;
@@ -655,6 +697,9 @@ static ggml_threadpool_t build_threadpool(int n_threads,
 static void apply_thread_mode(int mode) {
     tn_thread_config cfg = tn_thread_config_for_mode((tn_thread_mode)mode);
     g_state.thread_mode = mode;
+    g_state.fast_cores.clear();
+    for (int i = 0; i < cfg.n_perf_core_ids; i++) g_state.fast_cores.push_back((int)cfg.perf_core_ids[i]);
+    g_state.fast_cores_n = (int)g_state.fast_cores.size();
 
     // ОБСЧЁТ ЗАПРОСА — ТОЛЬКО НА БЫСТРЫХ ЯДРАХ. Режим «производительность»
     // движка отдаёт обсчёт всем ядрам, слабым тоже (thread-engine.cpp,
@@ -727,6 +772,45 @@ static void apply_thread_mode(int mode) {
              cfg.n_threads_generation, cfg.n_threads_batch,
              (void *)g_state.threadpool, (void *)g_state.threadpool_batch);
     }
+}
+
+// Прочитать, где идёт обсчёт: см. «ГДЕ ШЁЛ ОБСЧЁТ» у cpu_place.
+static cpu_place cpu_place_read() {
+    cpu_place p;
+    if (FILE * f = fopen("/proc/thread-self/cpuset", "r")) {
+        char buf[128] = {0};
+        if (fgets(buf, sizeof(buf), f)) {
+            // Только имя группы: латиница, цифры, «-» и «_». Строка уходит в
+            // JSON для приложения, и чужим знакам там не место.
+            const char * s = strrchr(buf, '/');
+            s = s ? s + 1 : buf;
+            size_t n = 0;
+            for (; *s && n + 1 < sizeof(p.group); ++s) {
+                const char c = *s;
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+                    p.group[n++] = c;
+                } else {
+                    break;
+                }
+            }
+            // Корень иерархии — процесс ни в какую группу не помещён.
+            if (n == 0 && buf[0] == '/') std::strncpy(p.group, "root", sizeof(p.group) - 1);
+        }
+        fclose(f);
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+        p.cpus = CPU_COUNT(&set);
+        if (!g_state.fast_cores.empty()) {
+            int n = 0;
+            for (int c : g_state.fast_cores) {
+                if (c >= 0 && c < CPU_SETSIZE && CPU_ISSET(c, &set)) ++n;
+            }
+            p.fast = n;
+        }
+    }
+    return p;
 }
 
 // rebuild_sampler(force=false) skips the rebuild if only simple knobs (temp,
@@ -2282,6 +2366,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
 
     // set up progress reporting for long prompt evaluation
     jni_progress_ctx progress_ctx = { env, callback };
+    g_state.eval_place_start = cpu_place_read();
+    g_state.eval_place_end = cpu_place();
     auto t_eval0 = std::chrono::high_resolution_clock::now();
     if (!new_tokens.empty() && !eval_tokens(new_tokens, g_state.n_past,
                                              jni_eval_progress, &progress_ctx)) {
@@ -2293,6 +2379,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
     g_state.last_prompt_eval_tokens = new_tokens.size();
     g_state.last_prompt_eval_us = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - t_eval0).count();
+    g_state.eval_place_end = cpu_place_read();
 
     // save prompt tokens for next call's prefix comparison
     g_state.prev_prompt_tokens = tokens;
@@ -2989,6 +3076,8 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
 
     // progress reporting for long prompt evaluation
     jni_progress_ctx mt_progress = { env, callback };
+    g_state.eval_place_start = cpu_place_read();
+    g_state.eval_place_end = cpu_place();
     auto t_eval0 = std::chrono::high_resolution_clock::now();
     bool evaluated;
     size_t evaluated_tokens = new_tokens.size();
@@ -3067,6 +3156,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
     g_state.last_prompt_eval_tokens = evaluated_tokens;
     g_state.last_prompt_eval_us = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::high_resolution_clock::now() - t_eval0).count();
+    g_state.eval_place_end = cpu_place_read();
 
     // try saving system prompt cache for future warm restarts
     // Только для запроса, начавшегося со стены, — см. starts_with_wall.
@@ -4190,13 +4280,16 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env, jobject) {
     uint64_t total = g_state.last_sample_us + g_state.last_detok_us
                    + g_state.last_stop_us  + g_state.last_decode_us;
-    char buf[512];
+    char buf[1024];
     snprintf(buf, sizeof(buf),
         "{\"tokens\":%llu,\"sample_us\":%llu,\"detok_us\":%llu,"
         "\"stop_us\":%llu,\"decode_us\":%llu,\"total_us\":%llu,"
         "\"ban_state\":%d,\"ban_tokens\":%zu,\"ban_hits\":%llu,"
         "\"gloss_state\":%d,\"gloss_spans\":%llu,"
-        "\"prompt_tokens\":%llu,\"prompt_us\":%llu,\"batch_threads\":%d}",
+        "\"prompt_tokens\":%llu,\"prompt_us\":%llu,\"batch_threads\":%d,"
+        "\"place_group\":\"%s\",\"place_cpus\":%d,\"place_fast\":%d,"
+        "\"place_end_group\":\"%s\",\"place_end_cpus\":%d,\"place_end_fast\":%d,"
+        "\"cpus_all\":%ld,\"fast_all\":%d}",
         (unsigned long long)g_state.last_decode_tokens,
         (unsigned long long)g_state.last_sample_us,
         (unsigned long long)g_state.last_detok_us,
@@ -4210,7 +4303,10 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetLastDecodeBreakdown(JNIEnv * env,
         (unsigned long long)g_state.last_gloss_spans,
         (unsigned long long)g_state.last_prompt_eval_tokens,
         (unsigned long long)g_state.last_prompt_eval_us,
-        g_state.ctx ? (int)llama_n_threads_batch(g_state.ctx) : -1);
+        g_state.ctx ? (int)llama_n_threads_batch(g_state.ctx) : -1,
+        g_state.eval_place_start.group, g_state.eval_place_start.cpus, g_state.eval_place_start.fast,
+        g_state.eval_place_end.group, g_state.eval_place_end.cpus, g_state.eval_place_end.fast,
+        sysconf(_SC_NPROCESSORS_CONF), g_state.fast_cores_n);
     return env->NewStringUTF(buf);
 }
 
