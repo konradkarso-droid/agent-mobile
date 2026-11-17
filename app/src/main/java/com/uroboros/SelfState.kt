@@ -1,9 +1,12 @@
 package com.uroboros
 
 import android.content.Context
+import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.dream.DreamPlot
 import com.uroboros.memory.dream.DreamWeaver
 import com.uroboros.memory.dream.SleepPressure
+import com.uroboros.memory.nav.LemmaHolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -123,7 +126,11 @@ object SelfState {
         val earlier = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) }.orEmpty()
         val queue = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 1) }.orEmpty()
         val records = db.stickerDao().getAll()
-        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier, queue) }
+        // Слова-темы сюжетов — те же, что у ночи; словарь здесь не грузится:
+        // экран грузит его сам, а пока не загрузил, давление на приборе может
+        // показать перемену сюжетов, которой в записях нет (SleepPressure).
+        val plotWords = DreamPlot.Words.of(LemmaHolder.loaded, ChatPrefs.names(context))
+        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier, queue, plotWords) }
         return Snapshot(
             starts = life.starts,
             aliveSince = life.lastStartAt,

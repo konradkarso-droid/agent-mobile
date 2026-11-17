@@ -54,7 +54,12 @@ import com.uroboros.memory.Sticker
  *    мера писать не должна. На то, КАКИЕ сны сплетутся, слой не влияет — только
  *    на счёт холодных и архивных в итоге ночи, который здесь не сравнивается;
  *  - цена — одно полное плетение на каждый замер, то есть столько же, сколько
- *    сама ночь (оценку по размеру памяти см. в [DreamWeaver]).
+ *    сама ночь (оценку по размеру памяти см. в [DreamWeaver]);
+ *  - проба и ночь плетут сюжеты одним словарём только тогда, когда он загружен
+ *    у обеих: проба без словаря после ночи со словарём читает ушедшими все
+ *    сюжеты ночи и простые сны на их местах — перемену, которой в записях нет.
+ *    Поэтому путь, решающий, ложиться ли (AgentService), грузит словарь до
+ *    пробы.
  */
 object SleepPressure {
 
@@ -89,6 +94,10 @@ object SleepPressure {
      *        умолчанию нет по той же причине, что у [earlierDreams].
      *        Значения по умолчанию нет намеренно: забытое — это давление
      *        после каждой ночи с потолком.
+     * @param plotWords слова-темы сюжетов — те же, что подаёт ночь
+     *        (DreamRunner.run). Сюжеты занимают свои места под потолком, и проба
+     *        без них отдала бы эти места простым снам: давление было бы и без
+     *        единой новой записи. Значения по умолчанию нет по той же причине.
      *
      * Сны сравниваются цепочками ([DreamWeaver.chainsOf]).
      */
@@ -98,8 +107,9 @@ object SleepPressure {
         lastDreams: List<Dream>,
         earlierDreams: List<Dream>,
         queueDreams: List<Dream>,
+        plotWords: DreamPlot.Words?,
     ): Reading {
-        val woven = DreamWeaver.weave(records, DreamWeaver.chainsOf(earlierDreams), DreamWeaver.lastDreamtOf(queueDreams))
+        val woven = DreamWeaver.weave(records, DreamWeaver.chainsOf(earlierDreams), DreamWeaver.lastDreamtOf(queueDreams), plotWords)
         val now = woven.dreams.map { it.recordIds }.toSet()
         if (lastNight == null) {
             return Reading(

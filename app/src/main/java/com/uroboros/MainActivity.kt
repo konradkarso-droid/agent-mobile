@@ -101,6 +101,7 @@ import com.uroboros.memory.dream.CuriosityPressure
 import com.uroboros.memory.dream.DreamPickup
 import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
+import com.uroboros.memory.dream.DreamPlot
 import com.uroboros.memory.dream.FactsReader
 import com.uroboros.memory.dream.ConclusionView
 import com.uroboros.memory.desk.DeskView
@@ -602,7 +603,9 @@ class MainActivity : AppCompatActivity() {
     // ещё не назначен, а раньше первого обращения к разбору он и не нужен.
     private val judgeLauncher by lazy { JudgeLauncher(this, llmEngine) }
     /** Раздел «Сны» в «Показать». Только чтение, см. DreamView. */
-    private val dreamView by lazy { DreamView(applicationContext) }
+    private val dreamView by lazy {
+        DreamView(applicationContext) { DreamPlot.Words.of(LemmaHolder.loaded, ChatPrefs.names(applicationContext)) }
+    }
 
     /** Ассоциация к ответу через сны, см. DreamRecall. */
     private val dreamRecall by lazy { DreamRecall(applicationContext) }
