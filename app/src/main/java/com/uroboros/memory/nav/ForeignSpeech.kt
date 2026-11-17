@@ -176,6 +176,27 @@ object ForeignSpeech {
         }
     }
 
+    /**
+     * Речь записи без подписи: всё после первого двоеточия, если вся запись —
+     * прямая речь одного говорящего ([ofRecord]); иначе текст как есть.
+     *
+     * Слова человека из канала лежат в памяти с подписью «Имя: …»
+     * (gate.TgWords.memoryText), чтобы их читали чужой речью. Подпись — не
+     * речь: кто говорит, а не что сказано. Проверке «что за предложение» она
+     * мешает — «Nastya: Привет» по словам уже не обычай.
+     *
+     * Запись, где после подписи вступает другой голос или рамка владельца,
+     * отдаётся как есть: снять одну подпись значило бы приписать остальное
+     * первому говорящему.
+     */
+    fun unsigned(text: String): String {
+        if (':' !in text) return text
+        val read = ofRecord(text)
+        val signer = read.firstOrNull()?.takeIf { it.kind == Kind.DIRECT }?.speaker ?: return text
+        if (read.any { it.kind != Kind.DIRECT || it.speaker != signer }) return text
+        return text.substringAfter(':').trimStart()
+    }
+
     /** Есть ли в записи голос не владельца. */
     fun hasForeignVoice(text: String): Boolean = ofRecord(text).any { r -> r.voices.any { it.speaker != null } }
 

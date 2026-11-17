@@ -193,4 +193,18 @@ class ForeignSpeechTest {
             PersonForm.lemmas = saved
         }
     }
+
+    @Test
+    fun `речь без подписи`() {
+        assertEquals("я тоже программа. И ты.", ForeignSpeech.unsigned("Клод: я тоже программа. И ты."))
+        assertEquals("Привет", ForeignSpeech.unsigned("Nastya: Привет"))
+        assertEquals("«Привет»", ForeignSpeech.unsigned("Передаю слова Клода: «Привет»"))
+    }
+
+    @Test
+    fun `молчит - без подписи текст как есть`() {
+        assertEquals("Я работаю по субботам", ForeignSpeech.unsigned("Я работаю по субботам"))
+        assertEquals("Итог: станок выключен", ForeignSpeech.unsigned("Итог: станок выключен"))
+        assertEquals("Мама говорит, что я похудел", ForeignSpeech.unsigned("Мама говорит, что я похудел"))
+    }
 }

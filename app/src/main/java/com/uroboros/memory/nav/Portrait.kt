@@ -436,17 +436,13 @@ object Portrait {
      * Текст записи как речь самого [person]. Слова другого человека из канала
      * лежат в памяти с его подписью («Пракс: …», gate.TgWords.memoryText),
      * чтобы экран владельца читал их чужой речью. Для портрета этого человека
-     * подпись — его собственная: она снимается, и дальше текст проходит те же
-     * проверки, что слова владельца. Подпись снимается, только если вся запись —
-     * прямая речь одного подписанта: иначе запись берётся как есть, и чужая
-     * речь в ней остаётся чужой. У владельца записи без подписи — как есть.
+     * подпись — его собственная: она снимается (ForeignSpeech.unsigned — там же,
+     * когда запись берётся как есть), и дальше текст проходит те же проверки,
+     * что слова владельца. У владельца записи без подписи — как есть.
      */
     private fun ownText(record: Sticker, person: PersonKey): String {
         if (person == PersonKey.OWNER || record.speaker == null) return record.content
-        val read = ForeignSpeech.ofRecord(record.content)
-        val signer = read.firstOrNull()?.takeIf { it.kind == ForeignSpeech.Kind.DIRECT }?.speaker ?: return record.content
-        if (read.any { it.kind != ForeignSpeech.Kind.DIRECT || it.speaker != signer }) return record.content
-        return record.content.substringAfter(':').trimStart()
+        return ForeignSpeech.unsigned(record.content)
     }
 
     /** Записи собеседника [person]; кто сказал — Coordinates.speakerOf с ключом владельца [ownerKey]. */
