@@ -15,6 +15,10 @@
     <!-- С Android 13 без этого разрешения уведомление службы не видно в шторке.
          Служба при этом работает; спрашивать разрешение пока некому. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Экран суда (memory.judge.CourtScreen): чёрный экран поверх блокировки,
+         чтобы прошивка не замораживала агента, пока он сам судит память.
+         Открывается уведомлением на весь экран, как будильник. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- Подъём тела агента после перезагрузки телефона (BootReceiver). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -51,6 +55,18 @@
         <activity
             android:name=".gate.link.GateActivity"
             android:exported="false" />
+
+        <!-- Экран суда: своя задача, не в недавних — открыть через него
+             приложение нельзя (CourtScreenActivity). -->
+        <activity
+            android:name=".CourtScreenActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.uroboros.court"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
 
         <service
             android:name=".will.TermuxResultService"
