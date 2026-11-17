@@ -73,6 +73,19 @@ class RiskTriggerFillerTest {
     }
 
     @Test
+    fun `запись из возвращённого пожелания - обычай`() {
+        // Та самая запись, которую самостоятельный суд отдавал печатному судье.
+        assertTrue(RiskTrigger.isOnlySocial("И тебе тоже)"))
+        assertTrue(RiskTrigger.isOnlySocial("Спасибо. И вам."))
+    }
+
+    @Test
+    fun `молчит - возвращённое пожелание рядом с делом`() {
+        assertFalse(RiskTrigger.isOnlySocial("И тебе тоже. Станок называется Вымпел."))
+        assertFalse(RiskTrigger.isOnlySocial("Тебе тоже купил подарок."))
+    }
+
+    @Test
     fun `молчит - обычай рядом с делом, вопросом или ответом`() {
         assertFalse(RiskTrigger.isOnlySocial("Привет. Станок называется Вымпел."))
         assertFalse(RiskTrigger.isOnlySocial("Привет. Что нового?"))
