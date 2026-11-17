@@ -1,5 +1,6 @@
 package com.uroboros.memory
 
+import com.uroboros.memory.nav.ForeignSpeech
 import com.uroboros.util.TextFold
 
 object RiskTrigger {
@@ -610,7 +611,7 @@ object RiskTrigger {
      * Вынесен наружу для тех, кому нужно решение о записи целиком, а не о паре.
      */
     fun isOnlyQuestions(text: String): Boolean {
-        val meaningful = text.trim()
+        val meaningful = speech(text).trim()
             .split(SENTENCE_BREAK)
             .filter { it.isNotBlank() && !isFillerSentence(it) }
         return meaningful.isNotEmpty() && meaningful.all { isQuestionSentence(it) }
@@ -714,7 +715,7 @@ object RiskTrigger {
      * [SENTENCE_BREAK], что и вопросы, с его промахами.
      */
     fun isOnlyRequests(text: String): Boolean {
-        val sentences = text.trim().split(SENTENCE_BREAK).filter { it.isNotBlank() }
+        val sentences = speech(text).trim().split(SENTENCE_BREAK).filter { it.isNotBlank() }
         var requests = 0
         for (sentence in sentences) {
             when {
@@ -746,9 +747,25 @@ object RiskTrigger {
      * удаляется — сказанное остаётся в памяти.
      */
     fun isOnlySocial(text: String): Boolean {
-        val sentences = text.trim().split(SENTENCE_BREAK).filter { it.isNotBlank() }
+        val sentences = speech(text).trim().split(SENTENCE_BREAK).filter { it.isNotBlank() }
         return sentences.isNotEmpty() && sentences.all { isFillerSentence(it) }
     }
+
+    /**
+     * Что запись говорит — без подписи говорящего. Здесь единственное
+     * объяснение; [isOnlyQuestions], [isOnlyRequests] и [isOnlySocial] на него
+     * ссылаются.
+     *
+     * ПОДПИСЬ НЕ В СЧЁТ. Слова человека из чата лежат в памяти с подписью
+     * («Nastya: Привет»), и подпись — слово не из словаря обычая и не вопрос:
+     * запись из одного приветствия читалась утверждением и шла в ответ, в сон и
+     * в суд. Что считается подписью и когда запись берётся как есть — у
+     * nav.ForeignSpeech.unsigned.
+     *
+     * Правило противоречия ([withoutQuestions]) подпись не снимает: его
+     * поведение измерено на нынешней резке.
+     */
+    private fun speech(text: String): String = ForeignSpeech.unsigned(text)
 
     /** Точная просьба SentenceKind; сомнительная для записей — утверждение (см. [isOnlyRequests]). */
     private fun isRequestSentence(sentence: String): Boolean = SentenceKind.of(sentence).isSureRequest
