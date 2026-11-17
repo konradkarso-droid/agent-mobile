@@ -142,6 +142,7 @@ import com.uroboros.memory.nav.WindowMap
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.HomeEventStore
 import com.uroboros.safety.MemoryWatch
+import com.uroboros.safety.StallWatch
 import com.uroboros.safety.HomeEvents
 import com.uroboros.safety.SafetyZone
 import com.uroboros.util.wordSpots
@@ -3313,6 +3314,8 @@ class MainActivity : AppCompatActivity() {
         group(
             "Комы",
             AgentLife.comaLines(applicationContext) + "\n" + AgentLife.hangLine() + "\n" + MemoryWatch.meterLine(applicationContext),
+            // Простои процесса (safety.StallWatch): кома — процесс умер, простой — жил, но не шёл.
+            StallWatch.meterLine(applicationContext),
             MoveState.meterLine(applicationContext),
         )
         group(

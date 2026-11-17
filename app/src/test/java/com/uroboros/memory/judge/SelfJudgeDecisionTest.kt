@@ -96,4 +96,20 @@ class SelfJudgeDecisionTest {
             SelfJudgeDecision.refusal(ready.copy(quietMs = 3 * minute, chatRefusal = { "в телеграме разговор" })),
         )
     }
+
+    @Test
+    fun `строка конца прогона — исход суда и сколько разобрано, а не строка ночной загрузки`() {
+        val judged = "Разбор дошёл до конца очереди.\nРазобрано за этот раз: 41\nИз них спорных: 0\n"
+        val report = "Ночь: ночная не подключилась — нет\n\n$judged"
+        assertEquals(
+            "Разбор дошёл до конца очереди. Разобрано за этот раз: 41",
+            SelfJudgeDecision.endHeadline(judged, report),
+        )
+    }
+
+    @Test
+    fun `до судьи не дошло — первая строка общего отчёта`() {
+        assertEquals("Разбор остановлен до конца.", SelfJudgeDecision.endHeadline(null, "\nРазбор остановлен до конца.\nЕщё строка"))
+        assertEquals("без отчёта", SelfJudgeDecision.endHeadline(null, "  \n"))
+    }
 }

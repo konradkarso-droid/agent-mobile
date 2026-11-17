@@ -50,6 +50,20 @@ object SelfJudgeDecision {
      */
     const val REST_AFTER_RUN_MS = 30L * 60 * 1000
 
+    /**
+     * Итог самостоятельного прогона одной строкой — для уведомления: чем кончился
+     * суд и сколько разобрано. Берётся из отчёта судьи [judged] (первые две
+     * непустые строки — исход и «Разобрано за этот раз»), а не из общего отчёта
+     * ночи [report]: в общем первой идёт строка ночной загрузки, и исход суда за
+     * ней не виден. Отчёта судьи нет — до судьи не дошло или прогон оборван
+     * посреди него — тогда первая строка общего отчёта.
+     */
+    fun endHeadline(judged: String?, report: String): String {
+        val head = judged?.lineSequence()?.map { it.trim() }?.filter { it.isNotEmpty() }?.take(2)?.toList().orEmpty()
+        if (head.isNotEmpty()) return head.joinToString(" ")
+        return report.lineSequence().firstOrNull { it.isNotBlank() }?.trim() ?: "без отчёта"
+    }
+
     data class Inputs(
         val running: Boolean,
         val emergencyStop: Boolean,
