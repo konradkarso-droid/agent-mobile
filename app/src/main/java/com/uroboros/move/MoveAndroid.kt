@@ -12,6 +12,7 @@ import com.uroboros.llm.GenerationThreads
 import com.uroboros.llm.ModelFolder
 import com.uroboros.memory.DatabaseExporter
 import com.uroboros.safety.MemoryWatch
+import com.uroboros.safety.StallWatch
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -27,8 +28,8 @@ import java.util.UUID
  *
  * НАСТРОЙКИ, ПРИВЯЗАННЫЕ К ТЕЛЕФОНУ ([SKIP_FILES], [DEVICE_KEYS]) — одно место
  * на этот список. Пути к модели указывают в папку этого телефона; замеры
- * памяти — про его железо; отметка переезда — про этот экземпляр. Остальные
- * настройки едут все ([MovePrefs], почему все).
+ * памяти — про его железо; простои — про его прошивку; отметка переезда — про
+ * этот экземпляр. Остальные настройки едут все ([MovePrefs], почему все).
  *
  * ЧЕГО НЕ УМЕЕТ: место на новом считается по общей памяти телефона — папка
  * моделей на карте памяти не проверяется; модели ищутся только `.gguf` в
@@ -36,7 +37,7 @@ import java.util.UUID
  */
 object MoveAndroid {
 
-    val SKIP_FILES = setOf(MoveState.PREFS, MemoryWatch.PREFS, GenerationThreads.PREFS)
+    val SKIP_FILES = setOf(MoveState.PREFS, MemoryWatch.PREFS, GenerationThreads.PREFS, StallWatch.PREFS)
     val DEVICE_KEYS = mapOf(ModelPrefs.NAME to setOf(ModelFolder.KEY_MODEL_FOLDER_URI, ModelPrefs.KEY_LAST_MODEL_URI))
 
     private const val OUT_DIR = "move_out"

@@ -58,6 +58,7 @@ import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.safety.MemoryWatch
+import com.uroboros.safety.StallWatch
 import com.uroboros.safety.SafetyZone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -241,6 +242,9 @@ class AgentService : Service() {
     /** Почему самостоятельный прогон оборван не по своим причинам; null — не оборван. */
     private var stopNote: String? = null
 
+    /** Отчёт судьи идущего прогона; null — до судьи не дошло. Для строки конца ([SelfJudgeDecision.endHeadline]). */
+    private var judgedReport: String? = null
+
     /**
      * Поводы заговорить первым, по порядку: рассказ о доме (safety.HomeEvents —
      * безопасность устройства первой, ARCHITECTURE.md §0), выбрать себе имя (пробел о себе —
@@ -304,6 +308,8 @@ class AgentService : Service() {
         scope.launch { sleepLoop() }
         // Память телефона: замер раз в 15 с и выгрузка модели по сигналу (safety.MemoryPressure).
         scope.launch { MemoryWatch.run(applicationContext) }
+        // Простои процесса: свой поток отметок (safety.StallWatch).
+        StallWatch.start(applicationContext)
         // Канал врат живёт, пока живо тело: опрос телеграма (gate.link.GateLink).
         GateLink.start(applicationContext, scope)
     }
@@ -983,6 +989,7 @@ class AgentService : Service() {
         stepsRun = false
         yielding = false
         stopNote = null
+        judgedReport = null
 
         job = scope.launch {
             val db = MemoryDatabase.getInstance(applicationContext)
@@ -1048,6 +1055,7 @@ class AgentService : Service() {
                         _state.value = RunState.Running(startedAt, done, now, self)
                         showProgress(startedAt, done, now)
                     }
+                judgedReport = judged
                 // Строка о себе — в ночи по кнопке после судьи (см. SelfLineStep);
                 // ночь без кнопки получает её заходом шагов (startNightSteps).
                 // Условия модели переспрашиваются перед вызовом: судья шёл
@@ -1232,13 +1240,13 @@ class AgentService : Service() {
             }
             yielding -> {
                 _state.value = RunState.Idle
-                lastSelfJudge = "Суд уступил разговору в ${clock(now)}: $headline"
+                lastSelfJudge = "Суд уступил разговору в ${clock(now)}: " + SelfJudgeDecision.endHeadline(judgedReport, report)
             }
             selfRun -> {
                 _state.value = RunState.Idle
                 restUntil = now + SelfJudgeDecision.REST_AFTER_RUN_MS
                 lastSelfJudge = "Судил сам, кончил в ${clock(now)}" +
-                    (stopNote?.let { " ($it)" } ?: "") + ": $headline"
+                    (stopNote?.let { " ($it)" } ?: "") + ": " + SelfJudgeDecision.endHeadline(judgedReport, report)
             }
             else -> _state.value = RunState.Finished(report)
         }
