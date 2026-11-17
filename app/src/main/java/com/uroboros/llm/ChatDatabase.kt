@@ -27,7 +27,7 @@ abstract class ChatDatabase : RoomDatabase() {
     abstract fun chatLineDao(): ChatLineDao
 
     companion object {
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
 
         /**
          * Поле [ChatLine.recall]. У прежних строк оно пустое — и это правда
@@ -42,6 +42,17 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Поле [ChatLine.dreamNote]. У прежних строк оно пустое — и это правда:
+         * до него описание ночи в телеграм не подавалось. Форма — как у
+         * `String? = null`: TEXT без значения по умолчанию.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_lines ADD COLUMN dreamNote TEXT")
+            }
+        }
+
         const val FILE_NAME = "uroboros_chats.db"
 
         @Volatile
@@ -50,7 +61,7 @@ abstract class ChatDatabase : RoomDatabase() {
         fun getInstance(context: Context): ChatDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(context.applicationContext, ChatDatabase::class.java, FILE_NAME)
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build().also { INSTANCE = it }
             }
     }

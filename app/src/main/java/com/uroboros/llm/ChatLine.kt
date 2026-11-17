@@ -43,6 +43,12 @@ import androidx.room.Query
  *   в этот ход (gate.ChatOwnSpeech.pack); null — записей не было или строка
  *   легла до появления поля. Нужны, чтобы пересказ поданной записи не
  *   читался потом своей речью агента (memory.nav.OwnSpeech).
+ * @property dreamNote у своего ответа — описание последней ночи, поданное
+ *   модели в этот ход (memory.dream.DreamTopic.line); null — не подавалось или
+ *   строка легла до появления поля. По нему ночь в этом чате считается
+ *   рассказанной (DreamTopic.chatRefusal) и считается прибор «Сон в зеркале».
+ *   Отдельно от [recall]: там записи памяти, и их число на экране врат —
+ *   число поданных записей.
  */
 @Entity(tableName = "chat_lines", indices = [Index(value = ["chat", "thread", "id"])])
 data class ChatLine(
@@ -63,6 +69,7 @@ data class ChatLine(
     val at: Long,
     val place: String,
     val recall: String? = null,
+    val dreamNote: String? = null,
 )
 
 /** Последний собеседник в личке — для отметки «это я» на экране врат. */

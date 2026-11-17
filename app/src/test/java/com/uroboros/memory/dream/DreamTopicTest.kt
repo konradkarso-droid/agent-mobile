@@ -101,6 +101,39 @@ class DreamTopicTest {
     }
 
     @Test
+    fun `строка прибора в чате называет чат`() {
+        assertEquals(
+            "Сон в зеркале (Иван): рассказан за сутки: 1 · в этом ходе подан",
+            DreamTopic.meter(1, null, "Иван"),
+        )
+    }
+
+    // --- Телеграм ---
+
+    private val night = "Этой ночью мне снилось: переезд, клод и радуга."
+
+    @Test
+    fun `в личке владельца на вопрос к агенту — подаётся`() {
+        assertNull(DreamTopic.chatRefusal(night, ownerDirect = true, toAgent = true, alreadyInChat = false, stored = "переезд"))
+    }
+
+    @Test
+    fun `молчит — не личка владельца, даже на вопрос к агенту`() {
+        // Темы ночи — из всей памяти: в группу и другому человеку они не идут.
+        assertEquals(
+            DreamTopic.NOT_OWNER_DIRECT,
+            DreamTopic.chatRefusal(night, ownerDirect = false, toAgent = true, alreadyInChat = false, stored = "переезд"),
+        )
+    }
+
+    @Test
+    fun `молчит — в личке, но вопрос не к агенту или уже рассказано в этом чате`() {
+        assertEquals("вопрос не к агенту", DreamTopic.chatRefusal(night, true, toAgent = false, alreadyInChat = false, stored = "переезд"))
+        assertEquals("уже рассказан в этой ленте", DreamTopic.chatRefusal(night, true, toAgent = true, alreadyInChat = true, stored = "переезд"))
+        assertEquals("шага тем у последней ночи не было", DreamTopic.chatRefusal(null, true, toAgent = true, alreadyInChat = false, stored = null))
+    }
+
+    @Test
     fun `сны спрашиваются с самой новой записи`() {
         val dreams = listOf("10,11", "100,101", "100,102", "104,187", "5,187")
         val ordered = DreamTopic.newestFirst(dreams, { it.split(",").map(String::toLong) }, { it })
