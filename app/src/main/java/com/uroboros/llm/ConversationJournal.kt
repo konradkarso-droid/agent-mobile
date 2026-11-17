@@ -409,13 +409,19 @@ class ConversationJournal {
         prochnost: String? = null,
         recallAsk: String? = null,
         crossChannel: String? = null,
+        selfClaims: String? = null,
     ): String {
         val blocks = ArrayList<String>(8)
         if (turns.lastOrNull()?.records?.isEmpty() == true) blocks += ANSWER_WITHOUT_SUPPORT
+        // Заявки прошлого ответа без опоры в памяти (dream.SelfClaim.note) — рядом
+        // с пометкой о записях: обе о прошлом ответе. Строка от первого лица,
+        // поэтому под меткой системы. Сверку делает память, сюда — готовая строка,
+        // как у сверки расхождений ниже.
+        if (!selfClaims.isNullOrBlank()) blocks += toAgent(selfClaims)
         // Строка между каналами (gate.CrossChannel) — где ещё я говорил перед
         // этим. Она о том, что было до вопроса, а не о вопросе, поэтому первой
-        // из строк системы: строки ниже указывают «ниже» на вопрос и должны
-        // стоять у него.
+        // из строк системы после строк о прошлом ответе: строки ниже указывают
+        // «ниже» на вопрос и должны стоять у него.
         if (!crossChannel.isNullOrBlank()) blocks += toAgent(crossChannel)
         // Предложение спросить о сне — сразу за пометкой и до сверки: оно
         // агенту о нём самом, а не о вопросе, и не должно стоять между

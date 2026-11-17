@@ -41,7 +41,9 @@ import com.uroboros.util.TextFold
  * (OwnSpeech): повтор реплики собеседника или поданной записи
  * (EchoCheck.ownSentences), служебный текст (OwnSpeech.isService), ход, где
  * на агента давили (OwnSpeech.underPressure): уступка под нажимом обещанием
- * не становится. Отличий от своей речи два, оба намеренные:
+ * не становится. Ход с заявкой о себе без опоры (OwnSpeech.Turn.claimed,
+ * dream.SelfClaim) — тоже: «Я попробую тренироваться» из выдуманного сна про
+ * лыжи — не обещание. Отличий от своей речи два, оба намеренные:
  *  - предложение из одного слова своё («Запомню.»): короткое согласие и есть
  *    частая форма обещания, а искать по нему здесь ничего не нужно;
  *  - предложение с «ты» не отбрасывается: «я тебе напомню» — обещание.
@@ -136,7 +138,14 @@ object Promises {
          * @param pressureSkipped сколько обещаний не взято: ход под нажимом.
          * @param unread чего не прочиталось, словами (лента чатов); пусто — всё прочитано.
          */
-        data class Ok(val promises: List<Promise>, val undated: Int, val pressureSkipped: Int, val unread: List<String> = emptyList()) : Found()
+        data class Ok(
+            val promises: List<Promise>,
+            val undated: Int,
+            val pressureSkipped: Int,
+            val unread: List<String> = emptyList(),
+            /** Обещаний из ходов с заявкой о себе без опоры (OwnSpeech.Turn.claimed). */
+            val claimSkipped: Int = 0,
+        ) : Found()
 
         /** Искать было нельзя; [reason] — почему, словами. */
         data class Silent(val reason: String) : Found()
@@ -158,6 +167,7 @@ object Promises {
                 screen.undated + chats.undated,
                 screen.pressureSkipped + chats.pressureSkipped,
                 screen.unread + chats.unread,
+                screen.claimSkipped + chats.claimSkipped,
             )
         }
     }
@@ -178,6 +188,7 @@ object Promises {
         val out = ArrayList<Promise>()
         var undated = 0
         var pressured = 0
+        var claimed = 0
         for (turn in turns) {
             // Сначала дешёвое: старый ход и ответ без единой формы обещания
             // дальше не разбираются — эхо и служебное считаются только у
@@ -192,6 +203,10 @@ object Promises {
                 pressured += promised.size
                 continue
             }
+            if (turn.claimed) {
+                claimed += promised.size
+                continue
+            }
             val at = turn.at
             if (at == null) {
                 undated += promised.size
@@ -199,7 +214,7 @@ object Promises {
             }
             promised.mapTo(out) { (s, f) -> Promise(s, asked(s, turn.question, dictionary), at, f == Form.WE) }
         }
-        return Found.Ok(out.sortedByDescending { it.at }, undated, pressured)
+        return Found.Ok(out.sortedByDescending { it.at }, undated, pressured, claimSkipped = claimed)
     }
 
     /** Есть ли в предложении обещание и чьё — правила в шапке, «ФОРМА». */

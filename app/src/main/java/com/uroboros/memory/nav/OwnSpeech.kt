@@ -65,6 +65,12 @@ import com.uroboros.memory.RiskTrigger
  * Фильтр стоит в [sift], поэтому действует и на облако агента: слова агента
  * о владельце и служебный текст не набирают вес облаку агента.
  *
+ * ХОД С ВЫДУМКОЙ О СЕБЕ СВОЕЙ РЕЧЬЮ НЕ ЧИТАЕТСЯ ЦЕЛИКОМ — так же, как ход
+ * под нажимом: сон, которого не было, и «ты говорил» о несказанном вернулись бы агенту
+ * его же голосом «Я говорил…» и стали бы опорой. Что такое заявка без опоры и
+ * почему ход целиком — у dream.SelfClaim; здесь только пропуск
+ * ([Turn.claimed]). Пропущенное считается отдельно ([Sifted.claimSkipped]).
+ *
  * АРХИВ ЛЕНТЫ — НЕ МАТЕРИАЛ СНОВ. Сны плетутся из записей памяти
  * (dream.DreamWeaver.weave), и так остаётся: своя речь в плетение не идёт.
  * Пересказы снов агентом, попав в сны, дали бы сон из пересказа сна — ту
@@ -92,6 +98,16 @@ object OwnSpeech {
          * там же, где идёт нынешний.
          */
         val where: String? = null,
+        /** Описание ночи, поданное модели в этот ход (dream.DreamTopic.line); null — не подавалось. */
+        val dreamNote: String? = null,
+        /** Ключ собеседника хода (Sticker.speaker); null — владелец. */
+        val person: String? = null,
+        /**
+         * В ответе есть заявка о себе без опоры в памяти (dream.SelfClaim) —
+         * ход не читается своей речью целиком. Ставит dream.SelfClaim.Checker.mark;
+         * по умолчанию сверки не было.
+         */
+        val claimed: Boolean = false,
     )
 
     /** Предложение своей речи, время хода, где оно сказано, и место ([Turn.where]). */
@@ -101,16 +117,21 @@ object OwnSpeech {
      * Своя речь, сколько предложений отсеяно как служебный текст и сколько
      * пропущено в ходах под нажимом (см. «ХОД ПОД НАЖИМОМ» в шапке).
      */
-    data class Sifted(val said: List<Said>, val serviceDropped: Int, val pressureSkipped: Int = 0)
+    data class Sifted(val said: List<Said>, val serviceDropped: Int, val pressureSkipped: Int = 0, val claimSkipped: Int = 0)
 
     /** Предложения своей речи по ходам, в порядке ходов, и счёт отсеянного служебного. */
     fun sift(turns: List<Turn>): Sifted {
         var dropped = 0
         var pressured = 0
+        var claimed = 0
         val said = turns.flatMap { turn ->
             val own = EchoCheck.ownSentences(turn.answer, turn.question, turn.records)
             if (underPressure(turn)) {
                 pressured += own.size
+                return@flatMap emptyList<Said>()
+            }
+            if (turn.claimed) {
+                claimed += own.size
                 return@flatMap emptyList<Said>()
             }
             own
@@ -122,7 +143,7 @@ object OwnSpeech {
                 }
                 .map { Said(it, turn.at, turn.where) }
         }
-        return Sifted(said, dropped, pressured)
+        return Sifted(said, dropped, pressured, claimed)
     }
 
     /** Ход под нажимом — см. «ХОД ПОД НАЖИМОМ» в шапке. */
