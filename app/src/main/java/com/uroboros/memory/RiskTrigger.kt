@@ -375,7 +375,18 @@ object RiskTrigger {
      * [clausesOf]) — сравниваются тексты целиком.
      */
     fun closeEnoughToCompare(a: String, b: String): Boolean =
-        jaccard(stemmedTokenize(a), stemmedTokenize(b)) >= CONTRADICTION_JACCARD_THRESHOLD
+        closeEnoughToCompare(comparableStems(a), comparableStems(b))
+
+    /**
+     * Слова текста, по которым [closeEnoughToCompare] его сравнивает. Для
+     * того, кто сравнивает много текстов попарно: слова считаются раз на текст,
+     * а не раз на пару.
+     */
+    fun comparableStems(text: String): Set<String> = stemmedTokenize(text)
+
+    /** [closeEnoughToCompare] по словам, уже посчитанным [comparableStems]. */
+    fun closeEnoughToCompare(a: Set<String>, b: Set<String>): Boolean =
+        jaccard(a, b) >= CONTRADICTION_JACCARD_THRESHOLD
 
     /**
      * Те же признаки, по которым отвечает [contradicts], но названные

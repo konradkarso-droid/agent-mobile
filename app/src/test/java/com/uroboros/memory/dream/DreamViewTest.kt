@@ -212,6 +212,20 @@ class DreamViewTest {
         Dream(nightAt = 1L, recordIds = ids.joinToString(","), kind = DreamWeaver.Kind.TIME.name)
 
     @Test
+    fun `раздел считается не на потоке того, кто зовёт`() {
+        // Зовёт экран, и счёт на его потоке держал бы экран (см. DreamView.section).
+        // Чтение записей идёт внутри того же счёта, поэтому его поток и есть поток счёта.
+        var readOn: Thread? = null
+        val stickers = FakeStickerDao().apply {
+            onGetAll = { readOn = Thread.currentThread(); listOf(record(1), record(2)) }
+        }
+        val caller = Thread.currentThread()
+        runBlocking { DreamView(FakeDreamDao(night(dreams = 1), listOf(dream(1, 2))), stickers).section() }
+        assertTrue("записи не читались", readOn != null)
+        assertTrue("раздел считался на потоке зовущего", readOn !== caller)
+    }
+
+    @Test
     fun `прохода не было — так и сказано`() {
         val text = view(emptyList(), emptyList(), null)
         // С начала раздела, а не целиком: после слов о проходе может стоять

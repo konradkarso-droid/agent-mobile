@@ -142,4 +142,33 @@ class RiskTriggerTest {
         val decision = RiskTrigger.evaluate(candidate, listOf(existing))
         assertNull(decision.contradictionCandidateId)
     }
+
+    @Test
+    fun `близость по заранее посчитанным словам та же, что по текстам`() {
+        // Показ снов считает слова раз на запись; ответ обязан совпасть с
+        // ответом по текстам, иначе семьи снов и правило разойдутся.
+        val pairs = listOf(
+            "Меркурий светит белым на закате." to "Меркурий светит красным на закате.",
+            "Станок называется Вымпел." to "Станок называется Буран.",
+            "Станок называется Вымпел." to "В радуге семь цветов.",
+            "" to "Станок называется Вымпел.",
+        )
+        for ((a, b) in pairs) {
+            assertEquals(
+                "$a / $b",
+                RiskTrigger.closeEnoughToCompare(a, b),
+                RiskTrigger.closeEnoughToCompare(RiskTrigger.comparableStems(a), RiskTrigger.comparableStems(b)),
+            )
+        }
+        assertTrue(RiskTrigger.closeEnoughToCompare(
+            RiskTrigger.comparableStems("Меркурий светит белым на закате."),
+            RiskTrigger.comparableStems("Меркурий светит красным на закате."),
+        ))
+        // Молчит: непохожие тексты и пустой текст близкими не становятся.
+        assertFalse(RiskTrigger.closeEnoughToCompare(
+            RiskTrigger.comparableStems("Станок называется Вымпел."),
+            RiskTrigger.comparableStems("В радуге семь цветов."),
+        ))
+        assertFalse(RiskTrigger.closeEnoughToCompare(emptySet(), RiskTrigger.comparableStems("Станок называется Вымпел.")))
+    }
 }

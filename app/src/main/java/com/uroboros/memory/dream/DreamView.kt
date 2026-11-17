@@ -5,6 +5,8 @@ import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -63,7 +65,15 @@ class DreamView(
         MemoryDatabase.getInstance(context).stickerDao(),
     )
 
-    suspend fun section(): String {
+    /**
+     * Раздел целиком. Считается на фоновом потоке, кто бы ни звал: семьи
+     * считаются попарно среди всех записей ночи ([collapse]), а на главном
+     * потоке такой счёт держит экран, и Android закрывает окно как «не
+     * отвечает». Чтение базы от потока не зависит.
+     */
+    suspend fun section(): String = withContext(Dispatchers.Default) { build() }
+
+    private suspend fun build(): String {
         // Вся память берётся одним чтением: номеров в снах сотни, и запрос на
         // каждый номер стоил бы сотни обращений к базе ради того же ответа.
         // Нужны и скрытые, и отвергнутые записи — по ним решается, молчать ли;
@@ -123,6 +133,9 @@ class DreamView(
      */
     private fun collapse(dreams: List<Pair<String, List<Sticker>>>): List<Shown> {
         val records = dreams.flatMap { it.second }.distinctBy { it.id }
+        // Слова каждой записи — раз на запись, а не раз на пару: пар в
+        // квадрат больше, чем записей.
+        val words = records.map { RiskTrigger.comparableStems(it.content) }
         // Семьи — объединением: близость не транзитивна, но для показа связная
         // группа и есть то, что человек читает как «одно и то же разными
         // словами».
@@ -137,7 +150,7 @@ class DreamView(
             for (j in i + 1 until records.size) {
                 val a = records[i]
                 val b = records[j]
-                if (!RiskTrigger.closeEnoughToCompare(a.content, b.content)) continue
+                if (!RiskTrigger.closeEnoughToCompare(words[i], words[j])) continue
                 val ra = root(a.id)
                 val rb = root(b.id)
                 if (ra != rb) family[ra] = rb
