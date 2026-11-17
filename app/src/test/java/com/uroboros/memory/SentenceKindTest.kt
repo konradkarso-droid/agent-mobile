@@ -110,6 +110,25 @@ class SentenceKindTest {
     }
 
     @Test
+    fun `обычай - пожелание, возвращённое без своего знака`() {
+        for (s in listOf("И тебе тоже)", "И тебе тоже!", "Тебе тоже.", "И вам.", "Вам тоже", "И тебеее тоже")) {
+            assertEquals(s, Kind.SOCIAL to Certainty.SURE, read(s))
+        }
+    }
+
+    @Test
+    fun `молчит - спутники без обращения или без возврата не обычай`() {
+        // Обращение без «и»/«тоже» и «тоже» без обращения — не возврат пожелания.
+        for (s in listOf("Тебе.", "Вам опять.", "Утро тоже.", "Всем тоже.", "Тоже.", "И снова.")) {
+            assertEquals(s, Kind.STATEMENT, SentenceKind.of(s).kind)
+        }
+        // Слово не из списков делает предложение утверждением, как и прежде.
+        assertEquals(Kind.STATEMENT, SentenceKind.of("И тебе тоже подарок.").kind)
+        // Знак «?» решает раньше обычая.
+        assertEquals(Kind.QUESTION, SentenceKind.of("И тебе тоже?").kind)
+    }
+
+    @Test
     fun `молчит - не обычай`() {
         // Спутник один обычаем не делает: «Утро.» бывает ответом на «когда?».
         assertEquals(Kind.STATEMENT, SentenceKind.of("Утро.").kind)
