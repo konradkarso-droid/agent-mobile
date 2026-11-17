@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sched.h>
+#include <time.h>
 #include <android/log.h>
 
 #include "llama.h"
@@ -458,6 +459,13 @@ static struct {
     std::atomic<bool> cancel_flag{false};
     std::mutex        gen_mutex;
 
+    // Работа модели под gen_mutex (см. GenHold): с какого мгновения замок
+    // держит нынешняя работа, 0 — никакая; сколько последняя работа ждала
+    // замка, -1 — работы ещё не было. Атомарные: потолок сторожа и прибор
+    // читают их без gen_mutex (nativeComputeHeldMs, nativeLastHoldWaitMs).
+    std::atomic<int64_t> hold_since_ms{0};
+    std::atomic<int64_t> hold_wait_ms{-1};
+
     int                      n_past = 0;
     std::vector<llama_token> prev_prompt_tokens;
     int                      n_system_tokens = 0;
@@ -534,6 +542,41 @@ static struct {
     bool auto_mode      = false;
     int  requested_mode = 1; // mirror of thread_mode prior to auto-derate
 } g_state;
+
+// ЗАМОК ГЕНЕРАЦИИ ДЛЯ РАБОТЫ МОДЕЛИ. Всё, что гоняет модель (ответ, куски,
+// чтение слоя, прогрев, картинки), берёт gen_mutex через GenHold, а не голым
+// lock_guard. Так потолок непрерывной работы у сторожа (снаружи, через
+// nativeComputeHeldMs) меряет время, пока модель работает на этот вызов, а
+// не ожидание в очереди за чужим, и не обнуляется чужим концом. Вход, который
+// гоняет модель мимо GenHold, остаётся без потолка — поэтому это правило, а
+// не удобство. Короткие настройки под замком (выборка, стена, потоки, снимок)
+// берут его, как прежде: их время потолок не считает.
+//
+// Часы — CLOCK_BOOTTIME, те же, что SystemClock.elapsedRealtime: идут и во
+// сне телефона, и пока прошивка держит процесс замороженным. Это стенное
+// время, а не процессорное: замороженный вызов копит потолок, не нагревая
+// телефон.
+static int64_t boottime_ms() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+struct GenHold {
+    std::unique_lock<std::mutex> lock;
+    GenHold() {
+        const int64_t asked = boottime_ms();
+        lock = std::unique_lock<std::mutex>(g_state.gen_mutex);
+        const int64_t got = boottime_ms();
+        g_state.hold_wait_ms.store(got - asked);
+        g_state.hold_since_ms.store(got);
+    }
+    // Отметка снимается раньше, чем замок отпускается (поле lock разрушается
+    // после тела деструктора): следующая работа ставит свою, а не видит чужую.
+    ~GenHold() { g_state.hold_since_ms.store(0); }
+    GenHold(const GenHold &) = delete;
+    GenHold & operator=(const GenHold &) = delete;
+};
 
 static void kv_evict_streaming();
 
@@ -2309,7 +2352,7 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStream(
         JNIEnv * env, jobject, jstring jprompt, jint maxTokens, jobject callback) {
 
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
 
     if (!g_state.model || !g_state.ctx) {
         LOGE("Model not loaded");
@@ -2810,7 +2853,7 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGenerateStreamMultiTurn(
         JNIEnv * env, jobject, jstring jmessagesJson, jint maxTokens, jobject callback) {
 
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
     g_state.last_first_step = "до первого шага не дошло";
     // Задание живого отвода забирается первым делом: генерация может кончиться
     // раньше обсчёта, а оставленное задание взвелось бы на чужой запрос.
@@ -3707,7 +3750,7 @@ static const uint64_t CHUNK_DIR_CAP_BYTES = 512ull * 1024 * 1024;
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeBuildRecordChunks(
         JNIEnv * env, jobject, jstring jlines, jboolean finish) {
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
     nlohmann::json out;
     const char * cstr = env->GetStringUTFChars(jlines, nullptr);
     std::string lines_json = cstr ? cstr : "";
@@ -3777,7 +3820,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeBuildRecordChunks(
 extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeReadLayerMean(
         JNIEnv * env, jobject, jstring jwall, jstring jhead, jstring jtail, jint layer) {
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
     auto str = [&](jstring j) {
         const char * c = env->GetStringUTFChars(j, nullptr);
         std::string v = c ? c : "";
@@ -4228,6 +4271,23 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeGetGenerationThreads(JNIEnv *, jobje
     return (jint)g_state.gen_threads_applied.load();
 }
 
+// Сколько мс замок держит нынешняя работа модели (GenHold); 0 — модель не
+// работает. Без gen_mutex: его держит та самая работа, о которой вопрос.
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeComputeHeldMs(JNIEnv *, jobject) {
+    const int64_t since = g_state.hold_since_ms.load();
+    if (since == 0) return 0;
+    const int64_t held = boottime_ms() - since;
+    return (jlong)(held > 0 ? held : 0);
+}
+
+// Сколько мс последняя работа модели ждала замка (GenHold); -1 — работы ещё
+// не было. Без gen_mutex. Последняя — любая, не обязательно того, кто спрашивает.
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_dark_gguf_1lib_GGUFNativeLib_nativeLastHoldWaitMs(JNIEnv *, jobject) {
+    return (jlong)g_state.hold_wait_ms.load();
+}
+
 // Чего сборке не хватает у процессора, словом; пусто — всё есть (cpu_missing_for_build).
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeCpuMissingForBuild(JNIEnv * env, jobject) {
@@ -4384,7 +4444,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeSetPromptCacheDir(
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeWarmUp(JNIEnv *, jobject) {
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
     if (!g_state.model || !g_state.ctx) return JNI_FALSE;
     fit_threads_to_place(cpu_place_read());
 
@@ -5265,7 +5325,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeVlmPrecomputeVisionEmbeddings(
         jbyteArray jVtKey,
         jint imageQuality) {
 
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
 
     if (!g_state.model || !g_state.ctx) {
         LOGE("VlmPrecompute: text model not loaded (need n_embd_inp)");
@@ -5382,7 +5442,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeVlmPrecomputeKvState(
         jint       imageQuality,     // 0=LOW, 1=MEDIUM, 2=HIGH
         jobject   jCallback) {       // optional VlmPrewarmCallback, may be null
 
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
 
     const auto t_start_total = std::chrono::high_resolution_clock::now();
     auto fire_error = [&](const char * msg) {
@@ -5639,7 +5699,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeVlmGenerateStream(
         jint maxTokens,
         jobject callback) {
 
-    std::lock_guard<std::mutex> lock(g_state.gen_mutex);
+    GenHold hold;
 
     if (!g_state.model || !g_state.ctx) {
         LOGE("VLM: text model not loaded");

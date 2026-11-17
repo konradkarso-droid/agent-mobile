@@ -212,6 +212,17 @@ class GGMLEngine {
     /** Какой команды процессора не хватает сборке; пусто — всё есть. */
     fun cpuMissingForBuild(): String = GGUFNativeLib.nativeCpuMissingForBuild()
 
+    /**
+     * Сколько мс модель уже работает на нынешний вызов (ответ, куски, чтение
+     * слоя); 0 — не работает. Ожидание замка сюда не входит. Без замка — можно
+     * звать откуда угодно, в том числе посреди чужой генерации. См. GenHold в
+     * gguf_lib.cpp.
+     */
+    fun computeHeldMs(): Long = GGUFNativeLib.nativeComputeHeldMs()
+
+    /** Сколько мс последняя работа модели ждала замка; -1 — работы не было. Без замка. */
+    fun lastHoldWaitMs(): Long = GGUFNativeLib.nativeLastHoldWaitMs()
+
     // ── Power engine + decode diagnostics ──────────────────────────────────
 
     /**
