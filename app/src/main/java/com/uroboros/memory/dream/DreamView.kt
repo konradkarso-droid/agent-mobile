@@ -106,7 +106,8 @@ class DreamView(
         val repeats = DreamWeaver.chainsOf(rows).count { it in before }
         // Очередь записей — вместе с показанной ночью: сколько записей уже прошло круг.
         val queued = DreamWeaver.lastDreamtOf(queue + rows).size
-        return render(night, collapse(visible), silent, dreamt.size, repeats, queued) + "\n\n" + pressure
+        val plots = rows.filter { it.kind == DreamWeaver.Kind.PLOT.name }.map { it.ids().size }
+        return render(night, collapse(visible), silent, dreamt.size, repeats, queued, plots) + "\n\n" + pressure
     }
 
     /**
@@ -191,6 +192,8 @@ class DreamView(
          * [DreamWeaver.repeatsLine]); null — не посчитано, строки нет.
          * [queued] — сколько записей снилось за ночи очереди
          * ([DreamWeaver.queueLine]); null — не посчитано, строки нет.
+         * [plots] — длины сюжетов ночи ([DreamWeaver.plotsLine]); null — не
+         * посчитано, строки нет.
          */
         fun render(
             night: DreamNight,
@@ -199,6 +202,7 @@ class DreamView(
             dreamtRecords: Int,
             repeats: Int? = null,
             queued: Int? = null,
+            plots: List<Int>? = null,
         ): String = buildString {
             append("СНЫ\n")
             append("Ночь: ").append(moment(night.nightAt))
@@ -217,6 +221,7 @@ class DreamView(
             if (night.dreamersCold > 0) append(" · холодных ").append(night.dreamersCold)
             if (night.dreamersArchive > 0) append(" · из архива ").append(night.dreamersArchive)
             append("\n")
+            if (plots != null) append(DreamWeaver.plotsLine(plots)).append("\n")
 
             // Разница между «участвовал» и «приснился» показывает, широко ли сон
             // берёт: запись могла пройти отбор и всё равно ни с чем не связаться.
@@ -253,7 +258,7 @@ class DreamView(
                 append("\n")
             }
             if (night.ceilingHit) {
-                append("Потолок снов сработал — до длинных сюжетов дело не дошло.\n")
+                append(DreamWeaver.CEILING_LINE).append("\n")
                 if (repeats != null) append(DreamWeaver.repeatsLine(night.dreams, repeats)).append("\n")
                 if (queued != null) append(DreamWeaver.queueLine(queued, night.dreamers)).append("\n")
             }

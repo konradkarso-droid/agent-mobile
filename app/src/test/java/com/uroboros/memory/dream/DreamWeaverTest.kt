@@ -170,8 +170,81 @@ class DreamWeaverTest {
                 rec(4, "Меркурий светит красным на восходе", at = 9 * hour),
             )
         )
-        // 2 —время— 1 —мост через 3— 4
-        assertEquals(listOf(DreamWeaver.Woven(listOf(2L, 1L, 4L), Kind.PLOT)), night.of(Kind.PLOT))
+        // 2 —время— 1 —мост 3— 4: мост входит в сюжет, его слова сводят края.
+        assertEquals(listOf(DreamWeaver.Woven(listOf(2L, 1L, 3L, 4L), Kind.PLOT)), night.of(Kind.PLOT))
+    }
+
+    /**
+     * Четыре сцены по две реплики (по времени), между сценами — короткие мосты
+     * общими словами, и сами мосты далеко по времени от всего. Сюжет идёт
+     * сцена — мост — сцена и дорастает до потолка длины.
+     */
+    private fun scenes() = listOf(
+        rec(1, "бегемот", at = 0), rec(2, "вертолет", at = minute),
+        rec(3, "гитара", at = 10 * hour), rec(4, "дельфин", at = 10 * hour + minute),
+        rec(5, "ежевика", at = 20 * hour), rec(6, "жасмин", at = 20 * hour + minute),
+        rec(7, "зебра", at = 30 * hour), rec(8, "игуана", at = 30 * hour + minute),
+        rec(11, "вертолет гитара", at = 100 * hour),
+        rec(12, "дельфин ежевика", at = 102 * hour),
+        rec(13, "жасмин зебра", at = 104 * hour),
+    )
+
+    @Test
+    fun `сюжет растёт сценами и мостами до потолка длины`() {
+        val plots = DreamWeaver.weave(scenes()).of(Kind.PLOT)
+        val longest = plots.maxByOrNull { it.recordIds.size }!!
+        assertEquals(DreamWeaver.MAX_PLOT_RECORDS, longest.recordIds.size)
+        // Растёт от самой новой реплики (8) к старым и упирается в потолок длины
+        // раньше самой старой (1).
+        assertEquals(listOf(2L, 11L, 3L, 4L, 12L, 5L, 6L, 13L, 7L, 8L), longest.recordIds)
+    }
+
+    @Test
+    fun `из почти одинаковых сюжетов остаётся тот, что начат с недавнего`() {
+        val plots = DreamWeaver.weave(scenes()).of(Kind.PLOT)
+        assertTrue("самая новая реплика в сюжете: $plots", plots.any { 8L in it.recordIds })
+        assertTrue("самая старая не тянет за собой второй такой же: $plots", plots.none { 1L in it.recordIds && 8L !in it.recordIds && it.recordIds.size > 5 })
+    }
+
+    @Test
+    fun `почти тот же набор записей — не второй сюжет`() {
+        val plots = DreamWeaver.weave(scenes()).of(Kind.PLOT)
+        for (i in plots.indices) for (k in i + 1 until plots.size) {
+            val common = plots[i].recordIds.toSet() intersect plots[k].recordIds.toSet()
+            assertTrue("${plots[i]} и ${plots[k]}", common.size * 2 <= plots[k].recordIds.size)
+        }
+    }
+
+    @Test
+    fun `сюжеты получают места, даже когда простых снов больше потолка`() {
+        // Пачка из двенадцати несвязанных слов подряд даёт простых снов больше потолка.
+        val burst = listOf(
+            "бетон", "ветер", "горох", "дождь", "кастрюля", "лопата",
+            "замок", "искра", "капля", "лимон", "магнит", "облако",
+        ).mapIndexed { i, w -> rec(50L + i, w, at = 200 * hour + i * minute) }
+        val night = DreamWeaver.weave(scenes() + burst)
+        assertTrue(night.ceilingHit)
+        assertEquals(DreamWeaver.MAX_DREAMS_PER_NIGHT, night.dreams.size)
+        assertTrue("сюжет из сцен на месте", night.of(Kind.PLOT).isNotEmpty())
+        assertTrue(night.of(Kind.PLOT).size <= DreamWeaver.PLOT_PLACES)
+    }
+
+    @Test
+    fun `сюжетов нет — мест простым столько же, сколько было`() {
+        val words = listOf(
+            "бетон", "ветер", "горох", "дождь", "кастрюля", "лопата",
+            "замок", "искра", "капля", "лимон", "магнит", "облако",
+        )
+        val night = DreamWeaver.weave(words.mapIndexed { i, w -> rec(i + 1L, w, at = (i + 1) * minute) })
+        assertTrue(night.of(Kind.PLOT).isEmpty())
+        assertEquals(DreamWeaver.MAX_DREAMS_PER_NIGHT, night.dreams.size)
+    }
+
+    @Test
+    fun `строка о сюжетах говорит и про ноль`() {
+        assertEquals("Сюжетов: ни одного — связи разных признаков в цепочку не сложились", DreamWeaver.plotsLine(emptyList()))
+        assertEquals("Сюжетов: 2, длиной 4 записей", DreamWeaver.plotsLine(listOf(4, 4)))
+        assertEquals("Сюжетов: 3, длиной от 3 до 10 записей", DreamWeaver.plotsLine(listOf(10, 3, 7)))
     }
 
     @Test

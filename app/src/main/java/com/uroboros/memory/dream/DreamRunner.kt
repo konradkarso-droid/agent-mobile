@@ -92,7 +92,8 @@ object DreamRunner {
                 db.dreamDao().insertNight(row)
                 db.dreamDao().insertAll(rows)
             }
-            describe(row, night.repeats) + (leaderFailure?.let { "\n$it" } ?: "")
+            describe(row, night.repeats, night.dreams.filter { it.kind == DreamWeaver.Kind.PLOT }.map { it.recordIds.size }) +
+                (leaderFailure?.let { "\n$it" } ?: "")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
@@ -107,9 +108,11 @@ object DreamRunner {
      * [repeats] — [DreamWeaver.Night.repeats]; в строке ночи не хранится,
      * экран снов пересчитывает его из базы. null — не известно, строки нет.
      */
-    fun describe(row: DreamNight, repeats: Int? = null): String = buildString {
+    fun describe(row: DreamNight, repeats: Int? = null, plots: List<Int>? = null): String = buildString {
         append(if (row.dreams == 0) "Сон: ничего не приснилось." else "Сон: снов ${row.dreams}.")
         append("\n")
+        // [plots] — длины вошедших сюжетов ночи; null — не известны, строки нет.
+        if (plots != null) append(DreamWeaver.plotsLine(plots)).append("\n")
         // «Участвовало», а не «снилось»: прошли отбор сна, но связаться могли не
         // все. Сколько приснилось на деле, видно в разделе «Сны».
         append("Участвовало записей: ").append(row.dreamers)
@@ -130,7 +133,7 @@ object DreamRunner {
             append("\n")
         }
         if (row.ceilingHit) {
-            append("Потолок снов сработал — до длинных сюжетов дело не дошло.\n")
+            append(DreamWeaver.CEILING_LINE).append("\n")
             if (repeats != null) append(DreamWeaver.repeatsLine(row.dreams, repeats)).append("\n")
         }
         val tributaries = row.riverTributaries ?: 0
