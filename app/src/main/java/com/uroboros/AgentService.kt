@@ -5,11 +5,15 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import androidx.core.content.ContextCompat
 import com.uroboros.gate.ChatQuiet
 import com.uroboros.gate.link.ChatPrefs
 import com.uroboros.gate.link.GateLink
@@ -56,6 +60,7 @@ import com.uroboros.memory.dream.SelfGapReader
 import com.uroboros.memory.dream.SleepDecision
 import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
+import com.uroboros.memory.judge.CourtScreen
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.safety.MemoryWatch
 import com.uroboros.safety.StallWatch
@@ -939,7 +944,8 @@ class AgentService : Service() {
     private fun livingText(): String =
         LIVING_TEXT + "\n" + sleepLine + (lastSelfSleep?.let { "\n$it" } ?: "") +
             "\n" + stepsLine + (lastNightSteps?.let { "\n$it" } ?: "") +
-            "\n" + judgeLine + (lastSelfJudge?.let { "\n$it" } ?: "")
+            "\n" + judgeLine + (lastSelfJudge?.let { "\n$it" } ?: "") +
+            (_courtScreen.value?.let { "\n" + CourtScreen.line(it, ::clock) } ?: "")
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // startForeground обязан прозвучать сразу после каждого запуска службы,
@@ -1031,6 +1037,8 @@ class AgentService : Service() {
             val startedAt = System.currentTimeMillis()
             _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null, self = self)
             working = true
+            // Экран суда — только самому суду (memory.judge.CourtScreen).
+            if (self) startCourtScreen()
             showProgress(startedAt, done = 0, lastAt = null)
 
             // Самостоятельный суд — только на зарядке, и не только на старте:
@@ -1136,6 +1144,7 @@ class AgentService : Service() {
                 STOPPED_REPORT
             } finally {
                 unplugWatch?.cancel()
+                if (self) stopCourtScreen()
                 backToDay()
                 releaseWakeLock()
             }
@@ -1264,6 +1273,7 @@ class AgentService : Service() {
 
     override fun onDestroy() {
         _alive.value = false
+        stopCourtScreen()
         releaseWakeLock()
         releaseTurnWakeLock()
         // Служба уходит посреди прогона (её остановила система): экран не должен
@@ -1299,8 +1309,93 @@ class AgentService : Service() {
 
     private fun showProgress(startedAt: Long, done: Int, lastAt: Long?) {
         currentText = "Разобрано пар: $done · начат в ${clock(startedAt)}" +
-            (lastAt?.let { " · последняя в ${clock(it)}" } ?: " · первая пара ещё идёт")
+            (lastAt?.let { " · последняя в ${clock(it)}" } ?: " · первая пара ещё идёт") +
+            (if (selfRun) "\n" + CourtScreen.line(_courtScreen.value, ::clock) else "")
         updateNotificationText()
+    }
+
+    /** Ловит погасание экрана, пока идёт самостоятельный суд; null — суд не идёт. */
+    private var screenOffReceiver: BroadcastReceiver? = null
+
+    /**
+     * Начало самостоятельного суда: экран суда просится сейчас, если экран
+     * погашен, и при каждом погасании до конца суда. Зачем и чего не умеет —
+     * у [CourtScreen].
+     */
+    private fun startCourtScreen() {
+        _courtScreen.value = CourtScreen.Run(startedAt = System.currentTimeMillis())
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_SCREEN_OFF) requestCourtScreen()
+            }
+        }
+        runCatching {
+            ContextCompat.registerReceiver(this, receiver, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
+            screenOffReceiver = receiver
+        }
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isInteractive) requestCourtScreen()
+    }
+
+    /**
+     * Попросить экран суда: уведомление на весь экран. Прежнее снимается
+     * первым — висящее уведомление второй раз экран не открывает.
+     */
+    private fun requestCourtScreen() {
+        val run = _courtScreen.value ?: return
+        if (run.endedAt != null || !selfRun || !working) return
+        val now = System.currentTimeMillis()
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !nm.canUseFullScreenIntent()) {
+            _courtScreen.value = run.copy(refusal = CourtScreen.NOT_ALLOWED)
+            return
+        }
+        _courtScreen.value = try {
+            nm.cancel(COURT_NOTIFICATION_ID)
+            nm.notify(COURT_NOTIFICATION_ID, courtNotification())
+            run.requested(now)
+        } catch (t: Throwable) {
+            run.copy(refusal = "показ не удался — ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** Конец самостоятельного суда: экран суда больше не просится, уведомление снимается; сам экран закроется по состоянию. */
+    private fun stopCourtScreen() {
+        screenOffReceiver?.let { runCatching { unregisterReceiver(it) } }
+        screenOffReceiver = null
+        runCatching { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(COURT_NOTIFICATION_ID) }
+        _courtScreen.value?.let { _courtScreen.value = it.ended(System.currentTimeMillis()) }
+    }
+
+    /**
+     * Уведомление, которое открывает экран суда. Канал громкий по важности —
+     * иначе система не откроет экран, — но без звука и вибрации: будить
+     * человека незачем, нужен только горящий экран.
+     */
+    private fun courtNotification(): Notification {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.getNotificationChannel(COURT_CHANNEL_ID) == null) {
+            nm.createNotificationChannel(
+                NotificationChannel(COURT_CHANNEL_ID, "Экран суда", NotificationManager.IMPORTANCE_HIGH).apply {
+                    setSound(null, null)
+                    enableVibration(false)
+                }
+            )
+        }
+        val screen = PendingIntent.getActivity(
+            this, COURT_NOTIFICATION_ID,
+            Intent(this, CourtScreenActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return Notification.Builder(this, COURT_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle("Агент разбирает память")
+            .setContentText("Экран не гаснет, пока идёт суд")
+            .setCategory(Notification.CATEGORY_PROGRESS)
+            .setContentIntent(screen)
+            .setFullScreenIntent(screen, true)
+            .setOngoing(true)
+            .build()
     }
 
     private fun updateNotificationText() {
@@ -1355,6 +1450,9 @@ class AgentService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val FIRST_CHANNEL_ID = "agent_first"
         private const val FIRST_NOTIFICATION_ID = 2
+        /** Экран суда (memory.judge.CourtScreen): своё уведомление на весь экран. */
+        private const val COURT_CHANNEL_ID = "agent_court_screen"
+        private const val COURT_NOTIFICATION_ID = 3
         private const val WAKE_LOCK_MARGIN_MS = 10L * 60 * 1000
         private const val LIVING_TEXT = "Живу. Разбор памяти не идёт."
 
@@ -1390,6 +1488,16 @@ class AgentService : Service() {
 
         private val _state = MutableStateFlow<RunState>(RunState.Idle)
         val state: StateFlow<RunState> get() = _state
+
+        private val _courtScreen = MutableStateFlow<CourtScreen.Run?>(null)
+
+        /** Экран последнего самостоятельного суда (memory.judge.CourtScreen); null — суда сам в этом запуске не было. */
+        val courtScreen: StateFlow<CourtScreen.Run?> get() = _courtScreen
+
+        /** Экран суда открылся — зовёт сам экран (CourtScreenActivity). */
+        fun courtScreenOpened(now: Long = System.currentTimeMillis()) {
+            _courtScreen.value?.takeIf { it.endedAt == null }?.let { _courtScreen.value = it.opened(now) }
+        }
 
         private val _initiativeLine = MutableStateFlow("Первым: не пишу — первая проверка через минуту")
 

@@ -77,6 +77,7 @@ import com.uroboros.memory.RejectOutcome
 import com.uroboros.memory.RejectPath
 import com.uroboros.memory.RequestCensus
 import com.uroboros.memory.dream.DreamTopic
+import com.uroboros.memory.judge.CourtScreen
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
@@ -3316,6 +3317,8 @@ class MainActivity : AppCompatActivity() {
             AgentLife.comaLines(applicationContext) + "\n" + AgentLife.hangLine() + "\n" + MemoryWatch.meterLine(applicationContext),
             // Простои процесса (safety.StallWatch): кома — процесс умер, простой — жил, но не шёл.
             StallWatch.meterLine(applicationContext),
+            // Экран суда (memory.judge.CourtScreen) — ответ на простои при самостоятельном суде.
+            CourtScreen.line(AgentService.courtScreen.value, ::fmtMoment),
             MoveState.meterLine(applicationContext),
         )
         group(
@@ -4513,6 +4516,10 @@ class MainActivity : AppCompatActivity() {
         // Счёт «Первым» за сутки — оттуда же (AgentService.initiativeTallyLines).
         lifecycleScope.launch {
             AgentService.initiativeTallyLines.collect { renderMetricsPanel() }
+        }
+        // Строка «Экран суда» — оттуда же (AgentService.courtScreen).
+        lifecycleScope.launch {
+            AgentService.courtScreen.collect { renderMetricsPanel() }
         }
         lifecycleScope.launch {
             combine(watchdog.zone, watchdog.power) { _, _ -> Unit }
