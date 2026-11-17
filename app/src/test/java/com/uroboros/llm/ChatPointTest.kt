@@ -68,4 +68,51 @@ class ChatPointTest {
         assertEquals(listOf("a"), ChatPoint.extra(files, max = 2))
         assertEquals(emptyList<String>(), ChatPoint.extra(files.take(2), max = 2))
     }
+
+    // Почему у чата нет файла снимка (missingWhy). Часы — минуты от полуночи, для чтения.
+    private val clock: (Long) -> String = { ms -> "%02d:%02d".format(ms / 60_000 / 60, ms / 60_000 % 60) }
+    private fun at(h: Int, m: Int) = (h * 60L + m) * 60_000
+
+    @Test
+    fun `нет файла - снимок пропал незаписанным`() {
+        // Ход чата 02:41, модель выгружена по памяти 02:47 — до записи дело не дошло.
+        assertEquals(
+            "снимок не записан: модель выгружена по сигналу памяти в 02:47",
+            ChatPoint.missingWhy(null, at(2, 47), "модель выгружена по сигналу памяти", null, at(0, 10), clock),
+        )
+        // Пропажа после прежней записи — тоже она: файл описывал бы старую ленту, но его нет.
+        assertEquals(
+            "снимок не записан: модель загружалась заново в 03:00",
+            ChatPoint.missingWhy(at(2, 50), at(3, 0), "модель загружалась заново", null, at(0, 10), clock),
+        )
+    }
+
+    @Test
+    fun `нет файла - записан, но стёрт`() {
+        assertEquals(
+            "записан в 02:50, стёрт по пределу файлов (${ChatPoint.MAX_FILES})",
+            ChatPoint.missingWhy(at(2, 50), null, null, at(3, 5), at(0, 10), clock),
+        )
+        assertEquals(
+            "записан в 02:50, но в 03:00 сменилась папка кэша (стена или модель) — снимок ушёл с прежней",
+            ChatPoint.missingWhy(at(2, 50), null, null, null, at(3, 0), clock),
+        )
+    }
+
+    @Test
+    fun `нет файла - в этом запуске не писался`() {
+        assertEquals("в этом запуске не записывался", ChatPoint.missingWhy(null, null, null, null, at(0, 10), clock))
+    }
+
+    @Test
+    fun `молчит о причинах, которых не было`() {
+        // Пропажа раньше удачной записи — не причина: запись её перекрыла.
+        val after = ChatPoint.missingWhy(at(2, 50), at(2, 40), "модель загружалась заново", null, at(0, 10), clock)
+        assertEquals("записан в 02:50, файла нет — отчего, не видно", after)
+        // Стирание по пределу раньше записи и смена папки раньше записи — тоже нет.
+        assertEquals(
+            "записан в 02:50, файла нет — отчего, не видно",
+            ChatPoint.missingWhy(at(2, 50), null, null, at(2, 0), at(1, 0), clock),
+        )
+    }
 }
