@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Build
 import android.os.PowerManager
 import androidx.annotation.RequiresApi
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -23,7 +24,9 @@ import java.util.Locale
  *
  * ПОДЪЁМ — ЭТО СОЗДАНИЕ СЛУЖБЫ. Первый подъём после установки — рождение, все
  * последующие — выход из комы, какой бы ни была её причина: счёт видит только,
- * что жизнь прерывалась. Когда и отчего — записи Android ([comas], ComaCause).
+ * что жизнь прерывалась. Когда и отчего — записи Android ([comas], ComaCause);
+ * где стоял экран при «завис» — снимок потоков при той же записи ([readHang],
+ * HangPlace).
  *
  * ЧЕГО НЕ УМЕЕТ:
  *  - сам не знает, когда агент упал — упавший записать этого не успевает; это
@@ -126,6 +129,70 @@ object AgentLife {
         // Замер памяти перед прошлой смертью — было ли «мало» (safety.MemoryPressure.beforeComa).
         val before = lastAt?.let { com.uroboros.safety.MemoryPressure.beforeComa(com.uroboros.safety.MemoryWatch.beforeDeath(context), it) }
         return ComaCause.lines(reading, ::moment) + (before?.let { "\n$it" } ?: "")
+    }
+
+    /**
+     * Где стоял экран при последнем «завис» ([HangPlace]) — готовая строка, если
+     * снимок уже прочитан ([readHang]); иначе слова о том, что ещё нет.
+     */
+    fun hangLine(): String = hangText ?: "Где стоял экран: снимок ещё не прочитан"
+
+    @Volatile
+    private var hangText: String? = null
+
+    @Volatile
+    private var hangSettled = false
+
+    /**
+     * Прочитать снимок потоков последнего «завис» и собрать строку. Удачное
+     * чтение — раз за жизнь процесса, по той же причине, что [comas]; сбой
+     * спрашивается снова при следующем вызове.
+     *
+     * Звать НЕ с главного потока: снимок — файл в сотни килобайт, который
+     * отдаёт система, а разбор идёт по всему прочитанному.
+     */
+    fun readHang(context: Context) {
+        if (hangSettled) return
+        val reading =
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) HangPlace.Reading.Unavailable("Android до 11 снимков не хранит")
+            else hangOf(context)
+        hangText = HangPlace.lines(reading, ::moment)
+        hangSettled = reading !is HangPlace.Reading.Unavailable
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun hangOf(context: Context): HangPlace.Reading {
+        val found = try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val name = context.packageName
+            am.getHistoricalProcessExitReasons(name, 0, 0)
+                .filter { it.processName == name && it.reason == ApplicationExitInfo.REASON_ANR }
+                .maxByOrNull { it.timestamp }
+        } catch (t: Throwable) {
+            return HangPlace.Reading.Unavailable(t.javaClass.simpleName)
+        }
+        val anr = found ?: return HangPlace.Reading.NoHang
+        return try {
+            val stream = anr.traceInputStream
+                ?: return HangPlace.Reading.NoTrace(anr.timestamp, "Android снимка потоков не сохранил")
+            val (text, truncated) = stream.use { readUpTo(it, HangPlace.MAX_TRACE_CHARS) }
+            HangPlace.Reading.Trace(anr.timestamp, text, truncated)
+        } catch (t: Throwable) {
+            HangPlace.Reading.NoTrace(anr.timestamp, "снимок не прочитался — ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** Начало потока не длиннее [limit] знаков и было ли за ним ещё. */
+    private fun readUpTo(input: InputStream, limit: Int): Pair<String, Boolean> {
+        val reader = input.bufferedReader(Charsets.UTF_8)
+        val out = StringBuilder()
+        val buf = CharArray(8192)
+        while (out.length < limit) {
+            val n = reader.read(buf, 0, minOf(buf.size, limit - out.length))
+            if (n < 0) return out.toString() to false
+            out.appendRange(buf, 0, n)
+        }
+        return out.toString() to (reader.read() >= 0)
     }
 
     private fun readComas(context: Context): ComaCause.Reading =
