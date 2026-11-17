@@ -3310,7 +3310,11 @@ class MainActivity : AppCompatActivity() {
                 start, metrics.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
-        group("Комы", AgentLife.comaLines(applicationContext) + "\n" + MemoryWatch.meterLine(applicationContext), MoveState.meterLine(applicationContext))
+        group(
+            "Комы",
+            AgentLife.comaLines(applicationContext) + "\n" + AgentLife.hangLine() + "\n" + MemoryWatch.meterLine(applicationContext),
+            MoveState.meterLine(applicationContext),
+        )
         group(
             "Сторож",
             // Наблюдение за зоной стоит последним: смотрят на него не при
@@ -6215,6 +6219,13 @@ class MainActivity : AppCompatActivity() {
         // разрешает.
         bodyFailure = AgentService.live(applicationContext)
         renderMetricsPanel()
+        // Снимок потоков последнего «завис» — файл, который отдаёт система:
+        // читается не здесь, а на потоке ввода-вывода, и строка в «Комах»
+        // перерисовывается, когда он прочитан. Прочитанный второй раз не читается.
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { AgentLife.readHang(applicationContext) }
+            renderMetricsPanel()
+        }
     }
 
     override fun onStop() {
