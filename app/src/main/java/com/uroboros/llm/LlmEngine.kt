@@ -25,6 +25,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -952,6 +953,7 @@ class LlmEngine(
         stateIsConversation = false
         checkpointFresh = false
         borrowReport = null
+        noteChatLost("модель загружалась заново")
         chatPoint = ChatPoint.otherStarted()
         val modelInfo = engine.getModelInfoJson() ?: ""
         loadPrint = shortHash(modelInfo + "|" + sourceIdentity + "|" + loadIdentity)
@@ -1452,6 +1454,7 @@ class LlmEngine(
      * @return рядом нашлась папка этой же загрузки под другой стеной.
      */
     private fun applyPromptCache(wall: String): Boolean {
+        val previousDir = promptCacheDir
         promptCacheDir = null
         promptCacheAcknowledged = false
 
@@ -1472,6 +1475,7 @@ class LlmEngine(
         }
 
         promptCacheDir = dir
+        if (dir != previousDir) cacheDirSince = System.currentTimeMillis()
         engine.setPromptCacheDir(dir.absolutePath)
 
         // Спрашиваем немедленно: строка только что напечатана и лежит в хвосте
@@ -1681,6 +1685,24 @@ class LlmEngine(
     var chatSaveReport: Pair<String, String>? = null
         private set
 
+    // Отчего у чата нет файла снимка ([ChatPoint.missingWhy]): моменты этого
+    // запуска процесса. Ключ — ключ чата, у стёртых по пределу — имя файла
+    // (стирается файл, а ключа в имени нет).
+    private val chatSavedAt = ConcurrentHashMap<String, Long>()
+    private val chatLostAt = ConcurrentHashMap<String, Pair<Long, String>>()
+    private val chatEvictedAt = ConcurrentHashMap<String, Long>()
+
+    /** С какого момента стоит нынешняя папка кэша ([applyPromptCache]); null — ещё не ставилась. */
+    @Volatile
+    private var cacheDirSince: Long? = null
+
+    /** Снимок чата в движке не записан и сейчас пропадёт — отметить, отчего ([ChatPoint.missingWhy]). */
+    private fun noteChatLost(why: String) {
+        val s = chatPoint
+        val chat = s.chat ?: return
+        if (s.owned && !s.onDisk) chatLostAt[chat] = System.currentTimeMillis() to why
+    }
+
     /**
      * Файл снимка чата [chat] — в папке кэша стены, как и точка экрана: от
      * другой модели, параметров или стены он лежит по другому пути и чужим
@@ -1702,6 +1724,7 @@ class LlmEngine(
         step.save?.let { leaving ->
             val started = System.currentTimeMillis()
             val ok = writeChatCheckpoint(leaving)
+            if (ok) chatSavedAt[leaving] = System.currentTimeMillis() else noteChatLost("запись в файл не удалась")
             chatPoint = ChatPoint.afterSave(chatPoint, ok)
             chatSaveReport = leaving to ((if (ok) "записан перед чужой работой" else "не записан") +
                 " · ${chatCheckpointLine(leaving)} · ${"%.1f".format((System.currentTimeMillis() - started) / 1000.0)} с")
@@ -1717,7 +1740,15 @@ class LlmEngine(
         val file = chatCheckpointFile(lift)
         if (file == null || !file.isFile || !engine.isLoaded) {
             chatPoint = ChatPoint.afterLift(lift, false)
-            chatLiftReport = "на диске нет — окно чата посчитается заново"
+            val why = when {
+                !engine.isLoaded -> "модель не загружена"
+                file == null -> "папки кэша нет"
+                else -> ChatPoint.missingWhy(
+                    chatSavedAt[lift], chatLostAt[lift]?.first, chatLostAt[lift]?.second,
+                    chatEvictedAt[file.name], cacheDirSince, ::clockOf,
+                )
+            }
+            chatLiftReport = "на диске нет ($why) — окно чата посчитается заново"
             return@synchronized
         }
         val started = System.currentTimeMillis()
@@ -1748,7 +1779,7 @@ class LlmEngine(
         // Сверх предела — самые давние: снимок весит больше сотни мегабайт.
         val files = dir.listFiles { f -> f.isFile && !f.name.endsWith(CHECKPOINT_TEMP_SUFFIX) }.orEmpty()
         val stale = ChatPoint.extra(files.map { it.name to it.lastModified() }).toSet()
-        files.filter { it.name in stale }.forEach { it.delete() }
+        files.filter { it.name in stale }.forEach { if (it.delete()) chatEvictedAt[it.name] = System.currentTimeMillis() }
         return true
     }
 
@@ -2852,6 +2883,8 @@ class LlmEngine(
      */
     suspend fun unloadForMemory(): Boolean = loadLock.withLock {
         if (!engine.isLoaded) return@withLock false
+        noteChatLost("модель выгружена по сигналу памяти")
+        chatPoint = ChatPoint.otherStarted()
         engine.unload()
         loadedSource = null
         loadedName = null
