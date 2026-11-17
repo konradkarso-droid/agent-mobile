@@ -42,6 +42,7 @@ import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.desk.Promises
+import com.uroboros.memory.dream.DreamTopic
 import com.uroboros.memory.dream.FactsReader
 import com.uroboros.memory.Heard
 import com.uroboros.memory.MemoryDatabase
@@ -569,7 +570,7 @@ object ChatLink {
             count[1]++
             return "промолчал сам ${clock(System.currentTimeMillis())} — $why · промолчал ${count[1]} из ${count[0] + count[1]} за запуск службы"
         }
-        send(app, job, text, ActionProvenance.MODEL_OUTPUT, generated.records)?.let { return "ответ не ушёл — $it" }
+        send(app, job, text, ActionProvenance.MODEL_OUTPUT, generated.records, generated.dreamNote)?.let { return "ответ не ушёл — $it" }
         count[0]++
         return ChatTurnMeter.answered(clock(System.currentTimeMillis()), generated.tookMs ?: 0L, text.length, generated.ladder)
     }
@@ -603,6 +604,8 @@ object ChatLink {
         val ladder: String? = null,
         /** Тексты записей памяти, поданных модели в этот ход (см. [Recall]). */
         val records: List<String> = emptyList(),
+        /** Описание ночи, поданное модели в этот ход (см. [NightNote]). */
+        val dreamNote: String? = null,
     )
 
     /** Имена колец, строки которых модель читает (AddressSorter.modelReads), — для запросов к ленте чата. */
@@ -681,7 +684,14 @@ object ChatLink {
         // ход идёт без них, строка экрана говорит почему.
         val question = ChatFeed.question(window)
         val recall = recallFor(app, job, window, question, owner, dictionary, chatName, now)
-        recalls[job.tallyKey] = recall.meter
+        // Описание ночи — первым в том же сообщении агента, что записи хода, как
+        // на экране строка о ночи стоит перед записями (ConversationJournal.messagesFor).
+        val night = nightFor(
+            app, ChatRecall.scope(job.place == Place.DIRECT, owner?.key == job.sender),
+            addressOf(window, question, now), readRaw.filter { it.id >= window.startId }, chatName, now,
+        )
+        recalls[job.tallyKey] = recall.meter + "\n" + night.meter
+        val remembered = listOfNotNull(night.line, recall.message).joinToString("\n\n").ifEmpty { null }
 
         // Лента чата для лестницы ответа (AnswerLadder): запрос — окно чата,
         // ходы для мер перехвата — ответы агента в окне. Годного ответа нет —
@@ -695,9 +705,9 @@ object ChatLink {
             override fun history() = turnsOfWindow
             override fun theirWords() = ForeignSelf.theirWords(recall.message)
             override fun messages(without: Set<Int>) =
-                ChatFeed.messages(ChatFeed.without(window, without), place, headText, tailBlock, note, recall.message)
+                ChatFeed.messages(ChatFeed.without(window, without), place, headText, tailBlock, note, remembered)
             override fun stableMessages(without: Set<Int>) =
-                if (without.isEmpty()) ChatFeed.stableMessages(messages(without), recall = recall.message != null) else null
+                if (without.isEmpty()) ChatFeed.stableMessages(messages(without), recall = remembered != null) else null
             override fun close(answer: String, rejected: String?) {
                 chosen = answer
             }
@@ -772,7 +782,7 @@ object ChatLink {
         if (text.isEmpty()) {
             return Generated(null, if (ran.glanced) "глянул на приборы, после доски ответа нет" else "модель не выдала ни знака", tookMs, said)
         }
-        return Generated(text, null, tookMs, said, recall.records)
+        return Generated(text, null, tookMs, said, recall.records, night.line)
     }
 
     /**
@@ -884,6 +894,61 @@ object ChatLink {
         }
     }
 
+    /** Слова людей в окне до текущей реплики — для адреса вопроса и просьбы вспомнить. */
+    private fun earlierWords(window: ChatFeed.Window): List<ChatFeed.Line> {
+        val asked = window.lines.takeLastWhile { !it.isAgent }
+        return window.lines.dropLast(asked.size).filter { !it.isAgent }
+    }
+
+    /** Адрес вопроса этого хода (Coordinates.addressInRibbon) — одно место для записей и описания ночи. */
+    private fun addressOf(window: ChatFeed.Window, question: String, now: Long): Coordinates.Address =
+        Coordinates.addressInRibbon(earlierWords(window).map { it.text to it.at }, question, now)
+
+    /** Описание ночи этого хода: строка модели (null — не подаётся) и строка экрана врат. */
+    private class NightNote(val line: String?, val meter: String)
+
+    /**
+     * Описание последней ночи — по правилу dream.DreamTopic.chatRefusal: только
+     * в личке владельца и на вопрос к агенту, раз на окно чата. Поданное
+     * ложится в строку ответа (llm.ChatLine.dreamNote), по ней же счёт за
+     * сутки. [shown] — строки окна этого чата. Ночь не прочиталась — ход идёт
+     * без описания, строка экрана говорит почему.
+     */
+    private suspend fun nightFor(
+        app: Context,
+        scope: ChatRecall.Scope,
+        address: Coordinates.Address,
+        shown: List<ChatLine>,
+        chatName: String,
+        now: Long,
+    ): NightNote {
+        val told = shown.filter { it.isAgent && it.dreamNote != null }
+        val toldToday = DreamTopic.toldWithinDay(told.map { it.at }, now)
+        val ownerDirect = scope == ChatRecall.Scope.OWNER
+        if (!ownerDirect) {
+            return NightNote(null, DreamTopic.meter(toldToday, DreamTopic.NOT_OWNER_DIRECT, chatName))
+        }
+        return try {
+            val db = MemoryDatabase.getInstance(app)
+            val night = withContext(Dispatchers.IO) { db.dreamDao().lastNight() }
+            val thought = night?.let { withContext(Dispatchers.IO) { db.conclusionDao().lastAcceptedText(it.nightAt) } }
+            val candidate = DreamTopic.line(DreamTopic.load(night?.dreamTopics), thought)
+            val refusal = DreamTopic.chatRefusal(
+                candidate,
+                ownerDirect = true,
+                toAgent = address == Coordinates.Address.AGENT,
+                alreadyInChat = told.any { it.dreamNote == candidate },
+                stored = night?.dreamTopics,
+            )
+            val fed = if (refusal == null) candidate else null
+            NightNote(fed, DreamTopic.meter(toldToday + (if (fed != null) 1 else 0), refusal, chatName))
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            NightNote(null, DreamTopic.meter(toldToday, "последняя ночь не прочиталась (${t.javaClass.simpleName})", chatName))
+        }
+    }
+
     /**
      * Что память даёт этому ходу — по границе чата ([ChatRecall]): владельцу
      * в личке — круг, как на экране (тот же вызов и те же подписи,
@@ -911,9 +976,8 @@ object ChatLink {
         val scope = ChatRecall.scope(job.place == Place.DIRECT, owner?.key == job.sender)
         val conversationStart = window.opened?.at ?: window.lines.first().at
         val shown = ChatRecall.shownTexts(window.lines, owner?.key?.id)
-        val asked = window.lines.takeLastWhile { !it.isAgent }
-        val earlier = window.lines.dropLast(asked.size).filter { !it.isAgent }
-        val address = Coordinates.addressInRibbon(earlier.map { it.text to it.at }, question, now)
+        val earlier = earlierWords(window)
+        val address = addressOf(window, question, now)
         // Своя речь — на вопрос к агенту или просьбу вспомнить (gate.ChatOwnSpeech).
         val recallPlan = RecallRequest.plan(question, earlier.map { it.text }, dictionary, address)
         val own = ownSpeechFor(
@@ -1026,7 +1090,8 @@ object ChatLink {
     /**
      * Отправить [text] ответом на сообщение задания: ворота с согласием, пауза
      * чата, канал, строка ленты. null — ушло; иначе причина. [records] —
-     * тексты записей памяти, поданных модели в этот ход.
+     * тексты записей памяти, поданных модели в этот ход; [dreamNote] — поданное
+     * описание ночи.
      */
     private suspend fun send(
         app: Context,
@@ -1034,6 +1099,7 @@ object ChatLink {
         text: String,
         provenance: ActionProvenance,
         records: List<String> = emptyList(),
+        dreamNote: String? = null,
     ): String? {
         val consent = ChatPrefs.consent(app)
         val verdict = GatedAction.evaluate(
@@ -1062,6 +1128,7 @@ object ChatLink {
                 sender = GateTelegram.userKey(meId).id, name = "агент", signature = "", isBot = true, isAgent = true,
                 text = text, ring = null, reason = null, replyTo = job.sender.id, at = now, place = job.place.name,
                 recall = ChatOwnSpeech.pack(records),
+                dreamNote = dreamNote,
             )
         )
         return null
