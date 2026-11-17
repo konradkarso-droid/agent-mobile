@@ -490,7 +490,30 @@ class LlmEngine(
     private val barrierClockStops = AtomicInteger(0)
 
     /**
-     * Отметить состоявшуюся проверку и обновить наибольший отрезок без неё.
+     * Сколько модель работала на прогон, по словам самого движка
+     * (GGMLEngine.computeHeldMs), — наибольшее из увиденного проверками.
+     *
+     * ЗАЧЕМ. Потолок сторожа ([barrierStopReason]) меряет то же число. Ноль
+     * при прогоне, дошедшем до движка, значит, что потолок слеп — движок не
+     * отмечает свою работу, — и это видно только здесь: в обычной жизни
+     * потолок не срабатывает, и его молчание иначе неотличимо от поломки.
+     *
+     * Чего не умеет: при двух прогонах сразу ждущий видит работу того, кто
+     * держит движок, и запишет её себе.
+     */
+    private val barrierMaxHeldMs = AtomicLong(0L)
+
+    /**
+     * Сколько прогон ждал движка за чужой работой, мс; -1 — не дошёл до
+     * движка. Читается в конце прогона (GGMLEngine.lastHoldWaitMs), и это
+     * ожидание последней работы движка — если сразу за этим прогоном движок
+     * взял кто-то другой, число будет его.
+     */
+    private val barrierHoldWaitMs = AtomicLong(-1L)
+
+    /**
+     * Отметить состоявшуюся проверку и обновить наибольший отрезок без неё —
+     * и наибольшую работу модели на прогон ([barrierMaxHeldMs]).
      *
      * ОДНА ФУНКЦИЯ НА ОБА ИСТОЧНИКА ПРОВЕРКИ — событие потока и тик часового.
      * Считая только события, прибор показывал бы прежний зазор и после того,
@@ -503,6 +526,8 @@ class LlmEngine(
      * порядка, а не для точности — как и сказано в [barrierMaxGapMs].
      */
     private fun noteBarrierCheck(atMs: Long) {
+        val held = engine.computeHeldMs()
+        if (held > barrierMaxHeldMs.get()) barrierMaxHeldMs.set(held)
         val previousCheckMs = barrierLastCheckAtMs.getAndSet(atMs)
         if (previousCheckMs != 0L) {
             val gap = atMs - previousCheckMs
@@ -519,11 +544,14 @@ class LlmEngine(
      * с первой молча, и на экране оба выглядели бы одинаково.
      *
      * Чего не умеет: причина одна, а совпасть их может две. Возвращается та,
-     * что проверена раньше.
+     * что проверена раньше. И при двух прогонах сразу часовой ждущего видит
+     * работу того, кто держит движок: дойдя до потолка, он остановит чужую
+     * работу (по сути верно — потолок исчерпан у неё) и запишет обрыв концом
+     * своего прогона.
      */
     private fun barrierStopReason(zone: SafetyZone): GenerationEnd? = when {
         zone == SafetyZone.CRITICAL -> GenerationEnd.WATCHDOG_CRITICAL
-        watchdog.shouldForceCooldown() -> GenerationEnd.WATCHDOG_TIMEOUT
+        DeviceSafetyWatchdog.shouldForceCooldown(engine.computeHeldMs()) -> GenerationEnd.WATCHDOG_TIMEOUT
         else -> null
     }
 
@@ -565,9 +593,10 @@ class LlmEngine(
             clockStops == 0 -> " Часовой: $ticks проверок, останавливать не пришлось."
             else -> " Часовой: $ticks проверок, остановки требовал $clockStops раз."
         }
+        val ceilingTail = CeilingLine.of(barrierMaxHeldMs.get(), barrierHoldWaitMs.get(), text + other > 0)
         if (text == 0 && other == 0) {
             return "Барьер: событий не проходило вовсе. " +
-                "Наибольший отрезок без проверки: $gapSec с." + clockTail
+                "Наибольший отрезок без проверки: $gapSec с." + clockTail + ceilingTail
         }
         val passed = "Барьер: пропущено $text кусков текста и $other служебных"
         val delayTail = if (delayed == 0) {
@@ -581,7 +610,7 @@ class LlmEngine(
         val gapTail = " Наибольший отрезок без проверки: $gapSec с."
         val stopMs = barrierStopToEndMs.get()
         if (stopMs == 0L) {
-            return passed + delayTail + gapTail + clockTail
+            return passed + delayTail + gapTail + clockTail + ceilingTail
         }
         // Строка про остановку показывается ТОЛЬКО когда барьер срабатывал.
         // Иначе её ноль читался бы как «остановились мгновенно», хотя означал
@@ -590,7 +619,7 @@ class LlmEngine(
         val stopSec = String.format("%.1f", stopMs / 1000.0)
         return passed + delayTail + gapTail +
             " После требования остановки прошло $stopSec с, " +
-            "отброшено ещё $dropped событий." + clockTail
+            "отброшено ещё $dropped событий." + clockTail + ceilingTail
     }
 
     /**
@@ -2322,7 +2351,6 @@ class LlmEngine(
         // сломала бы цифры вердикта, циклу — код. Ставится на каждый запрос,
         // а не один раз, потому что запросы разных хозяев идут вперемешку.
         engine.setConversationGloss(talk)
-        watchdog.markInferenceStarted()
         val startedAtMs = System.currentTimeMillis()
         // Причина сбрасывается ЗДЕСЬ, в начале прогона, а не в конце прошлого.
         // Иначе на экране осталась бы причина прошлого прогона, и читалась бы
@@ -2336,6 +2364,8 @@ class LlmEngine(
         barrierStopToEndMs.set(0L)
         barrierStopAtMs.set(0L)
         barrierMaxGapMs.set(0L)
+        barrierMaxHeldMs.set(0L)
+        barrierHoldWaitMs.set(-1L)
         barrierClockTicks.set(0)
         barrierClockStops.set(0)
         // Отсчёт зазора начинается ОТ СТАРТА ПРОГОНА, а не от первого события:
@@ -2503,10 +2533,10 @@ class LlmEngine(
             if (stopAt != 0L) {
                 barrierStopToEndMs.set(endedAtMs - stopAt)
             }
-            watchdog.resetInferenceTimer()
+            val reached = barrierPassedText.get() + barrierPassedOther.get() > 0
+            if (reached || barrierMaxHeldMs.get() > 0) barrierHoldWaitMs.set(engine.lastHoldWaitMs())
             // Чей снимок теперь в слоте — по строке лога этого хода, если ход
             // дошёл до движка; не дошёл — в слоте прежний (ChatPoint.Outcome.NONE).
-            val reached = barrierPassedText.get() + barrierPassedOther.get() > 0
             if (chat != null) {
                 val outcome = if (!reached) ChatPoint.Outcome.NONE else withContext(NonCancellable + Dispatchers.IO) {
                     runCatching { EngineLines.ribbonOutcome(lastRequestLog()) }.getOrDefault(ChatPoint.Outcome.NONE)
@@ -2560,7 +2590,6 @@ class LlmEngine(
     fun stopGeneration() {
         recordGenerationEnd(GenerationEnd.STOPPED_BY_CALLER)
         engine.stopGeneration()
-        watchdog.resetInferenceTimer()
     }
 
     /**
@@ -2641,13 +2670,13 @@ class LlmEngine(
      * memory.dream.RecordChunkStep). [finish] — последняя порция: тогда же
      * убираются папки кусков других загрузок.
      *
-     * Под тем же присмотром, что генерация: занятость движка ([activity]),
-     * счёт непрерывного обсчёта у сторожа и часовой, который при опасной зоне
-     * просит движок остановиться. Остановка прерывает порцию между строками.
+     * Под тем же присмотром, что генерация: занятость движка ([activity]) и
+     * часовой, который при опасной зоне или исчерпанном потолке непрерывной
+     * работы ([barrierStopReason]; время работы меряет сам движок) просит
+     * движок остановиться. Остановка прерывает порцию между строками.
      */
     suspend fun buildRecordChunks(lines: List<String>, finish: Boolean): RecordSplit.Build = withContext(Dispatchers.IO) {
         coroutineScope {
-            watchdog.markInferenceStarted()
             val clock = launch {
                 while (isActive) {
                     delay(WATCHDOG_TICK_MS)
@@ -2678,7 +2707,6 @@ class LlmEngine(
             } finally {
                 activity.end()
                 clock.cancel()
-                watchdog.resetInferenceTimer()
             }
         }
     }
@@ -2701,9 +2729,10 @@ class LlmEngine(
      * `state_read.h` в нативной части; зачем — у memory.judge.DirectJudge.
      *
      * Под тем же присмотром, что генерация и сборка кусков: занятость движка
-     * ([activity]) и счёт непрерывной работы у сторожа. Одно чтение короткое и
+     * ([activity]) и сторож ([barrierStopReason]). Одно чтение короткое и
      * внутри не прерывается, поэтому сторож спрашивается до него: в опасной
-     * зоне или на исчерпанном потолке чтение не начинается ([LayerRead.Stopped]).
+     * зоне — или пока движок без перерыва занят чужой работой дольше потолка —
+     * чтение не начинается ([LayerRead.Stopped]).
      *
      * После чтения разговор у движка необсчитан: следующий ход пойдёт со стены
      * с диска, как первый после загрузки.
@@ -2711,7 +2740,6 @@ class LlmEngine(
     suspend fun readLayerMean(wall: String, head: String, tail: String, layer: Int): LayerRead =
         withContext(Dispatchers.IO) {
             barrierStopReason(watchdog.zone.value)?.let { return@withContext LayerRead.Stopped(it) }
-            watchdog.markInferenceStarted()
             activity.begin()
             try {
                 val mean = engine.readLayerMean(wall, head, tail, layer)
@@ -2719,7 +2747,6 @@ class LlmEngine(
                 else LayerRead.Failed(engine.lastReadWhy().ifEmpty { "движок не назвал причину" })
             } finally {
                 activity.end()
-                watchdog.resetInferenceTimer()
             }
         }
 

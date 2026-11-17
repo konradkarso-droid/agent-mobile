@@ -117,6 +117,12 @@ internal object GGUFNativeLib {
     /** Какой команды процессора не хватает сборке; пусто — всё есть (cpu_missing_for_build). */
     external fun nativeCpuMissingForBuild(): String
 
+    /** Сколько мс модель уже работает на нынешний вызов; 0 — не работает (GenHold в gguf_lib.cpp). Без замка. */
+    external fun nativeComputeHeldMs(): Long
+
+    /** Сколько мс последняя работа модели ждала замка; -1 — работы не было (GenHold). Без замка. */
+    external fun nativeLastHoldWaitMs(): Long
+
     // ── Power engine / decode diagnostics ──────────────────────────────────
     //
     // The thermal/auto-mode surface lives outside the load path so the host
