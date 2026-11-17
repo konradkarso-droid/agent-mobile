@@ -189,6 +189,7 @@ object GateLink {
                 }
                 session = opened
                 cleanedAt = 0L
+                ChatLink.knowMe(app, opened.me)
                 opened
             }
             val now = System.currentTimeMillis()

@@ -213,8 +213,28 @@ object ChatLink {
     /** Строки ленты, подхваченные после комы: пришедшие ещё и очередью второй раз не отвечаются. */
     private val revived = ConcurrentHashMap.newKeySet<Long>()
 
+    /**
+     * Кто я в телеграме (`getMe`). Ставит его открытие канала ([knowMe]), а не
+     * первое услышанное сообщение: прибор приватности в группах должен
+     * говорить и тогда, когда сообщений нет, — как раз тогда его и смотрят.
+     */
     @Volatile
     private var me: GateBotApi.Me? = null
+
+    /** Канал открыт: кто я — для прибора и для чтения слов. Зовёт GateLink после `getMe`. */
+    fun knowMe(context: Context, me: GateBotApi.Me) {
+        this.me = me
+        refresh(context.applicationContext)
+    }
+
+    /** Строка прибора приватности в группах; [me] null — канал телеграма ещё не открыт. */
+    fun privacyLine(me: GateBotApi.Me?): String = when {
+        me == null -> "Приватность в группах: не знаю — канал телеграма не открыт (почему — в строке «Телеграм:»)"
+        me.readsAllGroupMessages == true -> "Приватность в группах: выключена — вижу все сообщения"
+        me.readsAllGroupMessages == false ->
+            "Приватность в группах: включена — вижу только обращённое (выключить в @BotFather: /setprivacy)"
+        else -> "Приватность в группах: телеграм не сказал"
+    }
 
     @Volatile
     private var failedUri: String? = null
@@ -1066,13 +1086,7 @@ object ChatLink {
         val names = ChatPrefs.names(app)
         out += if (names.isEmpty()) "Имена агента: не объявлены — в группах по имени не сортирую (кнопка «Имена»)"
         else "Имена агента: ${names.joinToString(", ")}"
-        me?.let { m ->
-            out += when (m.readsAllGroupMessages) {
-                true -> "Приватность в группах: выключена — вижу все сообщения"
-                false -> "Приватность в группах: включена — вижу только обращённое (выключить в @BotFather: /setprivacy)"
-                null -> "Приватность в группах: телеграм не сказал"
-            }
-        }
+        out += privacyLine(me)
         // Перехват порчи в ответах чата (AnswerLadder) стоит на этом детекторе:
         // не загружен — порча не проверяется, и это видно здесь, а не молчит.
         out += WordDamageHolder.meterLine()
