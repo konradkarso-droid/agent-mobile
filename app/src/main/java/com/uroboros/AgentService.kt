@@ -40,6 +40,7 @@ import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.MemoryDatabase
+import com.uroboros.memory.dream.DreamPlot
 import com.uroboros.memory.dream.DreamRunner
 import com.uroboros.memory.dream.Conclusion
 import com.uroboros.memory.dream.ConclusionStep
@@ -903,9 +904,12 @@ class AgentService : Service() {
         // Ночи перед последней — см. SleepPressure.measure.
         val earlier = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) } ?: emptyList()
         val queue = night?.let { db.dreamDao().ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 1) } ?: emptyList()
+        // Словарь — до пробы: проба и ночь плетут сюжеты одним словарём (см.
+        // SleepPressure.measure, «ЧЕГО НЕ УМЕЕТ»).
+        val plotWords = plotWords()
         // Пробное плетение — вне главного потока: при большой памяти это
         // заметный счёт, а на главном он подвешивал бы экран.
-        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier, queue) }
+        val pressure = withContext(Dispatchers.Default) { SleepPressure.measure(records, night, rows, earlier, queue, plotWords) }
         SleepDecision.decide(pressure.changed)?.let {
             showSleepLine(it)
             return
@@ -915,9 +919,20 @@ class AgentService : Service() {
             return
         }
 
-        val report = nightLock.withLock { DreamRunner.run(db, NightStart.SELF) }
+        val report = nightLock.withLock { DreamRunner.run(db, NightStart.SELF, plotWords) }
         lastSelfSleep = "Уснул сам в ${clock(now)}: " + report.lineSequence().first()
         showSleepLine("Выспался.")
+    }
+
+    /**
+     * Слова-темы сюжетов сна (dream.DreamPlot.Words): словарь грузится здесь, а
+     * не полагается на экран — ночь в службе идёт и тогда, когда экран в этом
+     * процессе не открывался. Не загрузился — null, и отчёт ночи скажет почему
+     * сюжетов нет.
+     */
+    private suspend fun plotWords(): DreamPlot.Words? {
+        withContext(Dispatchers.IO) { LemmaHolder.load { assets.open(LemmaHolder.ASSET) } }
+        return DreamPlot.Words.of(LemmaHolder.loaded, ChatPrefs.names(applicationContext))
     }
 
     /** Показать итог проверки сна; во время разбора уведомление не трогается. */
@@ -1005,7 +1020,7 @@ class AgentService : Service() {
             // Сон идёт без блокировки сна и без пометки "идёт разбор": это
             // миллисекунды счёта, а не прогон, который надо сторожить.
             val dreamed = if (dreamFirst) {
-                nightLock.withLock { DreamRunner.run(db, NightStart.BUTTON, nightAt) }
+                nightLock.withLock { DreamRunner.run(db, NightStart.BUTTON, plotWords(), nightAt) }
             } else {
                 null
             }

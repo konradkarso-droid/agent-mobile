@@ -39,11 +39,14 @@ object DreamRunner {
      * кроме отмены: срыв сна — это строка в отчёте, а не сорванный прогон.
      *
      * [startedBy] без значения по умолчанию намеренно: новый путь, начинающий
-     * ночь, обязан сказать, кто он, иначе его ночи смешаются с чужими.
+     * ночь, обязан сказать, кто он, иначе его ночи смешаются с чужими. То же с
+     * [plotWords] (слова-темы сюжетов, DreamWeaver.weave): путь, не подавший
+     * словарь, остался бы без сюжетов, и отчёт ночи так и скажет.
      */
     suspend fun run(
         db: MemoryDatabase,
         startedBy: NightStart,
+        plotWords: DreamPlot.Words?,
         nightAt: Long = System.currentTimeMillis(),
     ): String {
         return try {
@@ -54,7 +57,7 @@ object DreamRunner {
             // нечего. Давление сна берёт ночи на одну дальше, см. SleepPressure.measure.
             val recent = DreamWeaver.chainsOf(db.dreamDao().ofRecentNights(DreamWeaver.FRESH_NIGHTS, 0))
             val queue = DreamWeaver.lastDreamtOf(db.dreamDao().ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 0))
-            val night = DreamWeaver.weave(records, recent, queue)
+            val night = DreamWeaver.weave(records, recent, queue, plotWords)
             // Притоки реки — вспомненные сны прошлой ночи (см. DreamRiver).
             val previous = db.dreamDao().lastNight()
             val tributaries = previous?.let { db.dreamDao().ofNight(it.nightAt) }
@@ -92,7 +95,9 @@ object DreamRunner {
                 db.dreamDao().insertNight(row)
                 db.dreamDao().insertAll(rows)
             }
-            describe(row, night.repeats, night.dreams.filter { it.kind == DreamWeaver.Kind.PLOT }.map { it.recordIds.size }) +
+            val plots = night.dreams.filter { it.kind == DreamWeaver.Kind.PLOT }
+            val plotsLine = DreamWeaver.plotsLine(plots.map { it.recordIds.size }, plots.mapNotNull { it.core }, DreamWeaver.plotsWhy(night))
+            describe(row, night.repeats, plotsLine) +
                 (leaderFailure?.let { "\n$it" } ?: "")
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -108,11 +113,11 @@ object DreamRunner {
      * [repeats] — [DreamWeaver.Night.repeats]; в строке ночи не хранится,
      * экран снов пересчитывает его из базы. null — не известно, строки нет.
      */
-    fun describe(row: DreamNight, repeats: Int? = null, plots: List<Int>? = null): String = buildString {
+    fun describe(row: DreamNight, repeats: Int? = null, plots: String? = null): String = buildString {
         append(if (row.dreams == 0) "Сон: ничего не приснилось." else "Сон: снов ${row.dreams}.")
         append("\n")
-        // [plots] — длины вошедших сюжетов ночи; null — не известны, строки нет.
-        if (plots != null) append(DreamWeaver.plotsLine(plots)).append("\n")
+        // [plots] — строка о сюжетах (DreamWeaver.plotsLine); null — строки нет.
+        if (plots != null) append(plots).append("\n")
         // «Участвовало», а не «снилось»: прошли отбор сна, но связаться могли не
         // все. Сколько приснилось на деле, видно в разделе «Сны».
         append("Участвовало записей: ").append(row.dreamers)

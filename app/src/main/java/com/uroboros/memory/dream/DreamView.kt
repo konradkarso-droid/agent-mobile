@@ -53,16 +53,20 @@ import java.util.Locale
 class DreamView(
     private val dreams: DreamDao,
     private val stickers: StickerDao,
+    /** Слова-темы сюжетов для давления сна (SleepPressure.measure) — те же, что у ночи. */
+    private val plotWords: () -> DreamPlot.Words? = { null },
 ) {
 
     /**
      * Обычный вход с экрана. Хранилища берутся из базы процесса; отдельный
      * конструктор выше нужен затем, чтобы отбор молчащих снов проверялся
-     * подделками, без Android и без устройства.
+     * подделками, без Android и без устройства. [plotWords] спрашивается при
+     * каждом показе: словарь грузится после открытия экрана.
      */
-    constructor(context: Context) : this(
+    constructor(context: Context, plotWords: () -> DreamPlot.Words?) : this(
         MemoryDatabase.getInstance(context).dreamDao(),
         MemoryDatabase.getInstance(context).stickerDao(),
+        plotWords,
     )
 
     /**
@@ -85,7 +89,7 @@ class DreamView(
         // и строка повторов (см. DreamWeaver.repeatsLine).
         val earlier = night?.let { dreams.ofRecentNights(DreamWeaver.FRESH_NIGHTS, 1) } ?: emptyList()
         val queue = night?.let { dreams.ofRecentNights(DreamWeaver.QUEUE_NIGHTS, 1) } ?: emptyList()
-        val pressure = SleepPressure.line(SleepPressure.measure(all, night, rows, earlier, queue))
+        val pressure = SleepPressure.line(SleepPressure.measure(all, night, rows, earlier, queue, plotWords()))
         if (night == null) return NO_NIGHT + "\n\n" + pressure
         val byId = all.associateBy { it.id }
 
@@ -184,6 +188,9 @@ class DreamView(
         const val NO_NIGHT = "СНЫ\n" +
             "Сна ещё не было. Ночь проходит долгим нажатием на «Разбор памяти»."
 
+        /** Причина нуля сюжетов на экране снов: в базе её нет, она в отчёте ночи (DreamWeaver.plotsWhy). */
+        const val WHY_IN_REPORT = "почему, сказано в отчёте ночи"
+
         /**
          * Слова раздела. Отдельно от чтения базы, чтобы проверяться без Android:
          * ошибка здесь — это молчание или враньё на экране, а не сбой.
@@ -221,7 +228,8 @@ class DreamView(
             if (night.dreamersCold > 0) append(" · холодных ").append(night.dreamersCold)
             if (night.dreamersArchive > 0) append(" · из архива ").append(night.dreamersArchive)
             append("\n")
-            if (plots != null) append(DreamWeaver.plotsLine(plots)).append("\n")
+            // Ядер и причины нуля в базе нет — они в отчёте ночи.
+            if (plots != null) append(DreamWeaver.plotsLine(plots, why = WHY_IN_REPORT)).append("\n")
 
             // Разница между «участвовал» и «приснился» показывает, широко ли сон
             // берёт: запись могла пройти отбор и всё равно ни с чем не связаться.
