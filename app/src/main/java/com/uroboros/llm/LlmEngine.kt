@@ -629,17 +629,14 @@ class LlmEngine(
      *    экрана ещё подбирал записи) остаётся. Стену под идущей генерацией
      *    не даёт сменить отдельная проверка в [applyPendingWall];
      *  - чтений для экрана ([hasStateCheckpoint], [getStateCheckpointDiskReport],
-     *    [conversationDisplaced]). Запись держит замок долго — библиотека
-     *    сперва ждёт конца идущей генерации, потом пишет файл до полутора сотен
-     *    мегабайт, — и экран под замком замирал бы на это время. Цена чтения
-     *    без замка — на мгновение увидеть прежнюю папку.
+     *    [conversationDisplaced], [wallText]). Запись держит замок долго —
+     *    библиотека сперва ждёт конца идущей генерации, потом пишет файл до
+     *    полутора сотен мегабайт, — и экран под замком замирал бы на это время.
+     *    Цена чтения без замка — на мгновение увидеть прежнюю папку или стену.
      *
      * Держатель замка может ждать собственного замка библиотеки (запись,
-     * подъём и `setSystemPrompt` берут его), поэтому смена на лету, запись и
-     * подъём берут этот замок не на главном потоке. Исключение одно — загрузка
-     * ([configureAfterLoad]) ставит стену на том потоке, где идёт сама, как и
-     * до замка; ждать ей там почти нечего: пока модель грузится, точку
-     * писать некому.
+     * подъём и `setSystemPrompt` берут его), поэтому смена на лету, запись,
+     * подъём и загрузка ([loading]) берут этот замок не на главном потоке.
      */
     private val wallLock = Any()
 
@@ -798,8 +795,21 @@ class LlmEngine(
     @Volatile
     private var loadedAdapterKey: String? = null
 
-    suspend fun loadModel(modelPath: String): Boolean = loadLock.withLock {
-        if (cpuRefusal() != null) return@withLock false
+    /**
+     * Тело загрузки — под [loadLock] и на потоке ввода-вывода, кто бы ни звал.
+     *
+     * ЗАЧЕМ ПОТОК. Загрузка и настройка после неё ([applyThreadMode],
+     * [configureAfterLoad]: шаблон, выборка, папка кусков, стена) зовут в
+     * движок то, что ждёт его замка генерации, а замок занят всё время чужого
+     * ответа — телеграма, суда, шагов ночи. Среди зовущих загрузку — экран и
+     * тело агента (AgentService), оба с главного потока, и ожидание там
+     * держало бы экран вместе со всем телом агента.
+     */
+    private suspend fun <T> loading(block: suspend () -> T): T =
+        loadLock.withLock { withContext(Dispatchers.IO) { block() } }
+
+    suspend fun loadModel(modelPath: String): Boolean = loading {
+        if (cpuRefusal() != null) return@loading false
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
         // Модель по пути к файлу — не из папки моделей: накладку не ищем, и
@@ -865,18 +875,18 @@ class LlmEngine(
      * модель заново, только если у ночи своя накладка: подключить другую к уже
      * загруженной модели движок не умеет (см. nativeSetAdapterFd).
      */
-    suspend fun loadModelFromUri(uri: Uri, role: AdapterFile.Role = AdapterFile.Role.DAY): Boolean = loadLock.withLock {
+    suspend fun loadModelFromUri(uri: Uri, role: AdapterFile.Role = AdapterFile.Role.DAY): Boolean = loading {
         val adapter = orderAdapterFromFolder(role, uri)
         if (engine.isLoaded && loadedSource == uri.toString() && loadedAdapterKey == adapter.key) {
             // Заказ не пригодился: грузить нечего, а оставленный заказ ушёл бы
             // к чужой загрузке.
             engine.orderAdapter(context, null)
             loadedNight = adapter.night
-            return@withLock true
+            return@loading true
         }
         if (cpuRefusal() != null) {
             engine.orderAdapter(context, null)
-            return@withLock false
+            return@loading false
         }
         val params = GGMLEngine.getRecommendedParams(context)
         applyThreadMode()
@@ -1099,7 +1109,11 @@ class LlmEngine(
         return null
     }
 
-    /** Стена, стоящая в движке; null — модель не загружена. Под [wallLock]. */
+    /**
+     * Стена, стоящая в движке; null — модель не загружена. Пишется под
+     * [wallLock]; читается и без него ([wallText]).
+     */
+    @Volatile
     private var currentWall: String? = null
 
     /**
@@ -1107,7 +1121,7 @@ class LlmEngine(
      * Детектору порчи (AnswerLadder): слова стены — слова запроса, и имя
      * агента из стены порчей не считается.
      */
-    val wallText: String? get() = synchronized(wallLock) { currentWall }
+    val wallText: String? get() = currentWall
 
     /**
      * Сколько токенов текста для DRY прошло через цепочку выборки в последней
