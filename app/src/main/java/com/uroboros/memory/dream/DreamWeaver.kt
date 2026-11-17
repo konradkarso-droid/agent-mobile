@@ -11,7 +11,8 @@ import com.uroboros.util.TextFold
 /**
  * Дешёвый сон: какие записи этой ночью свяжутся между собой.
  *
- * Чистая арифметика над записями, без модели, без базы и без часов — поэтому
+ * Чистая арифметика над записями (для сюжетов — ещё словарь начальных форм,
+ * см. [DreamPlot]), без модели, без базы и без часов — поэтому
  * проверяется обычным тестом, а стоит миллисекунды. Сон ничего не меняет в
  * записях: его выход — список связей, которые кладутся рядом (см. [Dream]).
  *
@@ -34,18 +35,18 @@ import com.uroboros.util.TextFold
  * что холодное вытесняет горячее. Слой читается как есть, поэтому перед сном
  * звать остывание — забота вызывающего.
  *
- * СПЛЕТЕНИЕ. Внутри одной ночи простые связи сплетаются в сюжеты
- * ([Kind.PLOT]): цепочки из нескольких записей, где каждые две соседние связаны
- * одним из признаков выше. Сначала простые связи, потом сюжеты короче, потом
- * длиннее, до [MAX_PLOT_RECORDS]. Запись в сюжете встречается один раз, круги не
- * строятся, один и тот же набор записей — один сюжет.
+ * СЮЖЕТЫ ([Kind.PLOT]) — до [MAX_PLOT_RECORDS] записей, собравшихся вокруг
+ * записи-центра одной темой; как собираются и чего не умеют — у [DreamPlot].
+ * Признаки простых снов сюжету не нужны: записи сюжета как раз делят слово —
+ * тему. Сюжет, у которого больше половины записей уже есть в другом сюжете
+ * ночи, не строится: соседние центры дают почти одно и то же, и первым
+ * остаётся сюжет с более новым центром.
  *
- * Сюжет обязан сплетать РАЗНЫЕ признаки — хотя бы одну связь по времени и одну
- * через мост. Цепочка из связей одного признака пересказывает то, что уже
- * приснилось простыми снами: пачка фраз, набранных подряд, связана по времени
- * вся со всей, и её перестановки — не сюжеты. А «ставка 7.5 — закат — Меркурий»
- * соединяет то, что было рядом по времени, с тем, что сходится по словам, и
- * такого сна среди простых нет.
+ * МЕСТА. Простой сон — ассоциация к ответу (DreamRecall), сюжет — то, что можно
+ * рассказать; у них разная работа, и места под потолком у них раздельные:
+ * сюжетам — до [PLOT_PLACES], простым — остальные. Простых связей в живой
+ * памяти всегда больше потолка, и общие места они занимали целиком, до
+ * сюжетов не доходило ни одной ночи.
  *
  * КТО НЕ СНИТСЯ, и почему каждый:
  *  - запись на проверке — сон обходил бы карантин;
@@ -67,18 +68,13 @@ import com.uroboros.util.TextFold
  *    «станция» сойдутся. Для сна это приемлемо — сон и не обязан быть точным;
  *  - варианты одного сна не схлопываются: «закат — Меркурий на восходе» и
  *    «закат — Меркурий у полудня» — два сна, хотя по смыслу один;
- *  - потолок [MAX_DREAMS_PER_NIGHT]: когда простых снов больше него, до
- *    сюжетов дело не доходит вовсе, а места делятся так: сначала сны, которых
- *    не было последние [FRESH_NIGHTS] ночей, затем повторы, внутри каждой
+ *  - потолок [MAX_DREAMS_PER_NIGHT]: когда снов больше мест, места делятся
+ *    так — внутри сюжетов и внутри простых отдельно: сначала сны, которых не
+ *    было последние [FRESH_NIGHTS] ночей, затем повторы, внутри каждой
  *    очереди — между записями поровну, и первой та запись, что не снилась
- *    дольше всех (см. [fairShare]). Что потолок
- *    сработал, сказано в [Night.ceilingHit], сколько вошло повторов — в
- *    [Night.repeats];
- *  - сюжеты места поровну не делят: они строятся, только пока мест хватает,
- *    от старых записей к новым, и останавливаются на потолке. Когда сюжетов
- *    больше свободных мест, новые записи до своих сюжетов не доходят. Свежесть
- *    их тоже не касается: перебор сюжетов, упёршийся в потолок, каждую ночь
- *    строит одни и те же;
+ *    дольше всех (см. [fairShare]). Что потолок сработал, сказано в
+ *    [Night.ceilingHit], сколько вошло повторов — в [Night.repeats];
+ *  - сюжеты без словаря начальных форм не плетутся вовсе ([Night.plotCenters]);
  *  - мосты ищутся перебором пар с пересечением соседей: при тысячах записей это
  *    уже заметная работа, при сотнях — нет.
  */
@@ -86,8 +82,12 @@ object DreamWeaver {
 
     enum class Kind { BRIDGE, TIME, PLOT }
 
-    /** Один сон: номера записей в порядке цепочки и чем он приснился. */
-    data class Woven(val recordIds: List<Long>, val kind: Kind)
+    /**
+     * Один сон: номера записей в порядке цепочки и чем он приснился. [core] —
+     * ядро сюжета (DreamPlot.Plot.core); у простых снов null. В базе не
+     * хранится: оно для отчёта ночи.
+     */
+    data class Woven(val recordIds: List<Long>, val kind: Kind, val core: String? = null)
 
     /**
      * Итог ночи вместе с тем, кого сон не видел.
@@ -116,7 +116,7 @@ object DreamWeaver {
          */
         val coldDreams: Int,
         val archiveDreams: Int,
-        /** Потолок снов за ночь сработал — часть сюжетов не построена. */
+        /** Потолок снов за ночь сработал — часть снов (простых или сюжетов) не вошла. */
         val ceilingHit: Boolean,
         /**
          * Сколько вошедших в ночь снов уже снилось в ночи, переданные в
@@ -124,6 +124,12 @@ object DreamWeaver {
          * не хватило свежих снов на все места.
          */
         val repeats: Int = 0,
+        /**
+         * Сколько записей нашли ядро сюжета (DreamPlot.Result.centers); null —
+         * сюжеты не плелись: слов-тем не подали (нет словаря). Ноль сюжетов при
+         * нуле и при null — разные поломки, и отчёт ночи их различает.
+         */
+        val plotCenters: Int? = null,
     )
 
     /**
@@ -134,11 +140,16 @@ object DreamWeaver {
      * @param lastDreamt когда какая запись снилась в последний раз (см.
      *        [lastDreamtOf]); пустое — очереди между ночами нет. Влияет на
      *        то же, что [recent], и только на это.
+     * @param plotWords слова-темы для сюжетов ([DreamPlot.Words]); null —
+     *        сюжеты не плетутся, это видно в [Night.plotCenters]. Значения по
+     *        умолчанию нет намеренно: путь, забывший словарь, молча остался бы
+     *        без сюжетов.
      */
     fun weave(
         records: List<Sticker>,
         recent: Set<List<Long>> = emptySet(),
         lastDreamt: Map<Long, Long> = emptyMap(),
+        plotWords: DreamPlot.Words?,
     ): Night {
         var hidden = 0
         var questions = 0
@@ -172,13 +183,6 @@ object DreamWeaver {
         fun share(a: Long, b: Long) = sharing[a]?.contains(b) == true
 
         val dreams = mutableListOf<Woven>()
-        // Связи для сплетения: с кем связана запись и каким признаком. Признак
-        // нужен сюжету — см. weavePlots.
-        val links = HashMap<Long, MutableMap<Long, MutableSet<Kind>>>()
-        fun link(a: Long, b: Long, kind: Kind) {
-            links.getOrPut(a) { HashMap() }.getOrPut(b) { HashSet() } += kind
-            links.getOrPut(b) { HashMap() }.getOrPut(a) { HashSet() } += kind
-        }
 
         val ids = dreamers.map { it.id }
         for (i in ids.indices) {
@@ -190,23 +194,18 @@ object DreamWeaver {
                     .intersect(sharing[b] ?: emptySet())
                     .filter { words.getValue(it).size <= MAX_BRIDGE_WORDS }
                     .minOrNull()
-                if (bridge != null) {
-                    dreams += Woven(listOf(a, bridge, b), Kind.BRIDGE)
-                    link(a, b, Kind.BRIDGE)
-                }
+                if (bridge != null) dreams += Woven(listOf(a, bridge, b), Kind.BRIDGE)
                 val gap = kotlin.math.abs(byId.getValue(a).createdAt - byId.getValue(b).createdAt)
-                if (gap <= TIME_WINDOW_MS) {
-                    dreams += Woven(listOf(a, b), Kind.TIME)
-                    link(a, b, Kind.TIME)
-                }
+                if (gap <= TIME_WINDOW_MS) dreams += Woven(listOf(a, b), Kind.TIME)
             }
         }
 
-        var ceilingHit = dreams.size > MAX_DREAMS_PER_NIGHT
-        if (!ceilingHit) {
-            ceilingHit = !weavePlots(ids, links, dreams)
-        }
-        val kept = fairShare(dreams, MAX_DREAMS_PER_NIGHT, recent, lastDreamt)
+        val woven = plotWords?.let { DreamPlot.weave(dreamers, it) }
+        val plots = withoutNearDuplicates(woven?.plots.orEmpty())
+        val keptPlots = fairShare(plots, PLOT_PLACES, recent, lastDreamt)
+        val simplePlaces = MAX_DREAMS_PER_NIGHT - keptPlots.size
+        val ceilingHit = dreams.size > simplePlaces || plots.size > keptPlots.size
+        val kept = fairShare(dreams, simplePlaces, recent, lastDreamt) + keptPlots
         fun layerOf(id: Long) = byId.getValue(id).layer
         val archiveDreams = kept.count { d -> d.recordIds.any { layerOf(it) == Layer.PURPLE.name } }
         val coldDreams = kept.count { d ->
@@ -227,7 +226,24 @@ object DreamWeaver {
             archiveDreams = archiveDreams,
             ceilingHit = ceilingHit,
             repeats = kept.count { it.recordIds in recent },
+            plotCenters = woven?.centers,
         )
+    }
+
+    /**
+     * Сюжеты без почти-дублей (описание объекта, «СЮЖЕТЫ»): [plots] — от более
+     * новых центров к старым, как их отдаёт DreamPlot.weave.
+     */
+    private fun withoutNearDuplicates(plots: List<DreamPlot.Plot>): List<Woven> {
+        val taken = mutableListOf<Set<Long>>()
+        val out = mutableListOf<Woven>()
+        for (plot in plots) {
+            val set = plot.recordIds.toSet()
+            if (taken.any { (it intersect set).size * 2 > set.size }) continue
+            taken += set
+            out += Woven(plot.recordIds, Kind.PLOT, plot.core)
+        }
+        return out
     }
 
     /**
@@ -256,6 +272,36 @@ object DreamWeaver {
         }
         return out
     }
+
+    /**
+     * Строка о сюжетах ночи. Пишется всегда, и ноль тоже: «сюжетов нет» должно
+     * отличаться от «строки нет». [lengths] — длины вошедших сюжетов; [cores] —
+     * их ядра (есть только у отчёта ночи: в базе ядро не хранится); [why] —
+     * почему сюжетов ноль ([plotsWhy]).
+     */
+    fun plotsLine(lengths: List<Int>, cores: List<String> = emptyList(), why: String? = null): String = when {
+        lengths.isEmpty() -> "Сюжетов: ни одного" + (why?.let { " — $it" } ?: "")
+        else -> buildString {
+            append("Сюжетов: ").append(lengths.size)
+            if (lengths.min() == lengths.max()) append(", длиной ").append(lengths.min()).append(" записей")
+            else append(", длиной от ").append(lengths.min()).append(" до ").append(lengths.max()).append(" записей")
+            if (cores.isNotEmpty()) append("; ядра: ").append(cores.joinToString(", ") { "«$it»" })
+        }
+    }
+
+    /**
+     * Почему у ночи [night] нет сюжетов; null — сюжеты есть. Две поломки
+     * различаются: словаря не было — сюжеты и не плелись; словарь был — ни
+     * одна запись не собрала ядра (DreamPlot, «КАК СОБИРАЕТСЯ»).
+     */
+    fun plotsWhy(night: Night): String? = when {
+        night.dreams.any { it.kind == Kind.PLOT } -> null
+        night.plotCenters == null -> "словарь начальных форм не загружен, без него у записей нет слов-тем"
+        else -> "ни у одной записи из ${night.dreamers} нет ядра"
+    }
+
+    /** Строка о сработавшем потолке; одна на ночной отчёт и экран «Сны». */
+    const val CEILING_LINE = "Потолок снов сработал — часть снов не вошла."
 
     /**
      * Строка о повторах для итога ночи и экрана снов: сколько снов ночи
@@ -386,49 +432,6 @@ object DreamWeaver {
     }
 
     /**
-     * Дописать сюжеты от коротких к длинным. Ложь — упёрлись в потолок.
-     *
-     * Перебор останавливается на потолке, а не строит всё и режет потом: в
-     * густой памяти число цепочек растёт быстрее числа записей, и строить то,
-     * что заведомо не войдёт, значило бы платить за ночь больше, чем она даёт.
-     */
-    private fun weavePlots(
-        ids: List<Long>,
-        links: Map<Long, Map<Long, Set<Kind>>>,
-        dreams: MutableList<Woven>,
-    ): Boolean {
-        // Один набор записей — один сюжет, в каком бы порядке его ни обошли:
-        // в группе, где все связаны со всеми, иначе каждая перестановка стала
-        // бы отдельным сном.
-        val seen = HashSet<Set<Long>>()
-        for (length in 3..MAX_PLOT_RECORDS) {
-            fun walk(path: List<Long>, kinds: Set<Kind>): Boolean {
-                if (path.size == length) {
-                    if (kinds.size < 2) return true
-                    if (seen.add(path.toSet())) {
-                        if (dreams.size >= MAX_DREAMS_PER_NIGHT) return false
-                        val canonical = if (path.first() < path.last()) path else path.reversed()
-                        dreams += Woven(canonical, Kind.PLOT)
-                    }
-                    return true
-                }
-                val neighbours = links[path.last()] ?: emptyMap()
-                for (next in neighbours.keys.sorted()) {
-                    if (next in path) continue
-                    for (kind in neighbours.getValue(next)) {
-                        if (!walk(path + next, kinds + kind)) return false
-                    }
-                }
-                return true
-            }
-            for (start in ids) {
-                if (!walk(listOf(start), emptySet())) return false
-            }
-        }
-        return true
-    }
-
-    /**
      * Значимые слова записи — тем же правилом, что у поиска (MIN_WORD_LENGTH,
      * STOP_WORDS), и укороченные до [WORD_PREFIX] букв вместо разбора окончаний.
      */
@@ -473,10 +476,22 @@ object DreamWeaver {
     const val MAX_BRIDGE_WORDS = 8
 
     /**
-     * Самый длинный сюжет, в записях. Дальше сюжет, всплыв в ответе, тащил бы
-     * за одно место слишком много чужого текста. Объявленная граница, не подбор.
+     * Самый длинный сюжет, в записях. Объявленная граница, не подбор: столько же
+     * записей берётся к ответу (memory.DolmenCircle.RECORDS_CEILING) — меньше
+     * сюжет не успевает стать историей, больше уже не держится вместе. К ответу
+     * сюжет не идёт (DreamRecall берёт только простые сны), поэтому чужого
+     * текста за одно место он не тащит.
      */
-    const val MAX_PLOT_RECORDS = 4
+    const val MAX_PLOT_RECORDS = 10
+
+    /**
+     * Сколько мест из [MAX_DREAMS_PER_NIGHT] отдано сюжетам. Объявленное число,
+     * не подобранное: треть — сюжеты на виду, а простых связей, которыми живёт
+     * ассоциация в разговоре, остаётся вдвое больше. Неиспользованные сюжетами
+     * места уходят простым. Перепроверяется экраном «Сны»: сюжетов там видно
+     * число и длины.
+     */
+    const val PLOT_PLACES = 20
 
     /**
      * Потолок снов за ночь. Стартовое число, не вывод. Область — память в

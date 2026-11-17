@@ -34,7 +34,7 @@ class SleepPressureTest {
 
     /** Ночь над этими записями — так, как её положил бы ночной проход. */
     private fun nightOver(records: List<Sticker>): Pair<DreamNight, List<Dream>> {
-        val woven = DreamWeaver.weave(records)
+        val woven = DreamWeaver.weave(records, plotWords = null)
         val night = DreamNight.of(NIGHT, woven)
         val rows = woven.dreams.map { Dream(NIGHT, it.recordIds.joinToString(","), it.kind.name) }
         return night to rows
@@ -42,7 +42,7 @@ class SleepPressureTest {
 
     private fun measure(now: List<Sticker>, then: List<Sticker>): SleepPressure.Reading {
         val (night, rows) = nightOver(then)
-        return SleepPressure.measure(now, night, rows, emptyList(), emptyList())
+        return SleepPressure.measure(now, night, rows, emptyList(), emptyList(), null)
     }
 
     @Test
@@ -94,7 +94,7 @@ class SleepPressureTest {
 
     @Test
     fun `ночей не было — давление равно первой ночи`() {
-        val r = SleepPressure.measure(base, null, emptyList(), emptyList(), emptyList())
+        val r = SleepPressure.measure(base, null, emptyList(), emptyList(), emptyList(), null)
         assertEquals(3, r.appeared)
         assertEquals(null, r.dreamersThen)
         assertTrue(SleepPressure.line(r), SleepPressure.line(r).contains("ночей ещё не было"))
@@ -105,21 +105,21 @@ class SleepPressureTest {
         // Та же ночь, записанная с пробелами после запятых, — те же сны.
         val (night, rows) = nightOver(base)
         val spaced = rows.map { it.copy(recordIds = it.recordIds.replace(",", ", ")) }
-        assertEquals(0, SleepPressure.measure(base, night, spaced, emptyList(), emptyList()).changed)
+        assertEquals(0, SleepPressure.measure(base, night, spaced, emptyList(), emptyList(), null).changed)
     }
 
     @Test
     fun `сны реки не читаются ушедшими`() {
         val (night, rows) = nightOver(base)
         val withRiver = rows + Dream(NIGHT, "1,2,3", DreamRiver.KIND)
-        assertEquals(0, SleepPressure.measure(base, night, withRiver, emptyList(), emptyList()).changed)
+        assertEquals(0, SleepPressure.measure(base, night, withRiver, emptyList(), emptyList(), null).changed)
     }
 
     @Test
     fun `вспомненный сон — приток, и это давление`() {
         val (night, rows) = nightOver(base)
         val recalled = rows.mapIndexed { i, d -> if (i == 0) d.copy(lastRecalledAt = 5L) else d }
-        val r = SleepPressure.measure(base, night, recalled, emptyList(), emptyList())
+        val r = SleepPressure.measure(base, night, recalled, emptyList(), emptyList(), null)
         assertEquals(1, r.tributaries)
         assertEquals(1, r.changed)
         assertTrue(SleepPressure.line(r), SleepPressure.line(r).contains("притоков реки 1"))
@@ -135,7 +135,7 @@ class SleepPressureTest {
 
     /** Строки базы ночи [at], сплетённой из [records] с недавними из [before]. */
     private fun rowsOf(at: Long, records: List<Sticker>, before: List<Dream>): Pair<DreamNight, List<Dream>> {
-        val woven = DreamWeaver.weave(records, DreamWeaver.chainsOf(before), DreamWeaver.lastDreamtOf(before))
+        val woven = DreamWeaver.weave(records, DreamWeaver.chainsOf(before), DreamWeaver.lastDreamtOf(before), plotWords = null)
         return DreamNight.of(at, woven) to woven.dreams.map { Dream(at, it.recordIds.joinToString(","), it.kind.name) }
     }
 
@@ -146,10 +146,10 @@ class SleepPressureTest {
         // Перебор по кругу настоящий: прошлая ночь не повторила позапрошлую…
         assertTrue(DreamWeaver.chainsOf(lastRows) != DreamWeaver.chainsOf(earlier))
         // …но перемены материала нет, и давление — ноль.
-        assertEquals(0, SleepPressure.measure(crowded, last, lastRows, earlier, earlier).changed)
+        assertEquals(0, SleepPressure.measure(crowded, last, lastRows, earlier, earlier, null).changed)
         // Проба с памятью, включающей саму прошлую ночь, видела бы «перемену»
         // без единой новой записи — от этого и защищает выбор ночей.
-        val wrong = SleepPressure.measure(crowded, last, lastRows, earlier + lastRows, earlier + lastRows)
+        val wrong = SleepPressure.measure(crowded, last, lastRows, earlier + lastRows, earlier + lastRows, null)
         assertTrue("перебор по кругу не должен читаться давлением", wrong.changed > 0)
     }
 
@@ -159,7 +159,7 @@ class SleepPressureTest {
         // что была у прошлой ночи, повторяет её точно.
         val (_, earlier) = rowsOf(500L, crowded, emptyList())
         val (last, lastRows) = rowsOf(NIGHT, crowded, earlier)
-        assertEquals(0, SleepPressure.measure(crowded, last, lastRows, earlier, earlier).changed)
+        assertEquals(0, SleepPressure.measure(crowded, last, lastRows, earlier, earlier, null).changed)
     }
 
     @Test
@@ -167,7 +167,7 @@ class SleepPressureTest {
         val (_, earlier) = rowsOf(500L, crowded, emptyList())
         val (last, lastRows) = rowsOf(NIGHT, crowded, earlier)
         val now = crowded + rec(13, "носорог", at = minute)
-        assertTrue(SleepPressure.measure(now, last, lastRows, earlier, earlier).changed > 0)
+        assertTrue(SleepPressure.measure(now, last, lastRows, earlier, earlier, null).changed > 0)
     }
 
     private companion object {

@@ -95,17 +95,28 @@ class DreamRecallTest {
 
     @Test
     fun `отбор детерминирован и короткое раньше длинного`() {
-        val plot = dream(1, 5, 6, kind = DreamWeaver.Kind.PLOT)
+        val bridge = dream(1, 5, 6, kind = DreamWeaver.Kind.BRIDGE)
         val time = dream(1, 7)
-        val a = pick(listOf(plot, time), live, setOf(1), quota = 1)
-        val b = pick(listOf(time, plot), live, setOf(1), quota = 1)
+        val a = pick(listOf(bridge, time), live, setOf(1), quota = 1)
+        val b = pick(listOf(time, bridge), live, setOf(1), quota = 1)
         assertEquals(time, a.picked.single().dream)
         assertEquals(a, b)
     }
 
     @Test
+    fun `сюжет к ответу не идёт, даже когда подходит`() {
+        val plot = dream(1, 5, 6, 7, kind = DreamWeaver.Kind.PLOT)
+        val offer = pick(listOf(plot), live, setOf(1))
+        assertTrue(offer.picked.isEmpty())
+        assertEquals("сюжет и подходящим не считается", 0, offer.fitting)
+        // Рядом с простым сном отбирается простой.
+        val time = dream(1, 8)
+        assertEquals(listOf(time), pick(listOf(plot, time), live, setOf(1)).picked.map { it.dream })
+    }
+
+    @Test
     fun `отбор приносит записи, которых нет в ответе, по порядку и без повторов`() {
-        val rows = listOf(dream(8, 10), dream(8, 9, 10, kind = DreamWeaver.Kind.PLOT), dream(9, 11))
+        val rows = listOf(dream(8, 10), dream(8, 9, 10, kind = DreamWeaver.Kind.BRIDGE), dream(9, 11))
         val offer = pick(rows, live, setOf(8, 9))
         // (8,10) и (9,11) короче сюжета и идут первыми; сюжет нового не несёт.
         assertEquals(listOf(10L, 11L), offer.brought.map { it.id })
@@ -114,7 +125,7 @@ class DreamRecallTest {
 
     @Test
     fun `записи ответа не приносятся заново`() {
-        val offer = pick(listOf(dream(8, 9, 10, kind = DreamWeaver.Kind.PLOT)), live, setOf(8, 10))
+        val offer = pick(listOf(dream(8, 9, 10, kind = DreamWeaver.Kind.BRIDGE)), live, setOf(8, 10))
         assertEquals(listOf(9L), offer.brought.map { it.id })
     }
 
@@ -127,7 +138,7 @@ class DreamRecallTest {
     @Test
     fun `при скрытом звене ничего не приносится`() {
         val records = live.map { if (it.id == 9L) record(9, hidden = true) else it }
-        val offer = pick(listOf(dream(8, 9, 10, kind = DreamWeaver.Kind.PLOT)), records, setOf(8))
+        val offer = pick(listOf(dream(8, 9, 10, kind = DreamWeaver.Kind.BRIDGE)), records, setOf(8))
         assertTrue(offer.brought.isEmpty())
     }
 

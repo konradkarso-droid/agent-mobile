@@ -4,8 +4,10 @@ import com.uroboros.memory.Layer
 import com.uroboros.memory.SourceKind
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.dream.DreamWeaver.Kind
+import com.uroboros.memory.nav.TestVerbs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -39,11 +41,18 @@ class DreamWeaverTest {
 
     private fun DreamWeaver.Night.of(kind: Kind) = dreams.filter { it.kind == kind }
 
+    /**
+     * Плетение без сюжетов: здесь проверяются простые сны и потолок, словарь
+     * им не нужен. Сюжеты — в блоке «Сюжеты» и в DreamPlotTest.
+     */
+    private fun weave(records: List<Sticker>, recent: Set<List<Long>> = emptySet(), lastDreamt: Map<Long, Long> = emptyMap()) =
+        DreamWeaver.weave(records, recent, lastDreamt, plotWords = null)
+
     // --- Кто не снится ---
 
     @Test
     fun `скрытая запись, вопрос и отчёт агента не снятся и сосчитаны`() {
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Алеет солнце на закате", at = 0),
                 rec(2, "Бетономешалка мешает бетон", at = minute, hidden = true),
@@ -61,7 +70,7 @@ class DreamWeaverTest {
     @Test
     fun `просьба не снится и сосчитана отдельно от вопросов`() {
         // Из живой памяти: короткая просьба служила мостом между всем подряд.
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Алеет солнце на закате", at = 0),
                 rec(2, "Расскажи про правило", at = minute),
@@ -79,7 +88,7 @@ class DreamWeaverTest {
     fun `запись из одного обычая не снится и сосчитана отдельно`() {
         // Из живой памяти: сон связал «Понял, спасибо» с «Доброй тебе ночи»,
         // и ассоциация принесла «спасибо» к ответу.
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Алеет солнце на закате", at = 0),
                 rec(2, "Доброй тебе ночи.", at = minute),
@@ -97,7 +106,7 @@ class DreamWeaverTest {
 
     @Test
     fun `рядом по времени и без общих слов — сон по времени`() {
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Чёрный чай заваривают кипятком", at = 0),
                 rec(2, "Бетономешалка мешает бетон", at = 5 * minute),
@@ -108,7 +117,7 @@ class DreamWeaverTest {
 
     @Test
     fun `далеко по времени — не снится`() {
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Чёрный чай заваривают кипятком", at = 0),
                 rec(2, "Бетономешалка мешает бетон", at = DreamWeaver.TIME_WINDOW_MS + 1),
@@ -119,7 +128,7 @@ class DreamWeaverTest {
 
     @Test
     fun `общие слова — не сон, их и так сводит поиск`() {
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Мой любимый инструмент — рубанок", at = 0),
                 rec(2, "У рубанка деревянная колодка", at = minute),
@@ -132,7 +141,7 @@ class DreamWeaverTest {
 
     @Test
     fun `две записи без общих слов сходятся через короткую третью`() {
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Алеет солнце на закате"),
                 rec(2, "Меркурий светит белым на закате"),
@@ -145,7 +154,7 @@ class DreamWeaverTest {
     @Test
     fun `длинная запись мостом не служит`() {
         val long = "Мастерская станок подача шпиндель станина кожух закате восходе светит Меркурий"
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Алеет солнце на закате"),
                 rec(2, long),
@@ -160,32 +169,76 @@ class DreamWeaverTest {
 
     // --- Сюжеты ---
 
+    private val plotWords by lazy { DreamPlot.Words.of(TestVerbs.lemmas, listOf("Александр"))!! }
+
+    /** Три записи о Клоде в разные дни и центр: из них складывается сюжет (DreamPlotTest). */
+    private fun claude() = listOf(
+        rec(1, "Продолжаем с Клодом работу, сегодня насыщенный день.", at = 0),
+        rec(2, "Кодом занимается другой агент - Клод.", at = 10 * hour),
+        rec(3, "Я передавал тебе слова Клода.", at = 20 * hour),
+        rec(4, "Разобрались с Клодом, почему ты не весь работал.", at = 30 * hour),
+    )
+
     @Test
-    fun `сюжет сплетает время и мост`() {
-        val night = DreamWeaver.weave(
-            listOf(
-                rec(1, "Алеет солнце на закате", at = 0),
-                rec(2, "ставка семь с половиной", at = minute),
-                rec(3, "Меркурий светит белым на закате", at = 5 * hour),
-                rec(4, "Меркурий светит красным на восходе", at = 9 * hour),
-            )
-        )
-        // 2 —время— 1 —мост через 3— 4
-        assertEquals(listOf(DreamWeaver.Woven(listOf(2L, 1L, 4L), Kind.PLOT)), night.of(Kind.PLOT))
+    fun `сюжет входит в ночь с ядром, почти-дубль — нет`() {
+        val night = DreamWeaver.weave(claude(), plotWords = plotWords)
+        // Центры 4, 3, 2 дают тот же набор записей — сюжет один.
+        assertEquals(listOf(DreamWeaver.Woven(listOf(1L, 2L, 3L, 4L), Kind.PLOT, "клод")), night.of(Kind.PLOT))
+        assertNull(DreamWeaver.plotsWhy(night))
     }
 
     @Test
-    fun `цепочка из связей одного признака сюжетом не становится`() {
-        // Пачка фраз, набранных подряд: все связаны со всеми по времени.
+    fun `без словаря сюжеты не плетутся, и это сказано`() {
+        val night = weave(claude())
+        assertTrue(night.of(Kind.PLOT).isEmpty())
+        assertNull(night.plotCenters)
+        assertEquals("словарь начальных форм не загружен, без него у записей нет слов-тем", DreamWeaver.plotsWhy(night))
+    }
+
+    @Test
+    fun `ни у одной записи нет ядра — сказано иначе, чем без словаря`() {
         val night = DreamWeaver.weave(
-            listOf(
-                rec(1, "Всегда носи с собой полотенце", at = 0),
-                rec(2, "Написание тестовых фраз ощущается странно", at = minute),
-                rec(3, "Четвёртое предложение будет длиннее", at = 2 * minute),
-            )
+            listOf(rec(1, "Лопата сломалась."), rec(2, "Бетон застыл.", at = 5 * hour)),
+            plotWords = plotWords,
         )
-        assertEquals(3, night.of(Kind.TIME).size)
-        assertTrue("перестановки одной пачки — не сюжеты", night.of(Kind.PLOT).isEmpty())
+        assertEquals(0, night.plotCenters)
+        assertEquals("ни у одной записи из 2 нет ядра", DreamWeaver.plotsWhy(night))
+    }
+
+    @Test
+    fun `сюжеты получают места, даже когда простых снов больше потолка`() {
+        // Пачка из двенадцати несвязанных слов подряд даёт простых снов больше потолка.
+        val burst = listOf(
+            "бетон", "ветер", "горох", "дождь", "кастрюля", "лопата",
+            "замок", "искра", "капля", "лимон", "магнит", "облако",
+        ).mapIndexed { i, w -> rec(50L + i, w, at = 200 * hour + i * minute) }
+        val night = DreamWeaver.weave(claude() + burst, plotWords = plotWords)
+        assertTrue(night.ceilingHit)
+        assertEquals(DreamWeaver.MAX_DREAMS_PER_NIGHT, night.dreams.size)
+        assertTrue("сюжет на месте", night.of(Kind.PLOT).isNotEmpty())
+        assertTrue(night.of(Kind.PLOT).size <= DreamWeaver.PLOT_PLACES)
+    }
+
+    @Test
+    fun `сюжетов нет — мест простым столько же, сколько было`() {
+        val words = listOf(
+            "бетон", "ветер", "горох", "дождь", "кастрюля", "лопата",
+            "замок", "искра", "капля", "лимон", "магнит", "облако",
+        )
+        val night = weave(words.mapIndexed { i, w -> rec(i + 1L, w, at = (i + 1) * minute) })
+        assertTrue(night.of(Kind.PLOT).isEmpty())
+        assertEquals(DreamWeaver.MAX_DREAMS_PER_NIGHT, night.dreams.size)
+    }
+
+    @Test
+    fun `строка о сюжетах говорит и про ноль`() {
+        assertEquals("Сюжетов: ни одного", DreamWeaver.plotsLine(emptyList()))
+        assertEquals("Сюжетов: ни одного — почему", DreamWeaver.plotsLine(emptyList(), why = "почему"))
+        assertEquals("Сюжетов: 2, длиной 4 записей", DreamWeaver.plotsLine(listOf(4, 4)))
+        assertEquals(
+            "Сюжетов: 3, длиной от 3 до 10 записей; ядра: «клод», «переезд», «пинг»",
+            DreamWeaver.plotsLine(listOf(10, 3, 7), listOf("клод", "переезд", "пинг")),
+        )
     }
 
     // --- Потолок ---
@@ -198,7 +251,7 @@ class DreamWeaverTest {
             "замок", "искра", "капля", "лимон", "магнит", "облако",
         )
         val records = words.mapIndexed { i, w -> rec(i + 1L, w, at = (i + 1) * minute) }
-        val night = DreamWeaver.weave(records)
+        val night = weave(records)
         assertEquals(DreamWeaver.MAX_DREAMS_PER_NIGHT, night.dreams.size)
         assertTrue(night.ceilingHit)
     }
@@ -216,7 +269,7 @@ class DreamWeaverTest {
             val word = "${letters[i / letters.length]}${letters[i % letters.length]}ааа"
             rec(i + 1L, word, at = 0)
         }
-        val night = DreamWeaver.weave(records)
+        val night = weave(records)
         assertEquals(DreamWeaver.MAX_DREAMS_PER_NIGHT, night.dreams.size)
         assertTrue(night.ceilingHit)
         val uses = night.dreams.flatMap { it.recordIds }.groupingBy { it }.eachCount()
@@ -258,9 +311,9 @@ class DreamWeaverTest {
         // Сказаны в одну минуту: 66 снов по времени на 60 мест, вчерашние
         // 60 — повторы, 6 — свежие.
         val records = crowdedWords.mapIndexed { i, w -> rec(i + 1L, w, at = 0) }
-        val first = DreamWeaver.weave(records)
+        val first = weave(records)
         val recent = first.dreams.map { it.recordIds }.toSet()
-        val second = DreamWeaver.weave(records, recent)
+        val second = weave(records, recent)
         val fresh = second.dreams.filter { it.recordIds !in recent }
         assertEquals("все свежие вошли", 66 - 60, fresh.size)
         assertEquals("остаток добран повторами, а не пуст", DreamWeaver.MAX_DREAMS_PER_NIGHT, second.dreams.size)
@@ -275,8 +328,8 @@ class DreamWeaverTest {
             rec(2, "Бетономешалка мешает бетон", at = minute),
             rec(3, "Чёрный чай заваривают кипятком", at = 2 * minute),
         )
-        val first = DreamWeaver.weave(records)
-        val again = DreamWeaver.weave(records, first.dreams.map { it.recordIds }.toSet())
+        val first = weave(records)
+        val again = weave(records, first.dreams.map { it.recordIds }.toSet())
         assertEquals(first.dreams, again.dreams)
         assertEquals("повторы сосчитаны честно", first.dreams.size, again.repeats)
     }
@@ -308,7 +361,7 @@ class DreamWeaverTest {
 
     @Test
     fun `под потолком — потолок не сработал`() {
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 rec(1, "Чёрный чай заваривают кипятком", at = 0),
                 rec(2, "Бетономешалка мешает бетон", at = minute),
@@ -321,7 +374,7 @@ class DreamWeaverTest {
 
     @Test
     fun `холодное и архив снятся и сосчитаны по самому холодному звену`() {
-        val night = DreamWeaver.weave(
+        val night = weave(
             listOf(
                 // 1–2: горячие, рядом по времени.
                 rec(1, "Чёрный чай заваривают кипятком", at = 0),
@@ -346,7 +399,7 @@ class DreamWeaverTest {
     fun `сон слоя не меняет`() {
         val cold = rec(1, "Алеет солнце на закате", at = 0, layer = Layer.BLUE)
         val hot = rec(2, "Бетономешалка мешает бетон", at = minute)
-        val night = DreamWeaver.weave(listOf(cold, hot))
+        val night = weave(listOf(cold, hot))
         assertEquals(1, night.dreams.size)
         assertEquals(Layer.BLUE.name, cold.layer)
         assertEquals(Layer.GREEN.name, hot.layer)
@@ -356,7 +409,7 @@ class DreamWeaverTest {
 
     @Test
     fun `ночь без снов оставляет итог с нулём, а не ничего`() {
-        val night = DreamWeaver.weave(listOf(rec(1, "Алеет солнце на закате")))
+        val night = weave(listOf(rec(1, "Алеет солнце на закате")))
         val row = DreamNight.of(nightAt = 42L, night = night)
         assertEquals(42L, row.nightAt)
         assertEquals(0, row.dreams)
@@ -374,7 +427,7 @@ class DreamWeaverTest {
             rec(i + 1L, w, at = (i + 1) * minute, layer = if (i == 0) Layer.BLUE else Layer.GREEN)
         } + rec(20, "Какого ты пола?") + rec(21, "скрыта", hidden = true) +
             rec(22, "[TOTE] отчёт", source = SourceKind.AGENT_INFERRED.name)
-        val night = DreamWeaver.weave(records)
+        val night = weave(records)
         val row = DreamNight.of(1L, night)
         assertEquals(night.dreams.size, row.dreams)
         assertEquals(night.dreamers, row.dreamers)
@@ -441,7 +494,7 @@ class DreamWeaverTest {
             rec(2, "Бетономешалка мешает бетон", at = minute),
             rec(3, "Чёрный чай заваривают кипятком", at = 2 * minute),
         )
-        assertEquals(DreamWeaver.weave(records).dreams, DreamWeaver.weave(records, lastDreamt = mapOf(1L to 5L)).dreams)
+        assertEquals(weave(records).dreams, weave(records, lastDreamt = mapOf(1L to 5L)).dreams)
     }
 
     @Test
@@ -456,7 +509,7 @@ class DreamWeaverTest {
             val seen = HashSet<Long>()
             for (n in 1..4) {
                 val stamps = rows.map { it.nightAt }.distinct().sorted().takeLast(DreamWeaver.FRESH_NIGHTS)
-                val night = DreamWeaver.weave(
+                val night = weave(
                     records,
                     DreamWeaver.chainsOf(rows.filter { it.nightAt in stamps }),
                     if (queue) DreamWeaver.lastDreamtOf(rows) else emptyMap(),
