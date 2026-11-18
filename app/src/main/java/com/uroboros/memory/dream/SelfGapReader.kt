@@ -44,15 +44,20 @@ class SelfGapReader(private val context: Context, private val store: JournalStor
         for (night in db.dreamDao().nightsWithTopics()) {
             DreamTopic.load(night.dreamTopics).mapTo(out) { Clouds.ofAgent(it, night.nightAt) }
         }
-        val own = OwnSpeech.said(archive.orEmpty().map { row ->
+        val turns = archive.orEmpty().map { row ->
             OwnSpeech.Turn(
                 answer = row.agentContent,
                 question = row.question,
                 records = store.recordTexts(row),
                 at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
                 serviceBlocks = store.serviceBlocks(row),
+                dreamNote = row.dreamNote,
             )
-        })
+        }
+        // Выдумка о себе в облако агента не идёт (SelfClaim); сверка не
+        // прочиталась — облако как прежде.
+        val checker = runCatching { SelfClaimReader.checker(context) }.getOrNull()
+        val own = OwnSpeech.said(checker?.mark(turns) ?: turns)
         val (aboutSelf, notAboutSelf) = own.partition { Clouds.keepsOwn(it.sentence) }
         aboutSelf.mapNotNullTo(out) { said -> said.at?.let { Clouds.ofAgent(said.sentence, it) } }
         return Clouds.Gathered(out, assertsNothing.size, notAboutSelf.size)

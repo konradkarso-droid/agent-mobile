@@ -2,6 +2,7 @@ package com.uroboros.gate
 
 import com.uroboros.llm.ChatLine
 import com.uroboros.memory.desk.Desk
+import com.uroboros.memory.dream.SelfClaim
 import com.uroboros.memory.desk.Promises
 import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.OwnSpeech
@@ -53,6 +54,8 @@ object ChatPromises {
         val replyTo: String?,
         val direct: Boolean,
         val records: List<String> = emptyList(),
+        /** Описание ночи, поданное в этот ход (llm.ChatLine.dreamNote). */
+        val dreamNote: String? = null,
     )
 
     /** Строка ленты чатов (llm.ChatLine) — для [find]. */
@@ -66,6 +69,7 @@ object ChatPromises {
         replyTo = l.replyTo,
         direct = l.place == Place.DIRECT.name,
         records = ChatOwnSpeech.unpack(l.recall),
+        dreamNote = l.dreamNote,
     )
 
     /**
@@ -95,6 +99,8 @@ object ChatPromises {
                 records = line.records,
                 at = line.at,
                 serviceBlocks = listOfNotNull(note),
+                dreamNote = line.dreamNote,
+                person = to,
             )
         }
         return out
@@ -103,28 +109,43 @@ object ChatPromises {
     /**
      * Обещания в строках [lines] (все чаты, по порядку) за срок до [now].
      * [ownerKey] — ключ владельца в телеграме, null — не отмечен; [selfLines]
-     * — строки о себе из стены (ChatFeed.selfLines), для строки прочности.
+     * — строки о себе из стены (ChatFeed.selfLines), для строки прочности;
+     * [claims] — сверка заявок о себе (dream.SelfClaim), null — не сверялось:
+     * обещания из выдуманного хода тогда считаются.
      */
-    fun find(lines: List<Line>, now: Long, dictionary: LemmaDictionary?, ownerKey: String?, selfLines: List<String>): Promises.Found {
+    fun find(
+        lines: List<Line>,
+        now: Long,
+        dictionary: LemmaDictionary?,
+        ownerKey: String?,
+        selfLines: List<String>,
+        claims: SelfClaim.Checker?,
+    ): Promises.Found {
         if (dictionary == null) return Promises.Found.Silent(Promises.NO_DICTIONARY)
         val out = ArrayList<Promises.Promise>()
         var undated = 0
         var pressured = 0
+        var claimed = 0
         for ((_, chatLines) in lines.groupBy { it.chat }) {
-            for ((line, turn) in turnsOf(chatLines, selfLines)) {
+            val turns = turnsOf(chatLines, selfLines)
+            val marked = claims?.mark(turns.map { it.second }) ?: turns.map { it.second }
+            for ((i, pair) in turns.withIndex()) {
+                val line = pair.first
+                val turn = marked[i]
                 val to = line.replyTo ?: continue
                 when (val f = Promises.find(listOf(turn), now, dictionary)) {
                     is Promises.Found.Silent -> return f
                     is Promises.Found.Ok -> {
                         undated += f.undated
                         pressured += f.pressureSkipped
+                        claimed += f.claimSkipped
                         val address = address(chatLines, to, line, ownerKey, dictionary)
                         f.promises.mapTo(out) { it.copy(to = address) }
                     }
                 }
             }
         }
-        return Promises.Found.Ok(out.sortedByDescending { it.at }, undated, pressured)
+        return Promises.Found.Ok(out.sortedByDescending { it.at }, undated, pressured, claimSkipped = claimed)
     }
 
     /** Обещания одного чата [chat] из [found] — что видит модель в этом чате. */

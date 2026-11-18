@@ -102,6 +102,8 @@ import com.uroboros.memory.dream.DreamPickup
 import com.uroboros.memory.dream.DreamPickupMarker
 import com.uroboros.memory.dream.DreamView
 import com.uroboros.memory.dream.DreamPlot
+import com.uroboros.memory.dream.SelfClaim
+import com.uroboros.memory.dream.SelfClaimReader
 import com.uroboros.memory.dream.FactsReader
 import com.uroboros.memory.dream.ConclusionView
 import com.uroboros.memory.desk.DeskView
@@ -444,6 +446,9 @@ class MainActivity : AppCompatActivity() {
      * сутки и почему молчит в этом ходе (см. DreamTopic.meter). null — хода не было.
      */
     private var dreamInMirrorLine: String? = null
+
+    /** Строка «Выдумки:» последнего хода (dream.SelfClaim.meter); null — хода не было. */
+    private var selfClaimLine: String? = null
 
     /**
      * Последняя реплика пользователя, собранная для движка, — целиком и
@@ -829,6 +834,7 @@ class MainActivity : AppCompatActivity() {
         ChatPromises.find(
             lines.map(ChatPromises::lineOf), System.currentTimeMillis(), LemmaHolder.loaded,
             ChatPrefs.owner(applicationContext)?.key?.id, ChatFeed.selfLines(llmEngine.wallFor()),
+            runCatching { SelfClaimReader.checker(applicationContext) }.getOrNull(),
         )
     }.getOrNull()
 
@@ -840,13 +846,14 @@ class MainActivity : AppCompatActivity() {
      */
     private suspend fun deskTurns(since: Long): List<OwnSpeech.Turn>? {
         val archive = journalStore.readArchiveSince(since) ?: return null
-        return archive.map { row ->
+        val turns = archive.map { row ->
             OwnSpeech.Turn(
                 answer = row.agentContent,
                 question = row.question,
                 records = journalStore.recordTexts(row),
                 at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
                 serviceBlocks = journalStore.serviceBlocks(row),
+                dreamNote = row.dreamNote,
             )
         } + journal.history().map { turn ->
             OwnSpeech.Turn(
@@ -855,8 +862,13 @@ class MainActivity : AppCompatActivity() {
                 records = turn.records.map { it.text },
                 at = turn.at,
                 serviceBlocks = EchoCheck.serviceBlocks(turn),
+                dreamNote = turn.dreamNote,
             )
         }
+        // Обещания из хода с выдумкой о себе не считаются (dream.SelfClaim);
+        // сверка не прочиталась — обещания как прежде, без неё.
+        val checker = runCatching { SelfClaimReader.checker(applicationContext) }.getOrNull()
+        return checker?.mark(turns) ?: turns
     }
 
     /**
@@ -3295,6 +3307,7 @@ class MainActivity : AppCompatActivity() {
         )
         group(
             "Ход", lastMetricsLine, recordsLine ?: "Записи: чисел хода на экране нет", echoLine, interceptMeter(),
+            selfClaimLine ?: "Выдумки: чисел хода на экране нет",
             glanceLine ?: "Взгляд: чисел хода на экране нет",
             WordDamageHolder.meterLine(), disputeNoticeLine,
             foreignSpeechLine ?: "Чья речь: чисел хода на экране нет",
@@ -3652,6 +3665,7 @@ class MainActivity : AppCompatActivity() {
         curiosityAskFailure = null
         selfStateLine = null
         dreamInMirrorLine = null
+        selfClaimLine = null
         // Собранная реплика стирается здесь же и по той же причине: оставшись
         // на экране после несостоявшегося запуска, она читалась бы как
         // относящаяся к нынешнему. Это тот самый хвост 20, из-за которого
@@ -4941,17 +4955,23 @@ class MainActivity : AppCompatActivity() {
                 // Туда же — ответы агента в телеграме (gate.ChatOwnSpeech).
                 val ownAsked = address == Coordinates.Address.AGENT || recallPlan != null
                 val chatOwn = if (ownAsked && archive != null) chatOwnTurns() else null
+                // Сверка заявок о себе с памятью (dream.SelfClaim): одна на ход —
+                // для своей речи ниже и для строки о прошлом ответе в реплике.
+                // Не прочиталась — сверки нет, строка «Выдумки:» говорит почему.
+                val claimRead = runCatching { SelfClaimReader.checker(applicationContext) }
+                val claimChecker = claimRead.getOrNull()
                 val ownSifted =
                     if (!ownAsked || archive == null) null
-                    else OwnSpeech.sift(archive.map { row ->
+                    else OwnSpeech.sift((archive.map { row ->
                         OwnSpeech.Turn(
                             answer = row.agentContent,
                             question = row.question,
                             records = journalStore.recordTexts(row),
                             at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
                             serviceBlocks = journalStore.serviceBlocks(row),
+                            dreamNote = row.dreamNote,
                         )
-                    } + chatOwn?.getOrNull().orEmpty())
+                    } + chatOwn?.getOrNull().orEmpty()).let { claimChecker?.mark(it) ?: it })
                 val ownSaid =
                     if (ownSifted == null) emptyList()
                     else OwnSpeech.search(ownSifted.said, RecallRequest.topicText(userText, recallPlan))
@@ -4981,14 +5001,16 @@ class MainActivity : AppCompatActivity() {
                     !prochnostOwnWords -> emptyList()
                     archive == null -> null
                     else -> runCatching {
+                        // Выдумка о себе не в счёт и здесь (dream.SelfClaim).
                         OwnSpeech.sift(
-                            archive.map { row ->
+                            (archive.map { row ->
                                 OwnSpeech.Turn(
                                     answer = row.agentContent,
                                     question = row.question,
                                     records = journalStore.recordTexts(row),
                                     at = null,
                                     serviceBlocks = journalStore.serviceBlocks(row),
+                                    dreamNote = row.dreamNote,
                                 )
                             } + journal.history().map { turn ->
                                 OwnSpeech.Turn(
@@ -4997,8 +5019,9 @@ class MainActivity : AppCompatActivity() {
                                     records = turn.records.map { it.text },
                                     at = turn.at,
                                     serviceBlocks = EchoCheck.serviceBlocks(turn),
+                                    dreamNote = turn.dreamNote,
                                 )
-                            }
+                            }).let { claimChecker?.mark(it) ?: it }
                         ).said.map { it.sentence }
                     }.getOrNull()
                 }
@@ -5495,8 +5518,34 @@ class MainActivity : AppCompatActivity() {
                 // (selfNote в turns.run ниже).
                 // Где ещё я говорил с прошлой реплики на экране (gate.CrossChannel).
                 val crossChannel = crossChannelFor(archive)
+                // Прошлый ответ: заявки о себе без опоры в памяти (dream.SelfClaim).
+                // Окно — реплики владельца в ленте и записи прошлого хода (почему без
+                // ответов — SelfClaim.Turn).
+                val ribbonNow = journal.history()
+                val previousTurn = ribbonNow.lastOrNull()
+                val claimFound = if (previousTurn == null || claimChecker == null) null else runCatching {
+                    claimChecker.unsupported(
+                        SelfClaim.Turn(
+                            answer = previousTurn.agentContent,
+                            at = previousTurn.at,
+                            theirWords = ribbonNow.map { it.question },
+                            window = ribbonNow.map { it.question } + previousTurn.records.map { it.text },
+                            dreamNote = ribbonNow.lastOrNull { it.dreamNote != null }?.dreamNote,
+                            person = null,
+                        )
+                    )
+                }
+                selfClaimLine = when {
+                    previousTurn == null -> SelfClaim.meter(null, "прошлого ответа в ленте нет")
+                    claimRead.isFailure -> SelfClaim.meter(null, "память не прочиталась (${claimRead.exceptionOrNull()?.javaClass?.simpleName})")
+                    claimChecker == null -> SelfClaim.meter(null, SelfClaimReader.NO_DICTIONARY)
+                    claimFound == null || claimFound.isFailure ->
+                        SelfClaim.meter(null, "сверка сорвалась (${claimFound?.exceptionOrNull()?.javaClass?.simpleName})")
+                    else -> SelfClaim.meter(claimFound.getOrThrow())
+                }
                 val userContent = journal.composeUserContent(
                     userText, disputeText,
+                    selfClaims = claimFound?.getOrNull()?.let { SelfClaim.note(it) },
                     crossChannel = crossChannel,
                     prochnost = prochnostNote,
                     recallAsk = RecallRequest.ASK_BACK.takeIf { recallPlan?.askBack == true },

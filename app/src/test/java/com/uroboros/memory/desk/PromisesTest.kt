@@ -141,6 +141,15 @@ class PromisesTest {
     }
 
     @Test
+    fun `ход с выдумкой о себе — обещание не берётся, но считается`() {
+        val r = found(turn("Хорошо, я напомню о сне.").copy(claimed = true))
+        assertTrue(r.promises.isEmpty())
+        assertEquals(1, r.claimSkipped)
+        assertEquals(0, r.pressureSkipped)
+        assertEquals("ход без отметки — как прежде", 0, found(turn("Хорошо, я напомню о сне.")).claimSkipped)
+    }
+
+    @Test
     fun `повтор реплики собеседника — не своё`() {
         // Ограничение, закреплённое тестом: согласие словами просьбы отсеивается как эхо.
         assertTrue(found(turn("Сообщу о странном поведении функций.", question = "Сообщи о странном поведении функций.")).promises.isEmpty())

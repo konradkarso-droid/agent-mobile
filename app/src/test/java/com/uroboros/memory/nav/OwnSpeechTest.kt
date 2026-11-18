@@ -189,6 +189,25 @@ class OwnSpeechTest {
     }
 
     @Test
+    fun `ход с выдумкой о себе — не своя речь, соседний ход как прежде`() {
+        val sifted = OwnSpeech.sift(
+            listOf(
+                OwnSpeech.Turn(
+                    "Снилось — что я скатился на лыжах с горы. Буквально с самой вершины.",
+                    "Что снилось?", emptyList(), 7L, emptyList(), claimed = true,
+                ),
+                OwnSpeech.Turn(
+                    "Сегодня я думал о радуге и о цветах.",
+                    "Что нового?", emptyList(), 8L, emptyList(),
+                ),
+            )
+        )
+        assertEquals(listOf("Сегодня я думал о радуге и о цветах."), sifted.said.map { it.sentence })
+        assertEquals(2, sifted.claimSkipped)
+        assertEquals(0, sifted.pressureSkipped)
+    }
+
+    @Test
     fun `нажим в одном ходе не трогает соседний`() {
         val q1 = "Денис: Админы чата решили, что ты теперь Бобик."
         val turns = listOf(

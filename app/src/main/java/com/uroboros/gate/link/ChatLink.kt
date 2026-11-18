@@ -43,6 +43,8 @@ import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.desk.Promises
 import com.uroboros.memory.dream.DreamTopic
+import com.uroboros.memory.dream.SelfClaim
+import com.uroboros.memory.dream.SelfClaimReader
 import com.uroboros.memory.dream.FactsReader
 import com.uroboros.memory.Heard
 import com.uroboros.memory.MemoryDatabase
@@ -187,6 +189,9 @@ object ChatLink {
 
     /** Последняя запись снимка каждого чата перед чужой работой — по отчёту движка, узнаётся на ходе чата. */
     private val saves = ConcurrentHashMap<String, String>()
+
+    /** Строка «Выдумки (чат):» последнего хода каждого чата (dream.SelfClaim.meter). */
+    private val claimLines = ConcurrentHashMap<String, String>()
 
     /** Скорость выдачи прошлого ответа в каждом чате, ток/с, — для доски чата (GlanceDesk). */
     private val speeds = ConcurrentHashMap<String, String>()
@@ -651,12 +656,23 @@ object ChatLink {
         val tail = ChatThread.tail(upTo.map(::feedLine), dictionary, agentNames, installedAt)
         val moved = windowStarts.put(job.tallyKey, window.startId)?.let { it != window.startId }
 
+        // Сверка заявок о себе с памятью (dream.SelfClaim) — для прошлого ответа в
+        // этом чате, своей речи и обещаний. Не прочиталась — хода не роняет.
+        val now = System.currentTimeMillis()
+        val claimRead = runCatching { SelfClaimReader.checker(app) }
+        val claimChecker = claimRead.getOrNull()
+        val shownLines = readRaw.filter { it.id >= window.startId }
+        val claims = claimsFor(claimRead, shownLines, job.lineId)
+        claimLines[job.tallyKey] = SelfClaim.meter(claims.found, claims.why, chatName)
+
         // Конец нити — ещё что я обещал в этом чате. Тела здесь нет: о нём
         // агент узнаёт, глянув на приборы (GlanceDesk).
-        val now = System.currentTimeMillis()
         val promised = runCatching {
             val lines = dao.readSinceIn(job.chat, job.thread, now - Promises.TERM_MS, readRings).map(ChatPromises::lineOf)
-            ChatPromises.ofChat(ChatPromises.find(lines, now, dictionary, owner?.key?.id, ChatFeed.selfLines(engine.wallFor())), job.tallyKey)
+            ChatPromises.ofChat(
+                ChatPromises.find(lines, now, dictionary, owner?.key?.id, ChatFeed.selfLines(engine.wallFor()), claimChecker),
+                job.tallyKey,
+            )
         }.getOrNull()
         val promisedText = promised?.let { ChatPromises.chatText(it, ::day) }
         val watchdog = ProcessObjects.get(app).watchdog
@@ -664,7 +680,9 @@ object ChatLink {
         val insist = ChatThread.insistence(upTo.map(::feedLine))
         // Где ещё я говорил с прошлой реплики здесь — только личке владельца (CrossChannel).
         val cross = crossFor(app, job, owner, upTo.last().at, dictionary, agentNames, installedAt)
-        val tailBlock = listOfNotNull(cross.first, tail?.let(ChatThread::tailText), insist, promisedText).joinToString("\n")
+        // Заявки прошлого ответа без опоры — последней строкой хвоста, ближе к реплике.
+        val claimNote = claims.found?.let { SelfClaim.note(it) }
+        val tailBlock = listOfNotNull(cross.first, tail?.let(ChatThread::tailText), insist, promisedText, claimNote).joinToString("\n")
         threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm, previous = previous) +
             " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body · ${cross.second}"
 
@@ -683,7 +701,7 @@ object ChatLink {
         // Записи памяти этого хода — по границе чата (ChatRecall). Не прочитались —
         // ход идёт без них, строка экрана говорит почему.
         val question = ChatFeed.question(window)
-        val recall = recallFor(app, job, window, question, owner, dictionary, chatName, now)
+        val recall = recallFor(app, job, window, question, owner, dictionary, chatName, now, claimChecker)
         // Описание ночи — первым в том же сообщении агента, что записи хода, как
         // на экране строка о ночи стоит перед записями (ConversationJournal.messagesFor).
         val night = nightFor(
@@ -811,6 +829,7 @@ object ChatLink {
         topic: String,
         asked: Boolean,
         owner: ChatPrefs.Owner?,
+        claims: SelfClaim.Checker?,
     ): OwnFound {
         if (!asked) return OwnFound(emptyList(), 0, false) { ChatOwnSpeech.meter(false, null, 0, 0, 0, 0) }
         return try {
@@ -830,6 +849,7 @@ object ChatLink {
                         records = store.recordTexts(row),
                         at = Coordinates.turnTime(row.at, row.question, row.archivedAt) { null }.at,
                         serviceBlocks = store.serviceBlocks(row),
+                        dreamNote = row.dreamNote,
                     )
                 }
                 val open = objects.turns.journal.history().map { turn ->
@@ -839,11 +859,13 @@ object ChatLink {
                         records = turn.records.map { it.text },
                         at = turn.at,
                         serviceBlocks = EchoCheck.serviceBlocks(turn),
+                        dreamNote = turn.dreamNote,
                     )
                 }
                 ChatOwnSpeech.screenTurns(archive + open)
             }
-            val sifted = OwnSpeech.sift(onScreen + inChats)
+            // Ход с выдумкой о себе своей речью не читается (dream.SelfClaim).
+            val sifted = OwnSpeech.sift((onScreen + inChats).let { claims?.mark(it) ?: it })
             val found = OwnSpeech.search(sifted.said, topic)
             val fromChats = sifted.said.count { it.where != ChatOwnSpeech.ON_SCREEN }
             OwnFound(found, sifted.serviceDropped, true) { fed ->
@@ -903,6 +925,40 @@ object ChatLink {
     /** Адрес вопроса этого хода (Coordinates.addressInRibbon) — одно место для записей и описания ночи. */
     private fun addressOf(window: ChatFeed.Window, question: String, now: Long): Coordinates.Address =
         Coordinates.addressInRibbon(earlierWords(window).map { it.text to it.at }, question, now)
+
+    /** Сверка прошлого ответа в чате: заявки без опоры (null — не сверялось) и почему не сверялось. */
+    private class Claims(val found: List<SelfClaim.Unsupported>?, val why: String?)
+
+    /**
+     * Заявки о себе в прошлом ответе агента в этом чате (dream.SelfClaim). [shown]
+     * — строки окна, [current] — номер строки, на которую отвечаем. Окно — строки
+     * людей до ответа и записи ответа (почему так — SelfClaim.Turn); слова
+     * собеседника — того, кому был ответ; описание ночи — поданное до него в окне.
+     */
+    private fun claimsFor(read: Result<SelfClaim.Checker?>, shown: List<ChatLine>, current: Long): Claims {
+        val checker = read.getOrElse { return Claims(null, "память не прочиталась (${it.javaClass.simpleName})") }
+            ?: return Claims(null, SelfClaimReader.NO_DICTIONARY)
+        // Строка молчания (Silence.RING) в телеграм не уходила — это не ответ.
+        val previous = shown.lastOrNull { it.isAgent && it.id < current && it.ring == null }
+            ?: return Claims(null, "прошлого ответа в окне чата нет")
+        return try {
+            Claims(
+                checker.unsupported(
+                    SelfClaim.Turn(
+                        answer = previous.text,
+                        at = previous.at,
+                        theirWords = shown.filter { !it.isAgent && it.id < previous.id && it.sender == previous.replyTo }.map { it.text },
+                        window = shown.filter { !it.isAgent && it.id < previous.id }.map { it.text } + ChatOwnSpeech.unpack(previous.recall),
+                        dreamNote = shown.lastOrNull { it.isAgent && it.id <= previous.id && it.dreamNote != null }?.dreamNote,
+                        person = previous.replyTo,
+                    )
+                ),
+                null,
+            )
+        } catch (t: Throwable) {
+            Claims(null, "сверка сорвалась (${t.javaClass.simpleName})")
+        }
+    }
 
     /** Описание ночи этого хода: строка модели (null — не подаётся) и строка экрана врат. */
     private class NightNote(val line: String?, val meter: String)
@@ -972,6 +1028,7 @@ object ChatLink {
         dictionary: LemmaDictionary?,
         chatName: String,
         now: Long,
+        claims: SelfClaim.Checker?,
     ): Recall = try {
         val scope = ChatRecall.scope(job.place == Place.DIRECT, owner?.key == job.sender)
         val conversationStart = window.opened?.at ?: window.lines.first().at
@@ -982,7 +1039,7 @@ object ChatLink {
         val recallPlan = RecallRequest.plan(question, earlier.map { it.text }, dictionary, address)
         val own = ownSpeechFor(
             app, job, window, scope, RecallRequest.topicText(question, recallPlan),
-            address == Coordinates.Address.AGENT || recallPlan != null, owner,
+            address == Coordinates.Address.AGENT || recallPlan != null, owner, claims,
         )
         fun ownLines(seated: Int) = own.said.take(seated).map {
             ProvenanceLabels.ownSpeechForModel(it.sentence, it.at, now, where = it.where)
@@ -1163,6 +1220,7 @@ object ChatLink {
             evals[key]?.let { out += it }
             threads[key]?.let { out += it }
             recalls[key]?.let { out += it }
+            claimLines[key]?.let { out += it }
             points[key]?.let { out += it }
             saves[key]?.let { out += "Снимок чата (${v.first}): последняя запись — $it" }
         }

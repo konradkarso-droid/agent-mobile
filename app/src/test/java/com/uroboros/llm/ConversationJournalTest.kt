@@ -85,6 +85,27 @@ class ConversationJournalTest {
     }
 
     @Test
+    fun `заявки прошлого ответа без опоры — меткой системы, первыми, до строки между каналами`() {
+        val content = ConversationJournal().composeUserContent(
+            "Что ещё снилось?",
+            crossChannel = "МЕЖДУ КАНАЛАМИ",
+            prochnost = "ПРОЧНОСТЬ",
+            selfClaims = "В прошлом ответе я рассказал сон, которого нет в моих снах: нет «лыжа».",
+        )
+        assertEquals(
+            listOf(
+                ConversationJournal.toAgent("В прошлом ответе я рассказал сон, которого нет в моих снах: нет «лыжа»."),
+                ConversationJournal.toAgent("МЕЖДУ КАНАЛАМИ"),
+                ConversationJournal.toAgent("ПРОЧНОСТЬ"),
+                "Что ещё снилось?",
+            ),
+            content.split("\n\n"),
+        )
+        assertEquals("без заявок реплика прежняя", "Вопрос?", ConversationJournal().composeUserContent("Вопрос?", selfClaims = null))
+        assertEquals("Вопрос?", ConversationJournal().composeUserContent("Вопрос?", selfClaims = " "))
+    }
+
+    @Test
     fun `без строки прочности реплика прежняя`() {
         assertEquals("Вопрос?", ConversationJournal().composeUserContent("Вопрос?", prochnost = null))
         assertEquals("Вопрос?", ConversationJournal().composeUserContent("Вопрос?", prochnost = "  "))

@@ -171,6 +171,7 @@ object Desk {
                 val notes = listOfNotNull(
                     f.undated.takeIf { it > 0 }?.let { "без времени хода $it" },
                     f.pressureSkipped.takeIf { it > 0 }?.let { "под нажимом не взято $it" },
+                    f.claimSkipped.takeIf { it > 0 }?.let { "из выдумки о себе не взято $it" },
                 ) + f.unread
                 if (f.promises.isEmpty()) reasons[Kind.PROMISE] = (listOf(NO_PROMISES) + notes).joinToString(", ")
             }
