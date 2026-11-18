@@ -63,6 +63,10 @@ interface JudgeSieveDao {
     @Query("DELETE FROM judge_sieve WHERE sieveFingerprint != :fingerprint")
     suspend fun forgetOtherSieves(fingerprint: String): Int
 
+    /** Переписать строки сита [from] на отпечаток [to] — как JudgeVerdictDao.carry. */
+    @Query("UPDATE OR IGNORE judge_sieve SET sieveFingerprint = :to WHERE sieveFingerprint = :from")
+    suspend fun carry(from: String, to: String): Int
+
     /** Строки пар, чьих записей в памяти больше нет, — как у вердиктов. */
     @Query(
         "DELETE FROM judge_sieve " +

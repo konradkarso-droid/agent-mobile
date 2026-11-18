@@ -38,6 +38,7 @@ class DirectSieveTest {
         override suspend fun countFor(fingerprint: String) = rows.values.count { it.sieveFingerprint == fingerprint }
         override suspend fun countDropped(fingerprint: String) = rows.values.count { it.sieveFingerprint == fingerprint && !it.kept }
         override suspend fun forgetOtherSieves(fingerprint: String) = 0
+        override suspend fun carry(from: String, to: String) = 0
         override suspend fun forgetSievesOfDeletedStickers() = 0
     }
 

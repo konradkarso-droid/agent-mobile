@@ -1,11 +1,17 @@
 package com.uroboros.memory.judge
 
 import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.RiskTrigger
 import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /** Спорная пара с текстами обеих записей — всё, что нужно экрану. */
 data class DisputePair(
@@ -68,6 +74,7 @@ class JudgeLauncher(
     context: Context,
     private val engine: LlmEngine,
 ) {
+    private val resolver = context.applicationContext.contentResolver
     private val stickers: StickerDao = MemoryDatabase.getInstance(context).stickerDao()
     private val verdicts: JudgeVerdictDao = MemoryDatabase.getInstance(context).judgeVerdictDao()
     private val sieveRows: JudgeSieveDao = MemoryDatabase.getInstance(context).judgeSieveDao()
@@ -85,17 +92,70 @@ class JudgeLauncher(
             )
     }
 
-    /** Отпечаток прямого судьи: модель и версия направления вместе, см. [JudgeSieveRow]. */
-    private fun directFingerprint(modelIdentity: String): String {
-        val version = (directions as? DirectJudgeDirections.Parsed.Ok)?.directions?.version ?: 0
-        return Integer.toHexString(modelIdentity.hashCode()) + "-d" + version
+    /** Версия направления прямого судьи; 0 — направления нет. */
+    private fun directVersion(): Int = (directions as? DirectJudgeDirections.Parsed.Ok)?.directions?.version ?: 0
+
+    /** Отпечаток прямого судьи: модель и версия направления вместе, см. [JudgeSieveRow] и [JudgePrint]. */
+    private suspend fun directFingerprint(modelIdentity: String): String = JudgePrint.direct(modelOf(modelIdentity), directVersion())
+
+    /** Имя и размер файла модели; null — не прочитались. */
+    private class ModelFile(val name: String?, val size: Long?)
+
+    /** Прочитанное о файлах моделей — по адресу, на время жизни этого сборщика. */
+    private val files = ConcurrentHashMap<String, ModelFile>()
+
+    /**
+     * Имя и размер файла по адресу [modelIdentity]; не прочиталось — пусто
+     * (JudgePrint, «ЧЕГО НЕ УМЕЕТ»). Чтение — обращение к системе за файлом,
+     * поэтому не на главном потоке.
+     */
+    private suspend fun fileOf(modelIdentity: String): ModelFile = files[modelIdentity] ?: withContext(Dispatchers.IO) {
+        runCatching {
+            resolver.query(
+                Uri.parse(modelIdentity), arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null,
+            )?.use { c ->
+                if (!c.moveToFirst()) null
+                else ModelFile(c.getString(0), if (c.isNull(1)) null else c.getLong(1))
+            }
+        }.getOrNull() ?: ModelFile(null, null)
+    }.also { files[modelIdentity] = it }
+
+    /** Модель для отпечатков — по имени и размеру файла, см. [JudgePrint]. */
+    private suspend fun modelOf(modelIdentity: String): String =
+        fileOf(modelIdentity).let { JudgePrint.model(modelIdentity, it.name, it.size) }
+
+    /**
+     * Перенести строки, снятые под отпечатком по адресу файла, на отпечаток по
+     * имени и размеру (JudgePrint, «ПРЕЖНИЙ ОТПЕЧАТОК ПЕРЕНОСИТСЯ»). Зовётся
+     * перед каждым чтением и прогоном: прогон в начале сносит чужих судей, и
+     * перенос обязан успеть раньше. Когда переносить нечего, это два пустых
+     * запроса.
+     */
+    private suspend fun carry(modelIdentity: String) {
+        val model = modelOf(modelIdentity)
+        val legacy = JudgePrint.legacyModel(modelIdentity)
+        if (model == legacy) return
+        verdicts.carry(JudgePrint.printed(legacy, MemoryJudge.SYSTEM), JudgePrint.printed(model, MemoryJudge.SYSTEM))
+        sieveRows.carry(JudgePrint.direct(legacy, directVersion()), JudgePrint.direct(model, directVersion()))
+    }
+
+    /** Строка «Судья:» отчёта прогона — по чему узнаётся судья. */
+    private suspend fun judgeLine(modelIdentity: String): String {
+        val file = fileOf(modelIdentity)
+        val name = file.name
+        val size = file.size
+        return if (name.isNullOrBlank() || size == null || size <= 0) {
+            "Судья: имя или размер файла модели не прочитались — узнаётся по адресу файла, выбор файла заново начнёт суд сначала"
+        } else {
+            "Судья: $name (" + String.format(Locale.US, "%.1f ГБ", size / (1024.0 * 1024 * 1024)) + ")"
+        }
     }
 
     /**
      * Прогон собирается на каждый вызов: у прямого судьи состояние прогона
      * (эталон, счёт прочитанного) и отпечаток, зависящий от модели.
      */
-    private fun run(modelIdentity: String): JudgeRun = JudgeRun(
+    private suspend fun run(modelIdentity: String): JudgeRun = JudgeRun(
         engine, stickers, verdicts, EngineJudgeLlm(engine),
         DirectSieve(directions, sieveRows, directFingerprint(modelIdentity), engine::readLayerMean),
     )
@@ -106,15 +166,14 @@ class JudgeLauncher(
      * Отпечаток попадает в каждую строку хранилища, поэтому он короткий:
      * различать надо не содержание промпта, а факт его смены. Две разные
      * формулировки с одинаковым хэшем — случай, которым можно пренебречь;
-     * молчаливая правка промпта — нет.
+     * молчаливая правка промпта — нет. Что значит «модель» — у [JudgePrint].
      *
-     * [modelIdentity] приходит снаружи: движок своё имя наружу не отдаёт, а
-     * заводить ради этого ещё один путь к нему дороже, чем передать то, что у
-     * вызывающего уже есть.
+     * [modelIdentity] — адрес файла модели; приходит снаружи: движок своё имя
+     * наружу не отдаёт, а заводить ради этого ещё один путь к нему дороже, чем
+     * передать то, что у вызывающего уже есть.
      */
-    private fun fingerprint(modelIdentity: String): String =
-        Integer.toHexString(modelIdentity.hashCode()) + "-" +
-            Integer.toHexString(MemoryJudge.SYSTEM.hashCode())
+    private suspend fun fingerprint(modelIdentity: String): String =
+        JudgePrint.printed(modelOf(modelIdentity), MemoryJudge.SYSTEM)
 
     /**
      * Разобрать, сколько успеется за [budgetMs]. Текст — для ленты, не для «Показать».
@@ -124,13 +183,20 @@ class JudgeLauncher(
         modelIdentity: String,
         budgetMs: Long,
         onProgress: (done: Int) -> Unit = {},
-    ): String =
-        describe(run(modelIdentity).run(fingerprint(modelIdentity), budgetMs, onProgress))
+    ): String {
+        carry(modelIdentity)
+        return describe(run(modelIdentity).run(fingerprint(modelIdentity), budgetMs, onProgress)) +
+            "\n" + judgeLine(modelIdentity)
+    }
 
     /** Есть ли что судить судье этой модели — без модели. См. JudgeRun.hasPending. */
-    suspend fun hasPending(modelIdentity: String): Boolean = run(modelIdentity).hasPending(fingerprint(modelIdentity))
+    suspend fun hasPending(modelIdentity: String): Boolean {
+        carry(modelIdentity)
+        return run(modelIdentity).hasPending(fingerprint(modelIdentity))
+    }
 
     suspend fun counters(modelIdentity: String): JudgeCounters {
+        carry(modelIdentity)
         val print = fingerprint(modelIdentity)
         return JudgeCounters(
             judged = verdicts.countFor(print),
@@ -188,8 +254,9 @@ class JudgeLauncher(
      * при этом остаётся в хранилище и в счёт спорных входит — он о судье, а не
      * о памяти.
      */
-    suspend fun pendingDisputes(modelIdentity: String): List<DisputePair> =
-        verdicts.pairs(
+    suspend fun pendingDisputes(modelIdentity: String): List<DisputePair> {
+        carry(modelIdentity)
+        return verdicts.pairs(
             fingerprint = fingerprint(modelIdentity),
             verdict = MemoryJudge.Verdict.DISPUTE.name,
             human = HumanVerdict.UNREVIEWED.name,
@@ -199,9 +266,11 @@ class JudgeLauncher(
             if (first.rejectedAt != null || second.rejectedAt != null) return@mapNotNull null
             DisputePair(row.firstId, row.secondId, first.content, second.content)
         }
+    }
 
     /** Что человек сказал о паре. Снятие отметки — тот же вызов с UNREVIEWED. */
     suspend fun mark(modelIdentity: String, pair: DisputePair, human: HumanVerdict) {
+        carry(modelIdentity)
         verdicts.mark(
             firstId = pair.firstId,
             secondId = pair.secondId,
