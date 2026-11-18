@@ -4,6 +4,8 @@ import androidx.room.withTransaction
 import com.uroboros.memory.HourglassMemory
 import com.uroboros.memory.MemoryDatabase
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Один ночной проход сна: остудить слои, сплести сны, записать ночь, сказать
@@ -22,6 +24,15 @@ import kotlinx.coroutines.CancellationException
  * СОН НИКОГО НЕ ГРЕЕТ И НЕ ТРОГАЕТ ЗАПИСИ. Проход только читает их и пишет в
  * свои две таблицы. Приснившаяся холодная запись остаётся холодной: воспоминание
  * не делает старое нынешним.
+ *
+ * НЕ НА ГЛАВНОМ ПОТОКЕ. Проход сам уходит с потока вызывающего на поток счёта
+ * ([run], Dispatchers.Default). Плетение — перебор пар и раздача мест по всей
+ * памяти; сколько оно длится, не измерено, но при сотнях записей его хватало,
+ * чтобы система сочла приложение зависшим. Тело агента зовёт проход из своей
+ * области, а она живёт на главном потоке: там этот счёт держал экран, и снимок
+ * «Где стоял экран» при «завис» показывал DreamWeaver. Уход сделан здесь, а не
+ * у каждого вызывающего, чтобы новый путь, начинающий ночь, не мог об этом
+ * забыть.
  *
  * ЧЕГО НЕ УМЕЕТ:
  *  - сорвавшийся проход не оставляет строки ночи: об этом говорит только отчёт
@@ -48,8 +59,8 @@ object DreamRunner {
         startedBy: NightStart,
         plotWords: DreamPlot.Words?,
         nightAt: Long = System.currentTimeMillis(),
-    ): String {
-        return try {
+    ): String = withContext(Dispatchers.Default) {
+        try {
             val stickers = db.stickerDao()
             HourglassMemory(stickers).migrateExpired()
             val records = stickers.getAll()
