@@ -125,4 +125,14 @@ interface JudgeVerdictDao {
      */
     @Query("DELETE FROM judge_verdicts WHERE loadFingerprint != :fingerprint")
     suspend fun forgetOtherJudges(fingerprint: String): Int
+
+    /**
+     * Переписать строки судьи [from] на отпечаток [to] — тот же судья под
+     * новым отпечатком (JudgePrint, «ПРЕЖНИЙ ОТПЕЧАТОК ПЕРЕНОСИТСЯ»). Пара,
+     * у которой строка под [to] уже есть, остаётся под [from] и уйдёт со
+     * следующей уборкой чужих судей. Отметки человека переезжают вместе со
+     * строкой.
+     */
+    @Query("UPDATE OR IGNORE judge_verdicts SET loadFingerprint = :to WHERE loadFingerprint = :from")
+    suspend fun carry(from: String, to: String): Int
 }
