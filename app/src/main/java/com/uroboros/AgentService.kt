@@ -1053,8 +1053,8 @@ class AgentService : Service() {
             val startedAt = System.currentTimeMillis()
             _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null, self = self)
             working = true
-            // Экран суда — только самому суду (memory.judge.CourtScreen).
-            if (self) startCourtScreen()
+            // Экран суда — и самому суду, и ночи по кнопке (memory.judge.CourtScreen).
+            startCourtScreen()
             showProgress(startedAt, done = 0, lastAt = null)
 
             // Самостоятельный суд — только на зарядке, и не только на старте:
@@ -1160,7 +1160,7 @@ class AgentService : Service() {
                 STOPPED_REPORT
             } finally {
                 unplugWatch?.cancel()
-                if (self) stopCourtScreen()
+                stopCourtScreen()
                 backToDay()
                 releaseWakeLock()
             }
@@ -1326,15 +1326,15 @@ class AgentService : Service() {
     private fun showProgress(startedAt: Long, done: Int, lastAt: Long?) {
         currentText = "Разобрано пар: $done · начат в ${clock(startedAt)}" +
             (lastAt?.let { " · последняя в ${clock(it)}" } ?: " · первая пара ещё идёт") +
-            (if (selfRun) "\n" + CourtScreen.line(_courtScreen.value, ::clock) else "")
+            "\n" + CourtScreen.line(_courtScreen.value, ::clock)
         updateNotificationText()
     }
 
-    /** Ловит погасание экрана, пока идёт самостоятельный суд; null — суд не идёт. */
+    /** Ловит погасание экрана, пока идёт суд; null — суд не идёт. */
     private var screenOffReceiver: BroadcastReceiver? = null
 
     /**
-     * Начало самостоятельного суда: экран суда просится сейчас, если экран
+     * Начало суда: экран суда просится сейчас, если экран
      * погашен, и при каждом погасании до конца суда. Зачем и чего не умеет —
      * у [CourtScreen].
      */
@@ -1359,7 +1359,7 @@ class AgentService : Service() {
      */
     private fun requestCourtScreen() {
         val run = _courtScreen.value ?: return
-        if (run.endedAt != null || !selfRun || !working) return
+        if (run.endedAt != null || !working) return
         val now = System.currentTimeMillis()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !nm.canUseFullScreenIntent()) {
@@ -1375,7 +1375,7 @@ class AgentService : Service() {
         }
     }
 
-    /** Конец самостоятельного суда: экран суда больше не просится, уведомление снимается; сам экран закроется по состоянию. */
+    /** Конец суда: экран суда больше не просится, уведомление снимается; сам экран закроется по состоянию. */
     private fun stopCourtScreen() {
         screenOffReceiver?.let { runCatching { unregisterReceiver(it) } }
         screenOffReceiver = null
@@ -1507,7 +1507,7 @@ class AgentService : Service() {
 
         private val _courtScreen = MutableStateFlow<CourtScreen.Run?>(null)
 
-        /** Экран последнего самостоятельного суда (memory.judge.CourtScreen); null — суда сам в этом запуске не было. */
+        /** Экран последнего суда (memory.judge.CourtScreen); null — суда в этом запуске не было. */
         val courtScreen: StateFlow<CourtScreen.Run?> get() = _courtScreen
 
         /** Экран суда открылся — зовёт сам экран (CourtScreenActivity). */

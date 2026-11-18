@@ -24,9 +24,9 @@ import kotlinx.coroutines.launch
  * блокировки, и за ним не должно быть ничего, что требует замка (PresenceLock).
  * Отдельная задача и не в списке недавних — открыть через него приложение нельзя.
  *
- * Закрывается сам, как только самостоятельный суд не идёт или служба сняла
- * экран, — в том числе если суд кончился раньше, чем экран открылся. Касание
- * закрывает раньше.
+ * Закрывается сам, как только суд не идёт или служба сняла экран, — в том
+ * числе если суд кончился раньше, чем экран открылся (CourtScreen.needed).
+ * Касание закрывает раньше.
  */
 class CourtScreenActivity : ComponentActivity() {
 
@@ -62,10 +62,10 @@ class CourtScreenActivity : ComponentActivity() {
             }
         )
 
-        // Суд кончился (служба сняла экран) или самостоятельный суд не идёт вовсе.
+        // Суд кончился (служба сняла экран) или суд не идёт вовсе.
         lifecycleScope.launch {
             combine(AgentService.state, AgentService.courtScreen) { st, run ->
-                st is AgentService.RunState.Running && st.self && run != null && run.endedAt == null
+                CourtScreen.needed(st is AgentService.RunState.Running, run)
             }.collect { needed -> if (!needed) finish() }
         }
     }

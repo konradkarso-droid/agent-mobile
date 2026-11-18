@@ -2,6 +2,7 @@ package com.uroboros.memory.judge
 
 import com.uroboros.memory.judge.CourtScreen.Run
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,8 +22,21 @@ class CourtScreenTest {
     private val clock: (Long) -> String = { "t$it" }
 
     @Test
-    fun `суда сам не было — так и сказано`() {
-        assertEquals("Экран суда: в этом запуске суд сам не шёл", CourtScreen.line(null, clock))
+    fun `суда не было — так и сказано`() {
+        assertEquals("Экран суда: в этом запуске суда не было", CourtScreen.line(null, clock))
+    }
+
+    @Test
+    fun `экран нужен, пока идёт прогон и экран не снят — по кнопке тоже`() {
+        assertTrue(CourtScreen.needed(running = true, run = Run(startedAt = 1)))
+        assertTrue(CourtScreen.needed(running = true, run = Run(startedAt = 1).requested(2).opened(3)))
+    }
+
+    @Test
+    fun `экран не нужен — прогона нет, экран снят или не заводился`() {
+        assertFalse(CourtScreen.needed(running = false, run = Run(startedAt = 1)))
+        assertFalse(CourtScreen.needed(running = true, run = Run(startedAt = 1).ended(5)))
+        assertFalse(CourtScreen.needed(running = true, run = null))
     }
 
     @Test

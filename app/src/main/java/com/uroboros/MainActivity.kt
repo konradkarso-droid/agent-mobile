@@ -3333,7 +3333,7 @@ class MainActivity : AppCompatActivity() {
             AgentLife.comaLines(applicationContext) + "\n" + AgentLife.hangLine() + "\n" + MemoryWatch.meterLine(applicationContext),
             // Простои процесса (safety.StallWatch): кома — процесс умер, простой — жил, но не шёл.
             StallWatch.meterLine(applicationContext),
-            // Экран суда (memory.judge.CourtScreen) — ответ на простои при самостоятельном суде.
+            // Экран суда (memory.judge.CourtScreen) — ответ на простои при суде, самостоятельном и по кнопке.
             CourtScreen.line(AgentService.courtScreen.value, ::fmtMoment),
             MoveState.meterLine(applicationContext),
         )
