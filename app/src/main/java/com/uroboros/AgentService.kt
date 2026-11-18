@@ -1018,7 +1018,8 @@ class AgentService : Service() {
             // о себе» дописывает свой итог в строку этой ночи.
             val nightAt = System.currentTimeMillis()
             // Сон идёт без блокировки сна и без пометки "идёт разбор": это
-            // миллисекунды счёта, а не прогон, который надо сторожить.
+            // счёт без модели, а не прогон, который надо сторожить. С главного
+            // потока проход уходит сам (DreamRunner, «НЕ НА ГЛАВНОМ ПОТОКЕ»).
             val dreamed = if (dreamFirst) {
                 nightLock.withLock { DreamRunner.run(db, NightStart.BUTTON, plotWords(), nightAt) }
             } else {
