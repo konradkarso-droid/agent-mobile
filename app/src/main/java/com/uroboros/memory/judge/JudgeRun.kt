@@ -265,7 +265,7 @@ class JudgeRun(
             // решит, что прогон просто не дотянул, и запустит его снова.
             throw cancelled
         } catch (broken: JudgeGenerationException) {
-            interruptedBy = broken.message ?: REASON_ENGINE
+            interruptedBy = brokenReason(watchdogStop(), broken.message)
         }
 
         val outcome = when {
@@ -439,6 +439,24 @@ class JudgeRun(
          * частям можно, но это другой механизм, а не правка этого числа.
          */
         const val MAX_RECORD_CHARS = 1_500
+
+        /**
+         * Причина обрыва, когда движок вместо ответа прислал ошибку.
+         * [watchdogStop] — причина сторожа словами, если оборвал он (null — не
+         * он); [engineMessage] — текст ошибки движка.
+         *
+         * ПОЧЕМУ СТОРОЖ ПЕРВЫМ. Сторож обрывает модель и посреди обсчёта
+         * запроса, и тогда движок отвечает своей ошибкой («Failed to evaluate
+         * prompt»). По одному тексту ошибки обрыв сторожем не отличить от сбоя
+         * движка, а лечатся они по-разному. Поэтому, если сторож оборвал,
+         * называется его причина; текст движка — только когда сторож не
+         * вмешивался.
+         *
+         * ЧЕГО НЕ УМЕЕТ: если сторож оборвал, а движок в тот же миг сломался
+         * сам, будет названа причина сторожа — различить их нечем.
+         */
+        internal fun brokenReason(watchdogStop: String?, engineMessage: String?): String =
+            watchdogStop ?: engineMessage ?: REASON_ENGINE
 
         private const val REASON_BUDGET = "кончилось отведённое время"
         private const val REASON_HEAT = "устройство перегрелось"
