@@ -126,7 +126,7 @@ object BuildSelfDescription {
         "Я умею искать в интернете по прямой просьбе владельца, например «поищи в интернете инструкцию». " +
             "Приложение запускает поиск и показывает выдачу. Историю можно попросить словами «покажи историю поиска»."
 
-    const val WEB_SEARCH_SETUP_LINE = "Чтобы включить веб-поиск, владелец задаёт ключ Brave Search во Вратах, в разделе «Ключи»."
+    const val WEB_SEARCH_NOT_CONFIGURED_LINE = "Веб-поиск сейчас не настроен."
 
     const val DEFERRED_ACTIONS_LINE =
         "Мои обещания видны на доске. Запуск поиска и отправка напоминаний на заданное время пока недоступны."
@@ -219,7 +219,7 @@ object BuildSelfDescription {
         add(RECALL_LINE)
         add(CAN_LINE)
         add(WEB_SEARCH_LINE)
-        if (!webSearchConfigured) add(WEB_SEARCH_SETUP_LINE)
+        if (!webSearchConfigured) add(WEB_SEARCH_NOT_CONFIGURED_LINE)
         add(DEFERRED_ACTIONS_LINE)
         add(FIRST_LINE)
         add(SAVED_LINE)

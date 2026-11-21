@@ -27,9 +27,10 @@ class BuildSelfDescriptionTest {
                 assertTrue(BuildSelfDescription.WEB_SEARCH_LINE in lines)
                 assertTrue(BuildSelfDescription.DEFERRED_ACTIONS_LINE in lines)
                 assertFalse(lines.any { "ходить в интернет" in it })
+                assertFalse(lines.any { "Brave Search" in it })
             }
-            assertTrue(BuildSelfDescription.WEB_SEARCH_SETUP_LINE in unconfigured)
-            assertFalse(BuildSelfDescription.WEB_SEARCH_SETUP_LINE in configured)
+            assertTrue(BuildSelfDescription.WEB_SEARCH_NOT_CONFIGURED_LINE in unconfigured)
+            assertFalse(BuildSelfDescription.WEB_SEARCH_NOT_CONFIGURED_LINE in configured)
         }
     }
 

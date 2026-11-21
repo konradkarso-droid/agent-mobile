@@ -69,6 +69,18 @@ class WebSearchTest {
     }
 
     @Test
+    fun unconfiguredSearchShowsSetupOnlyToTheOwner() {
+        val entry = SearchEntry("id", "request", "пример", SearchChannel.APP, 0, SearchStatus.NOT_CONFIGURED)
+        val view = SearchView(entries = listOf(entry))
+
+        assertTrue(view.latestText().contains("ключ Brave Search во Вратах"))
+        assertTrue(view.historyText().contains("ключ Brave Search во Вратах"))
+        val note = view.conversationNote()!!
+        assertTrue(note.contains("веб-поиск не настроен"))
+        assertFalse(note.contains("Brave Search"))
+    }
+
+    @Test
     fun resumeAfterRestartMarksAnInterruptedRequestWithoutRetrying() = runBlocking {
         val store = Store().apply {
             rows = listOf(SearchEntry("id", "message-id", "тепло", SearchChannel.TELEGRAM, 0, SearchStatus.SEARCHING))

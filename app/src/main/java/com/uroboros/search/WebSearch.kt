@@ -22,9 +22,10 @@ internal enum class SearchChannel(val label: String) {
     APP("приложение"), TELEGRAM("Telegram"),
 }
 
-internal enum class SearchStatus(val label: String) {
+internal enum class SearchStatus(val label: String, val ownerLabel: String = label) {
     SEARCHING("ищу"), FOUND("выдержки найдены"), EMPTY("нет результатов"),
-    INSUFFICIENT("выдержек недостаточно"), NOT_CONFIGURED("нужен ключ Brave Search во Вратах"),
+    INSUFFICIENT("выдержек недостаточно"),
+    NOT_CONFIGURED("веб-поиск не настроен", "нужен ключ Brave Search во Вратах"),
     UNAVAILABLE("провайдер недоступен"), DENIED("сетевой запрос отклонён"),
     STOPPED("поиск остановлен"), TIMED_OUT("истекло время поиска"),
     STORAGE_ERROR("история поиска недоступна"), BUSY("уже идёт другой поиск"),
@@ -88,7 +89,7 @@ internal data class SearchView(
     fun historyText(): String {
         if (entries.isEmpty() || storageError) return latestText()
         return entries.take(5).joinToString("\n") {
-            "• " + it.timeLabel() + " · " + it.channel.label + " · «" + it.query + "» · " + it.status.label
+            "• " + it.timeLabel() + " · " + it.channel.label + " · «" + it.query + "» · " + it.status.ownerLabel
         }
     }
 
@@ -110,7 +111,7 @@ private fun SearchEntry.timeLabel(): String =
 internal data class SearchReply(val text: String, val duplicate: Boolean = false)
 
 private fun resultText(entry: SearchEntry, hits: List<SearchHit>): String = buildString {
-    appendLine("«" + entry.query + "» · " + entry.channel.label + " · " + entry.status.label)
+    appendLine("«" + entry.query + "» · " + entry.channel.label + " · " + entry.status.ownerLabel)
     if (hits.isNotEmpty()) {
         appendLine("\nПо выдержкам из поиска")
         hits.forEachIndexed { index, hit ->
