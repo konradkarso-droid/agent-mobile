@@ -32,6 +32,7 @@ import androidx.lifecycle.lifecycleScope
 import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
+import androidx.core.widget.doAfterTextChanged
 import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ModelFolder
@@ -153,6 +154,8 @@ import com.uroboros.util.wordSpots
 import com.uroboros.will.SimplePendingQuerySource
 import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
+import com.uroboros.search.MAX_QUERY_LENGTH
+import com.uroboros.search.SearchCommand
 import com.uroboros.search.SearchPanel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -4802,6 +4805,12 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
+        binding.editTextInput.doAfterTextChanged { text ->
+            if (!llmEngine.isLoaded && !turns.busy.value) {
+                binding.buttonSend.isEnabled = SearchCommand.fromOwnerWords(text?.toString()) != null
+            }
+        }
+
         // Короткое нажатие — обычный текстовый разговор. Аварийный стоп его НЕ
         // глушит намеренно: этот путь не проходит через ActionGate и вообще
         // ничего не делает с устройством, зато остаётся единственным способом
@@ -4821,6 +4830,17 @@ class MainActivity : AppCompatActivity() {
             if (userText.isBlank()) {
                 val hint = if (isToteRunning) "Введите вопрос" else "Введите запрос для генерации"
                 Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            SearchCommand.fromOwnerWords(userText)?.let { command ->
+                searchPanel?.open(command)
+                if (command !is SearchCommand.Find || command.query.length <= MAX_QUERY_LENGTH) {
+                    binding.editTextInput.text.clear()
+                }
+                return@setOnClickListener
+            }
+            if (!llmEngine.isLoaded && !isToteRunning) {
+                Toast.makeText(this, "Модель не загружена", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             // Модель одна, и разговор важнее суда: идущий разбор уступает, а

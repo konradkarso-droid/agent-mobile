@@ -142,6 +142,38 @@ class WebSearchTest {
     }
 
     @Test
+    fun directOwnerWordsUseTheSameCommandsAsTheExplicitEntryPoints() {
+        assertEquals(
+            SearchCommand.Find("как отключить превью ссылки?"),
+            SearchCommand.fromOwnerWords("Уроборос, пожалуйста, найди в интернете, как отключить превью ссылки?"),
+        )
+        assertEquals(SearchCommand.Find("инструкция для МГ-42"), SearchCommand.fromOwnerWords("Погугли инструкция для МГ-42"))
+        assertEquals(SearchCommand.Find("новости"), SearchCommand.fromOwnerWords("Поищи, пожалуйста, в сети новости"))
+        assertEquals(
+            SearchCommand.Find("расписание?"),
+            SearchCommand.fromOwnerWords("Можешь посмотреть онлайн расписание?"),
+        )
+        assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Что ты нашёл в интернете?"))
+        assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Покажи последний поиск"))
+        assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю веб-поисков"))
+    }
+
+    @Test
+    fun quotesPromisesAndOrdinaryConversationDoNotRequestNetworkAccess() {
+        listOf(
+            "Ты обещал поискать в интернете новости!",
+            "Я сам погуглю новости.",
+            "«Поищи в интернете новости»",
+            "Он написал: погугли новости",
+            "Не ищи в интернете новости",
+            "Найди запись в памяти",
+            "Как искать в интернете?",
+            "Поищи в интернете: :",
+        ).forEach { assertNull(it, SearchCommand.fromOwnerWords(it)) }
+        assertFalse(SearchCommand.isOwnerDirect(true, "1", "1", false, false, false, false, quoted = true))
+    }
+
+    @Test
     fun commandAndHistoryAreForTheOwnerInDirectChat() {
         assertEquals(SearchCommand.Find("размер APK"), SearchCommand.parse("/search@mybot размер APK", "MyBot"))
         assertEquals(SearchCommand.History, SearchCommand.parse("/search_history", "MyBot"))

@@ -26,7 +26,9 @@ internal class SearchPanel(
         dialog = null
     }
 
-    fun open() {
+    fun open(initial: SearchCommand? = null) = showSearch(initial, draft = "")
+
+    private fun showSearch(initial: SearchCommand?, draft: String) {
         close()
         val input = EditText(context).apply {
             hint = "Поисковая фраза для Brave"
@@ -34,6 +36,8 @@ internal class SearchPanel(
             inputType = InputType.TYPE_CLASS_TEXT
             filters = arrayOf(InputFilter.LengthFilter(MAX_QUERY_LENGTH))
         }
+        val initialQuery = (initial as? SearchCommand.Find)?.query
+        input.setText(initialQuery?.takeIf { it.length <= MAX_QUERY_LENGTH } ?: draft)
         val result = TextView(context).apply {
             setTextIsSelectable(true)
             text = "Читаю историю поиска…"
@@ -63,24 +67,26 @@ internal class SearchPanel(
         }
         window.show()
         window.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            val query = input.text.toString()
             close()
-            showKey()
+            showKey(query)
         }
-        window.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val query = input.text.toString().trim()
-            if (query.isEmpty()) {
+        fun submit(query: String) {
+            if (query.isBlank()) {
                 input.error = "Введи фразу для поиска"
-                return@setOnClickListener
+                return
             }
             scope.launch {
                 val reply = search.fromApp(query)
                 if (window.isShowing && !reply.duplicate) result.text = withHistory(reply.text)
             }
         }
+        window.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { submit(input.text.toString()) }
         observer = scope.launch {
             search.snapshot()
             search.state.collect { view -> result.text = withHistory(view.latestText()) }
         }
+        if (initial is SearchCommand.Find) submit(initial.query)
     }
 
     private fun withHistory(text: String): String {
@@ -88,7 +94,7 @@ internal class SearchPanel(
         return if (history.isEmpty()) text else "$text\n\nНедавние поиски\n$history"
     }
 
-    private fun showKey() {
+    private fun showKey(query: String) {
         val input = EditText(context).apply {
             hint = "Ключ Brave Search API"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -98,7 +104,7 @@ internal class SearchPanel(
             .setTitle("Ключ Brave Search")
             .setMessage("Ключ хранится на этом телефоне. Поисковику передаётся введённая фраза.")
             .setView(input)
-            .setNegativeButton("Назад") { _, _ -> open() }
+            .setNegativeButton("Назад") { _, _ -> showSearch(null, query) }
             .setNeutralButton("Удалить ключ", null)
             .setPositiveButton("Сохранить", null)
             .create()
@@ -108,7 +114,7 @@ internal class SearchPanel(
             scope.launch {
                 val saved = search.changeKey(value)
                 if (!window.isShowing) return@launch
-                if (saved) open() else input.error = "Ключ не удалось сохранить"
+                if (saved) showSearch(null, query) else input.error = "Ключ не удалось сохранить"
             }
         }
         window.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {

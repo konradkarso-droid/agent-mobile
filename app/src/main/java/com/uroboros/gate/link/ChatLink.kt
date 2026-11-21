@@ -254,6 +254,7 @@ object ChatLink {
     private var worker: kotlinx.coroutines.Job? = null
     @Volatile private var linkScope: CoroutineScope? = null
     private val searchReplies = Semaphore(2)
+    private val searchQuotedEntities = setOf("blockquote", "expandable_blockquote", "pre", "code")
     private val sendLock = Mutex()
 
     /** Запустить очередь ответов в области службы; уже идёт — ничего. */
@@ -291,6 +292,7 @@ object ChatLink {
     suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
         this.me = me
         val command = SearchCommand.parse(m.text, me.username)
+            ?: SearchCommand.fromOwnerWords(m.text)?.takeIf { isSearchOwner(app, m) }
         if (command != null) {
             searchCommand(app, m, me, command)
             return
@@ -350,18 +352,20 @@ object ChatLink {
         refresh(app)
     }
 
+    private fun isSearchOwner(app: Context, m: GateBotApi.Message): Boolean = SearchCommand.isOwnerDirect(
+        privateChat = m.chatType == "private" && m.chatId == m.fromId,
+        owner = ChatPrefs.owner(app)?.key?.id,
+        sender = m.fromId?.let { GateTelegram.userKey(it).id },
+        bot = m.fromIsBot,
+        forwarded = m.forwarded,
+        edited = m.edited,
+        senderChat = m.senderChatId != null,
+        quoted = m.entities.any { it.type in searchQuotedEntities },
+    )
+
     /** Поисковая команда и выдача лежат вне ленты и памяти разговора. */
     private suspend fun searchCommand(app: Context, m: GateBotApi.Message, bot: GateBotApi.Me, command: SearchCommand) {
-        val sender = m.fromId?.let { GateTelegram.userKey(it).id }
-        fun ownerAllowed() = SearchCommand.isOwnerDirect(
-            privateChat = m.chatType == "private" && m.chatId == m.fromId,
-            owner = ChatPrefs.owner(app)?.key?.id,
-            sender = sender,
-            bot = m.fromIsBot,
-            forwarded = m.forwarded,
-            edited = m.edited,
-            senderChat = m.senderChatId != null,
-        )
+        fun ownerAllowed() = isSearchOwner(app, m)
         if (!ownerAllowed() || m.messageId <= 0) return
         val scope = linkScope ?: return
         if (!searchReplies.tryAcquire()) {
