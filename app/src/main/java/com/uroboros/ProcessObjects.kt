@@ -12,6 +12,7 @@ import com.uroboros.memory.dream.Passport
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.HomeEventStore
+import com.uroboros.search.SearchPlatform
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,6 +57,7 @@ object ProcessObjects {
         val llmEngine: LlmEngine,
         /** Ход разговора и лента с её хранилищем — см. [ConversationTurns]. */
         val turns: ConversationTurns,
+        internal val search: SearchPlatform,
     ) {
         /** Имя модели в [llmEngine] для экрана; null — не загружена (LlmEngine.loadedModelName, почему там). */
         val loadedModelName: String? get() = llmEngine.loadedModelName
@@ -106,6 +108,7 @@ object ProcessObjects {
             watchdog = watchdog,
             llmEngine = llmEngine,
             turns = ConversationTurns(llmEngine, JournalStore(app), processScope),
+            search = SearchPlatform(app, watchdog, processScope),
         )
     }
 }

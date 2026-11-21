@@ -358,10 +358,11 @@ class ConversationTurns(
         desk: (suspend () -> String)? = null,
         onGlance: () -> Unit = {},
         liveRead: LiveReadOrder? = null,
+        searchNote: String? = null,
     ): Outcome {
         var closedIndex: Int? = null
         val outcome = locked {
-            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry, onThird, desk, onGlance, liveRead) { closedIndex = it }
+            runLocked(content, question, records, selfNote, recordMarks, dreamNote, recall, onAccepted, onStarted, onEvent, afterSend, onRetry, onThird, desk, onGlance, liveRead, searchNote) { closedIndex = it }
         }
         // Замок уже отпущен — затем событие и шлётся здесь (см. [closedEvents]).
         closedIndex?.let {
@@ -388,9 +389,13 @@ class ConversationTurns(
         desk: (suspend () -> String)?,
         onGlance: () -> Unit,
         liveRead: LiveReadOrder?,
+        searchNote: String?,
         onClosed: (Int) -> Unit,
     ): Outcome {
         gate(journal, content, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall)?.let { return it }
+        // При заполненной ленте приоритет у текущей реплики владельца.
+        val modelContent = searchNote?.let { ConversationJournal.toAgent(it) + "\n\n" + content }
+            ?.takeIf { gate(journal, it, CONTEXT_SIZE, ANSWER_TOKEN_LIMIT, recall) == null } ?: content
         onAccepted()
 
         // Движок брал кто-то другой — разбор памяти или цикл, — и разговора в
@@ -430,7 +435,7 @@ class ConversationTurns(
             override fun theirWords() = ForeignSelf.theirWords(recall)
             override fun messages(without: Set<Int>, withoutRecall: Set<String>): List<Pair<String, String>> {
                 if (withoutRecall.isNotEmpty()) recallDropped = withoutRecall
-                return journal.messagesFor(content, selfNote, dreamNote, EchoIntercept.recallWithout(recall, withoutRecall), without = without)
+                return journal.messagesFor(modelContent, selfNote, dreamNote, EchoIntercept.recallWithout(recall, withoutRecall), without = without)
             }
             override fun stableMessages(without: Set<Int>) = if (without.isEmpty()) journal.stableMessageCount() else null
             override fun close(answer: String, rejected: String?) {

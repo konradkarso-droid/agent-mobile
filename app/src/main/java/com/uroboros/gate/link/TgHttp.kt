@@ -33,10 +33,12 @@ class TgHttp(private val token: String) {
     }
 
     /** Текст в чат (тело — [GateBotApi.messageBody]). */
-    fun sendMessage(chatId: Long, text: String, replyTo: Long?, thread: Long?): GateBotApi.Reply =
+    fun sendMessage(
+        chatId: Long, text: String, replyTo: Long?, thread: Long?, disablePreview: Boolean = false,
+    ): GateBotApi.Reply =
         call(
             GateBotApi.methodUrl(token, "sendMessage"),
-            body = GateBotApi.messageBody(chatId, text, replyTo, thread),
+            body = GateBotApi.messageBody(chatId, text, replyTo, thread, disablePreview),
             contentType = "application/x-www-form-urlencoded; charset=UTF-8",
         )
 
