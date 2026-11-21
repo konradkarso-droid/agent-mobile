@@ -25,6 +25,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal const val MAX_SEARCH_KEY_LENGTH = 256
+
 internal class SearchPlatform(
     app: Context,
     private val watchdog: DeviceSafetyWatchdog,
@@ -67,7 +69,7 @@ internal class SearchPlatform(
         },
         stopped = combine(EmergencyStop.active, watchdog.zone) { stop, zone -> stop || zone == SafetyZone.CRITICAL },
         blocked = ::blocked,
-        available = { preferences.contains(KEY) },
+        available = ::hasKey,
         authorize = { channel ->
             GatedAction.evaluate(
                 app,
@@ -99,11 +101,14 @@ internal class SearchPlatform(
 
     suspend fun snapshot(): SearchView = withContext(Dispatchers.IO) { engine.snapshot() }
 
-    /** Ключ вводит владелец в приложении. Пустое поле снимает ключ. */
+    /** Наличие настройки. Ответ провайдера проверяется при самом поиске. */
+    fun hasKey(): Boolean = preferences.contains(KEY)
+
+    /** Ключ вводит владелец во Вратах. Пустое поле снимает ключ. */
     suspend fun changeKey(value: String): Boolean = withContext(Dispatchers.IO) {
         val token = value.trim()
         if (token.isEmpty()) return@withContext preferences.edit().remove(KEY).commit()
-        if (token.length > 256 || token.any { it !in '!'..'~' }) return@withContext false
+        if (token.length > MAX_SEARCH_KEY_LENGTH || token.any { it !in '!'..'~' }) return@withContext false
         runCatching {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, key())

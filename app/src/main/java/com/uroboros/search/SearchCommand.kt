@@ -4,8 +4,11 @@ internal sealed interface SearchCommand {
     data class Find(val query: String) : SearchCommand
     data object Last : SearchCommand
     data object History : SearchCommand
+    data object Deferred : SearchCommand
 
     companion object {
+        const val DEFERRED_MESSAGE = "Веб-поиск по времени пока недоступен. Запрос в сеть не отправлен."
+
         fun parse(text: String?, botName: String?): SearchCommand? {
             val words = text?.trim()?.split(Regex("\\s+"), limit = 2) ?: return null
             val name = words.first().substringBefore('@')
@@ -25,8 +28,30 @@ internal sealed interface SearchCommand {
         private const val IMPERATIVE = """(?:найди(?:те)?|поищи(?:те)?|посмотри(?:те)?|проверь(?:те)?)"""
         private const val ASK = """(?:може(?:шь|те)\s+(?:найти|поискать|посмотреть|проверить))"""
         private const val ONLINE = """(?:в\s+(?:интернете|сети)|онлайн)"""
+        private const val VERB = """(?:$IMPERATIVE|$ASK|(?:по)?гугли(?:те)?)"""
+        private const val POLITE = """(?:[\s,]+пожалуйста,?)?"""
+        private const val SEPARATOR = """[\s,:—–-]+"""
+        private const val NUMBER = """(?:\d+|одну|один|два|две|три|четыре|пять|десять|пятнадцать|двадцать|тридцать)"""
+        private const val UNIT = """(?:секунд[уы]?|минут[уы]?|час(?:а|ов)?|день|дня|дней)"""
+        private const val RELATIVE_TIME = """через\s+(?:пол\s*часа|(?:$NUMBER\s+)?$UNIT)"""
+        private const val PART_OF_DAY = """(?:сегодня\s+)?(?:вечером|утром|дн[её]м|ночью)"""
+        private const val AT_TIME = """(?:(?:сегодня|завтра)\s+)?(?:в|к)\s+(?:\d{1,2}:\d{2}|$NUMBER\s+час(?:а|ов)?)"""
+        private const val LATER = """(?:$RELATIVE_TIME|$PART_OF_DAY|$AT_TIME|позже|потом|послезавтра|завтра)"""
+
+        // Ищем явную отсрочку в начале поручения и после отделённой паузой
+        // темы. Относительное «через час» в конце тоже считаем отсрочкой.
+        // «Погода вечером» в самой теме остаётся поиском сейчас.
+        private val leadingDelay = Regex(
+            """^$ADDRESS(?:$VERB$POLITE(?:\s+$ONLINE)?$SEPARATOR$LATER|$LATER$SEPARATOR$VERB)(?=$|[\s,.!?;:])""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val trailingDelay = Regex(
+            """(?:[,;—–]\s*$LATER|\s+$RELATIVE_TIME)[.!?]*$""",
+            RegexOption.IGNORE_CASE,
+        )
+
         private val webRequest = Regex(
-            """^$ADDRESS(?:(?:$IMPERATIVE|$ASK)(?:[\s,]+пожалуйста,?)?\s+$ONLINE|(?:по)?гугли(?:те)?)[\s,:—–-]+(.+)$""",
+            """^$ADDRESS(?:(?:$IMPERATIVE|$ASK)$POLITE\s+$ONLINE|(?:по)?гугли(?:те)?)[\s,:—–-]+(.+)$""",
             RegexOption.IGNORE_CASE,
         )
         private val lastRequest = Regex(
@@ -35,14 +60,17 @@ internal sealed interface SearchCommand {
             RegexOption.IGNORE_CASE,
         )
         private val historyRequest = Regex(
-            """^""" + ADDRESS + """покажи(?:те)?\s+историю\s+(?:веб-)?поисков?[.!?]*$""",
+            """^""" + ADDRESS + """покажи(?:те)?\s+историю\s+(?:веб-)?поиск(?:а|ов)[.!?]*$""",
             RegexOption.IGNORE_CASE,
         )
 
         fun fromOwnerWords(text: String?): SearchCommand? {
             val phrase = text?.trim() ?: return null
+            if (leadingDelay.containsMatchIn(phrase)) return Deferred
             val query = webRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()
-            if (query != null && query.any { it.isLetterOrDigit() }) return Find(query)
+            if (query != null && query.any { it.isLetterOrDigit() }) {
+                return if (trailingDelay.containsMatchIn(query)) Deferred else Find(query)
+            }
             return when {
                 lastRequest.matches(phrase) -> Last
                 historyRequest.matches(phrase) -> History

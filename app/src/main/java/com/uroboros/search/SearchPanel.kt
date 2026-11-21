@@ -1,10 +1,6 @@
 package com.uroboros.search
 
 import android.content.Context
-import android.text.InputFilter
-import android.text.InputType
-import android.widget.EditText
-import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
@@ -12,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
+/** Показывает выдачу по реплике владельца, отдельно от ленты разговора. */
 internal class SearchPanel(
     private val context: Context,
     private val scope: CoroutineScope,
@@ -21,106 +18,51 @@ internal class SearchPanel(
     private var observer: Job? = null
 
     fun close() {
-        observer?.cancel()
-        dialog?.dismiss()
-        dialog = null
+        val window = dialog
+        closeObserver()
+        window?.dismiss()
     }
 
-    fun open(initial: SearchCommand? = null) = showSearch(initial, draft = "")
-
-    private fun showSearch(initial: SearchCommand?, draft: String) {
+    fun open(command: SearchCommand) {
         close()
-        val input = EditText(context).apply {
-            hint = "Поисковая фраза для Brave"
-            maxLines = 1
-            inputType = InputType.TYPE_CLASS_TEXT
-            filters = arrayOf(InputFilter.LengthFilter(MAX_QUERY_LENGTH))
-        }
-        val initialQuery = (initial as? SearchCommand.Find)?.query
-        input.setText(initialQuery?.takeIf { it.length <= MAX_QUERY_LENGTH } ?: draft)
         val result = TextView(context).apply {
             setTextIsSelectable(true)
-            text = "Читаю историю поиска…"
-        }
-        val body = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
             val inset = (20 * resources.displayMetrics.density).toInt()
-            setPadding(inset, 0, inset, inset)
-            addView(input)
-            addView(result)
+            setPadding(inset, inset / 2, inset, inset)
+            text = when (command) {
+                is SearchCommand.Find -> "Ищу…"
+                SearchCommand.Deferred -> SearchCommand.DEFERRED_MESSAGE
+                else -> "Читаю историю поиска…"
+            }
         }
-        val scroll = ScrollView(context).apply { addView(body) }
         val window = AlertDialog.Builder(context)
-            .setTitle("Веб-поиск")
-            .setView(scroll)
+            .setTitle(if (command == SearchCommand.History) "История поиска" else "Веб-поиск")
+            .setView(ScrollView(context).apply { addView(result) })
             .setNegativeButton("Закрыть", null)
-            .setNeutralButton("Ключ Brave", null)
-            .setPositiveButton("Искать", null)
             .create()
         dialog = window
         window.setOnDismissListener {
-            if (dialog === window) {
-                observer?.cancel()
-                observer = null
-                dialog = null
-            }
+            if (dialog === window) closeObserver()
         }
         window.show()
-        window.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-            val query = input.text.toString()
-            close()
-            showKey(query)
-        }
-        fun submit(query: String) {
-            if (query.isBlank()) {
-                input.error = "Введи фразу для поиска"
-                return
+        when (command) {
+            is SearchCommand.Find -> scope.launch {
+                val reply = search.fromApp(command.query)
+                if (window.isShowing && !reply.duplicate) result.text = reply.text
             }
-            scope.launch {
-                val reply = search.fromApp(query)
-                if (window.isShowing && !reply.duplicate) result.text = withHistory(reply.text)
+            SearchCommand.Last, SearchCommand.History -> observer = scope.launch {
+                search.snapshot()
+                search.state.collect { view ->
+                    result.text = if (command == SearchCommand.History) view.historyText() else view.latestText()
+                }
             }
+            SearchCommand.Deferred -> Unit
         }
-        window.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { submit(input.text.toString()) }
-        observer = scope.launch {
-            search.snapshot()
-            search.state.collect { view -> result.text = withHistory(view.latestText()) }
-        }
-        if (initial is SearchCommand.Find) submit(initial.query)
     }
 
-    private fun withHistory(text: String): String {
-        val history = search.state.value.historyText()
-        return if (history.isEmpty()) text else "$text\n\nНедавние поиски\n$history"
-    }
-
-    private fun showKey(query: String) {
-        val input = EditText(context).apply {
-            hint = "Ключ Brave Search API"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            filters = arrayOf(InputFilter.LengthFilter(256))
-        }
-        val window = AlertDialog.Builder(context)
-            .setTitle("Ключ Brave Search")
-            .setMessage("Ключ хранится на этом телефоне. Поисковику передаётся введённая фраза.")
-            .setView(input)
-            .setNegativeButton("Назад") { _, _ -> showSearch(null, query) }
-            .setNeutralButton("Удалить ключ", null)
-            .setPositiveButton("Сохранить", null)
-            .create()
-        dialog = window
-        window.show()
-        fun saveKey(value: String) {
-            scope.launch {
-                val saved = search.changeKey(value)
-                if (!window.isShowing) return@launch
-                if (saved) showSearch(null, query) else input.error = "Ключ не удалось сохранить"
-            }
-        }
-        window.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val token = input.text.toString().trim()
-            if (token.isEmpty()) input.error = "Введи ключ" else saveKey(token)
-        }
-        window.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { saveKey("") }
+    private fun closeObserver() {
+        observer?.cancel()
+        observer = null
+        dialog = null
     }
 }

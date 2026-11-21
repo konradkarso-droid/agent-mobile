@@ -85,6 +85,7 @@ object ProcessObjects {
 
     private fun create(app: Context): Held {
         val watchdog = DeviceSafetyWatchdog(app, processScope)
+        val search = SearchPlatform(app, watchdog, processScope)
         // Нажитое о себе для стены движок читает через эту функцию: слой памяти
         // знает, какие строки приняты, движок — только что их надо поставить.
         val stickers = MemoryDatabase.getInstance(app).stickerDao()
@@ -94,6 +95,7 @@ object ProcessObjects {
             // Строки о телеграме в стене стоят, пока лежит ключ бота (BuildSelfDescription).
             telegramOn = { File(app.filesDir, GateTokenStore.FILE_NAME).exists() },
             readPassport = { stickers.passportWall().let { BuildSelfDescription.PassportWall(it, Passport.hasName(it)) } },
+            webSearchConfigured = search::hasKey,
         )
         // «Дом» (safety.HomeEvents): выход из нормы и обрыв сторожем пишутся на
         // диск, чтобы пережить кому, — о них агент потом расскажет фактом.
@@ -108,7 +110,7 @@ object ProcessObjects {
             watchdog = watchdog,
             llmEngine = llmEngine,
             turns = ConversationTurns(llmEngine, JournalStore(app), processScope),
-            search = SearchPlatform(app, watchdog, processScope),
+            search = search,
         )
     }
 }

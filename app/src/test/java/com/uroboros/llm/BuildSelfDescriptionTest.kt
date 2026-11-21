@@ -19,6 +19,21 @@ import org.junit.Test
 class BuildSelfDescriptionTest {
 
     @Test
+    fun webSearchIsKnownWithOrWithoutAKeyAndTimersAreUnavailable() {
+        for (telegram in listOf(false, true)) {
+            val unconfigured = BuildSelfDescription.lines(1, telegram, webSearchConfigured = false)
+            val configured = BuildSelfDescription.lines(1, telegram, webSearchConfigured = true)
+            for (lines in listOf(unconfigured, configured)) {
+                assertTrue(BuildSelfDescription.WEB_SEARCH_LINE in lines)
+                assertTrue(BuildSelfDescription.DEFERRED_ACTIONS_LINE in lines)
+                assertFalse(lines.any { "ходить в интернет" in it })
+            }
+            assertTrue(BuildSelfDescription.WEB_SEARCH_SETUP_LINE in unconfigured)
+            assertFalse(BuildSelfDescription.WEB_SEARCH_SETUP_LINE in configured)
+        }
+    }
+
+    @Test
     fun `память первой при любом состоянии запрета`() {
         for (state in listOf(-1, 0, 1, 2, 3)) {
             assertEquals(BuildSelfDescription.MEMORY_LINE, BuildSelfDescription.lines(state).first())

@@ -388,9 +388,8 @@ object ChatLink {
                         onAccepted = { accepted.complete(Unit) },
                     )
                     SearchCommand.Last -> SearchReply(search.snapshot().latestText())
-                    SearchCommand.History -> SearchReply(search.snapshot().let { view ->
-                        if (view.storageError) view.latestText() else view.historyText().ifEmpty { view.latestText() }
-                    })
+                    SearchCommand.History -> SearchReply(search.snapshot().historyText())
+                    SearchCommand.Deferred -> SearchReply(SearchCommand.DEFERRED_MESSAGE)
                 }
                 if (!reply.duplicate && ownerAllowed()) {
                     val sent = sendReply(

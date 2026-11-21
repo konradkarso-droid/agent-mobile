@@ -24,7 +24,7 @@ internal enum class SearchChannel(val label: String) {
 
 internal enum class SearchStatus(val label: String) {
     SEARCHING("ищу"), FOUND("выдержки найдены"), EMPTY("нет результатов"),
-    INSUFFICIENT("выдержек недостаточно"), NOT_CONFIGURED("нужен ключ Brave Search"),
+    INSUFFICIENT("выдержек недостаточно"), NOT_CONFIGURED("нужен ключ Brave Search во Вратах"),
     UNAVAILABLE("провайдер недоступен"), DENIED("сетевой запрос отклонён"),
     STOPPED("поиск остановлен"), TIMED_OUT("истекло время поиска"),
     STORAGE_ERROR("история поиска недоступна"), BUSY("уже идёт другой поиск"),
@@ -85,8 +85,11 @@ internal data class SearchView(
         return resultText(entry, if (entry.id == resultId) hits else emptyList())
     }
 
-    fun historyText(): String = entries.take(5).joinToString("\n") {
-        "• " + it.timeLabel() + " · " + it.channel.label + " · «" + it.query + "» · " + it.status.label
+    fun historyText(): String {
+        if (entries.isEmpty() || storageError) return latestText()
+        return entries.take(5).joinToString("\n") {
+            "• " + it.timeLabel() + " · " + it.channel.label + " · «" + it.query + "» · " + it.status.label
+        }
     }
 
     /** Только сведения о действии. Выдержки и ссылки в обычный ход не передаются. */

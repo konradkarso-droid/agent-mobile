@@ -156,6 +156,30 @@ class WebSearchTest {
         assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Что ты нашёл в интернете?"))
         assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Покажи последний поиск"))
         assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю веб-поисков"))
+        assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю поиска"))
+    }
+
+    @Test
+    fun requestsToSearchLaterHaveNoImmediateSearchCommand() {
+        listOf(
+            "Поищи через час",
+            "Через час поищи в интернете расписание",
+            "Поищи в интернете через час новости",
+            "Поищи в интернете новости через час",
+            "Поищи, пожалуйста, через два часа",
+            "Проверь в интернете сегодня в 19:00 расписание",
+            "Погугли новости, вечером",
+        ).forEach { assertEquals(it, SearchCommand.Deferred, SearchCommand.fromOwnerWords(it)) }
+        assertEquals(
+            SearchCommand.Find("какая погода вечером?"),
+            SearchCommand.fromOwnerWords("Посмотри в интернете, какая погода вечером?"),
+        )
+        assertEquals(
+            SearchCommand.Find("фильм «Через час»"),
+            SearchCommand.fromOwnerWords("Погугли фильм «Через час»"),
+        )
+        assertNull(SearchCommand.fromOwnerWords("Напомни о встрече вечером"))
+        assertNull(SearchCommand.fromOwnerWords("Ты обещал поискать через час"))
     }
 
     @Test

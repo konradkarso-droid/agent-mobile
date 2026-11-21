@@ -4343,7 +4343,6 @@ class MainActivity : AppCompatActivity() {
         // созданный заново, получает те же объекты, а не заводит свои.
         processObjects = ProcessObjects.get(applicationContext)
         searchPanel = SearchPanel(this, lifecycleScope, processObjects.search)
-        binding.buttonSearch.setOnClickListener { searchPanel?.open() }
         mediator = processObjects.mediator
         watchdog = processObjects.watchdog
         llmEngine = processObjects.llmEngine
