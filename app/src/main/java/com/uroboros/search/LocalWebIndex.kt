@@ -4,31 +4,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import com.uroboros.memory.nav.LemmaDictionary
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.Locale
-import kotlin.math.ln
+import java.util.PriorityQueue
 
 internal data class IndexedPage(val url: String, val title: String, val text: String)
+internal data class IndexedMatch(val page: IndexedPage, val missingWords: List<String>)
 internal data class IndexStatus(val pages: Int, val checkedAt: Long?)
-
-internal fun searchTerms(query: String, dictionary: LemmaDictionary? = null): List<String> =
-    WORD.findAll(query.lowercase(Locale.ROOT)).map { it.value }
-        .filter { it.length in 2..48 && it !in FILLER }.distinct().take(12).toList()
-        .flatMap { word ->
-            val normal = dictionary?.analyze(word)?.firstOrNull()?.lemma?.lowercase(Locale.ROOT)
-            if (normal != null && normal.length >= 5 && WORD.matches(normal)) {
-                listOf(word, normal, normal.dropLast(1) + "*")
-            } else listOf(word)
-        }.distinct()
-
-private val WORD = Regex("[\\p{L}\\p{N}]+")
-private val FILLER = setOf(
-    "как", "где", "что", "это", "когда", "какой", "какие", "для", "или", "при",
-    "во", "на", "по", "из", "об", "от", "за", "про", "такое",
-    "the", "and", "how", "is", "to", "what", "when", "where", "which", "does", "with",
-)
 
 /**
  * Заменяемая база открытых страниц, отдельно от памяти и суда. FTS4 индексирует
@@ -218,44 +198,31 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         put("last_modified", modified)
     }
 
-    fun find(terms: List<String>, limit: Int): List<IndexedPage> {
-        if (terms.isEmpty()) return emptyList()
-        val expression = terms.joinToString(" OR ") { term ->
-            "\"$term\""
-        }
+    fun find(query: FtsQuery, limit: Int): List<IndexedMatch> {
+        if (query.terms.isEmpty()) return emptyList()
+        val expression = query.terms.joinToString(" OR ") { term -> "\"$term\"" }
+        data class RankedPage(val id: Long, val score: MatchScore)
+        val bestFirst = compareBy<RankedPage> { it.score.missingWords.size }
+            .thenByDescending { it.score.weight }.thenBy { it.id }
         val db = readableDatabase
         val best = db.rawQuery(
             "SELECT docid, matchinfo(pages_fts, 'pcx') FROM pages_fts WHERE pages_fts MATCH ?",
             arrayOf(expression),
         ).use { rows ->
-            val ranked = java.util.PriorityQueue(compareBy<Pair<Long, Double>> { it.second }.thenByDescending { it.first })
+            val ranked = PriorityQueue(bestFirst.reversed())
             while (rows.moveToNext()) {
-                ranked.add(rows.getLong(0) to score(rows.getBlob(1)))
+                ranked.add(RankedPage(rows.getLong(0), query.score(rows.getBlob(1))))
                 if (ranked.size > limit) ranked.remove()
             }
-            ranked.sortedWith(compareByDescending<Pair<Long, Double>> { it.second }.thenBy { it.first })
+            ranked.sortedWith(bestFirst)
         }
-        return best.mapNotNull { (id, _) ->
+        return best.mapNotNull { (id, score) ->
             db.rawQuery("SELECT url, title, body FROM pages WHERE id = ?", arrayOf(id.toString())).use { row ->
-                if (row.moveToFirst()) IndexedPage(row.getString(0), row.getString(1), row.getString(2)) else null
+                if (!row.moveToFirst()) return@use null
+                val page = IndexedPage(row.getString(0), row.getString(1), row.getString(2))
+                IndexedMatch(page, score.missingWords)
             }
         }
-    }
-
-    private fun score(blob: ByteArray): Double {
-        val data = ByteBuffer.wrap(blob).order(ByteOrder.nativeOrder())
-        val phrases = data.int
-        val columns = data.int
-        var score = 0.0
-        repeat(phrases) {
-            repeat(columns) { column ->
-                val hits = data.int
-                data.int // Всего совпадений с этой фразой.
-                val documents = data.int
-                if (hits > 0) score += (if (column == 0) 2 else 1) * (1 + ln(1.0 + hits)) / ln(2.0 + documents)
-            }
-        }
-        return score
     }
 
     private fun removePage(db: SQLiteDatabase, url: String): Long? {

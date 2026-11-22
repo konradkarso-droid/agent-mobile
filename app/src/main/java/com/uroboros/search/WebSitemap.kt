@@ -24,21 +24,6 @@ private val words = Regex("[\\p{L}\\p{N}]+")
 private const val MAX_SITEMAP_ENTRIES = 50_000
 private const val CANDIDATE_LIMIT = 8
 
-internal fun needsSitemapLookup(pages: List<IndexedPage>, terms: List<String>): Boolean {
-    val keys = sitemapTerms(terms)
-    if (keys.isEmpty()) return false
-    return pages.none { page ->
-        val seen = mutableSetOf<String>()
-        for (part in sequenceOf(page.title, page.text)) {
-            for (match in words.findAll(part.lowercase(Locale.ROOT))) {
-                if (match.value in keys) seen.add(match.value)
-                if (seen.size == keys.size) break
-            }
-        }
-        seen.size == keys.size
-    }
-}
-
 internal fun addressScore(url: HttpUrl, terms: List<String>): Int {
     val path = url.pathSegments.drop(if (url.host == mdnSitemap.host) 3 else 1)
     val pathWords = path.flatMap { piece -> words.findAll(piece.lowercase(Locale.ROOT)).map { it.value }.toList() }
