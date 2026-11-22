@@ -26,7 +26,8 @@ internal fun searchTerms(query: String, dictionary: LemmaDictionary? = null): Li
 private val WORD = Regex("[\\p{L}\\p{N}]+")
 private val FILLER = setOf(
     "как", "где", "что", "это", "когда", "какой", "какие", "для", "или", "при",
-    "во", "на", "по", "из", "об", "от", "за", "про", "the", "and", "how", "is", "to",
+    "во", "на", "по", "из", "об", "от", "за", "про", "такое",
+    "the", "and", "how", "is", "to", "what", "when", "where", "which", "does", "with",
 )
 
 /**
@@ -35,14 +36,17 @@ private val FILLER = setOf(
  * Предел в байтах применяется к самой базе SQLite. Временные файлы SQLite
  * при записи могут занимать дополнительное место.
  */
-internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 1) {
+internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 2) {
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         if (!db.isReadOnly) db.setMaximumSize(100_000_000L)
     }
 
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE pages (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL, body TEXT NOT NULL)")
+        db.execSQL(
+            "CREATE TABLE pages (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL, " +
+                "body TEXT NOT NULL, etag TEXT, last_modified TEXT)",
+        )
         db.execSQL("CREATE VIRTUAL TABLE pages_fts USING fts4(title, body, content='pages', tokenize=unicode61)")
         db.execSQL("CREATE TABLE frontier (url TEXT PRIMARY KEY NOT NULL, due INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX frontier_due ON frontier(due)")
@@ -50,8 +54,9 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Перестраиваемые данные. Версия 1 ещё не имеет миграций.
-        error("Unsupported web index upgrade: $oldVersion -> $newVersion")
+        check(oldVersion == 1 && newVersion == 2) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
+        db.execSQL("ALTER TABLE pages ADD COLUMN etag TEXT")
+        db.execSQL("ALTER TABLE pages ADD COLUMN last_modified TEXT")
     }
 
     fun status(): IndexStatus = readableDatabase.rawQuery(
@@ -61,40 +66,83 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         IndexStatus(row.getInt(0), if (row.isNull(1)) null else row.getLong(1))
     }
 
-    fun nextDue(now: Long, limit: Int): List<String> = readableDatabase.rawQuery(
-        "SELECT url FROM frontier WHERE due <= ? ORDER BY due, rowid LIMIT ?",
-        arrayOf(now.toString(), limit.toString()),
+    fun nextDue(before: Long, limit: Int, indexed: Boolean): List<String> = readableDatabase.rawQuery(
+        "SELECT f.url FROM frontier f LEFT JOIN pages p ON p.url = f.url " +
+            "WHERE f.due <= ? AND (p.id IS NOT NULL) = CAST(? AS INTEGER) ORDER BY f.due, f.rowid LIMIT ?",
+        arrayOf(before.toString(), if (indexed) "1" else "0", limit.toString()),
     ).use { rows -> buildList { while (rows.moveToNext()) add(rows.getString(0)) } }
 
-    fun seed(urls: List<String>, force: Boolean) = transaction { db ->
+    fun dueTargets(urls: List<String>, now: Long): List<String> {
+        if (urls.isEmpty()) return emptyList()
+        val placeholders = urls.joinToString(", ") { "?" }
+        val eligible = readableDatabase.rawQuery(
+            "SELECT url FROM frontier WHERE due <= ? AND url IN ($placeholders)",
+            (listOf(now.toString()) + urls).toTypedArray(),
+        ).use { rows -> buildSet { while (rows.moveToNext()) add(rows.getString(0)) } }
+        return urls.filter { it in eligible }
+    }
+
+    fun seed(urls: List<String>, retryUnindexed: Boolean = false) = transaction { db ->
         addUrls(db, urls)
-        if (force) {
-            for (url in urls) db.execSQL("UPDATE frontier SET due = -1 WHERE url = ?", arrayOf(url))
+        if (retryUnindexed) {
+            for (url in urls) {
+                db.execSQL("UPDATE frontier SET due = -1 WHERE url = ? AND url NOT IN (SELECT url FROM pages)", arrayOf(url))
+            }
         }
     }
 
-    fun record(address: String, page: IndexedPage?, links: List<String>, due: Long, deleted: Boolean = false) =
-        transaction { db ->
-            if (page != null) {
-                val oldId = removePage(db, page.url)
-                if (page.url != address) removePage(db, address)
-                val id = db.insertOrThrow("pages", null, ContentValues().apply {
-                    if (oldId != null) put("id", oldId)
-                    put("url", page.url)
-                    put("title", page.title)
-                    put("body", page.text)
-                })
-                db.execSQL("INSERT INTO pages_fts(docid, title, body) VALUES (?, ?, ?)", arrayOf(id, page.title, page.text))
-            } else if (deleted) {
-                removePage(db, address)
-            }
-            db.execSQL("UPDATE frontier SET due = ? WHERE url = ?", arrayOf(due, address))
-            addUrls(db, links)
-        }
+    fun validators(url: String): PageValidators? = readableDatabase.rawQuery(
+        "SELECT etag, last_modified FROM pages WHERE url = ?", arrayOf(url),
+    ).use { row -> if (row.moveToFirst()) PageValidators.from(row.getString(0), row.getString(1)) else null }
 
-    fun checked(at: Long) = transaction { db ->
-        db.execSQL("DELETE FROM refresh")
-        db.execSQL("INSERT INTO refresh VALUES (?)", arrayOf(at))
+    fun record(address: String, outcome: CrawlOutcome, due: Long, at: Long) = transaction { db ->
+        val checked = when (outcome) {
+            is CrawlOutcome.Loaded -> {
+                val page = outcome.content.page
+                val oldId = removePage(db, outcome.url)
+                if (outcome.url != address) removePage(db, address)
+                if (page != null) {
+                    val id = db.insertOrThrow("pages", null, outcome.validators.values().apply {
+                        if (oldId != null) put("id", oldId)
+                        put("url", page.url)
+                        put("title", page.title)
+                        put("body", page.text)
+                    })
+                    db.execSQL("INSERT INTO pages_fts(docid, title, body) VALUES (?, ?, ?)", arrayOf(id, page.title, page.text))
+                }
+                addUrls(db, outcome.content.links)
+                page != null
+            }
+            is CrawlOutcome.Unchanged -> {
+                check(db.update("pages", outcome.validators.values(), "url = ?", arrayOf(outcome.url)) == 1)
+                if (outcome.url != address) removePage(db, address)
+                true
+            }
+            is CrawlOutcome.Removed -> {
+                removePage(db, outcome.url)
+                if (outcome.url != address) removePage(db, address)
+                false
+            }
+        }
+        if (address != outcome.url) {
+            // После переадресации будущая проверка идёт к канонической странице.
+            db.delete("frontier", "url = ?", arrayOf(address))
+            addUrls(db, listOf(outcome.url))
+        }
+        db.execSQL("UPDATE frontier SET due = ? WHERE url = ?", arrayOf(due, outcome.url))
+        if (checked) {
+            db.execSQL("DELETE FROM refresh")
+            db.execSQL("INSERT INTO refresh VALUES (?)", arrayOf(at))
+        }
+    }
+
+    fun defer(address: String, due: Long) {
+        writableDatabase.execSQL("UPDATE frontier SET due = ? WHERE url = ?", arrayOf(due, address))
+    }
+
+    private fun PageValidators.values() = ContentValues().apply {
+        put("etag", etag)
+        put("last_modified", modified)
     }
 
     fun find(terms: List<String>, limit: Int): List<IndexedPage> {

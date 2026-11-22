@@ -85,100 +85,157 @@ internal fun extractPage(url: HttpUrl, body: ByteArray, directives: String = "",
     return CrawledPage(page, links)
 }
 
-internal data class CrawlReport(val loaded: Int, val attempted: Int, val status: IndexStatus)
+internal sealed interface CrawlOutcome {
+    val url: String
+
+    data class Loaded(override val url: String, val content: CrawledPage, val validators: PageValidators) : CrawlOutcome
+    data class Unchanged(override val url: String, val validators: PageValidators) : CrawlOutcome
+    data class Removed(override val url: String) : CrawlOutcome
+}
+
+internal data class CrawlReport(val loaded: Int, val unchanged: Int, val attempted: Int, val status: IndexStatus)
+
+private const val DAY = 24 * 60 * 60_000L
+private const val RETRY = 5 * 60_000L
+private const val CRAWL_ATTEMPTS = 16
 
 internal class WebCrawler(private val index: LocalWebIndex) {
     private val transport = CrawlTransport()
+    private var sitemap: Pair<Long, ByteArray>? = null
 
     suspend fun refresh(terms: List<String>, stillAllowed: () -> Boolean, forceSeeds: Boolean): CrawlReport {
-        index.seed(CrawlSources.seeds, forceSeeds)
+        index.seed(CrawlSources.seeds, retryUnindexed = forceSeeds)
+        val visited = mutableSetOf<String>()
         var attempted = 0
         var loaded = 0
-        val session = Session(stillAllowed)
+        var unchanged = 0
+        val session = CrawlSession(transport::fetch, index::validators, stillAllowed)
         withTimeoutOrNull(35_000) {
-            while (attempted < 16 && stillAllowed()) {
-                val due = index.nextDue(System.currentTimeMillis(), if (terms.isEmpty()) 1 else 180)
-                val address = due.maxByOrNull { candidate ->
-                    val path = CrawlSources.address(candidate)?.pathSegments?.joinToString(" ").orEmpty()
-                    terms.count { path.contains(it.trimEnd('*'), ignoreCase = true) }
-                } ?: break
+            val targets = withTimeoutOrNull(10_000) { discoverFromSitemap(session, terms) }.orEmpty()
+            while (attempted < CRAWL_ATTEMPTS && stillAllowed()) {
+                val now = System.currentTimeMillis()
+                fun revisit() = index.nextDue(if (forceSeeds) now + DAY else now, visited.size + 1, indexed = true)
+                    .firstOrNull { it !in visited }
+                fun discover(): String? = targets.firstOrNull { it !in visited }
+                    ?: index.nextDue(now, visited.size + if (terms.isEmpty()) 1 else 180, indexed = false)
+                        .asSequence().filterNot { it in visited }.maxByOrNull { address ->
+                            CrawlSources.address(address)?.let { addressScore(it, terms) } ?: 0
+                        }
+                val address = if (attempted % 3 == 0) revisit() ?: discover() else discover() ?: revisit()
+                if (address == null) break
+                visited.add(address)
                 attempted++
                 try {
                     val url = CrawlSources.address(address) ?: error("Stored address is outside the crawl")
-                    val (result, gone) = session.download(url)
+                    val outcome = session.download(url)
                     currentCoroutineContext().ensureActive()
                     if (!stillAllowed()) break
-                    val page = result?.page
-                    index.record(address, page, result?.links.orEmpty(), System.currentTimeMillis() +
-                        if (gone) 7 * DAY else DAY, gone || result != null && page == null)
-                    if (page != null) {
-                        loaded++
-                        index.checked(System.currentTimeMillis())
+                    visited.add(outcome.url)
+                    val at = System.currentTimeMillis()
+                    index.record(address, outcome, at + if (outcome is CrawlOutcome.Removed) 7 * DAY else DAY, at)
+                    when (outcome) {
+                        is CrawlOutcome.Loaded -> if (outcome.content.page != null) loaded++
+                        is CrawlOutcome.Unchanged -> unchanged++
+                        is CrawlOutcome.Removed -> Unit
                     }
                 } catch (_: IOException) {
-                    if (stillAllowed()) index.record(address, null, emptyList(), System.currentTimeMillis() + RETRY)
+                    if (stillAllowed()) index.defer(address, System.currentTimeMillis() + RETRY)
                 }
             }
         }
-        return CrawlReport(loaded, attempted, index.status())
+        return CrawlReport(loaded, unchanged, attempted, index.status())
     }
 
-    private inner class Session(private val stillAllowed: () -> Boolean) {
-        private val rulesByHost = mutableMapOf<String, SimpleRobotRules?>()
-        private val lastByHost = mutableMapOf<String, Long>()
-
-        suspend fun download(start: HttpUrl): Pair<CrawledPage?, Boolean> {
-            var url = start
-            repeat(4) {
-                val rules = rules(url)
-                if (!rules.isAllowed(url.toString()) || rules.crawlDelay > 5_000) return null to true
-                val response = fetch(url, rules.crawlDelay.coerceAtLeast(850))
-                when (response.code) {
-                    200 -> {
-                        val charset = response.type.substringAfter("charset=", "").substringBefore(';').trim('"', ' ')
-                            .takeIf { it.isNotBlank() && runCatching { java.nio.charset.Charset.isSupported(it) }.getOrDefault(false) }
-                        return extractPage(url, response.body, response.directives, charset) to false
-                    }
-                    301, 302, 303, 307, 308 -> {
-                        val destination = response.location?.let(url::resolve)?.toString()?.let(CrawlSources::address)
-                        url = destination ?: return null to true
-                    }
-                    404, 410, 415 -> return null to true
-                    else -> throw IOException("Source returned HTTP " + response.code)
-                }
-            }
-            throw IOException("Redirect limit")
-        }
-
-        private suspend fun rules(url: HttpUrl): SimpleRobotRules {
-            if (!rulesByHost.containsKey(url.host)) {
-                val robots = url.newBuilder().encodedPath("/robots.txt").build()
-                val response = fetch(robots, 850, robots = true)
-                val parser = SimpleRobotRulesParser()
-                rulesByHost[url.host] = when (response.code) {
-                    200 -> parser.parseContent(
-                        robots.toString(), response.body, response.type, listOf(CRAWLER_NAME.lowercase(Locale.ROOT)),
-                    )
-                    404, 410 -> parser.failedFetch(404)
-                    else -> null
-                }
-            }
-            return rulesByHost[url.host] ?: throw IOException("Robots rules unavailable")
-        }
-
-        private suspend fun fetch(url: HttpUrl, pause: Long, robots: Boolean = false): CrawlResponse {
-            lastByHost[url.host]?.let { last ->
-                val elapsed = (System.nanoTime() - last) / 1_000_000
-                if (elapsed < pause) delay(pause - elapsed)
-            }
-            if (!stillAllowed()) throw IOException("Crawl permission revoked")
-            lastByHost[url.host] = System.nanoTime()
-            return transport.fetch(url, robots)
+    private suspend fun discoverFromSitemap(session: CrawlSession, terms: List<String>): List<String> {
+        val technical = sitemapTerms(terms)
+        if (technical.isEmpty()) return emptyList()
+        return try {
+            val now = System.currentTimeMillis()
+            val bytes = sitemap?.takeIf { now - it.first in 0 until DAY }?.second ?: session.sitemap()
+                ?: return emptyList()
+            val candidates = sitemapCandidates(bytes, technical)
+            if (sitemap?.second !== bytes) sitemap = now to bytes
+            index.seed(candidates)
+            index.dueTargets(candidates, now)
+        } catch (_: IOException) {
+            emptyList()
         }
     }
+}
 
-    private companion object {
-        const val RETRY = 5 * 60_000L
-        const val DAY = 24 * 60 * 60_000L
+internal class CrawlSession(
+    private val network: suspend (HttpUrl, CrawlResource, PageValidators) -> CrawlResponse,
+    private val stored: (String) -> PageValidators?,
+    private val stillAllowed: () -> Boolean,
+) {
+    private val rulesByHost = mutableMapOf<String, SimpleRobotRules?>()
+    private val lastByHost = mutableMapOf<String, Long>()
+
+    suspend fun download(start: HttpUrl): CrawlOutcome {
+        var url = start
+        repeat(4) {
+            val rules = rules(url)
+            if (!rules.isAllowed(url.toString())) return CrawlOutcome.Removed(url.toString())
+            if (rules.crawlDelay > 5_000) throw IOException("Source requests a longer pause than one search allows")
+            val cached = stored(url.toString()) ?: PageValidators()
+            val response = fetch(url, rules.crawlDelay.coerceAtLeast(850), CrawlResource.PAGE, cached)
+            when (response.code) {
+                200 -> {
+                    val charset = response.type.substringAfter("charset=", "").substringBefore(';').trim('"', ' ')
+                        .takeIf { it.isNotBlank() && runCatching { java.nio.charset.Charset.isSupported(it) }.getOrDefault(false) }
+                    val page = extractPage(url, response.body, response.directives, charset)
+                    return CrawlOutcome.Loaded(url.toString(), page, response.validators)
+                }
+                304 -> {
+                    if (!cached.present) throw IOException("Not modified without a cached page")
+                    if (directiveWords(response.directives).any { it == "noindex" || it == "none" }) {
+                        return CrawlOutcome.Removed(url.toString())
+                    }
+                    return CrawlOutcome.Unchanged(url.toString(), cached.updatedBy(response.validators))
+                }
+                301, 302, 303, 307, 308 -> {
+                    val destination = response.location?.let(url::resolve)?.toString()?.let(CrawlSources::address)
+                    url = destination ?: return CrawlOutcome.Removed(url.toString())
+                }
+                404, 410, 415 -> return CrawlOutcome.Removed(url.toString())
+                else -> throw IOException("Source returned HTTP " + response.code)
+            }
+        }
+        throw IOException("Redirect limit")
+    }
+
+    suspend fun sitemap(): ByteArray? {
+        val rules = rules(mdnSitemap)
+        if (!rules.isAllowed(mdnSitemap.toString()) || rules.crawlDelay > 5_000) return null
+        val result = fetch(mdnSitemap, rules.crawlDelay.coerceAtLeast(850), CrawlResource.SITEMAP)
+        return result.body.takeIf { result.code == 200 && it.isNotEmpty() }
+    }
+
+    private suspend fun rules(url: HttpUrl): SimpleRobotRules {
+        if (!rulesByHost.containsKey(url.host)) {
+            val robots = url.newBuilder().encodedPath("/robots.txt").build()
+            val response = fetch(robots, 850, CrawlResource.ROBOTS)
+            val parser = SimpleRobotRulesParser()
+            rulesByHost[url.host] = when (response.code) {
+                200 -> parser.parseContent(
+                    robots.toString(), response.body, response.type, listOf(CRAWLER_NAME.lowercase(Locale.ROOT)),
+                )
+                404, 410 -> parser.failedFetch(404)
+                else -> null
+            }
+        }
+        return rulesByHost[url.host] ?: throw IOException("Robots rules unavailable")
+    }
+
+    private suspend fun fetch(
+        url: HttpUrl, pause: Long, resource: CrawlResource, validators: PageValidators = PageValidators(),
+    ): CrawlResponse {
+        lastByHost[url.host]?.let { last ->
+            val elapsed = (System.nanoTime() - last) / 1_000_000
+            if (elapsed < pause) delay(pause - elapsed)
+        }
+        if (!stillAllowed()) throw IOException("Crawl permission revoked")
+        lastByHost[url.host] = System.nanoTime()
+        return network(url, resource, validators)
     }
 }

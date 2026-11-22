@@ -17,12 +17,40 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 
+internal enum class CrawlResource(val accept: String, val limit: Int) {
+    PAGE("text/html", 2 * 1024 * 1024),
+    ROBOTS("text/plain", 512 * 1024),
+    SITEMAP("application/xml, text/xml, application/gzip", 4 * 1024 * 1024);
+
+    fun accepts(type: String): Boolean = when (this) {
+        PAGE -> type.equals(accept, true)
+        ROBOTS -> type.isBlank() || type.equals(accept, true)
+        SITEMAP -> type.lowercase(java.util.Locale.ROOT) in
+            setOf("application/xml", "text/xml", "application/gzip", "application/x-gzip")
+    }
+}
+
+internal data class PageValidators(val etag: String? = null, val modified: String? = null) {
+    val present: Boolean get() = etag != null || modified != null
+
+    fun updatedBy(headers: PageValidators) = PageValidators(headers.etag ?: etag, headers.modified ?: modified)
+
+    companion object {
+        fun from(etag: String?, modified: String?): PageValidators = PageValidators(
+            etag?.takeIf { it.length <= 256 && Regex("(?:W/)?\"[!#-~]*\"").matches(it) },
+            modified?.takeIf { it.length <= 80 && it.all { ch -> ch in ' '..'~' } &&
+                runCatching { java.time.ZonedDateTime.parse(it, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME) }.isSuccess },
+        )
+    }
+}
+
 internal data class CrawlResponse(
     val code: Int,
     val type: String,
     val body: ByteArray,
     val location: String?,
     val directives: String,
+    val validators: PageValidators = PageValidators(),
 )
 
 internal const val CRAWLER_NAME = "UroborosLocalSearch"
@@ -45,36 +73,42 @@ internal class CrawlTransport {
         .callTimeout(6, TimeUnit.SECONDS)
         .build()
 
-    suspend fun fetch(url: HttpUrl, robots: Boolean): CrawlResponse = suspendCancellableCoroutine { task ->
-        val mime = if (robots) "text/plain" else "text/html"
-        val request = Request.Builder().url(url).header("User-Agent", "$CRAWLER_NAME/1").header("Accept", mime).build()
-        val call = client.newCall(request)
-        task.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (task.isActive) task.resumeWithException(e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                try {
-                    val result = response.use {
-                        val type = it.header("Content-Type").orEmpty()
-                        val attachment = it.header("Content-Disposition").orEmpty().trim().startsWith("attachment", true)
-                        val accepted = !attachment && (type.substringBefore(';').trim().equals(mime, true) ||
-                            robots && type.isBlank())
-                        val code = if (it.code == 200 && !accepted) 415 else it.code
-                        val data = if (code == 200) {
-                            readBody(it, if (robots) 512 * 1024 else 2 * 1024 * 1024) { task.isActive }
-                        } else ByteArray(0)
-                        CrawlResponse(code, type, data, it.header("Location"), it.headers.values("X-Robots-Tag").joinToString(","))
-                    }
-                    if (task.isActive) task.resume(result)
-                } catch (error: Exception) {
-                    if (task.isActive) task.resumeWithException(error)
+    suspend fun fetch(url: HttpUrl, resource: CrawlResource, validators: PageValidators): CrawlResponse =
+        suspendCancellableCoroutine { task ->
+            val request = Request.Builder().url(url)
+                .header("User-Agent", "$CRAWLER_NAME/1").header("Accept", resource.accept).apply {
+                    validators.etag?.let { header("If-None-Match", it) }
+                    validators.modified?.let { header("If-Modified-Since", it) }
+                }.build()
+            val call = client.newCall(request)
+            task.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (task.isActive) task.resumeWithException(e)
                 }
-            }
-        })
-    }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        val result = response.use {
+                            val type = it.header("Content-Type").orEmpty()
+                            val attachment = it.header("Content-Disposition").orEmpty().trim().startsWith("attachment", true)
+                            val accepted = resource.accepts(type.substringBefore(';').trim()) &&
+                                (!attachment || resource == CrawlResource.SITEMAP)
+                            val code = if (it.code == 200 && !accepted) 415 else it.code
+                            val data = if (code == 200) {
+                                readBody(it, resource.limit) { task.isActive }
+                            } else ByteArray(0)
+                            CrawlResponse(code, type, data, it.header("Location"),
+                                it.headers.values("X-Robots-Tag").joinToString(","),
+                                PageValidators.from(it.header("ETag"), it.header("Last-Modified")))
+                        }
+                        if (task.isActive) task.resume(result)
+                    } catch (error: Exception) {
+                        if (task.isActive) task.resumeWithException(error)
+                    }
+                }
+            })
+        }
 
     private fun readBody(response: Response, limit: Int, active: () -> Boolean): ByteArray {
         val body = response.body ?: throw IOException("Missing body")

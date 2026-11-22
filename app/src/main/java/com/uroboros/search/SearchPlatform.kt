@@ -72,7 +72,7 @@ internal class SearchPlatform(
         blocked = ::blocked,
         available = { true },
         authorize = { true }, // Чтение индекса локально. Обход отдельно проходит Врата.
-        provider = SearchProvider { find(it) },
+        provider = SearchProvider { answer(it, lookup(it)) },
         requestTimeoutMs = 125_000,
     )
 
@@ -106,22 +106,28 @@ internal class SearchPlatform(
             if (command == SearchCommand.Refresh) {
                 refresh(channel, emptyList(), allowed, forceSeeds = true)
             } else {
-                val local = find(phrase)
-                if (local.hits.isNotEmpty() || !allowed()) local else {
-                    val update = refresh(channel, searchTerms(phrase, LemmaHolder.loaded), allowed)
-                    val result = when {
-                        update.status == SearchStatus.UPDATED && allowed() -> find(phrase)
-                        index.status().pages > 0 -> local.copy(detail = update.detail ?: local.detail)
-                        else -> update
-                    }
-                    if (result.hits.isNotEmpty() || !allowed() || index.status().pages == 0) result else {
-                        val alternative = withTimeoutOrNull(10_000) { reader.alternative(phrase) }
-                        if (alternative == null || !allowed()) result
-                        else find(phrase, alternative).takeIf { it.hits.isNotEmpty() } ?: result
-                    }
-                }
+                searchQuery(phrase, channel, allowed)
             }
         }
+    }
+
+    private suspend fun searchQuery(query: String, channel: SearchChannel, allowed: () -> Boolean): SearchPage {
+        var matches = lookup(query)
+        var update: SearchPage? = null
+        if (allowed() && (matches.pages.isEmpty() || needsSitemapLookup(matches.pages, matches.terms))) {
+            update = refresh(channel, matches.terms, allowed)
+            if (allowed()) matches = lookup(query)
+        }
+        if (matches.pages.isEmpty() && matches.status.pages == 0 && update != null) return update
+        if (matches.pages.isEmpty() && allowed()) {
+            val alternative = withTimeoutOrNull(10_000) { reader.alternative(query) }
+            if (alternative != null && allowed()) {
+                val rewritten = lookup(alternative)
+                if (rewritten.pages.isNotEmpty()) matches = rewritten
+            }
+        }
+        if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
+        return answer(query, matches, update?.detail)
     }
 
     private suspend fun refresh(
@@ -134,40 +140,46 @@ internal class SearchPlatform(
         if (!allowed() || verdict.result != GateResult.ALLOW) return SearchPage(emptyList(), status = SearchStatus.DENIED)
         val result = crawler.refresh(terms, allowed, forceSeeds)
         val status = when {
-            result.loaded > 0 -> SearchStatus.UPDATED
+            result.loaded + result.unchanged > 0 -> SearchStatus.UPDATED
             result.attempted > 0 -> SearchStatus.CRAWL_FAILED
             result.status.pages == 0 -> SearchStatus.INDEX_EMPTY
             else -> SearchStatus.UPDATED
         }
-        return SearchPage(emptyList(), status = status, detail = "${indexLine(result.status)} " +
-            when {
-                result.loaded > 0 -> "Прочитано за обход: ${result.loaded}."
-                result.attempted > 0 -> "За этот обход страницы не загрузились."
-                else -> "Сейчас нет страниц, ожидающих обхода."
-            })
+        val counts = if (result.loaded + result.unchanged > 0) {
+            "Загружено страниц: ${result.loaded}. Подтверждено без повторной загрузки: ${result.unchanged}."
+        } else if (result.attempted > 0) {
+            "Источники не вернули доступных страниц."
+        } else "Сейчас нет страниц, ожидающих обхода."
+        return SearchPage(emptyList(), status = status, detail = "${indexLine(result.status)} $counts")
     }
 
-    private suspend fun find(query: String, lookup: String = query): SearchPage {
+    private data class Matches(val status: IndexStatus, val terms: List<String>, val pages: List<IndexedPage>)
+
+    private fun lookup(query: String): Matches {
         val status = index.status()
-        if (status.pages == 0) return SearchPage(emptyList(), status = SearchStatus.INDEX_EMPTY, detail = indexLine(status))
-        LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
-        val terms = searchTerms(lookup, LemmaHolder.loaded)
-        val pages = index.find(terms, SEARCH_LIMIT)
-        val hits = pages.mapNotNull { page -> SearchHit.from(page.title, page.url, bestExcerpt(page, terms)) }
-        val byUrl = pages.associateBy { it.url }
+        if (status.pages > 0) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
+        val terms = searchTerms(query, LemmaHolder.loaded)
+        val pages = if (status.pages == 0) emptyList() else index.find(terms, SEARCH_LIMIT)
+        return Matches(status, terms, pages)
+    }
+
+    private suspend fun answer(query: String, matches: Matches, updateNote: String? = null): SearchPage {
+        val hits = matches.pages.mapNotNull { page ->
+            SearchHit.from(page.title, page.url, bestExcerpt(page, matches.terms))
+        }
+        val byUrl = matches.pages.associateBy { it.url }
         // Порядок чтения и нумерация выдачи совпадают, даже если часть страниц отфильтрована.
         val readable = hits.mapNotNull { byUrl[it.url] }
         val answer = if (readable.isEmpty()) null else withTimeoutOrNull(75_000) { reader.answer(query, readable) }
-        return SearchPage(hits, answer = answer, detail = indexLine(status) + if (hits.isNotEmpty() && answer == null) {
-            " Ниже найдённые выдержки."
-        } else "")
+        return SearchPage(hits, answer = answer, detail = (updateNote ?: indexLine(matches.status)) +
+            if (hits.isNotEmpty() && answer == null) " Ниже найдённые выдержки." else "")
     }
 
     private fun indexLine(status: IndexStatus): String {
         val date = status.checkedAt?.let {
             DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it))
         }
-        return "В локальном индексе страниц: ${status.pages}." + if (date == null) "" else " Последнее обновление: $date."
+        return "В локальном индексе страниц: ${status.pages}." + if (date == null) "" else " Последняя проверка: $date."
     }
 
     companion object {
