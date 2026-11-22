@@ -183,6 +183,7 @@ class WebSearchTest {
         assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Покажи последний поиск"))
         assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю веб-поисков"))
         assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю поиска"))
+        assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Что искал?"))
         assertEquals(SearchCommand.Find("как работает SQLite"), SearchCommand.fromOwnerWords("Поищи как работает SQLite"))
         assertEquals(SearchCommand.Refresh, SearchCommand.fromOwnerWords("Обнови источники"))
         assertEquals(SearchCommand.Refresh, SearchCommand.parse("/search_refresh@mybot", "MyBot"))
