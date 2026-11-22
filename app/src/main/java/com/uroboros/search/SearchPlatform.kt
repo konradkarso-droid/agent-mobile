@@ -24,8 +24,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONArray
-import org.json.JSONObject
 
 internal class SearchPlatform(
     private val app: Context,
@@ -42,38 +40,10 @@ internal class SearchPlatform(
     private fun blocked() = EmergencyStop.isActive() || watchdog.zone.value == SafetyZone.CRITICAL
 
     private val engine = WebSearch(
-        history = object : SearchHistory {
-            override fun read(): List<SearchEntry> {
-                val entries = JSONArray(preferences.getString(HISTORY, "[]"))
-                return (0 until entries.length()).map { index ->
-                    val item = entries.getJSONObject(index)
-                    SearchEntry(
-                        id = item.getString("id"),
-                        requestId = item.getString("request"),
-                        query = item.getString("query"),
-                        channel = SearchChannel.valueOf(item.getString("channel")),
-                        at = item.getLong("at"),
-                        status = SearchStatus.valueOf(item.getString("status")),
-                        count = item.getInt("count"),
-                        refresh = item.optBoolean("refresh"),
-                    )
-                }
-            }
-
-            override fun write(entries: List<SearchEntry>): Boolean {
-                val rows = JSONArray()
-                for (entry in entries) rows.put(JSONObject()
-                    .put("id", entry.id)
-                    .put("request", entry.requestId)
-                    .put("query", entry.query)
-                    .put("channel", entry.channel.name)
-                    .put("at", entry.at)
-                    .put("status", entry.status.name)
-                    .put("count", entry.count)
-                    .put("refresh", entry.refresh))
-                return preferences.edit().putString(HISTORY, rows.toString()).commit()
-            }
-        },
+        history = JsonSearchHistory(
+            readJson = { preferences.getString(HISTORY, "[]").orEmpty() },
+            writeJson = { preferences.edit().putString(HISTORY, it).commit() },
+        ),
         stopped = combine(EmergencyStop.active, watchdog.zone) { stop, zone -> stop || zone == SafetyZone.CRITICAL },
         blocked = ::blocked,
         available = { true },

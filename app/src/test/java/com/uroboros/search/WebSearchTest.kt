@@ -16,15 +16,17 @@ import org.junit.Test
 
 class WebSearchTest {
     private class Store : SearchHistory {
-        var rows = emptyList<SearchEntry>()
+        var json = "[]"
         var writable = true
-
-        override fun read() = rows
-        override fun write(entries: List<SearchEntry>): Boolean {
-            if (!writable) return false
-            rows = entries
-            return true
+        private val history = JsonSearchHistory({ json }) { encoded ->
+            writable.also { if (it) json = encoded }
         }
+        var rows: List<SearchEntry>
+            get() = read()
+            set(value) { check(write(value)) }
+
+        override fun read() = history.read()
+        override fun write(entries: List<SearchEntry>) = history.write(entries)
     }
 
     private val stopped = MutableStateFlow(false)
@@ -38,7 +40,7 @@ class WebSearchTest {
     private val sample = SearchHit("Статья", "https://example.com/article", "Метка внешнего текста")
 
     @Test
-    fun sharedStateAndRestoredHistoryContainNoExternalText() = runBlocking {
+    fun reopeningRestoresTheSameReplyAndKeepsHistoryListShort() = runBlocking {
         val store = Store()
         val engine = engine(store) { SearchPage(listOf(sample)) }
         val reply = engine.search("пример", SearchChannel.TELEGRAM, "bot:chat:msg")
@@ -49,13 +51,9 @@ class WebSearchTest {
         assertTrue(shared.historyText().contains("пример"))
         assertFalse(shared.historyText().contains(sample.description))
         assertFalse(shared.historyText().contains(sample.url))
-        assertFalse(store.rows.toString().contains(sample.description))
-        assertFalse(store.rows.toString().contains(sample.url))
-
         val reopened = engine(store) { error("Просмотр истории не вызывает сеть") }.snapshot()
         assertEquals(shared.entries, reopened.entries)
-        assertTrue(reopened.latestText().contains("Выдержки больше недоступны"))
-        assertTrue(reopened.hits.isEmpty())
+        assertEquals(reply, reopened.latestReply())
     }
 
     @Test
@@ -71,7 +69,7 @@ class WebSearchTest {
     }
 
     @Test
-    fun generatedAnswerAndSourceTextStayOutsideSharedConversation() = runBlocking {
+    fun refreshDoesNotReplaceTheStoredAnswer() = runBlocking {
         val store = Store()
         val engine = engine(store) { SearchPage(listOf(sample), answer = "Проверенный ответ [1]") }
         val reply = engine.search("пример", SearchChannel.TELEGRAM)
@@ -87,7 +85,32 @@ class WebSearchTest {
         assertEquals(listOf(sample.url), reply.sourceUrls)
         assertFalse(view.historyText().contains("Обновить источники"))
         assertFalse(view.historyText().contains("Проверенный ответ"))
-        assertFalse(store.rows.toString().contains("Проверенный ответ"))
+        assertEquals(reply, engine(store) { error("Просмотр результата не запускает поиск") }.snapshot().latestReply())
+    }
+
+    @Test
+    fun anotherSearchReplacesOnlyTheStoredReplyOfThePreviousSearch() = runBlocking {
+        val store = Store()
+        val search = engine(store) { query -> SearchPage(listOf(sample), answer = "Выдача $query [1]") }
+        search.search("первый", SearchChannel.APP)
+        val reply = search.search("второй", SearchChannel.TELEGRAM)
+        val reopened = engine(store) { error("Повторный поиск не нужен") }.snapshot()
+        assertEquals(reply, reopened.latestReply())
+        assertEquals(listOf("второй", "первый"), reopened.entries.map { it.query })
+        assertNull(reopened.entries.last().result)
+        assertFalse(store.json.contains("Выдача первый"))
+    }
+
+    @Test
+    fun oldHistoryWithoutAReplyStillOpens() = runBlocking {
+        val store = Store().apply {
+            json = """[{"id":"id","request":"msg","query":"тепло","channel":"APP","at":0,"status":"FOUND","count":1}]"""
+        }
+        val reopened = engine(store) { error("Старые запросы не выполняются заново") }.snapshot()
+        assertFalse(reopened.storageError)
+        assertEquals("тепло", reopened.entries.single().query)
+        assertTrue(reopened.latestText().contains("Выдержки больше недоступны"))
+        assertTrue(reopened.latestReply().sourceUrls.isEmpty())
     }
 
     @Test
