@@ -285,7 +285,11 @@ class JudgeLauncher(
             RunOutcome.NOT_STARTED -> "Разбор не запускался."
             RunOutcome.NOTHING_TO_JUDGE -> "Судить нечего: все пары уже разобраны этим судьёй."
             RunOutcome.INTERRUPTED -> "Разбор оборван: ${report.interruptedBy}."
-            RunOutcome.COMPLETED -> "Разбор дошёл до конца очереди."
+            RunOutcome.COMPLETED -> if (report.deferredByTimeout.isEmpty()) {
+                "Разбор дошёл до конца очереди."
+            } else {
+                "Разбор дошёл до конца очереди. Отложено по потолку: ${report.deferredByTimeout.size} пар."
+            }
         }
         val perPair = if (report.judged > 0) report.spentMs / report.judged else 0
         return buildString {
@@ -298,6 +302,13 @@ class JudgeLauncher(
             // Всегда, когда прямой судья есть: молчащий и выключенный выглядели
             // бы одинаково, а причина выключения — первое, что надо видеть.
             report.direct?.let { append("Прямой судья: ").append(it).append("\n") }
+            if (report.deferredByTimeout.isNotEmpty()) {
+                append("Отложены до следующего прогона после лимита одного обращения: ")
+                append(report.deferredByTimeout.size).append(" пар (")
+                append(report.deferredByTimeout.take(SHOWN_IDS).joinToString(", ") { (a, b) -> "№$a и №$b" })
+                if (report.deferredByTimeout.size > SHOWN_IDS) append(", …")
+                append(")\n")
+            }
             if (report.unreadable > 0) {
                 // Строка появляется, только когда есть что сказать: постоянный
                 // нуль перестают замечать, а именно это число первым покажет,

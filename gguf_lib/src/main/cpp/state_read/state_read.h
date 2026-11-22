@@ -37,6 +37,7 @@
 // телефона.
 
 #include <atomic>
+#include <functional>
 #include <climits>
 #include <string>
 #include <vector>
@@ -72,7 +73,8 @@ struct Result {
 // слоя layer по токенам seg. head и seg — токены одного текста, разрезанного там,
 // где кончается head (см. [split]). n_batch — логическая пачка контекста.
 Result read_mean(llama_context * ctx, Hook & hook, const std::vector<llama_token> & head,
-                 const std::vector<llama_token> & seg, int layer, int n_batch);
+                 const std::vector<llama_token> & seg, int layer, int n_batch,
+                 const std::function<bool()> & stop);
 
 // Разрезать текст head + tail на токены head и токены остатка так, как режет
 // его токенизатор целиком. ok = false — граница сдвинута: последний токен head

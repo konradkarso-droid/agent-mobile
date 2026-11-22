@@ -15,7 +15,7 @@ sealed class SieveDecision {
     /** Сито в этом прогоне не работает ([why] — для экрана); пара и все дальше — печатному судье. */
     data class Off(val why: String) : SieveDecision()
 
-    /** Сторож велел остановиться до чтения; прогон обрывается, как при остановке печатного судьи. */
+    /** Сторож остановил чтение. Причину получает прогон. */
     data class Stop(val end: GenerationEnd) : SieveDecision()
 }
 

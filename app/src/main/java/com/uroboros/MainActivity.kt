@@ -80,6 +80,7 @@ import com.uroboros.memory.RejectPath
 import com.uroboros.memory.RequestCensus
 import com.uroboros.memory.dream.DreamTopic
 import com.uroboros.memory.judge.CourtScreen
+import com.uroboros.memory.judge.JudgeRunStatus
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
@@ -3359,6 +3360,9 @@ class MainActivity : AppCompatActivity() {
             StallWatch.meterLine(applicationContext),
             // Экран суда (memory.judge.CourtScreen) — ответ на простои при суде, самостоятельном и по кнопке.
             CourtScreen.line(AgentService.courtScreen.value, ::fmtMoment),
+            JudgeRunStatus.line(
+                applicationContext, AgentService.state.value is AgentService.RunState.Running, ::fmtMoment,
+            ).orEmpty(),
             MoveState.meterLine(applicationContext),
         )
         group(

@@ -1,6 +1,7 @@
 package com.uroboros.memory.judge
 
 import com.dark.gguf_lib.models.GenerationEvent
+import com.uroboros.llm.GenerationEnd
 import com.uroboros.llm.LlmEngine
 
 /**
@@ -11,7 +12,7 @@ import com.uroboros.llm.LlmEngine
  * Поломка движка и молчание модели — разные вещи, и снаружи их потом не
  * различить.
  */
-class JudgeGenerationException(message: String) : RuntimeException(message)
+class JudgeGenerationException(message: String, val end: GenerationEnd? = null) : RuntimeException(message)
 
 /**
  * Переходник между [MemoryJudge] и движком.
@@ -51,7 +52,10 @@ class EngineJudgeLlm(
                 else -> Unit
             }
         }
-        failure?.let { throw JudgeGenerationException(it) }
+        val end = engine.lastGenerationEnd
+        if (end != GenerationEnd.COMPLETED || failure != null) {
+            throw JudgeGenerationException(failure ?: engine.getGenerationEndReport(), end)
+        }
         return said.toString()
     }
 

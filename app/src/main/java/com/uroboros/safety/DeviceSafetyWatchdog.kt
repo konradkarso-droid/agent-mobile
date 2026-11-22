@@ -538,6 +538,18 @@ class DeviceSafetyWatchdog(
         return "$temp / $charge"
     }
 
+    /** Показания при снятии отчёта разбора. */
+    internal fun judgeEndReadings(): String {
+        val state = power.value
+        val supply = when {
+            zoneObservation().powerLastAtMs == null -> "неизвестно"
+            state.charging -> "есть"
+            else -> "отключено"
+        }
+        val thermal = lastThermalStatus?.let(ThermalStatus::word) ?: "неизвестен"
+        return "Показания к окончанию: ${describePower(state)}, внешнее питание — $supply, тепловой статус Android — $thermal."
+    }
+
     /**
      * Можно ли НАЧИНАТЬ длинную работу (TOTE-цикл): порог здесь выше, чем порог
      * остановки, и это намеренно. Бессмысленно браться за получасовую задачу с

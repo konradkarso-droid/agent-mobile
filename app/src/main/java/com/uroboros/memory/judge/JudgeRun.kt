@@ -82,6 +82,8 @@ data class JudgeRunReport(
     val droppedByDirect: Int = 0,
     /** Что сделал прямой судья, словами ([PairSieve.report]); null — его нет. */
     val direct: String? = null,
+    /** Пары, отложенные до следующего прогона после потолка одного обращения. */
+    val deferredByTimeout: List<Pair<Long, Long>> = emptyList(),
 )
 
 /**
@@ -127,10 +129,9 @@ data class JudgeRunReport(
  * тоже (RiskTrigger.isOnlySocial). Запись при этом не меняется и
  * из памяти не уходит; её номер называется в отчёте каждого прогона.
  *
- * Слишком длинные записи не судятся вовсе, ни в одной паре, — см.
- * [MAX_RECORD_CHARS]. Без этого одна такая запись останавливает весь разбор
- * навсегда: пара с ней не укладывается в потолок сторожа, оборванная пара не
- * сохраняется, и каждый следующий прогон начинает с неё же.
+ * Слишком длинные записи исключает [MAX_RECORD_CHARS]. Если на допустимой
+ * длине одно обращение достигло потолка, пара остаётся в очереди до следующего
+ * прогона, а текущий проверяет остальные пары.
  *
  * Продолжение с места держится на хранилище вердиктов: разобранная пара — это
  * пара, у которой есть строка. Отдельного курсора нет намеренно, он был бы
@@ -144,13 +145,15 @@ data class JudgeRunReport(
  * ЧЕГО ПРОГОН НЕ ДЕЛАЕТ. Он не меняет память: ни одной записи не правит, не
  * удаляет и не помечает. Его выход — вердикты, которые читает человек.
  */
-class JudgeRun(
-    private val engine: LlmEngine,
+class JudgeRun internal constructor(
+    private val withDeterministicSampling: suspend (suspend () -> Unit) -> Unit,
     private val stickers: StickerDao,
     private val verdicts: JudgeVerdictDao,
     private val llm: MemoryJudge.Llm,
     private val direct: PairSieve? = null,
 ) {
+    constructor(engine: LlmEngine, stickers: StickerDao, verdicts: JudgeVerdictDao, llm: MemoryJudge.Llm, direct: PairSieve? = null) :
+        this(engine::withDeterministicSampling, stickers, verdicts, llm, direct)
 
     /**
      * Разобрать, сколько успеется за [budgetMs].
@@ -195,9 +198,11 @@ class JudgeRun(
         var droppedByDirect = 0
         var interruptedBy: String? = null
         var sawWork = false
+        var activeSieve = direct
+        val deferredByTimeout = mutableListOf<Pair<Long, Long>>()
 
         try {
-            engine.withDeterministicSampling {
+            withDeterministicSampling {
                 outer@ for ((first, second) in queue.pairs) {
                     if (verdicts.judged(first.id, second.id, fingerprint) > 0) continue
                     if (direct?.dropped(first.id, second.id) == true) continue
@@ -208,13 +213,18 @@ class JudgeRun(
                         break@outer
                     }
 
-                    when (val d = direct?.decide(first, second)) {
+                    when (val d = activeSieve?.decide(first, second)) {
                         SieveDecision.Drop -> {
                             droppedByDirect++
                             onProgress(judged + unreadable + droppedByDirect)
                             continue@outer
                         }
                         is SieveDecision.Stop -> {
+                            if (d.end == GenerationEnd.WATCHDOG_TIMEOUT) {
+                                activeSieve = null
+                                deferredByTimeout += first.id to second.id
+                                continue@outer
+                            }
                             interruptedBy = reasonOf(d.end)
                             break@outer
                         }
@@ -224,17 +234,14 @@ class JudgeRun(
                     }
 
                     val pairStartedAt = System.currentTimeMillis()
-                    val judgement = MemoryJudge.judge(llm, first.content, second.content)
-                    val spent = System.currentTimeMillis() - pairStartedAt
-
-                    val stoppedBy = watchdogStop()
-                    if (stoppedBy != null) {
-                        // Ответ, обрезанный часовым, — не ответ, и в хранилище он не
-                        // едет: пара останется неразобранной и достанется следующему
-                        // прогону целой.
-                        interruptedBy = stoppedBy
-                        break@outer
+                    val judgement = try {
+                        MemoryJudge.judge(llm, first.content, second.content)
+                    } catch (broken: JudgeGenerationException) {
+                        if (broken.end != GenerationEnd.WATCHDOG_TIMEOUT) throw broken
+                        deferredByTimeout += first.id to second.id
+                        continue@outer
                     }
+                    val spent = System.currentTimeMillis() - pairStartedAt
 
                     if (judgement.verdict == MemoryJudge.Verdict.UNREADABLE) {
                         unreadable++
@@ -265,7 +272,10 @@ class JudgeRun(
             // решит, что прогон просто не дотянул, и запустит его снова.
             throw cancelled
         } catch (broken: JudgeGenerationException) {
-            interruptedBy = brokenReason(watchdogStop(), broken.message)
+            val watchdogStop = broken.end?.takeIf {
+                it == GenerationEnd.WATCHDOG_CRITICAL || it == GenerationEnd.WATCHDOG_TIMEOUT
+            }?.let(::reasonOf)
+            interruptedBy = brokenReason(watchdogStop, broken.message)
         }
 
         val outcome = when {
@@ -287,7 +297,11 @@ class JudgeRun(
             onlySocial = onlySocial.map { it.id },
             outsideSieve = queue.outsideSieve,
             droppedByDirect = droppedByDirect,
-            direct = direct?.report(),
+            direct = direct?.let {
+                if (activeSieve == null) "чтение достигло потолка. Остаток очереди проверяет печатный судья."
+                else it.report()
+            },
+            deferredByTimeout = deferredByTimeout,
         )
     }
 
@@ -372,18 +386,6 @@ class JudgeRun(
     private fun order(one: Sticker, other: Sticker): Pair<Sticker, Sticker> =
         if (one.id <= other.id) one to other else other to one
 
-    /**
-     * Оборвал ли движок последнюю выдачу по своим причинам.
-     *
-     * Спрашивается у движка, а не у часового напрямую: решение о том, когда
-     * останавливаться, принимается внутри движка в одном месте, и второй
-     * спрашивающий со своим условием разошёлся бы с первым молча.
-     */
-    private fun watchdogStop(): String? = when (engine.lastGenerationEnd) {
-        GenerationEnd.WATCHDOG_CRITICAL, GenerationEnd.WATCHDOG_TIMEOUT -> reasonOf(engine.lastGenerationEnd)
-        else -> null
-    }
-
     /** Причина остановки сторожем словами — одна на печатного судью и на сито. */
     private fun reasonOf(end: GenerationEnd): String = when (end) {
         GenerationEnd.WATCHDOG_CRITICAL -> REASON_HEAT
@@ -423,8 +425,8 @@ class JudgeRun(
          * с промптом судьи около полутора тысяч, то есть около двух минут на
          * обращение: меньше половины потолка. Запас двойной
          * намеренно: скорость обсчёта падает под нагревом и на длинном
-         * запросе, а за пределом запаса ошибка не мягкая — пара рвётся и
-         * держит весь разбор.
+         * запросе, а за пределом запаса пара может каждый раз откладываться
+         * по потолку.
          *
          * ОБЛАСТЬ. Число верно для нынешней модели (3B) на этом телефоне. Другая
          * модель считает с другой скоростью и режет текст на лексемы
@@ -459,7 +461,7 @@ class JudgeRun(
             watchdogStop ?: engineMessage ?: REASON_ENGINE
 
         private const val REASON_BUDGET = "кончилось отведённое время"
-        private const val REASON_HEAT = "устройство перегрелось"
+        private const val REASON_HEAT = "сторож сообщил об опасной зоне"
         private const val REASON_WORK_LIMIT = "исчерпан потолок непрерывной работы"
         private const val REASON_ENGINE = "сбой движка"
     }
