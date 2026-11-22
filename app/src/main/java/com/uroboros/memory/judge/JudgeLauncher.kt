@@ -6,7 +6,6 @@ import android.provider.OpenableColumns
 import com.uroboros.llm.LlmEngine
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.RiskTrigger
-import com.uroboros.memory.Sticker
 import com.uroboros.memory.StickerDao
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,6 +19,8 @@ data class DisputePair(
     val first: String,
     val second: String,
 )
+
+data class ManualJudgePair(val pair: DisputePair, val stage: JudgeStage)
 
 /** Три числа, по которым видно, работает ли разбор и читает ли его человек. */
 data class JudgeCounters(
@@ -75,9 +76,11 @@ class JudgeLauncher(
     private val engine: LlmEngine,
 ) {
     private val resolver = context.applicationContext.contentResolver
-    private val stickers: StickerDao = MemoryDatabase.getInstance(context).stickerDao()
-    private val verdicts: JudgeVerdictDao = MemoryDatabase.getInstance(context).judgeVerdictDao()
-    private val sieveRows: JudgeSieveDao = MemoryDatabase.getInstance(context).judgeSieveDao()
+    private val db = MemoryDatabase.getInstance(context)
+    private val stickers: StickerDao = db.stickerDao()
+    private val verdicts: JudgeVerdictDao = db.judgeVerdictDao()
+    private val sieveRows: JudgeSieveDao = db.judgeSieveDao()
+    private val timeouts = db.judgeTimeoutDao()
 
     /**
      * Направление прямого судьи из файла приложения — один раз на сборку.
@@ -156,7 +159,7 @@ class JudgeLauncher(
      * (эталон, счёт прочитанного) и отпечаток, зависящий от модели.
      */
     private suspend fun run(modelIdentity: String): JudgeRun = JudgeRun(
-        engine, stickers, verdicts, EngineJudgeLlm(engine),
+        engine, stickers, verdicts, EngineJudgeLlm(engine), timeouts,
         DirectSieve(directions, sieveRows, directFingerprint(modelIdentity), engine::readLayerMean),
     )
 
@@ -260,12 +263,26 @@ class JudgeLauncher(
             fingerprint = fingerprint(modelIdentity),
             verdict = MemoryJudge.Verdict.DISPUTE.name,
             human = HumanVerdict.UNREVIEWED.name,
-        ).mapNotNull { row ->
-            val first: Sticker = stickers.getById(row.firstId) ?: return@mapNotNull null
-            val second: Sticker = stickers.getById(row.secondId) ?: return@mapNotNull null
-            if (first.rejectedAt != null || second.rejectedAt != null) return@mapNotNull null
-            DisputePair(row.firstId, row.secondId, first.content, second.content)
-        }
+        ).mapNotNull { row -> visiblePair(row.firstId, row.secondId) }
+    }
+
+    suspend fun pendingManual(): List<ManualJudgePair> = timeouts.pendingReview().mapNotNull { row ->
+        visiblePair(row.firstId, row.secondId)?.let { ManualJudgePair(it, row.stage) }
+    }
+
+    suspend fun reviewManual(pair: DisputePair, dispute: Boolean) {
+        timeouts.review(pair.firstId, pair.secondId, dispute)
+    }
+
+    suspend fun returnToQueue(pair: DisputePair) {
+        timeouts.returnToQueue(pair.firstId, pair.secondId)
+    }
+
+    private suspend fun visiblePair(firstId: Long, secondId: Long): DisputePair? {
+        val first = stickers.getById(firstId) ?: return null
+        val second = stickers.getById(secondId) ?: return null
+        if (first.rejectedAt != null || second.rejectedAt != null) return null
+        return DisputePair(firstId, secondId, first.content, second.content)
     }
 
     /** Что человек сказал о паре. Снятие отметки — тот же вызов с UNREVIEWED. */
@@ -283,7 +300,7 @@ class JudgeLauncher(
     private fun describe(report: JudgeRunReport): String {
         val head = when (report.outcome) {
             RunOutcome.NOT_STARTED -> "Разбор не запускался."
-            RunOutcome.NOTHING_TO_JUDGE -> "Судить нечего: все пары уже разобраны этим судьёй."
+            RunOutcome.NOTHING_TO_JUDGE -> "В автоматической очереди новых пар нет."
             RunOutcome.INTERRUPTED -> "Разбор оборван: ${report.interruptedBy}."
             RunOutcome.COMPLETED -> if (report.deferredByTimeout.isEmpty()) {
                 "Разбор дошёл до конца очереди."
@@ -293,7 +310,11 @@ class JudgeLauncher(
         }
         val perPair = if (report.judged > 0) report.spentMs / report.judged else 0
         return buildString {
-            append(head).append("\n")
+            append(head)
+            if (report.sentToManual > 0) {
+                append(" На ручной суд после второй отсечки: ").append(report.sentToManual).append(".")
+            }
+            append("\n")
             append("Разобрано за этот раз: ").append(report.judged).append("\n")
             append("Из них спорных: ").append(report.disputes).append("\n")
             if (report.droppedByDirect > 0) {
@@ -355,7 +376,7 @@ class JudgeLauncher(
                 append("Не судятся — нет общих слов: ").append(report.outsideSieve)
                 append(" пар\n")
             }
-            append("Осталось пар: ").append(report.remaining).append("\n")
+            append("Осталось пар в автоматической очереди: ").append(report.remaining).append("\n")
             append("Времени ушло: ").append(report.spentMs / 1000).append(" с")
             if (perPair > 0) append(" · на пару ").append(perPair).append(" мс")
             append("\n\nСпорные пары — в «Показать».")

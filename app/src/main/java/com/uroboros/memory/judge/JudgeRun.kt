@@ -16,7 +16,7 @@ enum class RunOutcome {
     NOT_STARTED,
 
     /**
-     * Запускали, но судить было нечего: все пары уже разобраны этим судьёй.
+     * Запускали, но в автоматической очереди не осталось пар.
      *
      * Отдельно от [COMPLETED] намеренно. «Разобрал и ничего не нашёл» и «делать
      * было нечего» выглядят на экране одинаково — пусто, — а означают разное, и
@@ -84,6 +84,7 @@ data class JudgeRunReport(
     val direct: String? = null,
     /** Пары, отложенные до следующего прогона после потолка одного обращения. */
     val deferredByTimeout: List<Pair<Long, Long>> = emptyList(),
+    val sentToManual: Int = 0,
 )
 
 /**
@@ -130,8 +131,8 @@ data class JudgeRunReport(
  * из памяти не уходит; её номер называется в отчёте каждого прогона.
  *
  * Слишком длинные записи исключает [MAX_RECORD_CHARS]. Если на допустимой
- * длине одно обращение достигло потолка, пара остаётся в очереди до следующего
- * прогона, а текущий проверяет остальные пары.
+ * длине одно обращение достигло потолка, пара откладывается. После второй
+ * отсечки она ждёт решения человека. Прогон проверяет остальные пары.
  *
  * Продолжение с места держится на хранилище вердиктов: разобранная пара — это
  * пара, у которой есть строка. Отдельного курсора нет намеренно, он был бы
@@ -150,10 +151,17 @@ class JudgeRun internal constructor(
     private val stickers: StickerDao,
     private val verdicts: JudgeVerdictDao,
     private val llm: MemoryJudge.Llm,
+    private val timeouts: JudgeTimeoutDao,
     private val direct: PairSieve? = null,
 ) {
-    constructor(engine: LlmEngine, stickers: StickerDao, verdicts: JudgeVerdictDao, llm: MemoryJudge.Llm, direct: PairSieve? = null) :
-        this(engine::withDeterministicSampling, stickers, verdicts, llm, direct)
+    constructor(
+        engine: LlmEngine,
+        stickers: StickerDao,
+        verdicts: JudgeVerdictDao,
+        llm: MemoryJudge.Llm,
+        timeouts: JudgeTimeoutDao,
+        direct: PairSieve? = null,
+    ) : this(engine::withDeterministicSampling, stickers, verdicts, llm, timeouts, direct)
 
     /**
      * Разобрать, сколько успеется за [budgetMs].
@@ -185,6 +193,8 @@ class JudgeRun internal constructor(
         // комплект, а не по комплекту на каждого судью, которого пробовали.
         verdicts.forgetOtherJudges(fingerprint)
         direct?.begin()
+        timeouts.forgetDeletedRecords()
+        val priorTimeouts = timeouts.all().associateBy { JudgePairIds(it.firstId, it.secondId) }
 
         // Как и почему собирается пул — у collectPool().
         val (pool, dropped) = collectPool()
@@ -199,12 +209,26 @@ class JudgeRun internal constructor(
         var interruptedBy: String? = null
         var sawWork = false
         val deferredByTimeout = mutableListOf<Pair<Long, Long>>()
+        var sentToManual = 0
+
+        suspend fun noteTimeout(firstId: Long, secondId: Long, stage: JudgeStage) {
+            val row = JudgeTimeout(firstId, secondId, stage, System.currentTimeMillis())
+            if (timeouts.record(row)) {
+                sentToManual++
+            } else {
+                deferredByTimeout += firstId to secondId
+            }
+        }
 
         try {
             withDeterministicSampling {
                 outer@ for ((first, second) in queue.pairs) {
-                    if (verdicts.judged(first.id, second.id, fingerprint) > 0) continue
-                    if (direct?.dropped(first.id, second.id) == true) continue
+                    val priorTimeout = priorTimeouts[JudgePairIds(first.id, second.id)]
+                    if (priorTimeout?.repeated == true) continue
+                    if (verdicts.judged(first.id, second.id, fingerprint) > 0 || direct?.dropped(first.id, second.id) == true) {
+                        if (priorTimeout != null) timeouts.clearFirstTimeout(first.id, second.id)
+                        continue
+                    }
                     sawWork = true
 
                     if (System.currentTimeMillis() - startedAt >= budgetMs) {
@@ -214,13 +238,14 @@ class JudgeRun internal constructor(
 
                     when (val d = direct?.decide(first, second)) {
                         SieveDecision.Drop -> {
+                            if (priorTimeout != null) timeouts.clearFirstTimeout(first.id, second.id)
                             droppedByDirect++
                             onProgress(judged + unreadable + droppedByDirect)
                             continue@outer
                         }
                         is SieveDecision.Stop -> {
                             if (d.end == GenerationEnd.WATCHDOG_TIMEOUT && !d.checkingEtalon) {
-                                deferredByTimeout += first.id to second.id
+                                noteTimeout(first.id, second.id, JudgeStage.DIRECT)
                                 continue@outer
                             }
                             interruptedBy = if (d.checkingEtalon) {
@@ -238,7 +263,7 @@ class JudgeRun internal constructor(
                         MemoryJudge.judge(llm, first.content, second.content)
                     } catch (broken: JudgeGenerationException) {
                         if (broken.end != GenerationEnd.WATCHDOG_TIMEOUT) throw broken
-                        deferredByTimeout += first.id to second.id
+                        noteTimeout(first.id, second.id, JudgeStage.PRINTED)
                         continue@outer
                     }
                     val spent = System.currentTimeMillis() - pairStartedAt
@@ -261,6 +286,7 @@ class JudgeRun internal constructor(
                             spentMs = spent,
                         )
                     )
+                    if (priorTimeout != null) timeouts.clearFirstTimeout(first.id, second.id)
                     judged++
                     if (judgement.verdict == MemoryJudge.Verdict.DISPUTE) disputes++
                     onProgress(judged + unreadable + droppedByDirect)
@@ -299,6 +325,7 @@ class JudgeRun internal constructor(
             droppedByDirect = droppedByDirect,
             direct = direct?.report(),
             deferredByTimeout = deferredByTimeout,
+            sentToManual = sentToManual,
         )
     }
 
@@ -310,7 +337,8 @@ class JudgeRun internal constructor(
      */
     suspend fun hasPending(fingerprint: String): Boolean {
         val (pool, _) = collectPool()
-        return queue(pool).pairs.any { (first, second) -> pending(first, second, fingerprint) }
+        val held = timeouts.held().toHashSet()
+        return queue(pool).pairs.any { (first, second) -> pending(first, second, fingerprint, held) }
     }
 
     /** Выпавшие из пула записи — длинные, одни вопросы, одни просьбы, один обычай. */
@@ -400,12 +428,15 @@ class JudgeRun internal constructor(
      * очереди. Очередь та же, что у основного цикла. Цена — по короткому
      * запросу на пару, один раз в конце прогона.
      */
-    private suspend fun unjudgedPairs(pairs: List<Pair<Sticker, Sticker>>, fingerprint: String): Int =
-        pairs.count { (first, second) -> pending(first, second, fingerprint) }
+    private suspend fun unjudgedPairs(pairs: List<Pair<Sticker, Sticker>>, fingerprint: String): Int {
+        val held = timeouts.held().toHashSet()
+        return pairs.count { (first, second) -> pending(first, second, fingerprint, held) }
+    }
 
-    /** Не разобрана ни печатным судьёй, ни ситом (отброшенная ситом — разобрана). */
-    private suspend fun pending(first: Sticker, second: Sticker, fingerprint: String): Boolean =
-        verdicts.judged(first.id, second.id, fingerprint) == 0 && direct?.dropped(first.id, second.id) != true
+    /** Пара, которую ещё должен разобрать автоматический суд. */
+    private suspend fun pending(first: Sticker, second: Sticker, fingerprint: String, held: Set<JudgePairIds>): Boolean =
+        JudgePairIds(first.id, second.id) !in held && verdicts.judged(first.id, second.id, fingerprint) == 0 &&
+            direct?.dropped(first.id, second.id) != true
 
     companion object {
         /**

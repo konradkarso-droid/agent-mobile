@@ -56,10 +56,11 @@ class JudgeUi(
     suspend fun section(modelIdentity: String, onChanged: () -> Unit): CharSequence {
         val counters = launcher.counters(modelIdentity)
         val pending = launcher.pendingDisputes(modelIdentity)
+        val manual = manualSection(onChanged)
         val out = SpannableStringBuilder()
 
         out.append("СУДЬЯ ПАМЯТИ\n")
-        if (counters.judged == 0) {
+        if (counters.judged == 0 && counters.directRead == 0 && manual.isEmpty()) {
             // Отдельная ветка: «не запускали» и «запускали, споров нет» — разные
             // ответы, и второй ничего не говорит, пока не случился первый.
             out.append("Разбор не запускался. Долгое нажатие на «Разбор памяти» запускает.")
@@ -78,30 +79,75 @@ class JudgeUi(
                 if (counters.disputes == 0) "Спорных пар не нашлось."
                 else "Все спорные пары просмотрены."
             )
-            return out
+            return out.append(manual)
         }
 
         out.append("\nНажмите на пару, чтобы разобрать. Судья ошибается часто: ")
         out.append("это повод посмотреть, а не повод править память.\n")
         for (pair in pending) {
-            out.append("\n")
-            val start = out.length
-            out.append("#").append(pair.firstId.toString()).append(" ").append(pair.first)
-            out.append("\n")
-            out.append("#").append(pair.secondId.toString()).append(" ").append(pair.second)
-            out.setSpan(
-                object : ClickableSpan() {
-                    override fun onClick(widget: View) = askAbout(modelIdentity, pair, onChanged)
-                    override fun updateDrawState(ds: TextPaint) {
-                        ds.color = linkColor
-                        ds.isUnderlineText = false
-                    }
-                },
-                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-            out.append("\n")
+            appendPair(out, pair) { askAbout(modelIdentity, pair, onChanged) }
+        }
+        return out.append(manual)
+    }
+
+    suspend fun manualSection(onChanged: () -> Unit): CharSequence {
+        val manual = launcher.pendingManual()
+        if (manual.isEmpty()) return ""
+        val out = SpannableStringBuilder("\n\nРУЧНОЙ СУД · ${manual.size}\n")
+        out.append("Пары после двух отсечек по времени. Нажмите на пару, чтобы разобрать.\n")
+        for ((pair, stage) in manual) {
+            appendPair(out, pair, "Последняя отсечка — ${stage.label}") {
+                askManual(pair, onChanged)
+            }
         }
         return out
+    }
+
+    private fun appendPair(
+        out: SpannableStringBuilder,
+        pair: DisputePair,
+        detail: String? = null,
+        onOpen: () -> Unit,
+    ) {
+        out.append("\n")
+        val start = out.length
+        out.append("#").append(pair.firstId.toString()).append(" ").append(pair.first)
+        out.append("\n#").append(pair.secondId.toString()).append(" ").append(pair.second)
+        detail?.let { out.append("\n").append(it) }
+        out.setSpan(
+            object : ClickableSpan() {
+                override fun onClick(widget: View) = onOpen()
+                override fun updateDrawState(ds: TextPaint) {
+                    ds.color = linkColor
+                    ds.isUnderlineText = false
+                }
+            },
+            start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        out.append("\n")
+    }
+
+    private fun askManual(pair: DisputePair, onChanged: () -> Unit) {
+        val saveDispute: suspend () -> Unit = { launcher.reviewManual(pair, dispute = true) }
+        AlertDialog.Builder(activity)
+            .setTitle("Спорят ли записи?")
+            .setMessage("№${pair.firstId} · ${pair.first}\n\n№${pair.secondId} · ${pair.second}")
+            .setPositiveButton("Есть спор") { _, _ ->
+                askWhichWrong(pair, saveDispute, onChanged, saveWithoutRejection = true)
+            }
+            .setNegativeButton("Нет спора") { _, _ ->
+                scope.launch {
+                    launcher.reviewManual(pair, dispute = false)
+                    onChanged()
+                }
+            }
+            .setNeutralButton("Вернуть в автосуд") { _, _ ->
+                scope.launch {
+                    launcher.returnToQueue(pair)
+                    onChanged()
+                }
+            }
+            .show()
     }
 
     /**
@@ -151,7 +197,7 @@ class JudgeUi(
                     "настоящий» спросит, какая из двух записей неверна."
             )
             .setPositiveButton("Спор настоящий") { _, _ ->
-                askWhichWrong(modelIdentity, pair, onChanged)
+                askWhichWrong(pair, { launcher.mark(modelIdentity, pair, HumanVerdict.CONFIRMED) }, onChanged)
             }
             .setNegativeButton("Промах судьи") { _, _ ->
                 scope.launch {
@@ -174,18 +220,32 @@ class JudgeUi(
      * записи и сказал, что спор настоящий, то есть действие начато двумя
      * нажатиями, а не одним случайным.
      */
-    private fun askWhichWrong(modelIdentity: String, pair: DisputePair, onChanged: () -> Unit) {
-        AlertDialog.Builder(activity)
+    private fun askWhichWrong(
+        pair: DisputePair,
+        markDispute: suspend () -> Unit,
+        onChanged: () -> Unit,
+        saveWithoutRejection: Boolean = false,
+    ) {
+        val dialog = AlertDialog.Builder(activity)
             .setTitle("Какая запись неверна?")
             .setMessage(
                 "1. «${pair.first}»\n\n2. «${pair.second}»\n\n" +
                     "Неверная будет отвергнута: уйдёт из ответов агента навсегда. " +
                     "Из памяти она не стирается, но вернуть её нажатием нельзя."
             )
-            .setPositiveButton("Первая") { _, _ -> rejectOne(modelIdentity, pair, pair.firstId, onChanged) }
-            .setNegativeButton("Вторая") { _, _ -> rejectOne(modelIdentity, pair, pair.secondId, onChanged) }
-            .setNeutralButton("Пока не знаю", null)
-            .show()
+            .setPositiveButton("Первая") { _, _ -> rejectOne(pair.firstId, markDispute, onChanged) }
+            .setNegativeButton("Вторая") { _, _ -> rejectOne(pair.secondId, markDispute, onChanged) }
+        if (saveWithoutRejection) {
+            dialog.setNeutralButton("Сохранить спор") { _, _ ->
+                scope.launch {
+                    markDispute()
+                    onChanged()
+                }
+            }
+        } else {
+            dialog.setNeutralButton("Пока не знаю", null)
+        }
+        dialog.show()
     }
 
     /**
@@ -194,10 +254,10 @@ class JudgeUi(
      * отвержение прошло: иначе при сбое базы пара исчезла бы, запись осталась
      * в ответах, и вернуться к ней отсюда было бы нельзя.
      */
-    private fun rejectOne(modelIdentity: String, pair: DisputePair, id: Long, onChanged: () -> Unit) {
+    private fun rejectOne(id: Long, markDispute: suspend () -> Unit, onChanged: () -> Unit) {
         scope.launch {
             val ok = reject(id)
-            if (ok) launcher.mark(modelIdentity, pair, HumanVerdict.CONFIRMED)
+            if (ok) markDispute()
             Toast.makeText(
                 activity,
                 if (ok) "Отвергнута запись №$id"

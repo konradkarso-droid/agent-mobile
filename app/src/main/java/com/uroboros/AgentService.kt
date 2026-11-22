@@ -697,19 +697,20 @@ class AgentService : Service() {
         }
         modelUri ?: return
 
-        // Отпечаток грубый: число записей, последний номер, сколько на проверке
-        // и отвергнуто. Новая запись, выход из карантина и отказ его меняют;
-        // правка текста записи — нет, и тогда суд подождёт следующей перемены.
-        val records = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
+        // Отпечаток состава очереди. Возврат пары из ручного суда снова
+        // разрешает проверку очереди даже без изменений самих записей.
+        val db = MemoryDatabase.getInstance(applicationContext)
+        val records = db.stickerDao().getAll()
         val memoryPrint = "${records.size}:${records.maxOfOrNull { it.id }}:" +
-            "${records.count { it.reviewPending }}:${records.count { it.rejectedAt != null }}"
+            "${records.count { it.reviewPending }}:${records.count { it.rejectedAt != null }}:" +
+            db.judgeTimeoutDao().held().joinToString { "${it.firstId}/${it.secondId}" }
         if (memoryPrint == nothingToJudgeAt) {
             showJudgeLine("Не сужу: судить нечего — память с прошлой проверки не менялась.")
             return
         }
         if (!JudgeLauncher(applicationContext, engine).hasPending(modelUri)) {
             nothingToJudgeAt = memoryPrint
-            showJudgeLine("Не сужу: судить нечего — все пары разобраны.")
+            showJudgeLine("Не сужу: в автоматической очереди новых пар нет.")
             return
         }
 

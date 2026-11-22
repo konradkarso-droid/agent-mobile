@@ -7,6 +7,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -17,6 +18,7 @@ class JudgeRunTimeoutTest {
         Sticker(id = 3, content = "Корабль вернулся в порт вечером.", createdAt = 300),
     )
     private val saved = mutableListOf<JudgeVerdict>()
+    private val timeouts = MemoryTimeouts()
     private val stickers = proxy(StickerDao::class.java) { method, _ ->
         when (method.name) {
             "getExpired" -> emptyList<Sticker>()
@@ -49,6 +51,7 @@ class JudgeRunTimeoutTest {
         assertTrue(saved.none { it.firstId == first && it.secondId == second })
         assertEquals(1, judge { "2" }.run("test", 60_000).judged)
         assertEquals(3, saved.size)
+        assertTrue(timeouts.all().isEmpty())
     }
 
     @Test
@@ -71,6 +74,31 @@ class JudgeRunTimeoutTest {
         assertEquals(2, report.droppedByDirect)
         assertEquals(1, report.remaining)
         assertEquals(1, report.deferredByTimeout.size)
+    }
+
+    @Test
+    fun aSecondTimeoutMovesThePairToManualReviewUntilReturned() = runBlocking {
+        var calls = 0
+        val firstRun = judge {
+            if (++calls == 1) throw JudgeGenerationException("лимит", GenerationEnd.WATCHDOG_TIMEOUT)
+            "2"
+        }.run("test", 60_000)
+        val (first, second) = firstRun.deferredByTimeout.single()
+        assertTrue(timeouts.pendingReview().isEmpty())
+
+        val secondRun = judge {
+            throw JudgeGenerationException("лимит", GenerationEnd.WATCHDOG_TIMEOUT)
+        }.run("test", 60_000)
+        assertEquals(1, secondRun.sentToManual)
+        assertTrue(secondRun.deferredByTimeout.isEmpty())
+        assertEquals(0, secondRun.remaining)
+        assertEquals(JudgeStage.PRINTED, timeouts.pendingReview().single().stage)
+        assertFalse(judge { error("Пара ждёт ручного суда") }.hasPending("test"))
+        assertEquals(RunOutcome.NOTHING_TO_JUDGE, judge { error("Пара ждёт ручного суда") }.run("test", 60_000).outcome)
+
+        assertEquals(1, timeouts.returnToQueue(first, second))
+        assertTrue(judge { "2" }.hasPending("test"))
+        assertEquals(1, judge { "2" }.run("test", 60_000).judged)
     }
 
     @Test
@@ -109,8 +137,42 @@ class JudgeRunTimeoutTest {
     private fun judge(sieve: PairSieve? = null, answer: () -> String) = JudgeRun(
         { it() }, stickers, verdicts, object : MemoryJudge.Llm {
             override suspend fun answer(system: String, request: String) = answer()
-        }, sieve,
+        }, timeouts, sieve,
     )
+
+    private class MemoryTimeouts : JudgeTimeoutDao {
+        private val rows = mutableMapOf<JudgePairIds, JudgeTimeout>()
+
+        override suspend fun insert(row: JudgeTimeout): Long =
+            if (rows.putIfAbsent(JudgePairIds(row.firstId, row.secondId), row) == null) 1L else -1L
+
+        override suspend fun repeat(first: Long, second: Long, stage: JudgeStage, at: Long): Int {
+            val key = JudgePairIds(first, second)
+            val row = rows[key]?.takeUnless { it.repeated } ?: return 0
+            rows[key] = row.copy(repeated = true, stage = stage, lastAt = at)
+            return 1
+        }
+
+        override suspend fun all() = rows.values.toList()
+        override suspend fun held() = rows.filterValues { it.repeated }.keys.toList()
+        override suspend fun pendingReview() = rows.values.filter { it.repeated && it.humanDispute == null }
+        override suspend fun forgetDeletedRecords() = Unit
+
+        override suspend fun clearFirstTimeout(first: Long, second: Long) {
+            val key = JudgePairIds(first, second)
+            if (rows[key]?.repeated == false) rows.remove(key)
+        }
+
+        override suspend fun returnToQueue(first: Long, second: Long): Int {
+            val key = JudgePairIds(first, second)
+            val row = rows[key] ?: return 0
+            if (!row.repeated || row.humanDispute != null) return 0
+            rows.remove(key)
+            return 1
+        }
+
+        override suspend fun review(first: Long, second: Long, dispute: Boolean): Int = error("Решение человека проверяет Room")
+    }
 
     private fun <T : Any> proxy(type: Class<T>, call: (Method, Array<out Any?>) -> Any?): T =
         requireNotNull(type.cast(Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
