@@ -19,6 +19,17 @@ import org.junit.Test
 class BuildSelfDescriptionTest {
 
     @Test
+    fun localSearchIsKnownInBothChannelsAndTimersAreUnavailable() {
+        for (telegram in listOf(false, true)) {
+            val lines = BuildSelfDescription.lines(1, telegram)
+            assertTrue(BuildSelfDescription.WEB_SEARCH_LINE in lines)
+            assertTrue(BuildSelfDescription.DEFERRED_ACTIONS_LINE in lines)
+            assertTrue(lines.any { "обнови источники" in it })
+            assertFalse(lines.any { "Brave Search" in it })
+        }
+    }
+
+    @Test
     fun `память первой при любом состоянии запрета`() {
         for (state in listOf(-1, 0, 1, 2, 3)) {
             assertEquals(BuildSelfDescription.MEMORY_LINE, BuildSelfDescription.lines(state).first())

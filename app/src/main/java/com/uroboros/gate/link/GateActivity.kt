@@ -35,7 +35,7 @@ import kotlinx.coroutines.withContext
  * весь бот, — и отсюда агент пишет другим агентам.
  *
  * РАСКЛАДКА ДЛЯ ЛЕВШИ: главные действия («Послать», «Познакомиться») внизу
- * слева; «Токен», «Отвечать», «Мой тг», «Имена» — вверху справа: это решения
+ * слева; «Ключи», «Отвечать», «Мой тг», «Имена» — вверху справа: это решения
  * владельца о канале ([ChatPrefs]), их нельзя нажать случайно. Там же
  * «Принять агента» и «Переехать» — переезд на другой телефон ([com.uroboros.move.Move]).
  *
@@ -116,7 +116,7 @@ class GateActivity : AppCompatActivity() {
         }
         val top = LinearLayout(this).apply { gravity = Gravity.END }
         top.addView(topButton("Отвечать") { consentDialog() })
-        top.addView(topButton("Токен") { tokenDialog() })
+        top.addView(topButton("Ключи") { tokenDialog() })
         root.addView(top)
         val top2 = LinearLayout(this).apply { gravity = Gravity.END }
         top2.addView(topButton("Имена") { namesDialog() })

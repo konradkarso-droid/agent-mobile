@@ -32,6 +32,7 @@ import androidx.lifecycle.lifecycleScope
 import com.dark.gguf_lib.GGMLEngine
 import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
+import androidx.core.widget.doAfterTextChanged
 import com.uroboros.access.PresenceLock
 import com.uroboros.databinding.ActivityMainBinding
 import com.uroboros.llm.ModelFolder
@@ -153,6 +154,9 @@ import com.uroboros.util.wordSpots
 import com.uroboros.will.SimplePendingQuerySource
 import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
+import com.uroboros.search.MAX_QUERY_LENGTH
+import com.uroboros.search.SearchCommand
+import com.uroboros.search.SearchPanel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -169,6 +173,7 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
+    private var searchPanel: SearchPanel? = null
     private lateinit var presenceLock: PresenceLock
     private lateinit var processObjects: ProcessObjects.Held
     private lateinit var mediator: TrustedMediator
@@ -4337,6 +4342,7 @@ class MainActivity : AppCompatActivity() {
         // Память, сторож и движок — одни на процесс, см. ProcessObjects. Экран,
         // созданный заново, получает те же объекты, а не заводит свои.
         processObjects = ProcessObjects.get(applicationContext)
+        searchPanel = SearchPanel(this, lifecycleScope, processObjects.search)
         mediator = processObjects.mediator
         watchdog = processObjects.watchdog
         llmEngine = processObjects.llmEngine
@@ -4798,6 +4804,12 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
+        binding.editTextInput.doAfterTextChanged { text ->
+            if (!llmEngine.isLoaded && !turns.busy.value) {
+                binding.buttonSend.isEnabled = SearchCommand.fromOwnerWords(text?.toString()) != null
+            }
+        }
+
         // Короткое нажатие — обычный текстовый разговор. Аварийный стоп его НЕ
         // глушит намеренно: этот путь не проходит через ActionGate и вообще
         // ничего не делает с устройством, зато остаётся единственным способом
@@ -4817,6 +4829,17 @@ class MainActivity : AppCompatActivity() {
             if (userText.isBlank()) {
                 val hint = if (isToteRunning) "Введите вопрос" else "Введите запрос для генерации"
                 Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            SearchCommand.fromOwnerWords(userText)?.let { command ->
+                searchPanel?.open(command)
+                if (command !is SearchCommand.Find || command.query.length <= MAX_QUERY_LENGTH) {
+                    binding.editTextInput.text.clear()
+                }
+                return@setOnClickListener
+            }
+            if (!llmEngine.isLoaded && !isToteRunning) {
+                Toast.makeText(this, "Модель не загружена", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             // Модель одна, и разговор важнее суда: идущий разбор уступает, а
@@ -5769,6 +5792,7 @@ class MainActivity : AppCompatActivity() {
                 val razvilkaPlan = Razvilka.plan(userText, RazvilkaHolder.direction, RazvilkaHolder.etalon)
                 val razvilkaOrder = (razvilkaPlan as? Razvilka.Plan.Read)?.order
                 val outcome = turns.run(
+                    searchNote = processObjects.search.snapshot().conversationNote(),
                     content = userContent,
                     question = userText,
                     // ВСЕ найденные отбором — те же, что ушли модели. Новизну журнал
@@ -6291,6 +6315,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        searchPanel?.close()
         super.onStop()
         MemoryWatch.screenShown = false
         // Первой строкой, до выхода по пустой ленте: замок встаёт при любом

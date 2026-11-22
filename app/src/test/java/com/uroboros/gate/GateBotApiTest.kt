@@ -1,5 +1,6 @@
 package com.uroboros.gate
 
+import java.net.URLDecoder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,6 +11,15 @@ import org.junit.Test
 class GateBotApiTest {
 
     private val token = "123456789:AAH-abcdefghijklmnopqrstuvwxyz_0123"
+
+    @Test
+    fun searchRepliesDisableLinkPreviews() {
+        val text = "Выдержка https://example.com/"
+        val ordinary = GateBotApi.messageBody(1, text, 2, null).decodeToString()
+        val search = GateBotApi.messageBody(1, text, 2, null, disablePreview = true).decodeToString()
+        assertFalse(ordinary.contains("link_preview_options"))
+        assertTrue(URLDecoder.decode(search, "UTF-8").contains("link_preview_options={\"is_disabled\":true}"))
+    }
 
     @Test
     fun `адреса — только телеграм, токен в пути`() {

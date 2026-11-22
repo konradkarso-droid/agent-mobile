@@ -22,11 +22,10 @@
     <!-- Подъём тела агента после перезагрузки телефона (BootReceiver). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Сеть — для врат, только к api.telegram.org: адрес держит код
-         (gate.GateBotApi), система этого не ограничивает. И для переезда
-         агента между двумя телефонами — только частные адреса локальной сети
-         (move.Move, свой закрытый канал). Открытый HTTP выключен ниже
-         (usesCleartextTraffic); переезд идёт не по HTTP. -->
+    <!-- Адреса держит код: api.telegram.org для Telegram, api.search.brave.com
+         для явного веб-поиска и частные адреса локальной сети для переезда
+         (move.Move). Android выдаёт право на сеть приложению целиком.
+         Открытый HTTP выключен ниже (usesCleartextTraffic). -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>

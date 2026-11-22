@@ -64,7 +64,10 @@ import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
+import com.uroboros.search.SearchCommand
+import com.uroboros.search.SearchReply
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -75,6 +78,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
@@ -246,6 +252,10 @@ object ChatLink {
     private var failedUri: String? = null
 
     private var worker: kotlinx.coroutines.Job? = null
+    @Volatile private var linkScope: CoroutineScope? = null
+    private val searchReplies = Semaphore(2)
+    private val searchQuotedEntities = setOf("blockquote", "expandable_blockquote", "pre", "code")
+    private val sendLock = Mutex()
 
     /** Запустить очередь ответов в области службы; уже идёт — ничего. */
     @Synchronized
@@ -256,6 +266,7 @@ object ChatLink {
         // потоке опроса: сторож и движок заводятся там, где их ждут.
         ProcessObjects.get(app)
         refresh(app)
+        linkScope = scope
         worker = scope.launch(Dispatchers.IO) { work(app) }
     }
 
@@ -280,6 +291,12 @@ object ChatLink {
     /** Сообщение без файла из канала. Зовёт опрос [GateLink] на своём потоке. */
     suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
         this.me = me
+        val command = SearchCommand.parse(m.text, me.username)
+            ?: SearchCommand.fromOwnerWords(m.text)?.takeIf { isSearchOwner(app, m) }
+        if (command != null) {
+            searchCommand(app, m, me, command)
+            return
+        }
         val w = when (val read = TgWords.of(m, me)) {
             is TgWords.Read.NotWords -> {
                 GateLink.note("Слова: ${read.why}")
@@ -333,6 +350,65 @@ object ChatLink {
             }
         }
         refresh(app)
+    }
+
+    private fun isSearchOwner(app: Context, m: GateBotApi.Message): Boolean = SearchCommand.isOwnerDirect(
+        privateChat = m.chatType == "private" && m.chatId == m.fromId,
+        owner = ChatPrefs.owner(app)?.key?.id,
+        sender = m.fromId?.let { GateTelegram.userKey(it).id },
+        bot = m.fromIsBot,
+        forwarded = m.forwarded,
+        edited = m.edited,
+        senderChat = m.senderChatId != null,
+        quoted = m.entities.any { it.type in searchQuotedEntities },
+    )
+
+    /** Поисковая команда и выдача лежат вне ленты и памяти разговора. */
+    private suspend fun searchCommand(app: Context, m: GateBotApi.Message, bot: GateBotApi.Me, command: SearchCommand) {
+        fun ownerAllowed() = isSearchOwner(app, m)
+        if (!ownerAllowed() || m.messageId <= 0) return
+        val scope = linkScope ?: return
+        if (!searchReplies.tryAcquire()) {
+            GateLink.note("Веб-поиск: очередь ответов занята")
+            return
+        }
+        val accepted = CompletableDeferred<Unit>()
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (ChatPrefs.consent(app) == null) {
+                    GateLink.note("Веб-поиск: нужно разрешить ответы в личке")
+                    return@launch
+                }
+                val search = ProcessObjects.get(app).search
+                val reply = when (command) {
+                    is SearchCommand.Find, SearchCommand.Refresh -> search.fromTelegram(
+                        command,
+                        bot.id.toString() + ":" + m.chatId + ":" + m.messageId,
+                        stillOwner = ::ownerAllowed,
+                        onAccepted = { accepted.complete(Unit) },
+                    )
+                    SearchCommand.Last -> SearchReply(search.snapshot().latestText())
+                    SearchCommand.History -> SearchReply(search.snapshot().historyText())
+                    SearchCommand.Deferred -> SearchReply(SearchCommand.DEFERRED_MESSAGE)
+                }
+                if (!reply.duplicate && ownerAllowed()) {
+                    val sent = sendReply(
+                        app, m.chatId, reply.text, m.messageId, null, ActionProvenance.CODE,
+                        disablePreview = true, stillAllowed = { ownerAllowed() && ChatPrefs.consent(app) != null },
+                    )
+                    sent.failure?.let { GateLink.note("Веб-поиск: ответ не отправлен — $it") }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                GateLink.note("Веб-поиск: " + error.javaClass.simpleName)
+            }
+        }.invokeOnCompletion {
+            searchReplies.release()
+            accepted.complete(Unit)
+        }
+        // Сдвигаем offset лишь после записи поручения или явного отказа.
+        accepted.await()
     }
 
     /** Положить в память по кольцу; итог словами для строки события. */
@@ -682,7 +758,9 @@ object ChatLink {
         val cross = crossFor(app, job, owner, upTo.last().at, dictionary, agentNames, installedAt)
         // Заявки прошлого ответа без опоры — последней строкой хвоста, ближе к реплике.
         val claimNote = claims.found?.let { SelfClaim.note(it) }
-        val tailBlock = listOfNotNull(cross.first, tail?.let(ChatThread::tailText), insist, promisedText, claimNote).joinToString("\n")
+        val searchNote = if (job.place == Place.DIRECT && owner?.key == job.sender)
+            ProcessObjects.get(app).search.snapshot().conversationNote() else null
+        val tailBlock = listOfNotNull(cross.first, searchNote, tail?.let(ChatThread::tailText), insist, promisedText, claimNote).joinToString("\n")
         threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm, previous = previous) +
             " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body · ${cross.second}"
 
@@ -1158,6 +1236,26 @@ object ChatLink {
         records: List<String> = emptyList(),
         dreamNote: String? = null,
     ): String? {
+        val sent = sendReply(app, job.chatId, text, job.messageId, job.thread, provenance)
+        sent.failure?.let { return it }
+        val now = System.currentTimeMillis()
+        val meId = me?.id ?: return null
+        ChatDatabase.getInstance(app).chatLineDao().insert(
+            ChatLine(
+                chat = job.chat, thread = job.thread, messageId = sent.messageId ?: 0L,
+                sender = GateTelegram.userKey(meId).id, name = "агент", signature = "", isBot = true, isAgent = true,
+                text = text, ring = null, reason = null, replyTo = job.sender.id, at = now, place = job.place.name,
+                recall = ChatOwnSpeech.pack(records),
+                dreamNote = dreamNote,
+            )
+        )
+        return null
+    }
+
+    private suspend fun sendReply(
+        app: Context, chatId: Long, text: String, messageId: Long, thread: Long?,
+        provenance: ActionProvenance, disablePreview: Boolean = false, stillAllowed: () -> Boolean = { true },
+    ): GateLink.TextSent = sendLock.withLock {
         val consent = ChatPrefs.consent(app)
         val verdict = GatedAction.evaluate(
             app,
@@ -1171,24 +1269,13 @@ object ChatLink {
             ),
             consent,
         )
-        if (verdict.result != GateResult.ALLOW) return "ворота: ${verdict.reason}"
-        val since = System.currentTimeMillis() - (lastSent[job.chatId] ?: 0L)
+        if (verdict.result != GateResult.ALLOW) return@withLock GateLink.TextSent(null, "ворота: " + verdict.reason)
+        val since = System.currentTimeMillis() - (lastSent[chatId] ?: 0L)
         if (since < SEND_GAP_MS) delay(SEND_GAP_MS - since)
-        val sent = GateLink.sendText(job.chatId, text, job.messageId, job.thread)
-        sent.failure?.let { return it }
-        val now = System.currentTimeMillis()
-        lastSent[job.chatId] = now
-        val meId = me?.id ?: return null
-        ChatDatabase.getInstance(app).chatLineDao().insert(
-            ChatLine(
-                chat = job.chat, thread = job.thread, messageId = sent.messageId ?: 0L,
-                sender = GateTelegram.userKey(meId).id, name = "агент", signature = "", isBot = true, isAgent = true,
-                text = text, ring = null, reason = null, replyTo = job.sender.id, at = now, place = job.place.name,
-                recall = ChatOwnSpeech.pack(records),
-                dreamNote = dreamNote,
-            )
-        )
-        return null
+        if (!stillAllowed()) return@withLock GateLink.TextSent(null, "разрешение изменилось")
+        val sent = GateLink.sendText(chatId, text, messageId, thread, disablePreview)
+        if (sent.failure == null) lastSent[chatId] = System.currentTimeMillis()
+        sent
     }
 
     // --- Прибор ---

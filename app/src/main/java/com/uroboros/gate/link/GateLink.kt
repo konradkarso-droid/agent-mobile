@@ -363,10 +363,12 @@ object GateLink {
      * только [ChatLink] — после ворот действий. Блокирует поток. Причина
      * отказа — без токена.
      */
-    fun sendText(chatId: Long, text: String, replyTo: Long?, thread: Long?): TextSent {
+    fun sendText(
+        chatId: Long, text: String, replyTo: Long?, thread: Long?, disablePreview: Boolean = false,
+    ): TextSent {
         val s = ready() ?: return TextSent(null, "канал не готов (нет токена, нет службы или аварийный стоп)")
         val r = try {
-            s.http.sendMessage(chatId, text, replyTo, thread)
+            s.http.sendMessage(chatId, text, replyTo, thread, disablePreview)
         } catch (e: IOException) {
             return TextSent(null, e.message ?: "сеть")
         } catch (e: IllegalArgumentException) {

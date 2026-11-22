@@ -6,7 +6,7 @@ import java.net.URLEncoder
  * Bot API телеграма — всё, что не ходит в сеть: адреса, разбор ответов,
  * тело отправки файла, чистка токена из текста. Сеть — в `gate.link.TgHttp`.
  *
- * ОДИН АДРЕС. Агент ходит в сеть только к [HOST], и адрес собирается только
+ * ОДИН АДРЕС. Канал Telegram ходит только к [HOST], и адрес собирается только
  * здесь ([methodUrl], [fileUrl]). Это граница кода, а не системы: разрешение
  * Android на интернет даёт любой адрес, и запретить другие оно не умеет.
  *
@@ -227,12 +227,15 @@ object GateBotApi {
      * из ответа модели остаются знаками). [replyTo] — ответом на это сообщение
      * (если оно исчезло — всё равно уходит); [thread] — в эту ветку форума.
      */
-    fun messageBody(chatId: Long, text: String, replyTo: Long?, thread: Long?): ByteArray {
+    fun messageBody(
+        chatId: Long, text: String, replyTo: Long?, thread: Long?, disablePreview: Boolean = false,
+    ): ByteArray {
         require(text.isNotEmpty() && text.length <= TEXT_LIMIT) { "текст пустой или длиннее $TEXT_LIMIT" }
         fun enc(v: String) = URLEncoder.encode(v, "UTF-8")
         val parts = ArrayList<String>(4)
         parts += "chat_id=$chatId"
         parts += "text=" + enc(text)
+        if (disablePreview) parts += "link_preview_options=" + enc("{\"is_disabled\":true}")
         if (thread != null) parts += "message_thread_id=$thread"
         if (replyTo != null && replyTo > 0) parts += "reply_parameters=" + enc("{\"message_id\":$replyTo,\"allow_sending_without_reply\":true}")
         return parts.joinToString("&").toByteArray(Charsets.UTF_8)

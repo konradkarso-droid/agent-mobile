@@ -1008,7 +1008,7 @@ class LlmEngine(
         // не последний ход, поэтому читать их до первой генерации законно.
         val banState = engine.getLastDecodeBreakdown().banState
         scriptBanStateAtLoad = banState
-        buildSelfLines = BuildSelfDescription.lines(banState, telegramReadSafely())
+        buildSelfLines = buildLinesFor(banState)
         synchronized(wallLock) {
             // Ожидающая стена прежней загрузки к этой не относится: загрузка
             // собирает стену сама, из тех же настроек.
@@ -1085,14 +1085,13 @@ class LlmEngine(
         }
     }
 
-    /**
-     * Есть ли ключ бота; сбой чтения — «нет»: строка о боте при сомнении не
-     * ставится (стена не обещает того, чего может не быть).
-     */
-    private fun telegramReadSafely(): Boolean = runCatching(telegramOn).getOrDefault(false)
+    private fun buildLinesFor(scriptBanState: Int): List<String> = BuildSelfDescription.lines(
+        scriptBanState,
+        telegram = runCatching(telegramOn).getOrDefault(false),
+    )
 
     /**
-     * Пересчитать строки сборки после смены ключа бота и попросить стену с ними.
+     * Пересчитать строки сборки после смены ключей врат и попросить стену с ними.
      * Встанет в начале следующего запроса разговора ([requestWall]); модель не
      * перезагружается. До загрузки — ничего: загрузка соберёт строки сама.
      *
@@ -1102,7 +1101,7 @@ class LlmEngine(
         if (scriptBanStateAtLoad == -1) return
         withContext(Dispatchers.IO) {
             synchronized(wallLock) {
-                buildSelfLines = BuildSelfDescription.lines(scriptBanStateAtLoad, telegramReadSafely())
+                buildSelfLines = buildLinesFor(scriptBanStateAtLoad)
             }
             requestWall(wallFor())
         }

@@ -12,6 +12,8 @@ import com.uroboros.memory.dream.Passport
 import com.uroboros.memory.dream.SelfLine
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.HomeEventStore
+import com.uroboros.search.SearchPlatform
+import com.dark.gguf_lib.models.GenerationEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,6 +58,7 @@ object ProcessObjects {
         val llmEngine: LlmEngine,
         /** Ход разговора и лента с её хранилищем — см. [ConversationTurns]. */
         val turns: ConversationTurns,
+        internal val search: SearchPlatform,
     ) {
         /** Имя модели в [llmEngine] для экрана; null — не загружена (LlmEngine.loadedModelName, почему там). */
         val loadedModelName: String? get() = llmEngine.loadedModelName
@@ -93,6 +96,25 @@ object ProcessObjects {
             telegramOn = { File(app.filesDir, GateTokenStore.FILE_NAME).exists() },
             readPassport = { stickers.passportWall().let { BuildSelfDescription.PassportWall(it, Passport.hasName(it)) } },
         )
+        val turns = ConversationTurns(llmEngine, JournalStore(app), processScope)
+        val search = SearchPlatform(app, watchdog, processScope) { instruction, material ->
+            if (!llmEngine.isLoaded) null else turns.aside {
+                val text = StringBuilder()
+                var done = false
+                var failed = false
+                llmEngine.generateConversationFlow(
+                    listOf("system" to instruction, "user" to material), maxTokens = 380,
+                ).collect { event ->
+                    when (event) {
+                        is GenerationEvent.Token -> text.append(event.text)
+                        is GenerationEvent.Error -> failed = true
+                        GenerationEvent.Done -> done = true
+                        else -> Unit
+                    }
+                }
+                text.toString().takeIf { done && !failed && it.isNotBlank() }
+            }
+        }
         // «Дом» (safety.HomeEvents): выход из нормы и обрыв сторожем пишутся на
         // диск, чтобы пережить кому, — о них агент потом расскажет фактом.
         val home = HomeEventStore(app)
@@ -105,7 +127,8 @@ object ProcessObjects {
             mediator = TrustedMediator(app),
             watchdog = watchdog,
             llmEngine = llmEngine,
-            turns = ConversationTurns(llmEngine, JournalStore(app), processScope),
+            turns = turns,
+            search = search,
         )
     }
 }
