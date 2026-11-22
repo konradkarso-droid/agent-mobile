@@ -134,6 +134,19 @@ class DirectSieveTest {
     }
 
     @Test
+    fun `сторож прервал эталон до чтения пары`() = runBlocking {
+        val store = Store()
+        val r = Reader { _, _ -> LayerRead.Stopped(GenerationEnd.WATCHDOG_TIMEOUT) }
+        val s = sieve(store, r)
+        assertEquals(
+            SieveDecision.Stop(GenerationEnd.WATCHDOG_TIMEOUT, checkingEtalon = true),
+            s.decide(sticker(1, "а"), sticker(2, "б")),
+        )
+        assertEquals(1, r.reads)
+        assertTrue(store.rows.isEmpty())
+    }
+
+    @Test
     fun `нет направления — сито молчит словами`() = runBlocking {
         val s = DirectSieve(DirectJudgeDirections.Parsed.Bad("нет файла"), Store(), "fp") { _, _, _, _ -> error("читать нельзя") }
         assertTrue(s.decide(sticker(1, "а"), sticker(2, "б")) is SieveDecision.Off)

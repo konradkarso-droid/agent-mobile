@@ -198,7 +198,6 @@ class JudgeRun internal constructor(
         var droppedByDirect = 0
         var interruptedBy: String? = null
         var sawWork = false
-        var activeSieve = direct
         val deferredByTimeout = mutableListOf<Pair<Long, Long>>()
 
         try {
@@ -213,19 +212,20 @@ class JudgeRun internal constructor(
                         break@outer
                     }
 
-                    when (val d = activeSieve?.decide(first, second)) {
+                    when (val d = direct?.decide(first, second)) {
                         SieveDecision.Drop -> {
                             droppedByDirect++
                             onProgress(judged + unreadable + droppedByDirect)
                             continue@outer
                         }
                         is SieveDecision.Stop -> {
-                            if (d.end == GenerationEnd.WATCHDOG_TIMEOUT) {
-                                activeSieve = null
+                            if (d.end == GenerationEnd.WATCHDOG_TIMEOUT && !d.checkingEtalon) {
                                 deferredByTimeout += first.id to second.id
                                 continue@outer
                             }
-                            interruptedBy = reasonOf(d.end)
+                            interruptedBy = if (d.checkingEtalon) {
+                                "проверка эталона прямого судьи остановлена — ${reasonOf(d.end)}"
+                            } else reasonOf(d.end)
                             break@outer
                         }
                         // Выключенный прямой судья — не повод не судить: пара
@@ -297,10 +297,7 @@ class JudgeRun internal constructor(
             onlySocial = onlySocial.map { it.id },
             outsideSieve = queue.outsideSieve,
             droppedByDirect = droppedByDirect,
-            direct = direct?.let {
-                if (activeSieve == null) "чтение достигло потолка. Остаток очереди проверяет печатный судья."
-                else it.report()
-            },
+            direct = direct?.report(),
             deferredByTimeout = deferredByTimeout,
         )
     }

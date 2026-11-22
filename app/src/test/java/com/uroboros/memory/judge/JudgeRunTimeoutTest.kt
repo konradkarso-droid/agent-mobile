@@ -52,22 +52,42 @@ class JudgeRunTimeoutTest {
     }
 
     @Test
-    fun timeoutInDirectReadLetsThePrintedJudgeHandleTheRest() = runBlocking {
+    fun timeoutInDirectReadStillFiltersLaterPairs() = runBlocking {
         var reads = 0
+        val dropped = mutableSetOf<Pair<Long, Long>>()
         val sieve = object : PairSieve {
             override suspend fun begin() = Unit
-            override suspend fun dropped(firstId: Long, secondId: Long) = false
+            override suspend fun dropped(firstId: Long, secondId: Long) = (firstId to secondId) in dropped
             override suspend fun decide(first: Sticker, second: Sticker): SieveDecision {
-                reads++
-                return SieveDecision.Stop(GenerationEnd.WATCHDOG_TIMEOUT)
+                if (++reads == 1) return SieveDecision.Stop(GenerationEnd.WATCHDOG_TIMEOUT)
+                dropped += first.id to second.id
+                return SieveDecision.Drop
             }
             override fun report() = "прямое чтение"
         }
-        val report = judge(sieve) { "2" }.run("test", 60_000)
-        assertEquals(1, reads)
-        assertEquals(2, report.judged)
+        val report = judge(sieve) { error("Печатному судье не было передачи") }.run("test", 60_000)
+        assertEquals(3, reads)
+        assertEquals(0, report.judged)
+        assertEquals(2, report.droppedByDirect)
         assertEquals(1, report.remaining)
         assertEquals(1, report.deferredByTimeout.size)
+    }
+
+    @Test
+    fun timeoutWhileCheckingEtalonEndsTheRunBeforeAnyPair() = runBlocking {
+        val sieve = object : PairSieve {
+            override suspend fun begin() = Unit
+            override suspend fun dropped(firstId: Long, secondId: Long) = false
+            override suspend fun decide(first: Sticker, second: Sticker) =
+                SieveDecision.Stop(GenerationEnd.WATCHDOG_TIMEOUT, checkingEtalon = true)
+            override fun report() = "нет законченных чтений"
+        }
+        val report = judge(sieve) { error("Эталон не проверен") }.run("test", 60_000)
+        assertEquals(RunOutcome.INTERRUPTED, report.outcome)
+        assertTrue(report.interruptedBy.orEmpty().contains("проверка эталона прямого судьи"))
+        assertEquals(3, report.remaining)
+        assertTrue(report.deferredByTimeout.isEmpty())
+        assertTrue(saved.isEmpty())
     }
 
     @Test

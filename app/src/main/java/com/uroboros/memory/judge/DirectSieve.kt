@@ -15,8 +15,8 @@ sealed class SieveDecision {
     /** Сито в этом прогоне не работает ([why] — для экрана); пара и все дальше — печатному судье. */
     data class Off(val why: String) : SieveDecision()
 
-    /** Сторож остановил чтение. Причину получает прогон. */
-    data class Stop(val end: GenerationEnd) : SieveDecision()
+    /** Сторож остановил чтение пары или проверку эталона. */
+    data class Stop(val end: GenerationEnd, val checkingEtalon: Boolean = false) : SieveDecision()
 }
 
 /** Сито перед печатным судьёй для одного прогона ([JudgeRun]). */
@@ -38,14 +38,12 @@ interface PairSieve {
  * Сито прямого судьи: эталон, чтение пары в двух порядках, хранение решения.
  * Правила — в [DirectJudge]; здесь только порядок шагов и учёт.
  *
- * ЭТАЛОН ПЕРЕД ПЕРВОЙ ПАРОЙ, в каждом прогоне: четыре чтения пар с известным
- * ответом. Не узнан — сито выключено до конца прогона, и всё идёт печатному
- * судье. Так чужая модель или испорченное направление видны на экране словами,
- * а не ровными неверными числами.
+ * Перед первым новым чтением в прогоне сито проверяет эталон: четыре чтения
+ * пар с известным ответом. Если эталон не узнан или чтение завершилось сбоем
+ * движка, сито выключается до конца прогона, и пары идут печатному судье.
  *
- * ЛЮБОЙ СБОЙ ЧТЕНИЯ ВЫКЛЮЧАЕТ СИТО НА ПРОГОН, а не пропускает пару: пропущенная
- * пара не разобрана бы ни ситом, ни судьёй, и вернулась бы в каждую ночь.
- * Выключенное сито ничего не теряет — пара просто судится как раньше.
+ * Остановку сторожем обрабатывает [JudgeRun]. Если исчерпан лимит чтения пары,
+ * сито продолжает со следующей. Остановка на эталоне прерывает прогон.
  */
 class DirectSieve(
     private val parsed: DirectJudgeDirections.Parsed,
@@ -81,7 +79,7 @@ class DirectSieve(
             val p = listOf(a to b, b to a, c to e, e to c).map { (x, y) ->
                 when (val r = share(d, x, y)) {
                     is Share.Ok -> r.p
-                    is Share.Stop -> return SieveDecision.Stop(r.end)
+                    is Share.Stop -> return SieveDecision.Stop(r.end, checkingEtalon = true)
                     is Share.Fail -> return switchOff(r.why)
                 }
             }
@@ -123,7 +121,7 @@ class DirectSieve(
 
     override fun report(): String {
         off?.let { return "выключено — $it; все пары судит печатный судья" }
-        if (readPairs == 0) return etalon?.let { "эталон: $it; новых пар не читалось" } ?: "не читало — новых пар не было"
+        if (readPairs == 0) return etalon?.let { "эталон: $it; новых пар не читалось" } ?: "нет законченных чтений"
         val perPair = readMs / readPairs
         return "прочитано пар $readPairs, отброшено $droppedPairs (порог ${DirectJudge.share(DirectJudge.SIEVE_THRESHOLD)})" +
             " · на пару $perPair мс · эталон: $etalon"
