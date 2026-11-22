@@ -46,7 +46,21 @@ internal data class SearchEntry(
     val status: SearchStatus,
     val count: Int = 0,
     val refresh: Boolean = false,
+    val result: SearchResult? = null,
 )
+
+internal data class SearchResult(val hits: List<SearchHit>, val detail: String?, val answer: String?) {
+    companion object {
+        fun from(hits: List<SearchHit>, detail: String?, answer: String?): SearchResult? {
+            val sources = hits.mapNotNull { SearchHit.from(it.title, it.url, it.description) }
+                .distinctBy { it.url }.take(SEARCH_LIMIT)
+            val note = detail?.take(1_800)?.trimEnd { it.isHighSurrogate() }?.ifBlank { null }
+            val summary = answer?.take(1_100)?.trimEnd { it.isHighSurrogate() }?.ifBlank { null }
+            if (sources.isEmpty() && note == null && summary == null) return null
+            return SearchResult(sources, note, summary)
+        }
+    }
+}
 
 internal data class SearchHit(val title: String, val url: String, val description: String) {
     companion object {
@@ -79,16 +93,12 @@ internal data class SearchHit(val title: String, val url: String, val descriptio
 
 internal data class SearchView(
     val entries: List<SearchEntry> = emptyList(),
-    val resultId: String? = null,
-    val hits: List<SearchHit> = emptyList(),
     val storageError: Boolean = false,
-    val detail: String? = null,
-    val answer: String? = null,
 ) {
     fun latestReply(): SearchReply {
         if (storageError) return SearchReply(SearchStatus.STORAGE_ERROR.label)
         val entry = entries.firstOrNull { !it.refresh } ?: return SearchReply("Поисков ещё не было.")
-        return if (entry.id == resultId) resultReply(entry, hits, detail, answer) else resultReply(entry, emptyList())
+        return resultReply(entry)
     }
 
     fun latestText(): String = latestReply().text
@@ -113,9 +123,10 @@ internal data class SearchReply(
     val sourceUrls: List<String> = emptyList(),
 )
 
-private fun resultReply(
-    entry: SearchEntry, hits: List<SearchHit>, detail: String? = null, answer: String? = null,
-): SearchReply {
+private fun resultReply(entry: SearchEntry): SearchReply {
+    val result = entry.result
+    val hits = result?.hits.orEmpty()
+    val answer = result?.answer
     val body = buildString {
         answer?.let { appendLine(it) }
         if (hits.isNotEmpty()) {
@@ -129,7 +140,7 @@ private fun resultReply(
         } else if (entry.status == SearchStatus.FOUND) {
             appendLine("Источников было " + entry.count + ". Выдержки больше недоступны.")
         }
-        detail?.let {
+        result?.detail?.let {
             if (isNotEmpty()) appendLine()
             appendLine(it)
         }
@@ -140,11 +151,6 @@ private fun resultReply(
         chatText = body.ifEmpty { entry.status.label },
         sourceUrls = hits.map { it.url },
     )
-}
-
-internal interface SearchHistory {
-    fun read(): List<SearchEntry>
-    fun write(entries: List<SearchEntry>): Boolean
 }
 
 internal data class SearchPage(
@@ -160,8 +166,8 @@ internal fun interface SearchProvider {
 }
 
 /**
- * Один активный запрос на оба канала. На диск попадают поручения и исходы.
- * Результат последнего успешного поиска живёт в процессе и заменяется следующим.
+ * Один активный запрос на оба канала. На диск попадают поручения, исходы и
+ * выдача последнего поиска. Обновление индекса сохраняет эту выдачу.
  * Лимиты объявлены для коротких выдержек. Они не оценивают пригодность статьи.
  */
 internal class WebSearch(
@@ -209,9 +215,7 @@ internal class WebSearch(
             if (!save(entry)) return SearchReply(SearchStatus.STORAGE_ERROR.label)
             onAccepted()
 
-            var hits = emptyList<SearchHit>()
-            var detail: String? = null
-            var answer: String? = null
+            var result: SearchResult? = null
             val status = try {
                 when {
                     !authorize(channel) -> if (blocked()) SearchStatus.STOPPED else SearchStatus.DENIED
@@ -226,11 +230,9 @@ internal class WebSearch(
                         else if (!stillAllowed()) SearchStatus.DENIED
                         else if (found == null) SearchStatus.TIMED_OUT
                         else {
-                            hits = found.hits.distinctBy { it.url }.take(SEARCH_LIMIT)
-                            detail = found.detail
-                            answer = found.answer
+                            result = SearchResult.from(found.hits, found.detail, found.answer)
                             found.status ?: when {
-                                hits.isNotEmpty() -> SearchStatus.FOUND
+                                result?.hits?.isNotEmpty() == true -> SearchStatus.FOUND
                                 found.reportedHits -> SearchStatus.INSUFFICIENT
                                 else -> SearchStatus.EMPTY
                             }
@@ -245,10 +247,10 @@ internal class WebSearch(
             } catch (_: Exception) {
                 SearchStatus.UNAVAILABLE
             }
-            val finished = entry.copy(status = status, count = hits.size)
-            val stored = withContext(NonCancellable) { save(finished, hits, detail, answer) }
+            val finished = entry.copy(status = status, count = result?.hits?.size ?: 0, result = result)
+            val stored = withContext(NonCancellable) { save(finished) }
             if (!stored) return SearchReply(SearchStatus.STORAGE_ERROR.label)
-            return resultReply(finished, hits, detail, answer)
+            return resultReply(finished)
         } finally {
             active.unlock()
         }
@@ -289,7 +291,7 @@ internal class WebSearch(
         if (initialized) return
         try {
             view.value = SearchView(entries = history.read().take(HISTORY_LIMIT).map {
-                if (it.status == SearchStatus.SEARCHING) it.copy(status = SearchStatus.STOPPED) else it
+                if (it.status == SearchStatus.SEARCHING) it.copy(status = SearchStatus.STOPPED, result = null) else it
             })
             initialized = true
         } catch (_: Exception) {
@@ -297,21 +299,16 @@ internal class WebSearch(
         }
     }
 
-    private suspend fun save(
-        entry: SearchEntry, hits: List<SearchHit> = emptyList(), detail: String? = null, answer: String? = null,
-    ): Boolean = updates.withLock {
+    private suspend fun save(entry: SearchEntry): Boolean = updates.withLock {
         load()
         if (!initialized) return@withLock false
-        val before = view.value
-        val next = (listOf(entry) + before.entries.filterNot { it.id == entry.id }).take(HISTORY_LIMIT)
-        val stored = runCatching { history.write(next) }.getOrDefault(false)
-        view.value = if (!stored) {
-            SearchView(storageError = true)
-        } else if (!entry.refresh && (hits.isNotEmpty() || detail != null || answer != null)) {
-            SearchView(next, entry.id, hits, detail = detail, answer = answer)
-        } else {
-            before.copy(entries = next, storageError = false)
+        val current = if (entry.refresh) entry.copy(result = null) else entry
+        val previous = view.value.entries.filterNot { it.id == entry.id }.map {
+            if (entry.refresh || it.result == null) it else it.copy(result = null)
         }
+        val next = (listOf(current) + previous).take(HISTORY_LIMIT)
+        val stored = runCatching { history.write(next) }.getOrDefault(false)
+        view.value = if (stored) SearchView(entries = next) else SearchView(storageError = true)
         if (!stored) initialized = false
         stored
     }
