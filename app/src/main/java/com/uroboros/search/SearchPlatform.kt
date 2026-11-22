@@ -16,6 +16,9 @@ import com.uroboros.move.MoveState
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import java.text.DateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -152,17 +155,19 @@ internal class SearchPlatform(
     }
 
     private suspend fun searchQuery(query: String, channel: SearchChannel, allowed: () -> Boolean): SearchPage {
-        var matches = lookup(query)
+        val request = PublicationQuery.parse(query)
+        val window = request.window
+        var matches = lookup(request.subject, window)
         var update: SearchPage? = null
-        if (allowed() && matches.needsRefresh) {
-            update = refresh(channel, matches.words.terms, allowed)
-            if (allowed()) matches = lookup(query)
+        if (allowed() && (window != null || matches.needsRefresh)) {
+            update = refresh(channel, matches.words.terms, allowed, window = window)
+            if (allowed()) matches = lookup(request.subject, window)
         }
-        if (matches.indexed.isEmpty() && matches.status.pages == 0 && update != null) return update
-        if (matches.indexed.isEmpty() && allowed()) {
-            val alternative = withTimeoutOrNull(10_000) { reader.alternative(query) }
+        if (window == null && matches.indexed.isEmpty() && matches.status.pages == 0 && update != null) return update
+        if (matches.indexed.isEmpty() && request.subject.isNotBlank() && allowed()) {
+            val alternative = withTimeoutOrNull(10_000) { reader.alternative(request.subject) }
             if (alternative != null && allowed()) {
-                val rewritten = lookup(alternative)
+                val rewritten = lookup(alternative, window)
                 if (rewritten.indexed.isNotEmpty()) matches = rewritten
             }
         }
@@ -170,17 +175,18 @@ internal class SearchPlatform(
         val updateNote = update?.detail?.let { note ->
             if (update.status == SearchStatus.DENIED) "${indexLine(matches.status)} $note" else note
         }
-        return answer(query, matches, updateNote)
+        return answer(query, matches, updateNote, window)
     }
 
     private suspend fun refresh(
         channel: SearchChannel, terms: List<String>, allowed: () -> Boolean, forceSeeds: Boolean = false,
+        window: PublicationWindow? = null,
     ): SearchPage {
         val request = ActionRequest(
             type = ActionType.NETWORK_CALL, requestedBy = "web-search/crawl/" + channel.name,
             provenance = ActionProvenance.USER, crossesDeviceBoundary = true, isReversible = false,
         )
-        return guardedRefresh(request, allowed) { crawler.refresh(terms, allowed, forceSeeds) }
+        return guardedRefresh(request, allowed) { crawler.refresh(terms, allowed, forceSeeds, window) }
     }
 
     private suspend fun guardedRefresh(
@@ -199,18 +205,22 @@ internal class SearchPlatform(
         val needsRefresh get() = indexed.firstOrNull()?.missingWords?.isNotEmpty() ?: true
     }
 
-    private fun lookup(query: String): Matches {
+    private fun lookup(query: String, window: PublicationWindow? = null): Matches {
         val status = index.status()
         if (status.pages > 0) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
         val words = SearchWords(query, LemmaHolder.loaded)
-        val indexed = if (status.pages == 0) emptyList() else index.find(words, SEARCH_LIMIT)
+        val indexed = if (status.pages == 0) emptyList() else index.find(words, SEARCH_LIMIT, window)
         return Matches(status, words, indexed)
     }
 
-    private suspend fun answer(query: String, matches: Matches, updateNote: String? = null): SearchPage {
+    private suspend fun answer(
+        query: String, matches: Matches, updateNote: String? = null, window: PublicationWindow? = null,
+    ): SearchPage {
         val sources = matches.indexed.mapNotNull { match ->
             val page = match.page
-            SearchHit.from(page.title, page.url, bestExcerpt(page, matches.words))?.let { it to match }
+            val date = page.publishedAt?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).format(DATE) }
+            val title = if (date == null) page.title else "$date · ${page.title}"
+            SearchHit.from(title, page.url, bestExcerpt(page, matches.words))?.let { it to match }
         }
         // Порядок чтения и нумерация выдачи совпадают, даже если часть страниц отфильтрована.
         val readable = sources.map { it.second.page }
@@ -220,6 +230,7 @@ internal class SearchPlatform(
         val missingWords = sources.firstOrNull()?.second?.missingWords.orEmpty()
         val detail = buildString {
             append(updateNote ?: "${indexLine(matches.status)} Поиск выполнен по локальному индексу.")
+            window?.let { append(" Период по датам публикаций в RSS и Atom — ${it.label}.") }
             if (missingWords.isNotEmpty()) {
                 append(" Совпадение частичное. На первой странице не найдены слова «")
                 append(missingWords.joinToString("», «"))
@@ -234,6 +245,7 @@ internal class SearchPlatform(
 
     companion object {
         private const val HISTORY = "history"
+        private val DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     }
 }
 

@@ -1,6 +1,7 @@
 package com.uroboros.search
 
 import java.io.IOException
+import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -49,6 +50,26 @@ class WebFeedTest {
         assertEquals(FeedArticle("$androidArticle-1", "Запись 1"), result.first())
         assertEquals(FeedArticle("$androidArticle-${FEED_ARTICLE_LIMIT}", "Запись $FEED_ARTICLE_LIMIT"), result.last())
         assertNull(CrawlSources.address(androidBlog.toString()))
+    }
+
+    @Test
+    fun datesUsePublicationTimeFromTheFeed() {
+        val rss = """
+            <rss><channel><item><title>Морская фауна</title><link>$scienceArticle</link>
+            <pubDate>Fri, 20 Nov 2026 18:46:00 +0300</pubDate></item></channel></rss>
+        """.trimIndent().toByteArray()
+        val atom = """
+            <feed><entry><title>Библиотека Android</title><link href="$androidArticle"/>
+              <published>2026-11-20T16:46:00+01:00</published><updated>2026-11-21T10:00:00Z</updated>
+            </entry><entry><title>Правка</title><link href="$androidArticle-update"/>
+              <updated>2026-11-21T10:00:00Z</updated>
+            </entry></feed>
+        """.trimIndent().toByteArray()
+        val expected = Instant.parse("2026-11-20T15:46:00Z").toEpochMilli()
+        assertEquals(expected, feedArticles(nPlusOne, rss).single().publishedAt)
+        val publications = feedArticles(androidBlog, atom)
+        assertEquals(expected, publications.first().publishedAt)
+        assertNull(publications.last().publishedAt)
     }
 
     @Test

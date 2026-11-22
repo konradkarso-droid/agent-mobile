@@ -1,6 +1,9 @@
 package com.uroboros.search
 
 import java.io.IOException
+import java.time.OffsetDateTime
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.jsoup.Jsoup
@@ -13,7 +16,7 @@ internal val webFeeds: List<HttpUrl> = listOf(
     "https://developer.android.com/blog/atom.xml".toHttpUrl(),
 )
 
-internal data class FeedArticle(val url: String, val title: String)
+internal data class FeedArticle(val url: String, val title: String, val publishedAt: Long? = null)
 internal data class FeedState(val due: Long = 0, val validators: PageValidators = PageValidators())
 internal data class FeedUpdate(val articles: List<FeedArticle>?, val validators: PageValidators)
 
@@ -43,7 +46,14 @@ internal fun feedArticles(feed: HttpUrl, body: ByteArray): List<FeedArticle> {
         val title = entry.childNamed("title")?.text().orEmpty()
             .filterNot { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }
             .take(160).trim()
-        FeedArticle(url.toString(), title)
+        val date = entry.childNamed(if (atom) "published" else "pubdate")?.text()
+        val publishedAt = date?.takeIf { it.length <= 80 }?.let {
+            runCatching {
+                if (atom) OffsetDateTime.parse(it).toInstant().toEpochMilli()
+                else ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
+            }.getOrNull()
+        }
+        FeedArticle(url.toString(), title, publishedAt)
     }.distinctBy { it.url }.take(FEED_ARTICLE_LIMIT).toList()
 }
 

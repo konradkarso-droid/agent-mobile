@@ -2,11 +2,12 @@ package com.uroboros.search
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.util.PriorityQueue
 
-internal data class IndexedPage(val url: String, val title: String, val text: String)
+internal data class IndexedPage(val url: String, val title: String, val text: String, val publishedAt: Long? = null)
 internal data class IndexedMatch(val page: IndexedPage, val missingWords: List<String>)
 internal data class IndexStatus(val pages: Int, val checkedAt: Long?)
 
@@ -16,7 +17,7 @@ internal data class IndexStatus(val pages: Int, val checkedAt: Long?)
  * Предел в байтах применяется к самой базе SQLite. Временные файлы SQLite
  * при записи могут занимать дополнительное место.
  */
-internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 3) {
+internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 4) {
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         if (!db.isReadOnly) db.setMaximumSize(100_000_000L)
@@ -25,7 +26,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE pages (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL, " +
-                "body TEXT NOT NULL, etag TEXT, last_modified TEXT)",
+                "body TEXT NOT NULL, etag TEXT, last_modified TEXT, published_at INTEGER)",
         )
         db.execSQL("CREATE VIRTUAL TABLE pages_fts USING fts4(title, body, content='pages', tokenize=unicode61)")
         db.execSQL("CREATE TABLE frontier (url TEXT PRIMARY KEY NOT NULL, due INTEGER NOT NULL)")
@@ -35,19 +36,26 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(newVersion == 3 && oldVersion in 1..2) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
+        check(newVersion == 4 && oldVersion in 1..3) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
         if (oldVersion == 1) {
             db.execSQL("ALTER TABLE pages ADD COLUMN etag TEXT")
             db.execSQL("ALTER TABLE pages ADD COLUMN last_modified TEXT")
         }
-        createFeedTables(db)
+        db.execSQL("ALTER TABLE pages ADD COLUMN published_at INTEGER")
+        if (oldVersion < 3) {
+            createFeedTables(db)
+        } else {
+            db.execSQL("ALTER TABLE feed_articles ADD COLUMN published_at INTEGER")
+            // Нужны тела лент, чтобы получить даты для уже известных статей.
+            db.execSQL("UPDATE feeds SET due = 0, etag = NULL, last_modified = NULL")
+        }
     }
 
     private fun createFeedTables(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE feeds (url TEXT PRIMARY KEY NOT NULL, due INTEGER NOT NULL, etag TEXT, last_modified TEXT)")
         db.execSQL(
             "CREATE TABLE feed_articles (feed TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, " +
-                "position INTEGER NOT NULL, PRIMARY KEY (feed, url))",
+                "position INTEGER NOT NULL, published_at INTEGER, PRIMARY KEY (feed, url))",
         )
     }
 
@@ -104,17 +112,21 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
                 put("url", article.url)
                 put("title", article.title)
                 put("position", position)
+                put("published_at", article.publishedAt)
             })
+            article.publishedAt?.let { published ->
+                db.execSQL("UPDATE pages SET published_at = ? WHERE url = ?", arrayOf(published, article.url))
+            }
         }
     }
 
     fun feedCandidates(now: Long): List<FeedArticle> = readableDatabase.rawQuery(
-        "SELECT a.url, a.title FROM feed_articles a LEFT JOIN frontier f ON a.url = f.url " +
+        "SELECT a.url, a.title, a.published_at FROM feed_articles a LEFT JOIN frontier f ON a.url = f.url " +
             "LEFT JOIN pages p ON a.url = p.url WHERE p.id IS NULL AND (f.due IS NULL OR f.due <= ?) " +
             "ORDER BY a.position, a.feed, a.url",
         arrayOf(now.toString()),
     ).use { rows ->
-        buildList { while (rows.moveToNext()) add(FeedArticle(rows.getString(0), rows.getString(1))) }
+        buildList { while (rows.moveToNext()) add(FeedArticle(rows.getString(0), rows.getString(1), rows.longOrNull(2))) }
     }
 
     fun queueFeedTargets(urls: List<String>, now: Long): List<String> {
@@ -152,6 +164,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         val checked = when (outcome) {
             is CrawlOutcome.Loaded -> {
                 val page = outcome.content.page
+                val published = publicationDate(db, outcome.url)
                 val oldId = removePage(db, outcome.url)
                 if (outcome.url != address) removePage(db, address)
                 if (page != null) {
@@ -160,6 +173,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
                         put("url", page.url)
                         put("title", page.title)
                         put("body", page.text)
+                        put("published_at", published)
                     })
                     db.execSQL("INSERT INTO pages_fts(docid, title, body) VALUES (?, ?, ?)", arrayOf(id, page.title, page.text))
                 }
@@ -198,32 +212,54 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         put("last_modified", modified)
     }
 
-    fun find(query: SearchWords, limit: Int): List<IndexedMatch> {
-        if (query.terms.isEmpty()) return emptyList()
+    fun find(query: SearchWords, limit: Int, window: PublicationWindow? = null): List<IndexedMatch> {
+        if (query.terms.isEmpty()) return if (window == null) emptyList() else recent(window, limit)
         val expression = query.terms.joinToString(" OR ") { term -> "\"$term\"" }
-        data class RankedPage(val id: Long, val score: MatchScore)
+        data class RankedPage(val id: Long, val score: MatchScore, val published: Long)
         val bestFirst = compareBy<RankedPage> { it.score.missingWords.size }
-            .thenByDescending { it.score.weight }.thenBy { it.id }
+            .thenByDescending { it.score.weight }.thenByDescending { it.published }.thenBy { it.id }
         val db = readableDatabase
-        val best = db.rawQuery(
-            "SELECT docid, matchinfo(pages_fts, 'pcx') FROM pages_fts WHERE pages_fts MATCH ?",
-            arrayOf(expression),
-        ).use { rows ->
+        val score = "matchinfo(pages_fts, 'pcx')"
+        val sql = if (window == null) {
+            "SELECT docid, $score, 0 FROM pages_fts WHERE pages_fts MATCH ?"
+        } else {
+            "SELECT pages_fts.docid, $score, p.published_at FROM pages_fts " +
+                "JOIN pages p ON p.id = pages_fts.docid WHERE pages_fts MATCH ? " +
+                "AND p.published_at >= ? AND p.published_at < ?"
+        }
+        val args = if (window == null) arrayOf(expression)
+            else arrayOf(expression, window.from.toString(), window.until.toString())
+        val best = db.rawQuery(sql, args).use { rows ->
             val ranked = PriorityQueue(bestFirst.reversed())
             while (rows.moveToNext()) {
-                ranked.add(RankedPage(rows.getLong(0), query.scoreIndexMatch(rows.getBlob(1))))
+                ranked.add(RankedPage(rows.getLong(0), query.scoreIndexMatch(rows.getBlob(1)), rows.getLong(2)))
                 if (ranked.size > limit) ranked.remove()
             }
             ranked.sortedWith(bestFirst)
         }
         return best.mapNotNull { (id, score) ->
-            db.rawQuery("SELECT url, title, body FROM pages WHERE id = ?", arrayOf(id.toString())).use { row ->
+            db.rawQuery("SELECT url, title, body, published_at FROM pages WHERE id = ?", arrayOf(id.toString())).use { row ->
                 if (!row.moveToFirst()) return@use null
-                val page = IndexedPage(row.getString(0), row.getString(1), row.getString(2))
-                IndexedMatch(page, score.missingWords)
+                IndexedMatch(row.page(), score.missingWords)
             }
         }
     }
+
+    private fun recent(window: PublicationWindow, limit: Int): List<IndexedMatch> = readableDatabase.rawQuery(
+        "SELECT url, title, body, published_at FROM pages WHERE published_at >= ? AND published_at < ? " +
+            "ORDER BY published_at DESC, id LIMIT ?",
+        arrayOf(window.from.toString(), window.until.toString(), limit.toString()),
+    ).use { rows -> buildList { while (rows.moveToNext()) add(IndexedMatch(rows.page(), emptyList())) } }
+
+    private fun publicationDate(db: SQLiteDatabase, url: String): Long? = db.rawQuery(
+        "SELECT published_at FROM pages WHERE url = ? AND published_at IS NOT NULL UNION ALL " +
+            "SELECT published_at FROM feed_articles WHERE url = ? AND published_at IS NOT NULL LIMIT 1",
+        arrayOf(url, url),
+    ).use { row -> if (row.moveToFirst()) row.getLong(0) else null }
+
+    private fun Cursor.longOrNull(column: Int) = if (isNull(column)) null else getLong(column)
+
+    private fun Cursor.page() = IndexedPage(getString(0), getString(1), getString(2), longOrNull(3))
 
     private fun removePage(db: SQLiteDatabase, url: String): Long? {
         val id = db.rawQuery("SELECT id FROM pages WHERE url = ?", arrayOf(url)).use {
