@@ -123,10 +123,8 @@ object BuildSelfDescription {
     const val CAN_LINE = "Сам я умею отвечать в разговоре и смотреть на свои приборы."
 
     const val WEB_SEARCH_LINE =
-        "Я умею искать в интернете по прямой просьбе владельца, например «поищи в интернете инструкцию». " +
-            "Приложение запускает поиск и показывает выдачу. Историю можно попросить словами «покажи историю поиска»."
-
-    const val WEB_SEARCH_NOT_CONFIGURED_LINE = "Веб-поиск сейчас не настроен."
+        "Я умею искать по своему индексу открытых сайтов в приложении и Telegram. " +
+            "Владелец может сказать «поищи в интернете…», «обнови источники» или «покажи историю поиска»."
 
     const val DEFERRED_ACTIONS_LINE =
         "Мои обещания видны на доске. Запуск поиска и отправка напоминаний на заданное время пока недоступны."
@@ -204,12 +202,10 @@ object BuildSelfDescription {
      *        сомнение решается в сторону молчания, потому что строка при
      *        выключенном запрете была бы ложью о себе.
      * @param telegram есть ли у агента ключ бота (см. «Телеграм» выше).
-     * @param webSearchConfigured задан ли ключ поисковика во вратах.
      */
     fun lines(
         scriptBanState: Int,
         telegram: Boolean = false,
-        webSearchConfigured: Boolean = false,
     ): List<String> = buildList {
         add(MEMORY_LINE)
         add(SYSTEM_NOTE_LINE)
@@ -219,7 +215,6 @@ object BuildSelfDescription {
         add(RECALL_LINE)
         add(CAN_LINE)
         add(WEB_SEARCH_LINE)
-        if (!webSearchConfigured) add(WEB_SEARCH_NOT_CONFIGURED_LINE)
         add(DEFERRED_ACTIONS_LINE)
         add(FIRST_LINE)
         add(SAVED_LINE)

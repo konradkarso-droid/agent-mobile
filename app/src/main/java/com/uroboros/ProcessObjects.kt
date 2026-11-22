@@ -13,6 +13,7 @@ import com.uroboros.memory.dream.SelfLine
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.HomeEventStore
 import com.uroboros.search.SearchPlatform
+import com.dark.gguf_lib.models.GenerationEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -85,7 +86,6 @@ object ProcessObjects {
 
     private fun create(app: Context): Held {
         val watchdog = DeviceSafetyWatchdog(app, processScope)
-        val search = SearchPlatform(app, watchdog, processScope)
         // Нажитое о себе для стены движок читает через эту функцию: слой памяти
         // знает, какие строки приняты, движок — только что их надо поставить.
         val stickers = MemoryDatabase.getInstance(app).stickerDao()
@@ -95,8 +95,26 @@ object ProcessObjects {
             // Строки о телеграме в стене стоят, пока лежит ключ бота (BuildSelfDescription).
             telegramOn = { File(app.filesDir, GateTokenStore.FILE_NAME).exists() },
             readPassport = { stickers.passportWall().let { BuildSelfDescription.PassportWall(it, Passport.hasName(it)) } },
-            webSearchConfigured = search::hasKey,
         )
+        val turns = ConversationTurns(llmEngine, JournalStore(app), processScope)
+        val search = SearchPlatform(app, watchdog, processScope) { instruction, material ->
+            if (!llmEngine.isLoaded) null else turns.aside {
+                val text = StringBuilder()
+                var done = false
+                var failed = false
+                llmEngine.generateConversationFlow(
+                    listOf("system" to instruction, "user" to material), maxTokens = 380,
+                ).collect { event ->
+                    when (event) {
+                        is GenerationEvent.Token -> text.append(event.text)
+                        is GenerationEvent.Error -> failed = true
+                        GenerationEvent.Done -> done = true
+                        else -> Unit
+                    }
+                }
+                text.toString().takeIf { done && !failed && it.isNotBlank() }
+            }
+        }
         // «Дом» (safety.HomeEvents): выход из нормы и обрыв сторожем пишутся на
         // диск, чтобы пережить кому, — о них агент потом расскажет фактом.
         val home = HomeEventStore(app)
@@ -109,7 +127,7 @@ object ProcessObjects {
             mediator = TrustedMediator(app),
             watchdog = watchdog,
             llmEngine = llmEngine,
-            turns = ConversationTurns(llmEngine, JournalStore(app), processScope),
+            turns = turns,
             search = search,
         )
     }

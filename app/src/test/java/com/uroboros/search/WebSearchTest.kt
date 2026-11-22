@@ -69,15 +69,19 @@ class WebSearchTest {
     }
 
     @Test
-    fun unconfiguredSearchShowsSetupOnlyToTheOwner() {
-        val entry = SearchEntry("id", "request", "пример", SearchChannel.APP, 0, SearchStatus.NOT_CONFIGURED)
-        val view = SearchView(entries = listOf(entry))
-
-        assertTrue(view.latestText().contains("ключ Brave Search во Вратах"))
-        assertTrue(view.historyText().contains("ключ Brave Search во Вратах"))
-        val note = view.conversationNote()!!
-        assertTrue(note.contains("веб-поиск не настроен"))
-        assertFalse(note.contains("Brave Search"))
+    fun generatedAnswerAndSourceTextStayOutsideSharedConversation() = runBlocking {
+        val store = Store()
+        val engine = engine(store) { SearchPage(listOf(sample), answer = "Проверенный ответ [1]") }
+        val reply = engine.search("пример", SearchChannel.TELEGRAM)
+        assertTrue(reply.text.contains("Проверенный ответ [1]"))
+        assertTrue(reply.text.contains(sample.url))
+        engine.search("Обновить источники", SearchChannel.TELEGRAM, refresh = true) {
+            SearchPage(emptyList(), status = SearchStatus.UPDATED, detail = "Обновление завершено")
+        }
+        assertEquals(reply.text, engine.snapshot().latestText())
+        assertFalse(engine.snapshot().conversationNote()!!.contains("Обновить источники"))
+        assertFalse(engine.snapshot().conversationNote()!!.contains("Проверенный ответ"))
+        assertFalse(store.rows.toString().contains("Проверенный ответ"))
     }
 
     @Test
@@ -169,6 +173,10 @@ class WebSearchTest {
         assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Покажи последний поиск"))
         assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю веб-поисков"))
         assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю поиска"))
+        assertEquals(SearchCommand.Find("как работает SQLite"), SearchCommand.fromOwnerWords("Поищи как работает SQLite"))
+        assertEquals(SearchCommand.Refresh, SearchCommand.fromOwnerWords("Обнови источники"))
+        assertEquals(SearchCommand.Refresh, SearchCommand.parse("/search_refresh@mybot", "MyBot"))
+        assertNull(SearchCommand.fromOwnerWords("Поищи в памяти обещание"))
     }
 
     @Test

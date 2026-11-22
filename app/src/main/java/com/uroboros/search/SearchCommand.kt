@@ -4,6 +4,7 @@ internal sealed interface SearchCommand {
     data class Find(val query: String) : SearchCommand
     data object Last : SearchCommand
     data object History : SearchCommand
+    data object Refresh : SearchCommand
     data object Deferred : SearchCommand
 
     companion object {
@@ -12,12 +13,13 @@ internal sealed interface SearchCommand {
         fun parse(text: String?, botName: String?): SearchCommand? {
             val words = text?.trim()?.split(Regex("\\s+"), limit = 2) ?: return null
             val name = words.first().substringBefore('@')
-            if (name !in setOf("/search", "/search_last", "/search_history")) return null
+            if (name !in setOf("/search", "/search_last", "/search_history", "/search_refresh")) return null
             val addressed = words.first().substringAfter('@', "")
             if ('@' in words.first() && (addressed.isEmpty() || !addressed.equals(botName, ignoreCase = true))) return null
             return when (name) {
                 "/search_last" -> Last
                 "/search_history" -> History
+                "/search_refresh" -> Refresh
                 else -> Find(words.getOrElse(1) { "" })
             }
         }
@@ -64,10 +66,22 @@ internal sealed interface SearchCommand {
             RegexOption.IGNORE_CASE,
         )
 
+        private val refreshRequest = Regex(
+            """^$ADDRESS(?:обнови(?:те)?|переобойди)\s+(?:источники(?:\s+(?:поиска|веб-поиска))?|(?:поисковый|локальный)\s+индекс)[.!?]*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val shortRequest = Regex(
+            """^${ADDRESS}поищи(?:те)?$POLITE$SEPARATOR(.+)$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val localObject = Regex("""^(?:(?:у\s+себя)|(?:в|по|на)\s+(?:(?:моих|наших|своих)\s+)?(?:памяти|разговор|чате|телефоне|журнале|истории|доске|запис|файл|интернете|сети))""", RegexOption.IGNORE_CASE)
+
         fun fromOwnerWords(text: String?): SearchCommand? {
             val phrase = text?.trim() ?: return null
             if (leadingDelay.containsMatchIn(phrase)) return Deferred
+            if (refreshRequest.matches(phrase)) return Refresh
             val query = webRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()
+                ?: shortRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()?.takeUnless(localObject::containsMatchIn)
             if (query != null && query.any { it.isLetterOrDigit() }) {
                 return if (trailingDelay.containsMatchIn(query)) Deferred else Find(query)
             }

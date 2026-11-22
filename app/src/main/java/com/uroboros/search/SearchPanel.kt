@@ -31,6 +31,7 @@ internal class SearchPanel(
             setPadding(inset, inset / 2, inset, inset)
             text = when (command) {
                 is SearchCommand.Find -> "Ищу…"
+                SearchCommand.Refresh -> "Обхожу источники…"
                 SearchCommand.Deferred -> SearchCommand.DEFERRED_MESSAGE
                 else -> "Читаю историю поиска…"
             }
@@ -46,8 +47,8 @@ internal class SearchPanel(
         }
         window.show()
         when (command) {
-            is SearchCommand.Find -> scope.launch {
-                val reply = search.fromApp(command.query)
+            is SearchCommand.Find, SearchCommand.Refresh -> scope.launch {
+                val reply = search.fromApp(command)
                 if (window.isShowing && !reply.duplicate) result.text = reply.text
             }
             SearchCommand.Last, SearchCommand.History -> observer = scope.launch {

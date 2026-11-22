@@ -22,18 +22,20 @@ internal enum class SearchChannel(val label: String) {
     APP("приложение"), TELEGRAM("Telegram"),
 }
 
-internal enum class SearchStatus(val label: String, val ownerLabel: String = label) {
-    SEARCHING("ищу"), FOUND("выдержки найдены"), EMPTY("нет результатов"),
+internal enum class SearchStatus(val label: String) {
+    SEARCHING("ищу"), FOUND("источники найдены"), EMPTY("в проиндексированных источниках совпадений нет"),
     INSUFFICIENT("выдержек недостаточно"),
-    NOT_CONFIGURED("веб-поиск не настроен", "нужен ключ Brave Search во Вратах"),
-    UNAVAILABLE("провайдер недоступен"), DENIED("сетевой запрос отклонён"),
+    NOT_CONFIGURED("прежний поиск не был настроен"),
+    INDEX_EMPTY("локальный индекс пуст"), UPDATED("обход завершён"),
+    CRAWL_FAILED("источники не удалось обновить"),
+    UNAVAILABLE("локальный поиск недоступен"), DENIED("сетевой запрос отклонён"),
     STOPPED("поиск остановлен"), TIMED_OUT("истекло время поиска"),
     STORAGE_ERROR("история поиска недоступна"), BUSY("уже идёт другой поиск"),
     INVALID("нужна непустая поисковая фраза до $MAX_QUERY_LENGTH знаков"),
 }
 
 internal const val MAX_QUERY_LENGTH = 300
-internal const val SEARCH_LIMIT = 5
+internal const val SEARCH_LIMIT = 4
 
 internal data class SearchEntry(
     val id: String,
@@ -43,12 +45,13 @@ internal data class SearchEntry(
     val at: Long,
     val status: SearchStatus,
     val count: Int = 0,
+    val refresh: Boolean = false,
 )
 
 internal data class SearchHit(val title: String, val url: String, val description: String) {
     companion object {
         fun from(title: String, url: String, description: String): SearchHit? {
-            if (url.length > 280) return null
+            if (url.length > 480) return null
             val address = runCatching { URI(url) }.getOrNull() ?: return null
             if (!address.scheme.equals("https", ignoreCase = true) || address.host == null ||
                 address.rawUserInfo != null || address.port !in listOf(-1, 443)
@@ -57,7 +60,7 @@ internal data class SearchHit(val title: String, val url: String, val descriptio
             val heading = plainText(title, 140).ifBlank { address.host }
             val snippet = plainText(description, 260)
             if (snippet.isBlank()) return null
-            return SearchHit(heading, address.toASCIIString().takeIf { it.length <= 280 } ?: return null, snippet)
+            return SearchHit(heading, address.toASCIIString().takeIf { it.length <= 480 } ?: return null, snippet)
         }
 
         private fun plainText(value: String, limit: Int): String = buildString {
@@ -79,25 +82,29 @@ internal data class SearchView(
     val resultId: String? = null,
     val hits: List<SearchHit> = emptyList(),
     val storageError: Boolean = false,
+    val detail: String? = null,
+    val answer: String? = null,
 ) {
     fun latestText(): String {
         if (storageError) return SearchStatus.STORAGE_ERROR.label
-        val entry = entries.firstOrNull() ?: return "Поисков ещё не было."
-        return resultText(entry, if (entry.id == resultId) hits else emptyList())
+        val entry = entries.firstOrNull { !it.refresh } ?: return "Поисков ещё не было."
+        return if (entry.id == resultId) resultText(entry, hits, detail, answer) else resultText(entry, emptyList())
     }
 
     fun historyText(): String {
-        if (entries.isEmpty() || storageError) return latestText()
-        return entries.take(5).joinToString("\n") {
-            "• " + it.timeLabel() + " · " + it.channel.label + " · «" + it.query + "» · " + it.status.ownerLabel
+        val searches = entries.filterNot { it.refresh }
+        if (searches.isEmpty() || storageError) return latestText()
+        return searches.take(5).joinToString("\n") {
+            "• " + it.timeLabel() + " · " + it.channel.label + " · «" + it.query + "» · " + it.status.label
         }
     }
 
     /** Только сведения о действии. Выдержки и ссылки в обычный ход не передаются. */
     fun conversationNote(): String? {
         if (storageError) return SearchStatus.STORAGE_ERROR.label + "."
-        if (entries.isEmpty()) return null
-        return entries.distinctBy { it.channel }.joinToString("\n") { entry ->
+        val searches = entries.filterNot { it.refresh }
+        if (searches.isEmpty()) return null
+        return searches.distinctBy { it.channel }.joinToString("\n") { entry ->
             "Последний веб-поиск владельца (" + entry.timeLabel() + ", " + entry.channel.label + "): «" +
                 entry.query.replace("]", "］").replace("»", "›") +
                 "» — " + entry.status.label + (if (entry.count > 0) ", источников: " + entry.count else "") + "."
@@ -110,13 +117,17 @@ private fun SearchEntry.timeLabel(): String =
 
 internal data class SearchReply(val text: String, val duplicate: Boolean = false)
 
-private fun resultText(entry: SearchEntry, hits: List<SearchHit>): String = buildString {
-    appendLine("«" + entry.query + "» · " + entry.channel.label + " · " + entry.status.ownerLabel)
+private fun resultText(
+    entry: SearchEntry, hits: List<SearchHit>, detail: String? = null, answer: String? = null,
+): String = buildString {
+    appendLine("«" + entry.query + "» · " + entry.channel.label + " · " + entry.status.label)
+    detail?.let { appendLine(it) }
+    answer?.let { appendLine("\n$it") }
     if (hits.isNotEmpty()) {
-        appendLine("\nПо выдержкам из поиска")
+        appendLine(if (answer == null) "\nПо выдержкам из поиска" else "\nИсточники")
         hits.forEachIndexed { index, hit ->
             appendLine("\n" + (index + 1) + ". " + hit.title)
-            appendLine(hit.description)
+            if (answer == null) appendLine(hit.description)
             appendLine(hit.url)
         }
     } else if (entry.status == SearchStatus.FOUND) {
@@ -129,7 +140,13 @@ internal interface SearchHistory {
     fun write(entries: List<SearchEntry>): Boolean
 }
 
-internal data class SearchPage(val hits: List<SearchHit>, val reportedHits: Boolean = hits.isNotEmpty())
+internal data class SearchPage(
+    val hits: List<SearchHit>,
+    val reportedHits: Boolean = hits.isNotEmpty(),
+    val status: SearchStatus? = null,
+    val detail: String? = null,
+    val answer: String? = null,
+)
 
 internal fun interface SearchProvider {
     suspend fun search(query: String): SearchPage
@@ -147,6 +164,7 @@ internal class WebSearch(
     private val available: () -> Boolean,
     private val authorize: suspend (SearchChannel) -> Boolean,
     private val provider: SearchProvider,
+    private val requestTimeoutMs: Long = 15_000,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val active = Mutex()
@@ -163,6 +181,8 @@ internal class WebSearch(
         requestId: String = UUID.randomUUID().toString(),
         stillAllowed: () -> Boolean = { true },
         onAccepted: () -> Unit = {},
+        refresh: Boolean = false,
+        operation: (suspend () -> SearchPage)? = null,
     ): SearchReply {
         val phrase = query.trim()
         if (phrase.isEmpty() || phrase.length > MAX_QUERY_LENGTH ||
@@ -174,7 +194,7 @@ internal class WebSearch(
             return SearchReply(if (duplicate) "" else SearchStatus.BUSY.label, duplicate)
         }
         try {
-            val entry = SearchEntry(UUID.randomUUID().toString(), requestId, phrase, channel, now(), SearchStatus.SEARCHING)
+            val entry = SearchEntry(UUID.randomUUID().toString(), requestId, phrase, channel, now(), SearchStatus.SEARCHING, refresh = refresh)
             val previous = snapshot()
             if (previous.entries.any { it.channel == channel && it.requestId == requestId }) {
                 return SearchReply("", duplicate = true)
@@ -183,6 +203,8 @@ internal class WebSearch(
             onAccepted()
 
             var hits = emptyList<SearchHit>()
+            var detail: String? = null
+            var answer: String? = null
             val status = try {
                 when {
                     !authorize(channel) -> if (blocked()) SearchStatus.STOPPED else SearchStatus.DENIED
@@ -190,9 +212,9 @@ internal class WebSearch(
                     !stillAllowed() -> SearchStatus.DENIED
                     !available() -> SearchStatus.NOT_CONFIGURED
                     else -> {
-                        val found = withTimeoutOrNull(REQUEST_TIMEOUT_MS) {
+                        val found = withTimeoutOrNull(requestTimeoutMs) {
                             coroutineScope {
-                                val request = async { provider.search(phrase) }
+                                val request = async { operation?.invoke() ?: provider.search(phrase) }
                                 val stop = async { stopped.first { it } }
                                 try {
                                     select<SearchPage?> {
@@ -206,10 +228,13 @@ internal class WebSearch(
                             }
                         }
                         if (blocked()) SearchStatus.STOPPED
+                        else if (!stillAllowed()) SearchStatus.DENIED
                         else if (found == null) SearchStatus.TIMED_OUT
                         else {
                             hits = found.hits.distinctBy { it.url }.take(SEARCH_LIMIT)
-                            when {
+                            detail = found.detail
+                            answer = found.answer
+                            found.status ?: when {
                                 hits.isNotEmpty() -> SearchStatus.FOUND
                                 found.reportedHits -> SearchStatus.INSUFFICIENT
                                 else -> SearchStatus.EMPTY
@@ -226,9 +251,9 @@ internal class WebSearch(
                 SearchStatus.UNAVAILABLE
             }
             val finished = entry.copy(status = status, count = hits.size)
-            val stored = withContext(NonCancellable) { save(finished, hits) }
+            val stored = withContext(NonCancellable) { save(finished, hits, detail, answer) }
             if (!stored) return SearchReply(SearchStatus.STORAGE_ERROR.label)
-            return SearchReply(resultText(finished, hits))
+            return SearchReply(resultText(finished, hits, detail, answer))
         } finally {
             active.unlock()
         }
@@ -246,7 +271,9 @@ internal class WebSearch(
         }
     }
 
-    private suspend fun save(entry: SearchEntry, hits: List<SearchHit> = emptyList()): Boolean = updates.withLock {
+    private suspend fun save(
+        entry: SearchEntry, hits: List<SearchHit> = emptyList(), detail: String? = null, answer: String? = null,
+    ): Boolean = updates.withLock {
         load()
         if (!initialized) return@withLock false
         val before = view.value
@@ -254,8 +281,8 @@ internal class WebSearch(
         val stored = runCatching { history.write(next) }.getOrDefault(false)
         view.value = if (!stored) {
             SearchView(storageError = true)
-        } else if (hits.isNotEmpty()) {
-            SearchView(next, entry.id, hits)
+        } else if (!entry.refresh && (hits.isNotEmpty() || detail != null || answer != null)) {
+            SearchView(next, entry.id, hits, detail = detail, answer = answer)
         } else {
             before.copy(entries = next, storageError = false)
         }
@@ -267,6 +294,5 @@ internal class WebSearch(
 
     companion object {
         private const val HISTORY_LIMIT = 24
-        private const val REQUEST_TIMEOUT_MS = 15_000L
     }
 }

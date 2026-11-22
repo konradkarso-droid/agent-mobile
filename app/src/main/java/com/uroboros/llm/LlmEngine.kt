@@ -198,7 +198,6 @@ class LlmEngine(
      * Приходит снаружи, как [readLearned]; читается теми же путями (см. [passport]).
      */
     private val readPassport: suspend () -> BuildSelfDescription.PassportWall = { BuildSelfDescription.PassportWall() },
-    private val webSearchConfigured: () -> Boolean = { false },
 ) {
 
     private val engine = GGMLEngine()
@@ -1086,11 +1085,9 @@ class LlmEngine(
         }
     }
 
-    /** Сбой чтения настройки трактуется как отсутствие ключа. */
     private fun buildLinesFor(scriptBanState: Int): List<String> = BuildSelfDescription.lines(
         scriptBanState,
         telegram = runCatching(telegramOn).getOrDefault(false),
-        webSearchConfigured = runCatching(webSearchConfigured).getOrDefault(false),
     )
 
     /**

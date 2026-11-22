@@ -4,11 +4,9 @@ import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
-import android.text.InputFilter
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -24,7 +22,6 @@ import com.uroboros.gate.store.GateTokenStore
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.move.MoveCode
 import com.uroboros.move.MoveRunner
-import com.uroboros.search.MAX_SEARCH_KEY_LENGTH
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -52,7 +49,6 @@ class GateActivity : AppCompatActivity() {
     private lateinit var statusView: TextView
     private lateinit var linesView: TextView
     private lateinit var moveRow: LinearLayout
-    private var searchKeyWindow: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,7 +84,6 @@ class GateActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
-        searchKeyWindow?.dismiss()
         super.onStop()
         lock.onScreenLeft()
     }
@@ -121,7 +116,7 @@ class GateActivity : AppCompatActivity() {
         }
         val top = LinearLayout(this).apply { gravity = Gravity.END }
         top.addView(topButton("Отвечать") { consentDialog() })
-        top.addView(topButton("Ключи") { keysDialog() })
+        top.addView(topButton("Ключи") { tokenDialog() })
         root.addView(top)
         val top2 = LinearLayout(this).apply { gravity = Gravity.END }
         top2.addView(topButton("Имена") { namesDialog() })
@@ -251,61 +246,6 @@ class GateActivity : AppCompatActivity() {
             .setPositiveButton("Сохранить") { _, _ -> ChatPrefs.setNames(this, field.text.toString()); ChatLink.refresh(this) }
             .setNegativeButton("Отмена", null)
             .show()
-    }
-
-    private fun keysDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("Ключи врат")
-            .setItems(arrayOf("Токен Telegram", "Ключ Brave Search")) { _, index ->
-                if (index == 0) tokenDialog() else searchKeyDialog()
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    private fun searchKeyDialog() {
-        val objects = ProcessObjects.get(applicationContext)
-        val input = EditText(this).apply {
-            hint = "Ключ Brave Search API"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            filters = arrayOf(InputFilter.LengthFilter(MAX_SEARCH_KEY_LENGTH))
-            setSingleLine()
-        }
-        val state = if (objects.search.hasKey()) "Ключ задан." else "Ключ ещё не задан."
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Ключ Brave Search")
-            .setMessage("$state Настройка общая для приложения и Telegram. Поисковику передаётся поисковая фраза.")
-            .setView(input)
-            .setPositiveButton("Сохранить", null)
-            .setNeutralButton("Стереть", null)
-            .setNegativeButton("Отмена", null)
-            .create()
-        searchKeyWindow = dialog
-        dialog.setOnDismissListener { if (searchKeyWindow === dialog) searchKeyWindow = null }
-        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        dialog.show()
-        val save = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-        val clear = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
-        fun change(value: String) {
-            save.isEnabled = false
-            clear.isEnabled = false
-            lifecycleScope.launch {
-                if (objects.search.changeKey(value)) {
-                    objects.llmEngine.refreshBuildLines()
-                    statusView.append(if (value.isEmpty()) "\nКлюч поиска стёрт." else "\nКлюч поиска сохранён.")
-                    dialog.dismiss()
-                } else if (dialog.isShowing) {
-                    input.error = "Ключ поиска не удалось изменить"
-                    save.isEnabled = true
-                    clear.isEnabled = true
-                }
-            }
-        }
-        save.setOnClickListener {
-            val value = input.text.toString().trim()
-            if (value.isEmpty()) input.error = "Введите ключ" else change(value)
-        }
-        clear.setOnClickListener { change("") }
     }
 
     /** Ввод токена: поле скрыто, как пароль; токен никуда, кроме хранилища, не идёт. */

@@ -381,8 +381,8 @@ object ChatLink {
                 }
                 val search = ProcessObjects.get(app).search
                 val reply = when (command) {
-                    is SearchCommand.Find -> search.fromTelegram(
-                        command.query,
+                    is SearchCommand.Find, SearchCommand.Refresh -> search.fromTelegram(
+                        command,
                         bot.id.toString() + ":" + m.chatId + ":" + m.messageId,
                         stillOwner = ::ownerAllowed,
                         onAccepted = { accepted.complete(Unit) },
