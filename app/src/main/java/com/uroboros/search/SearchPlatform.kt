@@ -82,10 +82,21 @@ internal class SearchPlatform(
         requestTimeoutMs = 125_000,
     )
 
-    val state get() = engine.state
-
-    suspend fun fromApp(command: SearchCommand): SearchReply =
-        processScope.async(Dispatchers.IO) { perform(command, SearchChannel.APP) }.await()
+    suspend fun fromApp(
+        command: SearchCommand,
+        ownerPresent: () -> Boolean = { false },
+        onReply: ((SearchReply) -> Unit)? = null,
+    ): SearchReply = processScope.async(Dispatchers.IO) {
+        val reply = when (command) {
+            is SearchCommand.Find, SearchCommand.Refresh -> perform(command, SearchChannel.APP)
+            is SearchCommand.AutoRefresh -> autoRefreshCommand(command, ownerPresent)
+            SearchCommand.Last -> engine.snapshot().latestReply()
+            SearchCommand.History -> SearchReply(engine.snapshot().historyText())
+            SearchCommand.Deferred -> SearchReply(SearchCommand.DEFERRED_MESSAGE)
+        }
+        if (onReply != null) withContext(Dispatchers.Main.immediate) { onReply(reply) }
+        reply
+    }.await()
 
     suspend fun fromTelegram(
         command: SearchCommand,

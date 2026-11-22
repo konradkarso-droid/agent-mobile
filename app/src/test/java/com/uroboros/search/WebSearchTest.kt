@@ -46,9 +46,9 @@ class WebSearchTest {
         val shared = engine.snapshot()
         assertEquals(SearchChannel.TELEGRAM, shared.entries.single().channel)
         assertEquals(reply.text, shared.latestText())
-        assertTrue(shared.conversationNote()!!.contains("пример"))
-        assertFalse(shared.conversationNote()!!.contains(sample.description))
-        assertFalse(shared.conversationNote()!!.contains(sample.url))
+        assertTrue(shared.historyText().contains("пример"))
+        assertFalse(shared.historyText().contains(sample.description))
+        assertFalse(shared.historyText().contains(sample.url))
         assertFalse(store.rows.toString().contains(sample.description))
         assertFalse(store.rows.toString().contains(sample.url))
 
@@ -59,15 +59,14 @@ class WebSearchTest {
     }
 
     @Test
-    fun conversationCanSeeTheLastSearchFromEachChannel() = runBlocking {
+    fun historyShowsSearchesFromBothChannels() = runBlocking {
         val engine = engine { SearchPage(listOf(sample)) }
         engine.search("из Telegram", SearchChannel.TELEGRAM)
         engine.search("первый из приложения", SearchChannel.APP)
         engine.search("последний из приложения", SearchChannel.APP)
-        val text = engine.snapshot().conversationNote()!!
+        val text = engine.snapshot().historyText()
         assertTrue(text.contains("из Telegram"))
         assertTrue(text.contains("последний из приложения"))
-        assertFalse(text.contains("первый из приложения"))
         assertFalse(text.contains(sample.description))
     }
 
@@ -81,9 +80,13 @@ class WebSearchTest {
         engine.search("Обновить источники", SearchChannel.TELEGRAM, refresh = true) {
             SearchPage(emptyList(), status = SearchStatus.UPDATED, detail = "Обновление завершено")
         }
-        assertEquals(reply.text, engine.snapshot().latestText())
-        assertFalse(engine.snapshot().conversationNote()!!.contains("Обновить источники"))
-        assertFalse(engine.snapshot().conversationNote()!!.contains("Проверенный ответ"))
+        val view = engine.snapshot()
+        assertEquals(reply, view.latestReply())
+        assertTrue(reply.chatText.startsWith("Проверенный ответ [1]"))
+        assertTrue(reply.chatText.contains(sample.url))
+        assertEquals(listOf(sample.url), reply.sourceUrls)
+        assertFalse(view.historyText().contains("Обновить источники"))
+        assertFalse(view.historyText().contains("Проверенный ответ"))
         assertFalse(store.rows.toString().contains("Проверенный ответ"))
     }
 
@@ -173,6 +176,10 @@ class WebSearchTest {
             SearchCommand.fromOwnerWords("Можешь посмотреть онлайн расписание?"),
         )
         assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Что ты нашёл в интернете?"))
+        assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Что нашлось?"))
+        assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("И что нашел?"))
+        assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Пришли ссылки на новости."))
+        assertNull(SearchCommand.fromOwnerWords("Что нашёл в памяти?"))
         assertEquals(SearchCommand.Last, SearchCommand.fromOwnerWords("Покажи последний поиск"))
         assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю веб-поисков"))
         assertEquals(SearchCommand.History, SearchCommand.fromOwnerWords("Покажи историю поиска"))

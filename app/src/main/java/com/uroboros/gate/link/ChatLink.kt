@@ -387,14 +387,15 @@ object ChatLink {
                         stillOwner = ::ownerAllowed,
                         onAccepted = { accepted.complete(Unit) },
                     )
-                    SearchCommand.Last -> SearchReply(search.snapshot().latestText())
+                    SearchCommand.Last -> search.snapshot().latestReply()
                     SearchCommand.History -> SearchReply(search.snapshot().historyText())
                     is SearchCommand.AutoRefresh -> search.autoRefreshCommand(command, stillAllowed = ::ownerAllowed)
                     SearchCommand.Deferred -> SearchReply(SearchCommand.DEFERRED_MESSAGE)
                 }
                 if (!reply.duplicate && ownerAllowed()) {
+                    val text = reply.text.take(GateBotApi.TEXT_LIMIT).trimEnd { it.isWhitespace() || it.isHighSurrogate() }
                     val sent = sendReply(
-                        app, m.chatId, reply.text, m.messageId, null, ActionProvenance.CODE,
+                        app, m.chatId, text, m.messageId, null, ActionProvenance.CODE,
                         disablePreview = true, stillAllowed = { ownerAllowed() && ChatPrefs.consent(app) != null },
                     )
                     sent.failure?.let { GateLink.note("Веб-поиск: ответ не отправлен — $it") }
@@ -759,9 +760,7 @@ object ChatLink {
         val cross = crossFor(app, job, owner, upTo.last().at, dictionary, agentNames, installedAt)
         // Заявки прошлого ответа без опоры — последней строкой хвоста, ближе к реплике.
         val claimNote = claims.found?.let { SelfClaim.note(it) }
-        val searchNote = if (job.place == Place.DIRECT && owner?.key == job.sender)
-            ProcessObjects.get(app).search.snapshot().conversationNote() else null
-        val tailBlock = listOfNotNull(cross.first, searchNote, tail?.let(ChatThread::tailText), insist, promisedText, claimNote).joinToString("\n")
+        val tailBlock = listOfNotNull(cross.first, tail?.let(ChatThread::tailText), insist, promisedText, claimNote).joinToString("\n")
         threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm, previous = previous) +
             " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body · ${cross.second}"
 
