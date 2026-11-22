@@ -4342,7 +4342,7 @@ class MainActivity : AppCompatActivity() {
         // Память, сторож и движок — одни на процесс, см. ProcessObjects. Экран,
         // созданный заново, получает те же объекты, а не заводит свои.
         processObjects = ProcessObjects.get(applicationContext)
-        searchPanel = SearchPanel(this, lifecycleScope, processObjects.search)
+        searchPanel = SearchPanel(this, lifecycleScope, processObjects.search) { presenceLock.isUnlocked }
         mediator = processObjects.mediator
         watchdog = processObjects.watchdog
         llmEngine = processObjects.llmEngine

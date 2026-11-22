@@ -1,5 +1,8 @@
 package com.uroboros.search
 
+import com.uroboros.memory.ActionGate
+import com.uroboros.memory.ActionType
+import com.uroboros.memory.GateResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
@@ -229,4 +232,67 @@ class WebSearchTest {
         assertFalse(SearchCommand.isOwnerDirect(true, "1", "1", false, true, false, false))
         assertFalse(SearchCommand.isOwnerDirect(true, "1", "1", false, false, true, false))
     }
+    @Test
+    fun backgroundRefreshSharesTheSearchLockAndStopsWithoutWritingHistory() = runBlocking {
+        val store = Store()
+        val engine = engine(store) { SearchPage(emptyList()) }
+        val started = CompletableDeferred<Unit>()
+        val stoppedRequest = CompletableDeferred<Unit>()
+        val background = async {
+            engine.background {
+                started.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    stoppedRequest.complete(Unit)
+                }
+            }
+        }
+        started.await()
+        assertEquals(SearchStatus.BUSY.label, engine.search("запрос", SearchChannel.APP).text)
+        stopped.value = true
+        assertEquals(SearchStatus.STOPPED, background.await().status)
+        stoppedRequest.await()
+        assertTrue(store.rows.isEmpty())
+        stopped.value = false
+        assertEquals(SearchStatus.UPDATED, engine.background {
+            SearchPage(emptyList(), status = SearchStatus.UPDATED)
+        }.status)
+        assertTrue(engine.snapshot().entries.isEmpty())
+    }
+
+    @Test
+    fun scheduledRefreshRequiresItsOwnStandingConsent() {
+        val now = 1_000L
+        val request = scheduledRefreshRequest()
+        val grant = grantScheduledRefresh(now)
+        assertEquals(GateResult.DENY, ActionGate.evaluate(request, now = now).result)
+        assertEquals(GateResult.ALLOW, ActionGate.evaluate(request, now = now, consent = grant).result)
+        assertEquals(GateResult.DENY, ActionGate.evaluate(
+            request.copy(requestedBy = "web-search/crawl/TELEGRAM"), now = now, consent = grant,
+        ).result)
+        assertEquals(GateResult.DENY, ActionGate.evaluate(
+            request.copy(type = ActionType.SEND_MESSAGE), now = now, consent = grant,
+        ).result)
+    }
+
+    @Test
+    fun automaticRefreshCommandsRequireUnambiguousOwnerWords() {
+        assertEquals(SearchCommand.AutoRefresh.Enable,
+            SearchCommand.fromOwnerWords("Уроборос, обновляй источники автоматически."))
+        assertEquals(SearchCommand.AutoRefresh.Disable,
+            SearchCommand.fromOwnerWords("Выключи автообновление источников"))
+        assertEquals(SearchCommand.AutoRefresh.Status,
+            SearchCommand.fromOwnerWords("Покажи статус автообновления"))
+        assertEquals(SearchCommand.AutoRefresh.Status,
+            SearchCommand.parse("/search_auto_status@mybot", "mybot"))
+        assertEquals(SearchCommand.AutoRefresh.Disable,
+            SearchCommand.parse("/search_auto_off", "mybot"))
+        assertNull(SearchCommand.parse("/search_auto_on@otherbot", "mybot"))
+        assertNull(SearchCommand.parse("/search_auto_on любое", "mybot"))
+        assertNull(SearchCommand.fromOwnerWords("«Обновляй источники автоматически»"))
+        assertNull(SearchCommand.fromOwnerWords("Не включай автообновление источников"))
+        assertNull(SearchCommand.fromOwnerWords("Он попросил включить автообновление источников"))
+    }
+
 }

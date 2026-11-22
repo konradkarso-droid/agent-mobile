@@ -22,11 +22,12 @@
     <!-- Подъём тела агента после перезагрузки телефона (BootReceiver). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Адреса держит код: api.telegram.org для Telegram, api.search.brave.com
-         для явного веб-поиска и частные адреса локальной сети для переезда
+    <!-- Адреса держит код: api.telegram.org для Telegram, разрешённые сайты
+         для веб-поиска и частные адреса локальной сети для переезда
          (move.Move). Android выдаёт право на сеть приложению целиком.
          Открытый HTTP выключен ниже (usesCleartextTraffic). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <queries>
         <package android:name="com.termux" />
@@ -70,6 +71,11 @@
         <service
             android:name=".will.TermuxResultService"
             android:exported="false" />
+
+        <service
+            android:name=".search.WebRefreshJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
 
         <!-- Тип specialUse обязателен только с Android 14: вычисление модели на
              устройстве не подходит ни под один из готовых типов. -->

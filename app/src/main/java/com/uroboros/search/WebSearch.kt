@@ -30,7 +30,7 @@ internal enum class SearchStatus(val label: String) {
     CRAWL_FAILED("источники не удалось обновить"),
     UNAVAILABLE("локальный поиск недоступен"), DENIED("сетевой запрос отклонён"),
     STOPPED("поиск остановлен"), TIMED_OUT("истекло время поиска"),
-    STORAGE_ERROR("история поиска недоступна"), BUSY("уже идёт другой поиск"),
+    STORAGE_ERROR("история поиска недоступна"), BUSY("уже идёт поиск или обновление источников"),
     INVALID("нужна непустая поисковая фраза до $MAX_QUERY_LENGTH знаков"),
 }
 
@@ -213,19 +213,7 @@ internal class WebSearch(
                     !available() -> SearchStatus.NOT_CONFIGURED
                     else -> {
                         val found = withTimeoutOrNull(requestTimeoutMs) {
-                            coroutineScope {
-                                val request = async { operation?.invoke() ?: provider.search(phrase) }
-                                val stop = async { stopped.first { it } }
-                                try {
-                                    select<SearchPage?> {
-                                        stop.onAwait { null }
-                                        request.onAwait { it }
-                                    } ?: throw SearchStopped()
-                                } finally {
-                                    request.cancel()
-                                    stop.cancel()
-                                }
-                            }
+                            untilStopped { operation?.invoke() ?: provider.search(phrase) }
                         }
                         if (blocked()) SearchStatus.STOPPED
                         else if (!stillAllowed()) SearchStatus.DENIED
@@ -256,6 +244,37 @@ internal class WebSearch(
             return SearchReply(resultText(finished, hits, detail, answer))
         } finally {
             active.unlock()
+        }
+    }
+
+    /** Одно общее окно для поиска и обхода, без записи фоновой работы в историю запросов. */
+    suspend fun background(operation: suspend () -> SearchPage): SearchPage {
+        if (!active.tryLock()) return SearchPage(emptyList(), status = SearchStatus.BUSY)
+        try {
+            if (blocked()) return SearchPage(emptyList(), status = SearchStatus.STOPPED)
+            return untilStopped(operation)
+        } catch (_: SearchStopped) {
+            return SearchPage(emptyList(), status = SearchStatus.STOPPED)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return SearchPage(emptyList(), status = SearchStatus.UNAVAILABLE)
+        } finally {
+            active.unlock()
+        }
+    }
+
+    private suspend fun untilStopped(operation: suspend () -> SearchPage): SearchPage = coroutineScope {
+        val request = async { operation() }
+        val stop = async { stopped.first { it } }
+        try {
+            select<SearchPage?> {
+                stop.onAwait { null }
+                request.onAwait { it }
+            } ?: throw SearchStopped()
+        } finally {
+            request.cancel()
+            stop.cancel()
         }
     }
 

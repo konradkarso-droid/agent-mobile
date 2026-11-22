@@ -13,6 +13,7 @@ internal class SearchPanel(
     private val context: Context,
     private val scope: CoroutineScope,
     private val search: SearchPlatform,
+    private val ownerPresent: () -> Boolean,
 ) {
     private var dialog: AlertDialog? = null
     private var observer: Job? = null
@@ -32,6 +33,7 @@ internal class SearchPanel(
             text = when (command) {
                 is SearchCommand.Find -> "Ищу…"
                 SearchCommand.Refresh -> "Обхожу источники…"
+                is SearchCommand.AutoRefresh -> "Проверяю автообновление…"
                 SearchCommand.Deferred -> SearchCommand.DEFERRED_MESSAGE
                 else -> "Читаю историю поиска…"
             }
@@ -50,6 +52,10 @@ internal class SearchPanel(
             is SearchCommand.Find, SearchCommand.Refresh -> scope.launch {
                 val reply = search.fromApp(command)
                 if (window.isShowing && !reply.duplicate) result.text = reply.text
+            }
+            is SearchCommand.AutoRefresh -> scope.launch {
+                val reply = search.autoRefreshCommand(command, ownerPresent)
+                if (window.isShowing) result.text = reply.text
             }
             SearchCommand.Last, SearchCommand.History -> observer = scope.launch {
                 search.snapshot()

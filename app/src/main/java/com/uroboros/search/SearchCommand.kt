@@ -7,20 +7,29 @@ internal sealed interface SearchCommand {
     data object Refresh : SearchCommand
     data object Deferred : SearchCommand
 
+    sealed interface AutoRefresh : SearchCommand {
+        data object Enable : AutoRefresh
+        data object Disable : AutoRefresh
+        data object Status : AutoRefresh
+    }
+
     companion object {
         const val DEFERRED_MESSAGE = "Веб-поиск по времени пока недоступен. Запрос в сеть не отправлен."
 
         fun parse(text: String?, botName: String?): SearchCommand? {
             val words = text?.trim()?.split(Regex("\\s+"), limit = 2) ?: return null
             val name = words.first().substringBefore('@')
-            if (name !in setOf("/search", "/search_last", "/search_history", "/search_refresh")) return null
             val addressed = words.first().substringAfter('@', "")
             if ('@' in words.first() && (addressed.isEmpty() || !addressed.equals(botName, ignoreCase = true))) return null
             return when (name) {
                 "/search_last" -> Last
                 "/search_history" -> History
                 "/search_refresh" -> Refresh
-                else -> Find(words.getOrElse(1) { "" })
+                "/search_auto_on" -> AutoRefresh.Enable.takeIf { words.size == 1 }
+                "/search_auto_off" -> AutoRefresh.Disable.takeIf { words.size == 1 }
+                "/search_auto_status" -> AutoRefresh.Status.takeIf { words.size == 1 }
+                "/search" -> Find(words.getOrElse(1) { "" })
+                else -> null
             }
         }
 
@@ -70,6 +79,18 @@ internal sealed interface SearchCommand {
             """^$ADDRESS(?:обнови(?:те)?|переобойди)\s+(?:источники(?:\s+(?:поиска|веб-поиска))?|(?:поисковый|локальный)\s+индекс)[.!?]*$""",
             RegexOption.IGNORE_CASE,
         )
+        private val enableAuto = Regex(
+            """^$ADDRESS(?:обновляй(?:те)?\s+источники\s+автоматически|включи(?:те)?\s+автообновление\s+источников)[.!?]*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val disableAuto = Regex(
+            """^$ADDRESS(?:выключи(?:те)?|отключи(?:те)?|останови(?:те)?)\s+автообновление\s+источников[.!?]*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val statusAuto = Regex(
+            """^$ADDRESS(?:покажи(?:те)?\s+)?статус\s+автообновления(?:\s+источников)?[.!?]*$""",
+            RegexOption.IGNORE_CASE,
+        )
         private val shortRequest = Regex(
             """^${ADDRESS}поищи(?:те)?$POLITE$SEPARATOR(.+)$""",
             RegexOption.IGNORE_CASE,
@@ -88,6 +109,9 @@ internal sealed interface SearchCommand {
             return when {
                 lastRequest.matches(phrase) -> Last
                 historyRequest.matches(phrase) -> History
+                enableAuto.matches(phrase) -> AutoRefresh.Enable
+                disableAuto.matches(phrase) -> AutoRefresh.Disable
+                statusAuto.matches(phrase) -> AutoRefresh.Status
                 else -> null
             }
         }

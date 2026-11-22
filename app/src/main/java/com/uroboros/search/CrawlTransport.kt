@@ -1,5 +1,7 @@
 package com.uroboros.search
 
+import android.net.Network
+
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.InetAddress
@@ -56,14 +58,16 @@ internal data class CrawlResponse(
 internal const val CRAWLER_NAME = "UroborosLocalSearch"
 
 /** Закрепляем проверку IP в том DNS, которым клиент устанавливает соединение. */
-internal class CrawlTransport {
+internal class CrawlTransport(network: Network? = null) {
     private val client = OkHttpClient.Builder()
+        .apply { network?.socketFactory?.let { socketFactory(it) } }
         .proxy(Proxy.NO_PROXY)
         .dns(object : Dns {
             override fun lookup(hostname: String): List<InetAddress> =
-                Dns.SYSTEM.lookup(hostname).filter(::isPublicWebAddress).ifEmpty {
-                    throw UnknownHostException("No public address for source")
-                }
+                (network?.getAllByName(hostname)?.toList() ?: Dns.SYSTEM.lookup(hostname))
+                    .filter(::isPublicWebAddress).ifEmpty {
+                        throw UnknownHostException("No public address for source")
+                    }
         })
         .followRedirects(false)
         .followSslRedirects(false)
