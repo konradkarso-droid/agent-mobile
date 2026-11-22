@@ -3,6 +3,7 @@ package com.dark.gguf_lib
 import com.dark.gguf_lib.models.EmbeddingCallback
 import com.dark.gguf_lib.models.StreamCallback
 import com.dark.gguf_lib.models.VlmPrewarmCallback
+import java.util.function.LongPredicate
 
 /**
  * Low-level JNI bridge to llama.cpp + tool-neuron engine helpers.
@@ -67,7 +68,9 @@ internal object GGUFNativeLib {
     external fun nativeSetRecordChunkDir(path: String, identity: String)
     external fun nativeBuildRecordChunks(linesJson: String, finish: Boolean): String
     external fun nativeGetLastConversationPrompt(): ByteArray
-    external fun nativeReadLayerMean(wall: String, head: String, tail: String, layer: Int): FloatArray
+    external fun nativeReadLayerMean(
+        wall: String, head: String, tail: String, layer: Int, stop: LongPredicate,
+    ): FloatArray
     external fun nativeGetLastReadWhy(): String
     external fun nativeSetLiveRead(layer: Int, segment: String)
     external fun nativeTakeLiveRead(): FloatArray

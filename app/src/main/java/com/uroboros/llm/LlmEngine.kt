@@ -16,6 +16,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.isActive
@@ -29,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import java.util.function.LongPredicate
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -550,9 +552,9 @@ class LlmEngine(
      * работу (по сути верно — потолок исчерпан у неё) и запишет обрыв концом
      * своего прогона.
      */
-    private fun barrierStopReason(zone: SafetyZone): GenerationEnd? = when {
+    private fun barrierStopReason(zone: SafetyZone, heldMs: Long? = null): GenerationEnd? = when {
         zone == SafetyZone.CRITICAL -> GenerationEnd.WATCHDOG_CRITICAL
-        DeviceSafetyWatchdog.shouldForceCooldown(engine.computeHeldMs()) -> GenerationEnd.WATCHDOG_TIMEOUT
+        DeviceSafetyWatchdog.shouldForceCooldown(heldMs ?: engine.computeHeldMs()) -> GenerationEnd.WATCHDOG_TIMEOUT
         else -> null
     }
 
@@ -2759,22 +2761,27 @@ class LlmEngine(
      * `state_read.h` в нативной части; зачем — у memory.judge.DirectJudge.
      *
      * Под тем же присмотром, что генерация и сборка кусков: занятость движка
-     * ([activity]) и сторож ([barrierStopReason]). Одно чтение короткое и
-     * внутри не прерывается, поэтому сторож спрашивается до него: в опасной
-     * зоне — или пока движок без перерыва занят чужой работой дольше потолка —
-     * чтение не начинается ([LayerRead.Stopped]).
+     * ([activity]) и сторож ([barrierStopReason]). Проверка до чтения,
+     * между пачками и перед выдачей результата. Нативный отсчёт начат после
+     * взятия замка этого чтения.
      *
      * После чтения разговор у движка необсчитан: следующий ход пойдёт со стены
      * с диска, как первый после загрузки.
      */
     suspend fun readLayerMean(wall: String, head: String, tail: String, layer: Int): LayerRead =
         withContext(Dispatchers.IO) {
-            barrierStopReason(watchdog.zone.value)?.let { return@withContext LayerRead.Stopped(it) }
+            barrierStopReason(watchdog.zone.value, heldMs = 0L)?.let { return@withContext LayerRead.Stopped(it) }
             activity.begin()
             try {
-                val mean = engine.readLayerMean(wall, head, tail, layer)
-                if (mean != null) LayerRead.Read(mean)
-                else LayerRead.Failed(engine.lastReadWhy().ifEmpty { "движок не назвал причину" })
+                var stop: GenerationEnd? = null
+                val mean = engine.readLayerMean(wall, head, tail, layer, LongPredicate { heldMs ->
+                    stop = barrierStopReason(watchdog.zone.value, heldMs)
+                    !isActive || stop != null
+                })
+                coroutineContext.ensureActive()
+                stop?.let { return@withContext LayerRead.Stopped(it) }
+                if (mean != null) LayerRead.Read(mean) else
+                    LayerRead.Failed(engine.lastReadWhy().ifEmpty { "движок не назвал причину" })
             } finally {
                 activity.end()
             }

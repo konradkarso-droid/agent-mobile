@@ -61,6 +61,7 @@ import com.uroboros.memory.dream.SelfGapReader
 import com.uroboros.memory.dream.SleepDecision
 import com.uroboros.memory.dream.SleepPressure
 import com.uroboros.memory.judge.JudgeLauncher
+import com.uroboros.memory.judge.JudgeRunStatus
 import com.uroboros.memory.judge.CourtScreen
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.safety.MemoryWatch
@@ -247,6 +248,7 @@ class AgentService : Service() {
 
     /** Почему самостоятельный прогон оборван не по своим причинам; null — не оборван. */
     private var stopNote: String? = null
+    private var judgeStartedAt: Long? = null
 
     /** Отчёт судьи идущего прогона; null — до судьи не дошло. Для строки конца ([SelfJudgeDecision.endHeadline]). */
     private var judgedReport: String? = null
@@ -306,6 +308,7 @@ class AgentService : Service() {
         AgentLife.recordStart(applicationContext)
         bodyStartedAt = System.currentTimeMillis()
         _alive.value = true
+        lastSelfJudge = JudgeRunStatus.line(applicationContext, running = false, clock = ::clock)
         // Счёт за сутки — с диска сразу: до первой проверки (через минуту)
         // шторка показывает его, а не «не прочитан».
         runCatching {
@@ -694,19 +697,20 @@ class AgentService : Service() {
         }
         modelUri ?: return
 
-        // Отпечаток грубый: число записей, последний номер, сколько на проверке
-        // и отвергнуто. Новая запись, выход из карантина и отказ его меняют;
-        // правка текста записи — нет, и тогда суд подождёт следующей перемены.
-        val records = MemoryDatabase.getInstance(applicationContext).stickerDao().getAll()
+        // Отпечаток состава очереди. Возврат пары из ручного суда снова
+        // разрешает проверку очереди даже без изменений самих записей.
+        val db = MemoryDatabase.getInstance(applicationContext)
+        val records = db.stickerDao().getAll()
         val memoryPrint = "${records.size}:${records.maxOfOrNull { it.id }}:" +
-            "${records.count { it.reviewPending }}:${records.count { it.rejectedAt != null }}"
+            "${records.count { it.reviewPending }}:${records.count { it.rejectedAt != null }}:" +
+            db.judgeTimeoutDao().held().joinToString { "${it.firstId}/${it.secondId}" }
         if (memoryPrint == nothingToJudgeAt) {
             showJudgeLine("Не сужу: судить нечего — память с прошлой проверки не менялась.")
             return
         }
         if (!JudgeLauncher(applicationContext, engine).hasPending(modelUri)) {
             nothingToJudgeAt = memoryPrint
-            showJudgeLine("Не сужу: судить нечего — все пары разобраны.")
+            showJudgeLine("Не сужу: в автоматической очереди новых пар нет.")
             return
         }
 
@@ -971,13 +975,15 @@ class AgentService : Service() {
         val running = job?.isActive == true
         when {
             intent?.action == ACTION_STOP ->
-                if (running) {
+                if (running && stopNote == null) {
+                    stopNote = "поступила команда остановки"
                     currentText = "Останавливаю разбор"
                     updateNotificationText()
                     job?.cancel()
                 }
             intent?.action == ACTION_YIELD ->
-                if (running) {
+                if (running && stopNote == null) {
+                    stopNote = "суд уступил разговору"
                     yielding = true
                     currentText = "Уступаю разговору"
                     updateNotificationText()
@@ -1051,6 +1057,8 @@ class AgentService : Service() {
             }
 
             val startedAt = System.currentTimeMillis()
+            judgeStartedAt = startedAt
+            JudgeRunStatus.start(applicationContext, startedAt)
             _state.value = RunState.Running(startedAt, done = 0, lastProgressAt = null, self = self)
             working = true
             // Экран суда — и самому суду, и ночи по кнопке (memory.judge.CourtScreen).
@@ -1063,15 +1071,18 @@ class AgentService : Service() {
             val unplugWatch = if (self) {
                 scope.launch {
                     objects.watchdog.power.first { !it.charging }
-                    stopNote = "сняли с зарядки"
-                    runner?.cancel()
+                    if (runner?.isActive == true && stopNote == null) {
+                        stopNote = "Android перестал сообщать о внешнем питании"
+                        runner.cancel()
+                    }
                 }
             } else {
                 null
             }
 
-            acquireWakeLock(budgetMs)
+            var restoreFailure: String? = null
             val report = try {
+                acquireWakeLock(budgetMs)
                 val nightLine = loadForNight()
                 val judged = JudgeLauncher(applicationContext, objects.llmEngine)
                     .runAndReport(modelIdentity, budgetMs) { done ->
@@ -1080,6 +1091,7 @@ class AgentService : Service() {
                         showProgress(startedAt, done, now)
                     }
                 judgedReport = judged
+                finishJudgeStatus(SelfJudgeDecision.endHeadline(judged, judged))
                 // Строка о себе — в ночи по кнопке после судьи (см. SelfLineStep);
                 // ночь без кнопки получает её заходом шагов (startNightSteps).
                 // Условия модели переспрашиваются перед вызовом: судья шёл
@@ -1155,17 +1167,38 @@ class AgentService : Service() {
                 }
                 listOfNotNull(nightLine, judged, selfLine, mirror, conclusions, dreamTopics, facts, aging, chunks).joinToString("\n\n")
             } catch (failed: NightLoadFailed) {
+                finishJudgeStatus(NIGHT_LOAD_FAILED)
                 NIGHT_LOAD_FAILED
             } catch (cancelled: CancellationException) {
-                STOPPED_REPORT
+                val reason = stopNote ?: "работа отменена"
+                val stopped = "Разбор остановлен: $reason. Разобранные пары сохранены."
+                finishJudgeStatus(stopped)
+                stopped
+            } catch (error: Exception) {
+                val detail = error.message?.take(160)?.let { " · $it" }.orEmpty()
+                val broken = "Сбой разбора: ${error.javaClass.simpleName}$detail"
+                finishJudgeStatus(broken)
+                broken
             } finally {
                 unplugWatch?.cancel()
                 stopCourtScreen()
-                backToDay()
-                releaseWakeLock()
+                try {
+                    backToDay()
+                } catch (error: Exception) {
+                    restoreFailure = "Сбой возврата к дневной модели: ${error.javaClass.simpleName}."
+                } finally {
+                    releaseWakeLock()
+                }
             }
-            end(listOfNotNull(dreamed, report).joinToString("\n\n"))
+            end(listOfNotNull(dreamed, report, restoreFailure).joinToString("\n\n"))
         }
+    }
+
+    private fun finishJudgeStatus(reason: String) {
+        val startedAt = judgeStartedAt ?: return
+        val inputs = ProcessObjects.get(applicationContext).watchdog.judgeEndReadings()
+        JudgeRunStatus.finish(applicationContext, startedAt, System.currentTimeMillis(), "$reason $inputs")
+        judgeStartedAt = null
     }
 
     /**
@@ -1270,8 +1303,7 @@ class AgentService : Service() {
             selfRun -> {
                 _state.value = RunState.Idle
                 restUntil = now + SelfJudgeDecision.REST_AFTER_RUN_MS
-                lastSelfJudge = "Судил сам, кончил в ${clock(now)}" +
-                    (stopNote?.let { " ($it)" } ?: "") + ": " + SelfJudgeDecision.endHeadline(judgedReport, report)
+                lastSelfJudge = "Судил сам, кончил в ${clock(now)}: " + SelfJudgeDecision.endHeadline(judgedReport, report)
             }
             else -> _state.value = RunState.Finished(report)
         }
@@ -1289,12 +1321,18 @@ class AgentService : Service() {
 
     override fun onDestroy() {
         _alive.value = false
+        val report = if (judgeStartedAt != null) {
+            "Служба завершилась во время суда. Разобранные пары сохранены."
+        } else {
+            STOPPED_REPORT
+        }
+        finishJudgeStatus(report)
         stopCourtScreen()
         releaseWakeLock()
         releaseTurnWakeLock()
         // Служба уходит посреди прогона (её остановила система): экран не должен
         // навсегда остаться со словами «разбор идёт».
-        if (_state.value is RunState.Running) _state.value = RunState.Finished(STOPPED_REPORT)
+        if (_state.value is RunState.Running) _state.value = RunState.Finished(report)
         scope.cancel()
         super.onDestroy()
     }

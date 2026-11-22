@@ -3815,12 +3815,21 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeBuildRecordChunks(
 // следующий ход разговора пойдёт как первый после загрузки — стена с диска,
 // остальное заново. Так же, как ход после ночи у модели с Mamba-слоями.
 //
-// ЧЕГО НЕ УМЕЕТ: остановка (nativeStopGeneration) одно чтение не прерывает —
-// оно короткое; зовущий сверяется со сторожем между чтениями.
+// Сторож проверяется на границе пачки и перед выдачей результата. Время
+// читается под GenHold, поэтому ожидание замка не включается в отсчёт.
 extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_dark_gguf_1lib_GGUFNativeLib_nativeReadLayerMean(
-        JNIEnv * env, jobject, jstring jwall, jstring jhead, jstring jtail, jint layer) {
+        JNIEnv * env, jobject, jstring jwall, jstring jhead, jstring jtail, jint layer, jobject guard) {
     GenHold hold;
+    const jmethodID check = env->GetMethodID(env->GetObjectClass(guard), "test", "(J)Z");
+    if (!check) return nullptr;
+    bool stopped = false;
+    const auto stop = [&]() {
+        if (stopped) return true;
+        const jlong elapsed = boottime_ms() - g_state.hold_since_ms.load();
+        stopped = env->CallBooleanMethod(guard, check, elapsed) || env->ExceptionCheck();
+        return stopped;
+    };
     auto str = [&](jstring j) {
         const char * c = env->GetStringUTFChars(j, nullptr);
         std::string v = c ? c : "";
@@ -3832,6 +3841,7 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeReadLayerMean(
         g_state.last_read_why = why;
         return env->NewFloatArray(0);
     };
+    if (stop()) return env->ExceptionCheck() ? nullptr : fail("чтение остановлено");
     if (!g_state.model || !g_state.ctx) return fail("модель не загружена");
     fit_threads_to_place(cpu_place_read());
 
@@ -3840,13 +3850,14 @@ Java_com_dark_gguf_1lib_GGUFNativeLib_nativeReadLayerMean(
     if (!cut.ok) return fail("граница отрезка сдвинута токенизатором");
 
     const state_read::Result r = state_read::read_mean(
-        g_state.ctx, g_state.read_hook, cut.head, cut.seg, (int)layer, (int)llama_n_batch(g_state.ctx));
+        g_state.ctx, g_state.read_hook, cut.head, cut.seg, (int)layer, (int)llama_n_batch(g_state.ctx), stop);
 
     llama_memory_clear(llama_get_memory(g_state.ctx), true);
     g_state.prev_prompt_tokens.clear();
     g_state.n_past = 0;
     g_state.n_system_tokens = 0;
 
+    if (stop()) return env->ExceptionCheck() ? nullptr : fail("чтение остановлено");
     if (r.mean.empty()) return fail(r.why);
     g_state.last_read_why.clear();
     jfloatArray out = env->NewFloatArray((jsize)r.mean.size());

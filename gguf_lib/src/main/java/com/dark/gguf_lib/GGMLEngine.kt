@@ -5,6 +5,7 @@ import android.net.Uri
 import com.dark.gguf_lib.models.DecodingMetrics
 import com.dark.gguf_lib.models.GenerationEvent
 import com.dark.gguf_lib.models.StreamCallback
+import java.util.function.LongPredicate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -568,8 +569,12 @@ class GGMLEngine {
      * считается необсчитанным. Что это и чего не умеет — у `state_read.h` и
      * `nativeReadLayerMean` в нативной части.
      */
-    fun readLayerMean(wall: String, head: String, tail: String, layer: Int): FloatArray? =
-        if (!loaded) null else GGUFNativeLib.nativeReadLayerMean(wall, head, tail, layer).takeIf { it.isNotEmpty() }
+    @JvmOverloads
+    fun readLayerMean(
+        wall: String, head: String, tail: String, layer: Int,
+        stop: LongPredicate = LongPredicate { false },
+    ): FloatArray? =
+        if (!loaded) null else GGUFNativeLib.nativeReadLayerMean(wall, head, tail, layer, stop).takeIf { it.isNotEmpty() }
 
     /** Почему последнее чтение слоя не удалось; пусто — удалось. */
     fun lastReadWhy(): String = if (!loaded) "модель не загружена" else GGUFNativeLib.nativeGetLastReadWhy()

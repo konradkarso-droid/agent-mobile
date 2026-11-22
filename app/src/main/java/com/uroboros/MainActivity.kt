@@ -80,6 +80,7 @@ import com.uroboros.memory.RejectPath
 import com.uroboros.memory.RequestCensus
 import com.uroboros.memory.dream.DreamTopic
 import com.uroboros.memory.judge.CourtScreen
+import com.uroboros.memory.judge.JudgeRunStatus
 import com.uroboros.memory.judge.SelfJudgeDecision
 import com.uroboros.memory.RetrievalPurpose
 import com.uroboros.memory.RiskTrigger
@@ -3359,6 +3360,9 @@ class MainActivity : AppCompatActivity() {
             StallWatch.meterLine(applicationContext),
             // Экран суда (memory.judge.CourtScreen) — ответ на простои при суде, самостоятельном и по кнопке.
             CourtScreen.line(AgentService.courtScreen.value, ::fmtMoment),
+            JudgeRunStatus.line(
+                applicationContext, AgentService.state.value is AgentService.RunState.Running, ::fmtMoment,
+            ).orEmpty(),
             MoveState.meterLine(applicationContext),
         )
         group(
@@ -6310,6 +6314,7 @@ class MainActivity : AppCompatActivity() {
                     is AgentService.RunState.Finished -> {
                         binding.textResults.text = st.report
                         AgentService.acknowledgeFinished()
+                        showJudgeReportPairs(st.report)
                     }
                     AgentService.RunState.Idle -> Unit
                 }
@@ -6339,6 +6344,18 @@ class MainActivity : AppCompatActivity() {
             setDetailsExpanded(false)
             AgentService.startJudge(applicationContext, modelIdentity(), JUDGE_BUDGET_MS)
             true
+        }
+    }
+
+    private suspend fun showJudgeReportPairs(report: String) {
+        val before = binding.textResults.text
+        val manual = judgeUi.manualSection {
+            lifecycleScope.launch {
+                if (binding.textResults.text.startsWith(report)) showJudgeReportPairs(report)
+            }
+        }
+        if (binding.textResults.text === before) {
+            binding.textResults.text = SpannableStringBuilder(report).append(manual)
         }
     }
 

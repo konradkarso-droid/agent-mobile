@@ -56,7 +56,8 @@ Split split(const llama_vocab * vocab, const std::string & wall, const std::stri
 }
 
 Result read_mean(llama_context * ctx, Hook & hook, const std::vector<llama_token> & head,
-                 const std::vector<llama_token> & seg, int layer, int n_batch) {
+                 const std::vector<llama_token> & seg, int layer, int n_batch,
+                 const std::function<bool()> & stop) {
     Result out;
     const llama_model * model = llama_get_model(ctx);
     const int n_layer = llama_model_n_layer(model);
@@ -81,12 +82,13 @@ Result read_mean(llama_context * ctx, Hook & hook, const std::vector<llama_token
     hook.bad_shape = false;
     hook.layer.store(layer);
     bool ok = true;
-    for (size_t i = 0; ok && i < all.size(); i += (size_t) n_batch) {
+    for (size_t i = 0; ok && i < all.size() && !stop(); i += (size_t) n_batch) {
         const int k = (int) std::min<size_t>((size_t) n_batch, all.size() - i);
         ok = llama_decode(ctx, llama_batch_get_one(all.data() + i, k)) == 0;
     }
     hook.layer.store(-1);
 
+    if (stop()) { out.why = "чтение остановлено"; return out; }
     if (!ok) { out.why = "сбой движка при обсчёте"; return out; }
     if (hook.bad_shape) { out.why = "выход слоя неожиданной формы"; return out; }
     if (hook.seen != (long) all.size() || hook.rows != (long) seg.size()) { out.why = "прочитаны не все токены отрезка"; return out; }
