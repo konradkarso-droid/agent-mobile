@@ -174,7 +174,7 @@ internal class SearchPlatform(
         var matches = lookup(query)
         var update: SearchPage? = null
         if (allowed() && matches.needsRefresh) {
-            update = refresh(channel, matches.terms, allowed)
+            update = refresh(channel, matches.words.terms, allowed)
             if (allowed()) matches = lookup(query)
         }
         if (matches.indexed.isEmpty() && matches.status.pages == 0 && update != null) return update
@@ -223,26 +223,28 @@ internal class SearchPlatform(
         return SearchPage(emptyList(), status = status, detail = "${indexLine(result.status)} $counts$feeds")
     }
 
-    private data class Matches(val status: IndexStatus, val terms: List<String>, val indexed: List<IndexedMatch>) {
+    private data class Matches(val status: IndexStatus, val words: SearchWords, val indexed: List<IndexedMatch>) {
         val needsRefresh get() = indexed.firstOrNull()?.missingWords?.isNotEmpty() ?: true
     }
 
     private fun lookup(query: String): Matches {
         val status = index.status()
         if (status.pages > 0) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
-        val parsed = FtsQuery(query, LemmaHolder.loaded)
-        val indexed = if (status.pages == 0) emptyList() else index.find(parsed, SEARCH_LIMIT)
-        return Matches(status, parsed.terms, indexed)
+        val words = SearchWords(query, LemmaHolder.loaded)
+        val indexed = if (status.pages == 0) emptyList() else index.find(words, SEARCH_LIMIT)
+        return Matches(status, words, indexed)
     }
 
     private suspend fun answer(query: String, matches: Matches, updateNote: String? = null): SearchPage {
         val sources = matches.indexed.mapNotNull { match ->
             val page = match.page
-            SearchHit.from(page.title, page.url, bestExcerpt(page, matches.terms))?.let { it to match }
+            SearchHit.from(page.title, page.url, bestExcerpt(page, matches.words))?.let { it to match }
         }
         // Порядок чтения и нумерация выдачи совпадают, даже если часть страниц отфильтрована.
         val readable = sources.map { it.second.page }
-        val answer = if (readable.isEmpty()) null else withTimeoutOrNull(75_000) { reader.answer(query, readable) }
+        val answer = if (readable.isEmpty()) null else withTimeoutOrNull(75_000) {
+            reader.answer(query, readable, matches.words)
+        }
         val missingWords = sources.firstOrNull()?.second?.missingWords.orEmpty()
         val detail = buildString {
             append(updateNote ?: indexLine(matches.status))

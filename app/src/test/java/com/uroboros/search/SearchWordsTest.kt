@@ -18,26 +18,39 @@ class SearchWordsTest {
 
     @Test
     fun russianFormsReportOneMissingWordAndDoNotMultiplyItsWeight() {
-        val query = FtsQuery("Копия фотографии фотография", dictionary)
+        val query = SearchWords("Копия фотографии фотография", dictionary)
         assertEquals(listOf("копия", "фотографии", "фотография", "фотографи*"), query.terms)
 
-        val oneForm = query.score(matchInfo(0 to 0, 3 to 0, 0 to 0, 0 to 0))
-        val twoForms = query.score(matchInfo(0 to 0, 3 to 0, 3 to 0, 3 to 0))
+        val oneForm = query.scoreIndexMatch(matchInfo(0 to 0, 3 to 0, 0 to 0, 0 to 0))
+        val twoForms = query.scoreIndexMatch(matchInfo(0 to 0, 3 to 0, 3 to 0, 3 to 0))
         assertEquals(listOf("копия"), twoForms.missingWords)
         assertEquals(oneForm, twoForms)
 
-        val wordsAcrossTitleAndBody = query.score(matchInfo(0 to 1, 0 to 0, 0 to 0, 1 to 0))
+        val wordsAcrossTitleAndBody = query.scoreIndexMatch(matchInfo(0 to 1, 0 to 0, 0 to 0, 1 to 0))
         assertTrue(wordsAcrossTitleAndBody.missingWords.isEmpty())
-        assertEquals(listOf("фотографии"), query.score(matchInfo(0 to 1, 0 to 0, 0 to 0, 0 to 0)).missingWords)
+        assertEquals(listOf("фотографии"),
+            query.scoreIndexMatch(matchInfo(0 to 1, 0 to 0, 0 to 0, 0 to 0)).missingWords)
     }
 
     @Test
     fun russianQuestionWordsPreserveTechnicalTargetsForTheSitemap() {
-        val query = FtsQuery("Можно ли использовать CSS Subgrid?")
+        val query = SearchWords("Можно ли использовать CSS Subgrid?")
         assertEquals(listOf("css", "subgrid"), sitemapTerms(query.terms))
-        val full = FtsQuery("Что такое CSS Subgrid?")
-        assertEquals(listOf("subgrid"), full.score(matchInfo(1 to 0, 0 to 0)).missingWords)
-        assertTrue(full.score(matchInfo(1 to 0, 0 to 1)).missingWords.isEmpty())
+        val full = SearchWords("Что такое CSS Subgrid?")
+        assertEquals(listOf("subgrid"), full.scoreIndexMatch(matchInfo(1 to 0, 0 to 0)).missingWords)
+        assertTrue(full.scoreIndexMatch(matchInfo(1 to 0, 0 to 1)).missingWords.isEmpty())
+    }
+
+    @Test
+    fun excerptCountsRussianFormsOnceAndMatchesWholeTechnicalTerms() {
+        val query = SearchWords("CSS фотографии", dictionary)
+        val unrelated = "В CSSOM нет разницы между метками «фотография» и «фотографии»."
+        val matching = "Для фотографий подходит сетка CSS."
+        val page = IndexedPage("https://developer.mozilla.org/en-US/docs/Web/CSS", "Сетка", "$unrelated\n$matching")
+
+        assertEquals(1, query.matchingGroups(unrelated).size)
+        assertEquals(2, query.matchingGroups(matching).size)
+        assertEquals(matching, bestExcerpt(page, query))
     }
 
     private fun matchInfo(vararg hits: Pair<Int, Int>): ByteArray {

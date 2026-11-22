@@ -34,12 +34,24 @@ private fun searchGroups(query: String, dictionary: LemmaDictionary?): List<Set<
 
 internal data class MatchScore(val missingWords: List<String>, val weight: Double)
 
-internal class FtsQuery(query: String, dictionary: LemmaDictionary? = null) {
+internal class SearchWords(query: String, dictionary: LemmaDictionary? = null) {
     private val groups = searchGroups(query, dictionary)
     val terms = groups.flatten().distinct()
     private val termGroups = terms.map { term -> groups.indices.filter { term in groups[it] } }
 
-    fun score(blob: ByteArray): MatchScore {
+    fun matchingGroups(text: String): Set<Int> {
+        val tokens = word.findAll(text.lowercase(Locale.ROOT)).map { it.value }.toSet()
+        return groups.indices.filterTo(mutableSetOf()) { group ->
+            groups[group].any { form ->
+                if (form.endsWith('*')) {
+                    val prefix = form.dropLast(1)
+                    tokens.any { it.startsWith(prefix) }
+                } else form in tokens
+            }
+        }
+    }
+
+    fun scoreIndexMatch(blob: ByteArray): MatchScore {
         val data = ByteBuffer.wrap(blob).order(ByteOrder.nativeOrder())
         val phrases = data.int
         val columns = data.int

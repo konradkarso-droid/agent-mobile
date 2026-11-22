@@ -73,6 +73,40 @@ class LocalWebSearchTest {
     }
 
     @Test
+    fun outlineIncludesALateSectionWithAMatchingHeadingAndShowsItsMatchingParagraph() = runBlocking {
+        val matching = "Копия фотографий сохраняется на отдельном носителе."
+        val body = buildString {
+            repeat(26) {
+                appendLine("# Отступление ${it + 1}")
+                appendLine("Копия карточки учёта хранится в архиве.")
+            }
+            appendLine("# Резервная копия")
+            appendLine("Вводный абзац.")
+            appendLine(matching)
+            appendLine("Заключительный абзац.")
+        }
+        val page = IndexedPage("https://ru.wikipedia.org/wiki/HTML", "Руководство", body)
+        val reader = PageReader { system, user ->
+            val input = JSONObject(user)
+            if (system.startsWith("Выбери")) {
+                val outline = input.getJSONArray("разделы")
+                val last = (0 until outline.length()).map(outline::getJSONObject)
+                    .single { it.getString("title") == "Резервная копия" }
+                assertTrue(last.getString("preview").contains(matching))
+                last.getInt("id").toString()
+            } else {
+                val source = input.getJSONArray("источники").getJSONObject(0)
+                assertEquals(1, source.getInt("source"))
+                assertTrue(source.getString("text").contains(matching))
+                "Фотографии сохраняют на отдельном носителе [1]."
+            }
+        }
+
+        assertEquals("Фотографии сохраняют на отдельном носителе [1].",
+            reader.answer("Резервная копия фотографии", listOf(page)))
+    }
+
+    @Test
     fun longPageIsReadInOrderWithSeveralModelCalls() = runBlocking {
         val body = (1..3).joinToString("\n") { "# Раздел $it\n" + "Текст $it. ".repeat(400) }
         val page = IndexedPage("https://ru.wikipedia.org/wiki/HTML", "Руководство", body)

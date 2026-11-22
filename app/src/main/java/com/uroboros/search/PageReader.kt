@@ -21,30 +21,13 @@ internal class PageReader(private val infer: suspend (String, String) -> String?
         }
     }
 
-    suspend fun answer(query: String, pages: List<IndexedPage>): String? {
+    suspend fun answer(query: String, pages: List<IndexedPage>, words: SearchWords = SearchWords(query)): String? {
         if (pages.isEmpty()) return null
         val sections = pages.flatMapIndexed { index, page -> sections(index + 1, page) }
-        val words = searchTerms(query)
         val wholePage = Regex("""всю (?:страниц[уы]|статью)|(?:прочитай|разбери) (?:е[её] )?(?:целиком|полностью)""", RegexOption.IGNORE_CASE)
             .containsMatchIn(query)
-        val ranked = sections.indices.sortedWith(
-            compareByDescending<Int> { relevance(sections[it].body, words) }.thenBy { it },
-        )
         val selected = if (wholePage) sections.filter { it.source == 1 } else {
-            // Ограничение карты относится к одному вызову модели, а не к размеру статьи.
-            val mapped = ranked.take(24).sorted()
-            val outline = JSONArray()
-            for (index in mapped) {
-                val section = sections[index]
-                val lines = section.body.lineSequence().filter { it.isNotBlank() }.toList()
-                outline.put(JSONObject().put("id", index + 1).put("source", section.source)
-                    .put("title", section.title.take(85))
-                    .put("preview", listOfNotNull(lines.firstOrNull()?.take(90), lines.lastOrNull()?.takeLast(65))
-                        .distinct().joinToString(" … ")))
-            }
-            val choice = infer(SELECT, request(query, "разделы", outline)) ?: return null
-            val numbers = parseSectionChoice(choice, mapped)
-            if (numbers.isEmpty()) ranked.take(3).sorted().map(sections::get) else numbers.map(sections::get)
+            selectSections(query, sections, words) ?: return null
         }
         if (selected.isEmpty()) return null
         val batches = readBatches(selected)
@@ -65,6 +48,41 @@ internal class PageReader(private val infer: suspend (String, String) -> String?
             }
         }
         return infer(SYNTHESIS, request(query, "заметки", JSONArray(evidence)))?.let(::cleanAnswer)
+    }
+
+    private suspend fun selectSections(query: String, sections: List<PageSection>, words: SearchWords): List<PageSection>? {
+        data class RankedSection(val index: Int, val coveredWords: Int, val bodyWords: Int)
+        val ranked = sections.mapIndexed { index, section ->
+            val title = words.matchingGroups(section.title)
+            val body = words.matchingGroups(section.body)
+            RankedSection(index, (title + body).size, body.size)
+        }.sortedWith(compareByDescending<RankedSection> { it.coveredWords }
+            .thenByDescending { it.bodyWords }.thenBy { it.index }).map { it.index }
+
+        // Сначала учитываем совпадения по всей статье. Модель получает обзор первых 24 разделов по совпадениям.
+        val mapped = ranked.take(24).sorted()
+        val outline = JSONArray()
+        for (index in mapped) {
+            val section = sections[index]
+            outline.put(JSONObject().put("id", index + 1).put("source", section.source)
+                .put("title", section.title.take(85)).put("preview", preview(section.body, words)))
+        }
+        val choice = infer(SELECT, request(query, "разделы", outline)) ?: return null
+        val numbers = parseSectionChoice(choice, mapped)
+        return (numbers.ifEmpty { ranked.take(3).sorted() }).map(sections::get)
+    }
+
+    private fun preview(body: String, words: SearchWords): String {
+        val lines = body.lineSequence().filter { it.isNotBlank() }.toList()
+        val best = lines.maxByOrNull { words.matchingGroups(it).size } ?: return ""
+        val first = lines.first()
+        val last = lines.last()
+        val parts = when (best) {
+            first -> listOf(first.take(90), last.takeLast(65))
+            last -> listOf(first.take(65), last.take(90))
+            else -> listOf(first.take(36), best.take(84), last.takeLast(36))
+        }
+        return parts.distinct().joinToString(" … ")
     }
 
     private fun sections(source: Int, page: IndexedPage): List<PageSection> = buildList {
@@ -145,12 +163,9 @@ internal fun parseSectionChoice(choice: String, allowed: List<Int>): List<Int> {
         .filter { it in allowed }.distinct().sorted()
 }
 
-internal fun bestExcerpt(page: IndexedPage, terms: List<String>): String =
+internal fun bestExcerpt(page: IndexedPage, words: SearchWords): String =
     page.text.lineSequence().filter { it.isNotBlank() && !it.startsWith("# ") }
-        .maxByOrNull { relevance(it, terms) } ?: page.text.lineSequence().firstOrNull().orEmpty().removePrefix("# ")
-
-private fun relevance(text: String, terms: List<String>): Int =
-    terms.count { text.contains(it.trimEnd('*'), ignoreCase = true) }
+        .maxByOrNull { words.matchingGroups(it).size } ?: page.text.lineSequence().firstOrNull().orEmpty().removePrefix("# ")
 
 private fun cleanAnswer(value: String): String? = value
     .replace(Regex("""(?i)\b(?:https?://|www\.)\S+"""), "")

@@ -198,7 +198,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         put("last_modified", modified)
     }
 
-    fun find(query: FtsQuery, limit: Int): List<IndexedMatch> {
+    fun find(query: SearchWords, limit: Int): List<IndexedMatch> {
         if (query.terms.isEmpty()) return emptyList()
         val expression = query.terms.joinToString(" OR ") { term -> "\"$term\"" }
         data class RankedPage(val id: Long, val score: MatchScore)
@@ -211,7 +211,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         ).use { rows ->
             val ranked = PriorityQueue(bestFirst.reversed())
             while (rows.moveToNext()) {
-                ranked.add(RankedPage(rows.getLong(0), query.score(rows.getBlob(1))))
+                ranked.add(RankedPage(rows.getLong(0), query.scoreIndexMatch(rows.getBlob(1))))
                 if (ranked.size > limit) ranked.remove()
             }
             ranked.sortedWith(bestFirst)
