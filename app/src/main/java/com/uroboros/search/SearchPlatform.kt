@@ -173,16 +173,16 @@ internal class SearchPlatform(
     private suspend fun searchQuery(query: String, channel: SearchChannel, allowed: () -> Boolean): SearchPage {
         var matches = lookup(query)
         var update: SearchPage? = null
-        if (allowed() && (matches.pages.isEmpty() || needsSitemapLookup(matches.pages, matches.terms))) {
+        if (allowed() && matches.needsRefresh) {
             update = refresh(channel, matches.terms, allowed)
             if (allowed()) matches = lookup(query)
         }
-        if (matches.pages.isEmpty() && matches.status.pages == 0 && update != null) return update
-        if (matches.pages.isEmpty() && allowed()) {
+        if (matches.indexed.isEmpty() && matches.status.pages == 0 && update != null) return update
+        if (matches.indexed.isEmpty() && allowed()) {
             val alternative = withTimeoutOrNull(10_000) { reader.alternative(query) }
             if (alternative != null && allowed()) {
                 val rewritten = lookup(alternative)
-                if (rewritten.pages.isNotEmpty()) matches = rewritten
+                if (rewritten.indexed.isNotEmpty()) matches = rewritten
             }
         }
         if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
@@ -223,26 +223,37 @@ internal class SearchPlatform(
         return SearchPage(emptyList(), status = status, detail = "${indexLine(result.status)} $counts$feeds")
     }
 
-    private data class Matches(val status: IndexStatus, val terms: List<String>, val pages: List<IndexedPage>)
+    private data class Matches(val status: IndexStatus, val terms: List<String>, val indexed: List<IndexedMatch>) {
+        val needsRefresh get() = indexed.firstOrNull()?.missingWords?.isNotEmpty() ?: true
+    }
 
     private fun lookup(query: String): Matches {
         val status = index.status()
         if (status.pages > 0) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
-        val terms = searchTerms(query, LemmaHolder.loaded)
-        val pages = if (status.pages == 0) emptyList() else index.find(terms, SEARCH_LIMIT)
-        return Matches(status, terms, pages)
+        val parsed = FtsQuery(query, LemmaHolder.loaded)
+        val indexed = if (status.pages == 0) emptyList() else index.find(parsed, SEARCH_LIMIT)
+        return Matches(status, parsed.terms, indexed)
     }
 
     private suspend fun answer(query: String, matches: Matches, updateNote: String? = null): SearchPage {
-        val hits = matches.pages.mapNotNull { page ->
-            SearchHit.from(page.title, page.url, bestExcerpt(page, matches.terms))
+        val sources = matches.indexed.mapNotNull { match ->
+            val page = match.page
+            SearchHit.from(page.title, page.url, bestExcerpt(page, matches.terms))?.let { it to match }
         }
-        val byUrl = matches.pages.associateBy { it.url }
         // Порядок чтения и нумерация выдачи совпадают, даже если часть страниц отфильтрована.
-        val readable = hits.mapNotNull { byUrl[it.url] }
+        val readable = sources.map { it.second.page }
         val answer = if (readable.isEmpty()) null else withTimeoutOrNull(75_000) { reader.answer(query, readable) }
-        return SearchPage(hits, answer = answer, detail = (updateNote ?: indexLine(matches.status)) +
-            if (hits.isNotEmpty() && answer == null) " Ниже найдённые выдержки." else "")
+        val missingWords = sources.firstOrNull()?.second?.missingWords.orEmpty()
+        val detail = buildString {
+            append(updateNote ?: indexLine(matches.status))
+            if (missingWords.isNotEmpty()) {
+                append(" Совпадение частичное. На первой странице не найдены слова «")
+                append(missingWords.joinToString("», «"))
+                append("».")
+            }
+            if (sources.isNotEmpty() && answer == null) append(" Ниже найдённые выдержки.")
+        }
+        return SearchPage(sources.map { it.first }, answer = answer, detail = detail)
     }
 
     private fun indexLine(status: IndexStatus): String {

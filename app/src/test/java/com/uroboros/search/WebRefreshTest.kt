@@ -5,7 +5,6 @@ import java.io.IOException
 import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -31,17 +30,6 @@ class WebRefreshTest {
 
         assertEquals(listOf(target, "https://developer.mozilla.org/en-US/docs/Web/CSS"),
             sitemapCandidates(zipped, listOf("css", "subgrid")))
-    }
-
-    @Test
-    fun partialLocalMatchStillMakesRoomForNewPages() {
-        val first = IndexedPage("https://developer.mozilla.org/en-US/docs/Web/CSS", "CSS", "Grid layout")
-        val specific = first.copy(text = "CSS supports Subgrid.")
-        val keys = searchTerms("Что такое CSS Subgrid?")
-        assertEquals(listOf("css", "subgrid"), sitemapTerms(keys))
-        assertTrue(needsSitemapLookup(listOf(first), keys))
-        assertFalse(needsSitemapLookup(listOf(first, specific), keys))
-        assertFalse(needsSitemapLookup(emptyList(), listOf("астрономия")))
     }
 
     @Test
