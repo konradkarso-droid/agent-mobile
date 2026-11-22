@@ -738,4 +738,30 @@ class ConversationJournalHiddenTest {
 
         assertTrue(journal.hidden().isEmpty())
     }
+
+    @Test
+    fun `веб ответ появляется на экране и не входит в запрос модели`() {
+        val journal = journalWithTwoTurns()
+        val before = journal.messagesFor("Как дела?")
+        val question = "Поищи новости"
+        val title = "Пересказ новости"
+        val link = "https://nplus1.ru/news/2026/11/22/news"
+        val pending = requireNotNull(journal.beginWebTurn(question, "Ищу в интернете…"))
+        assertEquals(pending, journal.pendingWeb)
+        assertEquals(null, journal.beginWebTurn("Другой поиск", "Ищу"))
+
+        journal.finishWebTurn(pending, "$title\n$link", listOf(link))
+        val visible = journal.screenTurns.value.single() as ConversationJournal.Web
+        assertEquals(2, visible.afterTurn)
+        assertEquals(question, visible.question)
+        assertEquals("$title\n$link", visible.answer)
+        assertEquals(listOf(link), visible.sourceUrls)
+        assertEquals(null, journal.pendingWeb)
+        assertEquals(before, journal.messagesFor("Как дела?"))
+        assertEquals(2, journal.history().size)
+
+        journal.dropLastWeb(visible)
+        assertTrue(journal.screenTurns.value.isEmpty())
+        assertEquals(2, journal.history().size)
+    }
 }

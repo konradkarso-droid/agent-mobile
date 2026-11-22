@@ -20,6 +20,7 @@ import android.text.style.ClickableSpan
 import android.text.style.LeadingMarginSpan
 import android.text.style.LineBackgroundSpan
 import android.text.style.StyleSpan
+import android.text.style.URLSpan
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -156,7 +157,6 @@ import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
 import com.uroboros.search.MAX_QUERY_LENGTH
 import com.uroboros.search.SearchCommand
-import com.uroboros.search.SearchPanel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -173,7 +173,6 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
-    private var searchPanel: SearchPanel? = null
     private lateinit var presenceLock: PresenceLock
     private lateinit var processObjects: ProcessObjects.Held
     private lateinit var mediator: TrustedMediator
@@ -1061,7 +1060,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        fun addTurn(question: String, answer: String?, turn: ConversationJournal.Turn?, index: Int) {
+        fun addTurn(
+            question: String, answer: String?, turn: ConversationJournal.Turn?, index: Int,
+            sourceUrls: List<String> = emptyList(),
+        ) {
             if (out.isNotEmpty()) out.append("\n\n")
             turnOffsets += out.length
             // Пустой вопрос — ход, начатый агентом (AgentService, «пишет
@@ -1081,22 +1083,39 @@ class MainActivity : AppCompatActivity() {
                 out.append("\n\n")
             }
             out.append("Агент: ")
-            if (answer != null) out.append(answer)
+            if (answer != null) {
+                val start = out.length
+                out.append(answer)
+                if (sourceUrls.isNotEmpty()) {
+                    var lineStart = start
+                    for (line in answer.lineSequence()) {
+                        if (line in sourceUrls) {
+                            out.setSpan(URLSpan(line), lineStart, lineStart + line.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        }
+                        lineStart += line.length + 1
+                    }
+                }
+            }
         }
 
         // Скрытые ходы (ConversationJournal.Hidden) встают на своё место среди
         // ходов ленты: вопрос и заглушка, без строки записей — записи этого
         // хода модели не ушли. Скрытый ход агента (пустой вопрос) не выводится:
         // заглушка без вопроса ничего бы не значила.
-        val hiddenByPlace = journal.hidden().filter { it.question.isNotEmpty() }.groupBy { it.afterTurn }
-        fun addHidden(afterTurn: Int) {
-            hiddenByPlace[afterTurn]?.forEach { addTurn(it.question, ConversationJournal.STUB, null, -1) }
+        val screenByPlace = journal.screenTurns.value.filter { it.question.isNotEmpty() }.groupBy { it.afterTurn }
+        fun addScreenTurns(afterTurn: Int) {
+            screenByPlace[afterTurn]?.forEach { row ->
+                when (row) {
+                    is ConversationJournal.Hidden -> addTurn(row.question, ConversationJournal.STUB, null, -1)
+                    is ConversationJournal.Web -> addTurn(row.question, row.answer, null, -1, row.sourceUrls)
+                }
+            }
         }
         journal.history().forEachIndexed { index, turn ->
-            addHidden(index)
+            addScreenTurns(index)
             addTurn(turn.question, turn.agentContent, turn, index)
         }
-        addHidden(journal.turnCount)
+        addScreenTurns(journal.turnCount)
         // У начатого хода записей ещё нет: они помечаются уложенными только
         // после того, как ответ получен.
         if (pendingQuestion != null) addTurn(pendingQuestion, null, null, -1)
@@ -2727,7 +2746,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderTurnNavVisibility() {
         // Считаются ходы на экране — вместе со скрытыми: прыжки и «Убрать ход»
         // работают по тому, что видно.
-        val turns = journal.turnCount + journal.hidden().count { it.question.isNotEmpty() }
+        val turns = journal.turnCount + journal.screenTurns.value.count { it.question.isNotEmpty() }
         val jumps = if (turns >= TURN_NAV_MIN_TURNS) View.VISIBLE else View.GONE
         binding.buttonTurnPrev.visibility = jumps
         binding.buttonTurnNext.visibility = jumps
@@ -3578,13 +3597,47 @@ class MainActivity : AppCompatActivity() {
         showProgress("Идёт генерация...")
     }
 
+    private var turnProgress: String? = null
+
     private fun showProgress(text: String?) {
+        turnProgress = text
+        renderProgress()
+    }
+
+    private fun renderProgress() {
+        val text = turnProgress ?: journal.pendingWeb?.progress
         if (text == null) {
             binding.textProgress.visibility = View.GONE
             binding.textProgress.text = ""
         } else {
             binding.textProgress.visibility = View.VISIBLE
             binding.textProgress.text = text
+        }
+    }
+
+    private fun submitWebSearch(command: SearchCommand, question: String) {
+        val progress = when (command) {
+            is SearchCommand.Find -> "Ищу в интернете…"
+            SearchCommand.Refresh -> "Обновляю источники…"
+            is SearchCommand.AutoRefresh -> "Проверяю автообновление…"
+            SearchCommand.Last -> "Читаю последний результат…"
+            SearchCommand.History -> "Читаю историю поиска…"
+            SearchCommand.Deferred -> "Проверяю поручение…"
+        }
+        val feed = journal
+        val turn = feed.beginWebTurn(question, progress) ?: return
+        setDetailsExpanded(false)
+        backToConversation()
+        renderProgress()
+        val ownerPresent: () -> Boolean = if (command == SearchCommand.AutoRefresh.Enable) {
+            { presenceLock.isUnlocked }
+        } else {
+            { false }
+        }
+        lifecycleScope.launch {
+            processObjects.search.fromApp(command, ownerPresent) { reply ->
+                feed.finishWebTurn(turn, reply.chatText, reply.sourceUrls)
+            }
         }
     }
 
@@ -4131,7 +4184,7 @@ class MainActivity : AppCompatActivity() {
      * молчанием.
      */
     private fun restartBlocked(): Boolean {
-        val busy = turns.busy.value ||
+        val busy = journal.pendingWeb != null || turns.busy.value ||
             (llmEngine.isLoaded && !binding.buttonSend.isEnabled)
         if (busy) Toast.makeText(this, "Идёт ход — начать заново можно, когда он кончится", Toast.LENGTH_SHORT).show()
         return busy
@@ -4181,12 +4234,25 @@ class MainActivity : AppCompatActivity() {
      * в этот момент значит отрезать не тот ход.
      */
     private fun showDropTurnDialog() {
-        if (!binding.buttonSend.isEnabled) return
+        if (!binding.buttonSend.isEnabled || journal.pendingWeb != null) return
         // Последним на экране стоит скрытый ход — убирается он, а не ход
         // ленты перед ним.
-        journal.hidden().lastOrNull()?.takeIf { it.afterTurn == journal.turnCount && it.question.isNotEmpty() }?.let {
-            showDropHiddenDialog(it)
-            return
+        val screenTurn = journal.screenTurns.value.lastOrNull()
+            ?.takeIf { it.afterTurn == journal.turnCount && it.question.isNotEmpty() }
+        when (screenTurn) {
+            is ConversationJournal.Hidden -> {
+                showDropHiddenDialog(screenTurn)
+                return
+            }
+            is ConversationJournal.Web -> {
+                AlertDialog.Builder(this)
+                    .setTitle("Убрать результат поиска из ленты?")
+                    .setPositiveButton("Убрать") { _, _ -> journal.dropLastWeb(screenTurn) }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+                return
+            }
+            null -> Unit
         }
         val last = journal.history().lastOrNull() ?: return
         val index = journal.turnCount - 1
@@ -4342,7 +4408,6 @@ class MainActivity : AppCompatActivity() {
         // Память, сторож и движок — одни на процесс, см. ProcessObjects. Экран,
         // созданный заново, получает те же объекты, а не заводит свои.
         processObjects = ProcessObjects.get(applicationContext)
-        searchPanel = SearchPanel(this, lifecycleScope, processObjects.search) { presenceLock.isUnlocked }
         mediator = processObjects.mediator
         watchdog = processObjects.watchdog
         llmEngine = processObjects.llmEngine
@@ -4508,11 +4573,25 @@ class MainActivity : AppCompatActivity() {
         // и соседняя.
         binding.textMetrics.movementMethod = LinkMovementMethod.getInstance()
 
-        if (!journal.isEmpty) {
+        if (!journal.isEmpty || journal.screenTurns.value.isNotEmpty()) {
             binding.textResults.text = renderJournal()
             binding.scrollResults.post { binding.scrollResults.fullScroll(View.FOCUS_DOWN) }
         }
         renderTurnNavVisibility()
+
+        lifecycleScope.launch {
+            var previousWeb = journal.screenTurns.value.filterIsInstance<ConversationJournal.Web>()
+            journal.screenTurns.collect { rows ->
+                val web = rows.filterIsInstance<ConversationJournal.Web>()
+                renderProgress()
+                if (web != previousWeb && feedShowsConversation()) {
+                    autoScrollIfAtBottom()
+                    binding.textResults.text = renderJournal()
+                    renderTurnNavVisibility()
+                }
+                previousWeb = web
+            }
+        }
 
         // Прыжок на реплику, а не на пиксель. Счётчик navTurnIndex живёт
         // между нажатиями, поэтому повторные касания идут по ходам подряд,
@@ -4831,8 +4910,12 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            if (journal.pendingWeb != null) {
+                Toast.makeText(this, "Поиск уже идёт", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             SearchCommand.fromOwnerWords(userText)?.let { command ->
-                searchPanel?.open(command)
+                submitWebSearch(command, userText)
                 if (command !is SearchCommand.Find || command.query.length <= MAX_QUERY_LENGTH) {
                     binding.editTextInput.text.clear()
                 }
@@ -5792,7 +5875,6 @@ class MainActivity : AppCompatActivity() {
                 val razvilkaPlan = Razvilka.plan(userText, RazvilkaHolder.direction, RazvilkaHolder.etalon)
                 val razvilkaOrder = (razvilkaPlan as? Razvilka.Plan.Read)?.order
                 val outcome = turns.run(
-                    searchNote = processObjects.search.snapshot().conversationNote(),
                     content = userContent,
                     question = userText,
                     // ВСЕ найденные отбором — те же, что ушли модели. Новизну журнал
@@ -6315,7 +6397,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
-        searchPanel?.close()
         super.onStop()
         MemoryWatch.screenShown = false
         // Первой строкой, до выхода по пустой ленте: замок встаёт при любом

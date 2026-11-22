@@ -85,11 +85,13 @@ internal data class SearchView(
     val detail: String? = null,
     val answer: String? = null,
 ) {
-    fun latestText(): String {
-        if (storageError) return SearchStatus.STORAGE_ERROR.label
-        val entry = entries.firstOrNull { !it.refresh } ?: return "Поисков ещё не было."
-        return if (entry.id == resultId) resultText(entry, hits, detail, answer) else resultText(entry, emptyList())
+    fun latestReply(): SearchReply {
+        if (storageError) return SearchReply(SearchStatus.STORAGE_ERROR.label)
+        val entry = entries.firstOrNull { !it.refresh } ?: return SearchReply("Поисков ещё не было.")
+        return if (entry.id == resultId) resultReply(entry, hits, detail, answer) else resultReply(entry, emptyList())
     }
+
+    fun latestText(): String = latestReply().text
 
     fun historyText(): String {
         val searches = entries.filterNot { it.refresh }
@@ -99,41 +101,46 @@ internal data class SearchView(
         }
     }
 
-    /** Только сведения о действии. Выдержки и ссылки в обычный ход не передаются. */
-    fun conversationNote(): String? {
-        if (storageError) return SearchStatus.STORAGE_ERROR.label + "."
-        val searches = entries.filterNot { it.refresh }
-        if (searches.isEmpty()) return null
-        return searches.distinctBy { it.channel }.joinToString("\n") { entry ->
-            "Последний веб-поиск владельца (" + entry.timeLabel() + ", " + entry.channel.label + "): «" +
-                entry.query.replace("]", "］").replace("»", "›") +
-                "» — " + entry.status.label + (if (entry.count > 0) ", источников: " + entry.count else "") + "."
-        }
-    }
 }
 
 private fun SearchEntry.timeLabel(): String =
     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(at))
 
-internal data class SearchReply(val text: String, val duplicate: Boolean = false)
+internal data class SearchReply(
+    val text: String,
+    val duplicate: Boolean = false,
+    val chatText: String = text,
+    val sourceUrls: List<String> = emptyList(),
+)
 
-private fun resultText(
+private fun resultReply(
     entry: SearchEntry, hits: List<SearchHit>, detail: String? = null, answer: String? = null,
-): String = buildString {
-    appendLine("«" + entry.query + "» · " + entry.channel.label + " · " + entry.status.label)
-    detail?.let { appendLine(it) }
-    answer?.let { appendLine("\n$it") }
-    if (hits.isNotEmpty()) {
-        appendLine(if (answer == null) "\nПо выдержкам из поиска" else "\nИсточники")
-        hits.forEachIndexed { index, hit ->
-            appendLine("\n" + (index + 1) + ". " + hit.title)
-            if (answer == null) appendLine(hit.description)
-            appendLine(hit.url)
+): SearchReply {
+    val body = buildString {
+        answer?.let { appendLine(it) }
+        if (hits.isNotEmpty()) {
+            if (isNotEmpty()) appendLine()
+            appendLine(if (answer == null) "По выдержкам из поиска" else "Источники")
+            hits.forEachIndexed { index, hit ->
+                appendLine("\n" + (index + 1) + ". " + hit.title)
+                if (answer == null) appendLine(hit.description)
+                appendLine(hit.url)
+            }
+        } else if (entry.status == SearchStatus.FOUND) {
+            appendLine("Источников было " + entry.count + ". Выдержки больше недоступны.")
         }
-    } else if (entry.status == SearchStatus.FOUND) {
-        append("Источников было " + entry.count + ". Выдержки больше недоступны.")
-    }
-}.trimEnd()
+        detail?.let {
+            if (isNotEmpty()) appendLine()
+            appendLine(it)
+        }
+    }.trimEnd()
+    val heading = "«${entry.query}» · ${entry.channel.label} · ${entry.status.label}"
+    return SearchReply(
+        text = listOf(heading, body).filter { it.isNotEmpty() }.joinToString("\n"),
+        chatText = body.ifEmpty { entry.status.label },
+        sourceUrls = hits.map { it.url },
+    )
+}
 
 internal interface SearchHistory {
     fun read(): List<SearchEntry>
@@ -241,7 +248,7 @@ internal class WebSearch(
             val finished = entry.copy(status = status, count = hits.size)
             val stored = withContext(NonCancellable) { save(finished, hits, detail, answer) }
             if (!stored) return SearchReply(SearchStatus.STORAGE_ERROR.label)
-            return SearchReply(resultText(finished, hits, detail, answer))
+            return resultReply(finished, hits, detail, answer)
         } finally {
             active.unlock()
         }

@@ -1,5 +1,8 @@
 package com.uroboros.llm
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
 /**
  * Лента разговора — недоверенный журнал ходов, который уходит в модель
  * вместе с каждым новым вопросом.
@@ -185,19 +188,35 @@ class ConversationJournal {
      * Пустой [question] — ход начал агент (пишет первым): на экране такого
      * скрытого хода нет вовсе, заглушка без вопроса ничего бы не значила.
      */
+    sealed interface ScreenTurn {
+        val afterTurn: Int
+        val question: String
+    }
+
     data class Hidden(
-        val afterTurn: Int,
-        val question: String,
+        override val afterTurn: Int,
+        override val question: String,
         val reason: String,
         val rejected: List<Rejected>,
-    )
+    ) : ScreenTurn
+
+    /** Веб-выдача видна в ленте экрана. В историю, архив и запрос модели идут только [Turn]. */
+    data class Web(
+        override val afterTurn: Int,
+        override val question: String,
+        val progress: String,
+        val answer: String? = null,
+        val sourceUrls: List<String> = emptyList(),
+    ) : ScreenTurn
 
     /** Один отброшенный текст скрытого хода: [label] — какая попытка («первый», «вариант 2 (повтор)»). */
     data class Rejected(val label: String, val text: String)
 
     private val turns = mutableListOf<Turn>()
 
-    private val hiddenTurns = mutableListOf<Hidden>()
+    private val _screenTurns = MutableStateFlow<List<ScreenTurn>>(emptyList())
+    val screenTurns = _screenTurns.asStateFlow()
+    val pendingWeb: Web? get() = _screenTurns.value.filterIsInstance<Web>().lastOrNull { it.answer == null }
 
 
     /**
@@ -260,14 +279,14 @@ class ConversationJournal {
     fun history(): List<Turn> = turns.toList()
 
     /** Скрытые ходы по порядку — только для экрана и приборов (см. [Hidden]). */
-    fun hidden(): List<Hidden> = hiddenTurns.toList()
+    fun hidden(): List<Hidden> = _screenTurns.value.filterIsInstance<Hidden>()
 
     /**
      * Скрывает ход: в ленту он не ложится, записи не помечаются уложенными,
      * модели не подаётся ничего (см. [Hidden]).
      */
     fun hideTurn(question: String, reason: String, rejected: List<Rejected>) {
-        hiddenTurns += Hidden(turns.size, question, reason, rejected)
+        _screenTurns.value += Hidden(turns.size, question, reason, rejected)
     }
 
     /**
@@ -276,10 +295,29 @@ class ConversationJournal {
      * подавался. null — последним на экране стоит обычный ход.
      */
     fun dropLastHidden(): Hidden? {
-        val last = hiddenTurns.lastOrNull() ?: return null
+        val last = _screenTurns.value.lastOrNull() as? Hidden ?: return null
         if (last.afterTurn != turns.size) return null
-        hiddenTurns.removeAt(hiddenTurns.lastIndex)
+        _screenTurns.value = _screenTurns.value.dropLast(1)
         return last
+    }
+
+    fun beginWebTurn(question: String, progress: String): Web? {
+        if (pendingWeb != null) return null
+        val turn = Web(turns.size, question, progress)
+        _screenTurns.value += turn
+        return turn
+    }
+
+    fun finishWebTurn(turn: Web, answer: String, sourceUrls: List<String>) {
+        _screenTurns.value = _screenTurns.value.map {
+            if (it === turn) turn.copy(answer = answer, sourceUrls = sourceUrls) else it
+        }
+    }
+
+    fun dropLastWeb(turn: Web) {
+        if (_screenTurns.value.lastOrNull() === turn && turn.afterTurn == turns.size) {
+            _screenTurns.value = _screenTurns.value.dropLast(1)
+        }
     }
 
     /**
@@ -615,7 +653,7 @@ class ConversationJournal {
      *         и совпадение с обсчитанным началом.
      */
     fun restore(saved: List<Turn>): Boolean {
-        if (turns.isNotEmpty() || hiddenTurns.isNotEmpty()) return false
+        if (turns.isNotEmpty() || hidden().isNotEmpty()) return false
         turns += saved
         for (turn in saved) {
             for (use in turn.records) {
@@ -727,8 +765,7 @@ class ConversationJournal {
         if (index < 0) return null
         val dropped = turns.removeAt(index)
         placedRecords.entries.removeAll { it.value == index }
-        // Скрытые ходы после отрезанного стояли за ходом, которого больше нет.
-        hiddenTurns.removeAll { it.afterTurn > index }
+        _screenTurns.value = _screenTurns.value.filter { it.afterTurn <= index }
         lastPromptTokens = 0
         return dropped
     }
@@ -796,7 +833,7 @@ class ConversationJournal {
      */
     fun clear() {
         turns.clear()
-        hiddenTurns.clear()
+        _screenTurns.value = emptyList()
         placedRecords.clear()
         lastPromptTokens = 0
         onCleared?.invoke()
