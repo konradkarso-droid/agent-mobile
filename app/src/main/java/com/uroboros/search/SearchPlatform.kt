@@ -1,13 +1,18 @@
 package com.uroboros.search
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import com.uroboros.memory.ActionProvenance
 import com.uroboros.memory.ActionRequest
 import com.uroboros.memory.ActionType
 import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
+import com.uroboros.memory.StandingConsent
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.move.MoveState
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
 import java.text.DateFormat
@@ -32,6 +37,7 @@ internal class SearchPlatform(
     private val index = LocalWebIndex(app)
     private val crawler = WebCrawler(index)
     private val reader = PageReader(infer)
+    private val autoRefresh = WebRefreshSchedule(app)
 
     private fun blocked() = EmergencyStop.isActive() || watchdog.zone.value == SafetyZone.CRITICAL
 
@@ -92,6 +98,59 @@ internal class SearchPlatform(
 
     suspend fun snapshot(): SearchView = withContext(Dispatchers.IO) { engine.snapshot() }
 
+    suspend fun autoRefreshCommand(
+        command: SearchCommand.AutoRefresh,
+        ownerPresent: () -> Boolean = { false },
+        stillAllowed: () -> Boolean = { true },
+    ): SearchReply {
+        val grant = if (command == SearchCommand.AutoRefresh.Enable) {
+            withContext(Dispatchers.Main.immediate) {
+                if (ownerPresent()) grantScheduledRefresh(System.currentTimeMillis()) else null
+            }
+        } else null
+        return withContext(Dispatchers.IO) {
+            if (!stillAllowed()) return@withContext SearchReply(SearchStatus.DENIED.label)
+            try {
+                when (command) {
+                    SearchCommand.AutoRefresh.Enable -> if (grant == null) {
+                        SearchReply("Включить автообновление можно в приложении после открытия замка.")
+                    } else autoRefresh.enable(grant)
+                    SearchCommand.AutoRefresh.Disable -> autoRefresh.disable()
+                    SearchCommand.AutoRefresh.Status -> autoRefresh.status()
+                }
+            } catch (_: IllegalStateException) {
+                SearchReply("Не удалось связаться с планировщиком Android.")
+            } catch (_: SecurityException) {
+                SearchReply("Android ограничил доступ к планировщику.")
+            }
+        }
+    }
+
+    suspend fun refreshScheduled(network: Network) {
+        val grant = autoRefresh.consent() ?: return
+        val connectivity = app.getSystemService(ConnectivityManager::class.java)
+        val allowed = {
+            autoRefresh.consent()?.id == grant.id && !blocked() &&
+                watchdog.zone.value < SafetyZone.FATIGUE && MoveState.holdReason(app) == null &&
+                connectivity?.getNetworkCapabilities(network)
+                    ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true
+        }
+        val result = engine.background {
+            if (!allowed()) {
+                return@background SearchPage(emptyList(), status = SearchStatus.STOPPED,
+                    detail = "Условия фонового обхода сейчас не выполнены.")
+            }
+            guardedRefresh(scheduledRefreshRequest(), allowed, grant) {
+                // Сокеты и DNS привязаны к сети задания, а не к текущей сети приложения.
+                WebCrawler(index, CrawlTransport(network)).refresh(emptyList(), allowed, forceSeeds = false)
+            }
+        }
+        val message = if (result.status == SearchStatus.BUSY) {
+            "Фоновая проверка уступила текущему поиску."
+        } else result.detail ?: (result.status ?: SearchStatus.UNAVAILABLE).label
+        autoRefresh.record(grant, message)
+    }
+
     private suspend fun perform(
         command: SearchCommand, channel: SearchChannel, requestId: String = UUID.randomUUID().toString(),
         stillOwner: () -> Boolean = { true }, onAccepted: () -> Unit = {},
@@ -133,12 +192,20 @@ internal class SearchPlatform(
     private suspend fun refresh(
         channel: SearchChannel, terms: List<String>, allowed: () -> Boolean, forceSeeds: Boolean = false,
     ): SearchPage {
-        val verdict = GatedAction.evaluate(app, ActionRequest(
+        val request = ActionRequest(
             type = ActionType.NETWORK_CALL, requestedBy = "web-search/crawl/" + channel.name,
             provenance = ActionProvenance.USER, crossesDeviceBoundary = true, isReversible = false,
-        ))
+        )
+        return guardedRefresh(request, allowed) { crawler.refresh(terms, allowed, forceSeeds) }
+    }
+
+    private suspend fun guardedRefresh(
+        request: ActionRequest, allowed: () -> Boolean, consent: StandingConsent? = null,
+        execute: suspend () -> CrawlReport,
+    ): SearchPage {
+        val verdict = GatedAction.evaluate(app, request, consent)
         if (!allowed() || verdict.result != GateResult.ALLOW) return SearchPage(emptyList(), status = SearchStatus.DENIED)
-        val result = crawler.refresh(terms, allowed, forceSeeds)
+        val result = execute()
         val status = when {
             result.loaded + result.unchanged > 0 -> SearchStatus.UPDATED
             result.attempted > 0 -> SearchStatus.CRAWL_FAILED

@@ -79,6 +79,7 @@ class PresenceLock(
     private val onEmergencyStop: () -> Unit,
 ) {
     private var locked = true
+    internal val isUnlocked: Boolean get() = !locked
 
     /**
      * Системный запрос открыт. На Android 10 ввод PIN уходит в отдельное

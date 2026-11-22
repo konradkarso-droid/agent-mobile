@@ -99,8 +99,10 @@ private const val DAY = 24 * 60 * 60_000L
 private const val RETRY = 5 * 60_000L
 private const val CRAWL_ATTEMPTS = 16
 
-internal class WebCrawler(private val index: LocalWebIndex) {
-    private val transport = CrawlTransport()
+internal class WebCrawler(
+    private val index: LocalWebIndex,
+    private val transport: CrawlTransport = CrawlTransport(),
+) {
     private var sitemap: Pair<Long, ByteArray>? = null
 
     suspend fun refresh(terms: List<String>, stillAllowed: () -> Boolean, forceSeeds: Boolean): CrawlReport {

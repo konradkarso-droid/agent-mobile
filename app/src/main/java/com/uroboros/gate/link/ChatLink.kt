@@ -389,6 +389,7 @@ object ChatLink {
                     )
                     SearchCommand.Last -> SearchReply(search.snapshot().latestText())
                     SearchCommand.History -> SearchReply(search.snapshot().historyText())
+                    is SearchCommand.AutoRefresh -> search.autoRefreshCommand(command, stillAllowed = ::ownerAllowed)
                     SearchCommand.Deferred -> SearchReply(SearchCommand.DEFERRED_MESSAGE)
                 }
                 if (!reply.duplicate && ownerAllowed()) {
