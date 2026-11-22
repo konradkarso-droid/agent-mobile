@@ -127,8 +127,10 @@ internal class WebCrawler(
 ) {
     private var sitemap: Pair<Long, ByteArray>? = null
 
-    suspend fun refresh(terms: List<String>, stillAllowed: () -> Boolean, forceSeeds: Boolean): CrawlReport {
-        index.seed(CrawlSources.seeds, retryUnindexed = forceSeeds)
+    suspend fun refresh(
+        terms: List<String>, stillAllowed: () -> Boolean, forceSeeds: Boolean, window: PublicationWindow? = null,
+    ): CrawlReport {
+        if (window == null) index.seed(CrawlSources.seeds, retryUnindexed = forceSeeds)
         val visited = mutableSetOf<String>()
         var attempted = 0
         var loaded = 0
@@ -136,8 +138,10 @@ internal class WebCrawler(
         val session = CrawlSession(network, index::validators, stillAllowed)
         var feeds = FeedDiscovery(emptyList(), 0, 0)
         val completed = withTimeoutOrNull(35_000) {
-            val sitemapTargets = withTimeoutOrNull(10_000) { discoverFromSitemap(session, terms) }.orEmpty()
-            feeds = discoverFromFeeds(session, terms, stillAllowed)
+            val sitemapTargets = if (window == null) {
+                withTimeoutOrNull(10_000) { discoverFromSitemap(session, terms) }.orEmpty()
+            } else emptyList()
+            feeds = discoverFromFeeds(session, terms, stillAllowed, window)
             val targets = (feeds.targets + sitemapTargets).distinct()
             while (attempted < CRAWL_ATTEMPTS && stillAllowed()) {
                 val now = System.currentTimeMillis()
@@ -148,7 +152,11 @@ internal class WebCrawler(
                         .asSequence().filterNot { it in visited }.maxByOrNull { address ->
                             CrawlSources.address(address)?.let { addressScore(it, terms) } ?: 0
                         }
-                val address = if (attempted % 3 == 0) revisit() ?: discover() else discover() ?: revisit()
+                val address = when {
+                    window != null -> targets.firstOrNull { it !in visited }
+                    attempted % 3 == 0 -> revisit() ?: discover()
+                    else -> discover() ?: revisit()
+                }
                 if (address == null) break
                 visited.add(address)
                 attempted++
@@ -175,7 +183,7 @@ internal class WebCrawler(
     }
 
     private suspend fun discoverFromFeeds(
-        session: CrawlSession, terms: List<String>, stillAllowed: () -> Boolean,
+        session: CrawlSession, terms: List<String>, stillAllowed: () -> Boolean, window: PublicationWindow?,
     ): FeedDiscovery {
         var attempted = 0
         var checked = 0
@@ -203,9 +211,13 @@ internal class WebCrawler(
         val now = System.currentTimeMillis()
         if (!stillAllowed()) return FeedDiscovery(emptyList(), attempted, checked)
         val urls = index.feedCandidates(now)
-            .map { article -> article.url to feedScore(article, terms) }
-            .filter { terms.isEmpty() || it.second > 0 }
-            .sortedByDescending { it.second }.map { it.first }.distinct().take(FEED_TARGET_LIMIT)
+            .filter { window == null || window.contains(it.publishedAt) }
+            .map { article -> article to feedScore(article, terms) }
+            .filter { window != null || terms.isEmpty() || it.second > 0 }
+            .sortedWith(compareByDescending<Pair<FeedArticle, Int>> { it.second }.thenByDescending {
+                if (window == null) 0L else it.first.publishedAt ?: 0L
+            })
+            .map { it.first.url }.distinct().take(FEED_TARGET_LIMIT)
         return FeedDiscovery(index.queueFeedTargets(urls, now), attempted, checked)
     }
 
