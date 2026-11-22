@@ -186,7 +186,10 @@ internal class SearchPlatform(
             }
         }
         if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
-        return answer(query, matches, update?.detail)
+        val updateNote = update?.detail?.let { note ->
+            if (update.status == SearchStatus.DENIED) "${indexLine(matches.status)} $note" else note
+        }
+        return answer(query, matches, updateNote)
     }
 
     private suspend fun refresh(
@@ -204,23 +207,11 @@ internal class SearchPlatform(
         execute: suspend () -> CrawlReport,
     ): SearchPage {
         val verdict = GatedAction.evaluate(app, request, consent)
-        if (!allowed() || verdict.result != GateResult.ALLOW) return SearchPage(emptyList(), status = SearchStatus.DENIED)
-        val result = execute()
-        val status = when {
-            result.loaded + result.unchanged > 0 -> SearchStatus.UPDATED
-            result.attempted > 0 -> SearchStatus.CRAWL_FAILED
-            result.status.pages == 0 -> SearchStatus.INDEX_EMPTY
-            else -> SearchStatus.UPDATED
+        if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
+        if (verdict.result != GateResult.ALLOW) {
+            return SearchPage(emptyList(), status = SearchStatus.DENIED, detail = "Врата отклонили сетевой обход.")
         }
-        val counts = if (result.loaded + result.unchanged > 0) {
-            "Загружено страниц: ${result.loaded}. Подтверждено без повторной загрузки: ${result.unchanged}."
-        } else if (result.attempted > 0) {
-            "Источники не вернули доступных страниц."
-        } else "Сейчас нет страниц, ожидающих обхода."
-        val feeds = if (result.feedsAttempted > 0) {
-            " Проверено лент: ${result.feedsChecked} из ${result.feedsAttempted}."
-        } else ""
-        return SearchPage(emptyList(), status = status, detail = "${indexLine(result.status)} $counts$feeds")
+        return execute().toSearchPage()
     }
 
     private data class Matches(val status: IndexStatus, val words: SearchWords, val indexed: List<IndexedMatch>) {
@@ -247,25 +238,52 @@ internal class SearchPlatform(
         }
         val missingWords = sources.firstOrNull()?.second?.missingWords.orEmpty()
         val detail = buildString {
-            append(updateNote ?: indexLine(matches.status))
+            append(updateNote ?: "${indexLine(matches.status)} Поиск выполнен по локальному индексу.")
             if (missingWords.isNotEmpty()) {
                 append(" Совпадение частичное. На первой странице не найдены слова «")
                 append(missingWords.joinToString("», «"))
                 append("».")
             }
-            if (sources.isNotEmpty() && answer == null) append(" Ниже найдённые выдержки.")
+            if (sources.isNotEmpty() && answer == null) {
+                append(" Ответ модели недоступен. Ниже найдённые выдержки.")
+            }
         }
         return SearchPage(sources.map { it.first }, answer = answer, detail = detail)
-    }
-
-    private fun indexLine(status: IndexStatus): String {
-        val date = status.checkedAt?.let {
-            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it))
-        }
-        return "В локальном индексе страниц: ${status.pages}." + if (date == null) "" else " Последняя проверка: $date."
     }
 
     companion object {
         private const val HISTORY = "history"
     }
+}
+
+internal fun CrawlReport.toSearchPage(): SearchPage {
+    val verifiedPages = loaded + unchanged
+    val outcome = when {
+        timedOut -> SearchStatus.TIMED_OUT
+        verifiedPages > 0 -> SearchStatus.UPDATED
+        attempted > 0 || (feedsAttempted > 0 && feedsChecked == 0) -> SearchStatus.CRAWL_FAILED
+        status.pages == 0 -> SearchStatus.INDEX_EMPTY
+        else -> SearchStatus.UPDATED
+    }
+    val detail = buildString {
+        append(indexLine(status))
+        when {
+            verifiedPages > 0 -> {
+                append(" Загружено страниц: $loaded. Подтверждено без повторной загрузки: $unchanged.")
+            }
+            timedOut -> Unit
+            attempted > 0 -> append(" Источники не вернули доступных страниц.")
+            else -> append(" Сейчас нет страниц, ожидающих обхода.")
+        }
+        if (feedsAttempted > 0) append(" Проверено лент: $feedsChecked из $feedsAttempted.")
+        if (timedOut) append(" Достигнут лимит времени сетевого обхода.")
+    }
+    return SearchPage(emptyList(), status = outcome, detail = detail)
+}
+
+private fun indexLine(status: IndexStatus): String {
+    val date = status.checkedAt?.let {
+        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it))
+    }
+    return "В локальном индексе страниц: ${status.pages}." + if (date == null) "" else " Последняя проверка: $date."
 }
