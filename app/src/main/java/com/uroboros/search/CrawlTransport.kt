@@ -22,11 +22,15 @@ import okhttp3.Response
 internal enum class CrawlResource(val accept: String, val limit: Int) {
     PAGE("text/html", 2 * 1024 * 1024),
     ROBOTS("text/plain", 512 * 1024),
+    FEED("application/rss+xml, application/atom+xml, application/xml, text/xml", 512 * 1024),
     SITEMAP("application/xml, text/xml, application/gzip", 4 * 1024 * 1024);
 
     fun accepts(type: String): Boolean = when (this) {
         PAGE -> type.equals(accept, true)
         ROBOTS -> type.isBlank() || type.equals(accept, true)
+        FEED -> type.lowercase(java.util.Locale.ROOT) in setOf(
+            "application/rss+xml", "application/atom+xml", "application/xml", "text/xml",
+        )
         SITEMAP -> type.lowercase(java.util.Locale.ROOT) in
             setOf("application/xml", "text/xml", "application/gzip", "application/x-gzip")
     }

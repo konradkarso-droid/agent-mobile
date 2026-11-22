@@ -142,7 +142,7 @@ internal class SearchPlatform(
             }
             guardedRefresh(scheduledRefreshRequest(), allowed, grant) {
                 // Сокеты и DNS привязаны к сети задания, а не к текущей сети приложения.
-                WebCrawler(index, CrawlTransport(network)).refresh(emptyList(), allowed, forceSeeds = false)
+                WebCrawler(index, CrawlTransport(network)::fetch).refresh(emptyList(), allowed, forceSeeds = false)
             }
         }
         val message = if (result.status == SearchStatus.BUSY) {
@@ -217,7 +217,10 @@ internal class SearchPlatform(
         } else if (result.attempted > 0) {
             "Источники не вернули доступных страниц."
         } else "Сейчас нет страниц, ожидающих обхода."
-        return SearchPage(emptyList(), status = status, detail = "${indexLine(result.status)} $counts")
+        val feeds = if (result.feedsAttempted > 0) {
+            " Проверено лент: ${result.feedsChecked} из ${result.feedsAttempted}."
+        } else ""
+        return SearchPage(emptyList(), status = status, detail = "${indexLine(result.status)} $counts$feeds")
     }
 
     private data class Matches(val status: IndexStatus, val terms: List<String>, val pages: List<IndexedPage>)

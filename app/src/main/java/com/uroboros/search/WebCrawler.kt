@@ -13,6 +13,11 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 
 internal object CrawlSources {
+    private val year = Regex("[0-9]{4}")
+    private val month = Regex("0[1-9]|1[0-2]")
+    private val day = Regex("0[1-9]|[12][0-9]|3[01]")
+    private val slug = Regex("[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}")
+
     // Открытые источники первой версии. Ссылки расширяют обход внутри этих областей.
     val seeds = listOf(
         "https://ru.wikipedia.org/wiki/Информатика",
@@ -31,12 +36,16 @@ internal object CrawlSources {
             url.encodedQuery != null || url.encodedPath.length > 440
         ) return null
         val parts = url.pathSegments
+        if (parts.any { part -> part.any { it in "/\\" || it.isISOControl() } }) return null
         val accepted = when (url.host) {
             "ru.wikipedia.org" -> parts.size == 2 && parts[0] == "wiki" && parts[1].isNotBlank() &&
-                parts[1].none { it in ":/\\" || it.isISOControl() }
+                ':' !in parts[1]
             "developer.mozilla.org" -> parts.size >= 3 && parts[0] in setOf("en-US", "ru") &&
-                parts[1] == "docs" && parts[2] in setOf("Web", "Learn", "Learn_web_development") &&
-                parts.none { it.contains('/') || it.contains('\\') }
+                parts[1] == "docs" && parts[2] in setOf("Web", "Learn", "Learn_web_development")
+            "nplus1.ru" -> parts.size == 5 && parts[0] in setOf("news", "material", "blog") &&
+                parts[1].matches(year) && parts[2].matches(month) && parts[3].matches(day) && parts[4].matches(slug)
+            "developer.android.com" -> parts.size == 3 && parts[0] == "blog" && parts[1] == "posts" &&
+                parts[2].matches(slug)
             else -> false
         }
         return if (accepted) url.newBuilder().fragment(null).build() else null
@@ -93,15 +102,27 @@ internal sealed interface CrawlOutcome {
     data class Removed(override val url: String) : CrawlOutcome
 }
 
-internal data class CrawlReport(val loaded: Int, val unchanged: Int, val attempted: Int, val status: IndexStatus)
+internal data class CrawlReport(
+    val loaded: Int,
+    val unchanged: Int,
+    val attempted: Int,
+    val status: IndexStatus,
+    val feedsAttempted: Int = 0,
+    val feedsChecked: Int = 0,
+)
 
 private const val DAY = 24 * 60 * 60_000L
 private const val RETRY = 5 * 60_000L
 private const val CRAWL_ATTEMPTS = 16
+private const val FEED_CHECK_INTERVAL = 6 * 60 * 60_000L
+private const val FEED_TARGET_LIMIT = 6
+
+private data class FeedDiscovery(val targets: List<String>, val attempted: Int, val checked: Int)
+
 
 internal class WebCrawler(
     private val index: LocalWebIndex,
-    private val transport: CrawlTransport = CrawlTransport(),
+    private val network: suspend (HttpUrl, CrawlResource, PageValidators) -> CrawlResponse = CrawlTransport()::fetch,
 ) {
     private var sitemap: Pair<Long, ByteArray>? = null
 
@@ -111,9 +132,12 @@ internal class WebCrawler(
         var attempted = 0
         var loaded = 0
         var unchanged = 0
-        val session = CrawlSession(transport::fetch, index::validators, stillAllowed)
+        val session = CrawlSession(network, index::validators, stillAllowed)
+        var feeds = FeedDiscovery(emptyList(), 0, 0)
         withTimeoutOrNull(35_000) {
-            val targets = withTimeoutOrNull(10_000) { discoverFromSitemap(session, terms) }.orEmpty()
+            val sitemapTargets = withTimeoutOrNull(10_000) { discoverFromSitemap(session, terms) }.orEmpty()
+            feeds = discoverFromFeeds(session, terms, stillAllowed)
+            val targets = (feeds.targets + sitemapTargets).distinct()
             while (attempted < CRAWL_ATTEMPTS && stillAllowed()) {
                 val now = System.currentTimeMillis()
                 fun revisit() = index.nextDue(if (forceSeeds) now + DAY else now, visited.size + 1, indexed = true)
@@ -145,7 +169,42 @@ internal class WebCrawler(
                 }
             }
         }
-        return CrawlReport(loaded, unchanged, attempted, index.status())
+        return CrawlReport(loaded, unchanged, attempted, index.status(), feeds.attempted, feeds.checked)
+    }
+
+    private suspend fun discoverFromFeeds(
+        session: CrawlSession, terms: List<String>, stillAllowed: () -> Boolean,
+    ): FeedDiscovery {
+        var attempted = 0
+        var checked = 0
+        for (feed in webFeeds) {
+            if (!stillAllowed()) break
+            val key = feed.toString()
+            val previous = index.feedState(key)
+            if (previous.due > System.currentTimeMillis()) continue
+            attempted++
+            val update = try {
+                withTimeoutOrNull(5_000) { session.feed(feed, previous.validators) }
+            } catch (_: IOException) {
+                null
+            }
+            currentCoroutineContext().ensureActive()
+            if (!stillAllowed()) break
+            val at = System.currentTimeMillis()
+            if (update == null) {
+                index.recordFeed(key, FeedUpdate(null, previous.validators), at + RETRY)
+            } else {
+                checked++
+                index.recordFeed(key, update, at + FEED_CHECK_INTERVAL)
+            }
+        }
+        val now = System.currentTimeMillis()
+        if (!stillAllowed()) return FeedDiscovery(emptyList(), attempted, checked)
+        val urls = index.feedCandidates(now)
+            .map { article -> article.url to feedScore(article, terms) }
+            .filter { terms.isEmpty() || it.second > 0 }
+            .sortedByDescending { it.second }.map { it.first }.distinct().take(FEED_TARGET_LIMIT)
+        return FeedDiscovery(index.queueFeedTargets(urls, now), attempted, checked)
     }
 
     private suspend fun discoverFromSitemap(session: CrawlSession, terms: List<String>): List<String> {
@@ -204,6 +263,24 @@ internal class CrawlSession(
             }
         }
         throw IOException("Redirect limit")
+    }
+
+    suspend fun feed(url: HttpUrl, cached: PageValidators): FeedUpdate {
+        require(url in webFeeds)
+        val rules = rules(url)
+        if (!rules.isAllowed(url.toString()) || rules.crawlDelay > 5_000) {
+            throw IOException("Feed outside the permitted crawl")
+        }
+        val response = fetch(url, rules.crawlDelay.coerceAtLeast(850), CrawlResource.FEED, cached)
+        val follow = directiveWords(response.directives).none { it in setOf("none", "nofollow") }
+        return when (response.code) {
+            200 -> FeedUpdate(if (follow) feedArticles(url, response.body) else emptyList(), response.validators)
+            304 -> {
+                if (!cached.present) throw IOException("Not modified without a cached feed")
+                FeedUpdate(if (follow) null else emptyList(), cached.updatedBy(response.validators))
+            }
+            else -> throw IOException("Feed returned HTTP " + response.code)
+        }
     }
 
     suspend fun sitemap(): ByteArray? {

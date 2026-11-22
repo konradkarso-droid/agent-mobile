@@ -36,7 +36,7 @@ private val FILLER = setOf(
  * Предел в байтах применяется к самой базе SQLite. Временные файлы SQLite
  * при записи могут занимать дополнительное место.
  */
-internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 2) {
+internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 3) {
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         if (!db.isReadOnly) db.setMaximumSize(100_000_000L)
@@ -51,12 +51,24 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         db.execSQL("CREATE TABLE frontier (url TEXT PRIMARY KEY NOT NULL, due INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX frontier_due ON frontier(due)")
         db.execSQL("CREATE TABLE refresh (checked_at INTEGER NOT NULL)")
+        createFeedTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(oldVersion == 1 && newVersion == 2) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
-        db.execSQL("ALTER TABLE pages ADD COLUMN etag TEXT")
-        db.execSQL("ALTER TABLE pages ADD COLUMN last_modified TEXT")
+        check(newVersion == 3 && oldVersion in 1..2) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
+        if (oldVersion == 1) {
+            db.execSQL("ALTER TABLE pages ADD COLUMN etag TEXT")
+            db.execSQL("ALTER TABLE pages ADD COLUMN last_modified TEXT")
+        }
+        createFeedTables(db)
+    }
+
+    private fun createFeedTables(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE feeds (url TEXT PRIMARY KEY NOT NULL, due INTEGER NOT NULL, etag TEXT, last_modified TEXT)")
+        db.execSQL(
+            "CREATE TABLE feed_articles (feed TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, " +
+                "position INTEGER NOT NULL, PRIMARY KEY (feed, url))",
+        )
     }
 
     fun status(): IndexStatus = readableDatabase.rawQuery(
@@ -89,6 +101,67 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
                 db.execSQL("UPDATE frontier SET due = -1 WHERE url = ? AND url NOT IN (SELECT url FROM pages)", arrayOf(url))
             }
         }
+    }
+
+    fun feedState(url: String): FeedState = readableDatabase.rawQuery(
+        "SELECT due, etag, last_modified FROM feeds WHERE url = ?", arrayOf(url),
+    ).use { row ->
+        if (row.moveToFirst()) FeedState(row.getLong(0), PageValidators.from(row.getString(1), row.getString(2)))
+        else FeedState()
+    }
+
+    fun recordFeed(url: String, update: FeedUpdate, due: Long) = transaction { db ->
+        val stored = db.insertWithOnConflict("feeds", null, update.validators.values().apply {
+            put("url", url)
+            put("due", due)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+        check(stored != -1L)
+        val articles = update.articles ?: return@transaction
+        db.delete("feed_articles", "feed = ?", arrayOf(url))
+        articles.distinctBy { it.url }.take(FEED_ARTICLE_LIMIT).forEachIndexed { position, article ->
+            db.insertOrThrow("feed_articles", null, ContentValues().apply {
+                put("feed", url)
+                put("url", article.url)
+                put("title", article.title)
+                put("position", position)
+            })
+        }
+    }
+
+    fun feedCandidates(now: Long): List<FeedArticle> = readableDatabase.rawQuery(
+        "SELECT a.url, a.title FROM feed_articles a LEFT JOIN frontier f ON a.url = f.url " +
+            "LEFT JOIN pages p ON a.url = p.url WHERE p.id IS NULL AND (f.due IS NULL OR f.due <= ?) " +
+            "ORDER BY a.position, a.feed, a.url",
+        arrayOf(now.toString()),
+    ).use { rows ->
+        buildList { while (rows.moveToNext()) add(FeedArticle(rows.getString(0), rows.getString(1))) }
+    }
+
+    fun queueFeedTargets(urls: List<String>, now: Long): List<String> {
+        if (urls.isEmpty()) return emptyList()
+        transaction { db ->
+            val targets = urls.distinct()
+            val marks = targets.joinToString(", ") { "?" }
+            val present = db.rawQuery(
+                "SELECT COUNT(*) FROM frontier WHERE url IN ($marks)", targets.toTypedArray(),
+            ).use { rows -> check(rows.moveToFirst()); rows.getInt(0) }
+            val needed = android.database.DatabaseUtils.queryNumEntries(db, "frontier") +
+                targets.size - present - FRONTIER_LIMIT
+            if (needed > 0) {
+                // Освобождаем места только из очереди ещё не посещённых ссылок.
+                val seeds = CrawlSources.seeds
+                val keep = seeds.joinToString(", ") { "?" }
+                db.execSQL(
+                    "DELETE FROM frontier WHERE url IN (" +
+                        "SELECT f.url FROM frontier f LEFT JOIN pages p ON f.url = p.url " +
+                        "WHERE f.due = 0 AND p.id IS NULL AND f.url NOT IN (SELECT url FROM feed_articles) " +
+                        "AND f.url NOT IN ($keep) ORDER BY f.rowid DESC LIMIT ?)",
+                    (seeds + needed.toString()).toTypedArray(),
+                )
+            }
+            addUrls(db, targets)
+        }
+        return dueTargets(urls.distinct(), now)
     }
 
     fun validators(url: String): PageValidators? = readableDatabase.rawQuery(
@@ -196,7 +269,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
     }
 
     private fun addUrls(db: SQLiteDatabase, urls: List<String>) {
-        var remaining = 12_000 - android.database.DatabaseUtils.queryNumEntries(db, "frontier")
+        var remaining = FRONTIER_LIMIT - android.database.DatabaseUtils.queryNumEntries(db, "frontier")
         for (url in urls.distinct()) {
             if (remaining <= 0) break
             val id = db.insertWithOnConflict("frontier", null, ContentValues().apply {
@@ -205,6 +278,10 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
             }, SQLiteDatabase.CONFLICT_IGNORE)
             if (id != -1L) remaining--
         }
+    }
+
+    private companion object {
+        const val FRONTIER_LIMIT = 12_000L
     }
 
     private fun transaction(write: (SQLiteDatabase) -> Unit) {
