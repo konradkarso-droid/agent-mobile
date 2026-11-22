@@ -109,6 +109,7 @@ internal data class CrawlReport(
     val status: IndexStatus,
     val feedsAttempted: Int = 0,
     val feedsChecked: Int = 0,
+    val timedOut: Boolean = false,
 )
 
 private const val DAY = 24 * 60 * 60_000L
@@ -134,7 +135,7 @@ internal class WebCrawler(
         var unchanged = 0
         val session = CrawlSession(network, index::validators, stillAllowed)
         var feeds = FeedDiscovery(emptyList(), 0, 0)
-        withTimeoutOrNull(35_000) {
+        val completed = withTimeoutOrNull(35_000) {
             val sitemapTargets = withTimeoutOrNull(10_000) { discoverFromSitemap(session, terms) }.orEmpty()
             feeds = discoverFromFeeds(session, terms, stillAllowed)
             val targets = (feeds.targets + sitemapTargets).distinct()
@@ -168,8 +169,9 @@ internal class WebCrawler(
                     if (stillAllowed()) index.defer(address, System.currentTimeMillis() + RETRY)
                 }
             }
-        }
-        return CrawlReport(loaded, unchanged, attempted, index.status(), feeds.attempted, feeds.checked)
+            true
+        } ?: false
+        return CrawlReport(loaded, unchanged, attempted, index.status(), feeds.attempted, feeds.checked, timedOut = !completed)
     }
 
     private suspend fun discoverFromFeeds(

@@ -5,10 +5,33 @@ import java.io.IOException
 import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WebRefreshTest {
+    @Test
+    fun timeLimitIsReportedEvenWhenTheCrawlAlreadyLoadedAPage() {
+        val report = CrawlReport(loaded = 1, unchanged = 0, attempted = 2, status = IndexStatus(4, null), timedOut = true)
+        val page = report.toSearchPage()
+        assertEquals(SearchStatus.TIMED_OUT, page.status)
+        assertTrue(page.detail.orEmpty().contains("Загружено страниц: 1."))
+        assertTrue(page.detail.orEmpty().contains("лимит времени сетевого обхода"))
+
+        val beforeAnyPage = report.copy(loaded = 0, attempted = 0).toSearchPage()
+        assertEquals(SearchStatus.TIMED_OUT, beforeAnyPage.status)
+        assertFalse(beforeAnyPage.detail.orEmpty().contains("нет страниц, ожидающих обхода"))
+    }
+
+    @Test
+    fun failedFeedsAndAnIdleEmptyIndexHaveDifferentOutcomes() {
+        val idle = CrawlReport(loaded = 0, unchanged = 0, attempted = 0, status = IndexStatus(0, null))
+        assertEquals(SearchStatus.INDEX_EMPTY, idle.toSearchPage().status)
+        val page = idle.copy(feedsAttempted = 2).toSearchPage()
+        assertEquals(SearchStatus.CRAWL_FAILED, page.status)
+        assertTrue(page.detail.orEmpty().contains("Проверено лент: 0 из 2."))
+    }
+
     @Test
     fun sitemapFindsSpecificPagesAndKeepsOnlyPermittedDocuments() = runBlocking {
         val target = "https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Grid_layout/Subgrid"
