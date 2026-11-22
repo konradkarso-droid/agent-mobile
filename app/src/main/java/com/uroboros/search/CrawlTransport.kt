@@ -61,9 +61,9 @@ internal data class CrawlResponse(
 
 internal const val CRAWLER_NAME = "UroborosLocalSearch"
 
-/** Закрепляем проверку IP в том DNS, которым клиент устанавливает соединение. */
-internal class CrawlTransport(network: Network? = null) {
-    private val client = OkHttpClient.Builder()
+internal class CrawlTransport(private val client: Call.Factory) {
+    /** Закрепляем проверку IP в том DNS, которым клиент устанавливает соединение. */
+    constructor(network: Network? = null) : this(OkHttpClient.Builder()
         .apply { network?.socketFactory?.let { socketFactory(it) } }
         .proxy(Proxy.NO_PROXY)
         .dns(object : Dns {
@@ -79,7 +79,7 @@ internal class CrawlTransport(network: Network? = null) {
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(4, TimeUnit.SECONDS)
         .callTimeout(6, TimeUnit.SECONDS)
-        .build()
+        .build())
 
     suspend fun fetch(url: HttpUrl, resource: CrawlResource, validators: PageValidators): CrawlResponse =
         suspendCancellableCoroutine { task ->
