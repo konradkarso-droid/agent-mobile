@@ -12,12 +12,23 @@ internal data class PublicationQuery(val subject: String, val window: Publicatio
             """(?:^|\s+)(сегодня|вчера|за\s+(?:(?:последнюю\s+)?неделю|последние\s+([1-9][0-9]?)\s+(?:день|дня|дней)))[.!?]*$""",
             RegexOption.IGNORE_CASE,
         )
-        private val allNews = Regex("(?:что нового|(?:свежие )?новости)", RegexOption.IGNORE_CASE)
+        private val allNews = Regex("(?:что нового|(?:свежие )?новости|последние события)", RegexOption.IGNORE_CASE)
 
         fun parse(query: String, now: ZonedDateTime = ZonedDateTime.now()): PublicationQuery {
-            val match = time.find(query.trimEnd()) ?: return PublicationQuery(query, null)
-            val label = match.groupValues[1]
+            val match = time.find(query.trimEnd())
             val dayStart = now.toLocalDate().atStartOfDay(now.zone)
+            if (match == null) {
+                val phrase = query.trim()
+                val implicit = allNews.containsMatchIn(phrase)
+                if (!implicit) return PublicationQuery(query, null)
+                val subject = phrase
+                    .replace(Regex("(?:что нового|(?:свежие )?новости|последние события)", RegexOption.IGNORE_CASE), "")
+                    .trim().trimEnd(' ', ',', '—', '–')
+                val until = now.toInstant().toEpochMilli() + 1
+                val from = now.minusDays(30).toInstant().toEpochMilli()
+                return PublicationQuery(subject, PublicationWindow(from, until, "последние 30 дней"))
+            }
+            val label = match.groupValues[1]
             val count = match.groupValues[2].toLongOrNull() ?: 7L
             val from = when {
                 label.equals("сегодня", true) -> dayStart
