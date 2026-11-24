@@ -50,9 +50,9 @@ internal object DeferredSearchParser {
             }
             val millis = when {
                 unit.startsWith("сек") -> amount * 1_000L
-                unit.starts("мин") -> amount * 60_000L
-                unit.starts("час") -> amount * 3_600_000L
-                unit.starts("день") || unit.starts("дн") -> amount * 86_400_000L
+                unit.startsWith("мин") -> amount * 60_000L
+                unit.startsWith("час") -> amount * 3_600_000L
+                unit.startsWith("день") || unit.startsWith("дн") -> amount * 86_400_000L
                 else -> return null
             }
             val runAt = now.toInstant().toEpochMilli() + millis
@@ -73,9 +73,11 @@ internal object DeferredSearchParser {
 
     private fun removeDelayAndCommand(text: String, delayRange: IntRange): String {
         var value = text.removeRange(delayRange).trim()
-        value = value.replace(Regex("^(?:пожалуйста[,!:\\s]*)?(?:поищи(?:те)?|найди(?:те)?|посмотри(?:те)?|проверь(?:те)?|можешь\\s+(?:найти|поискать|посмотреть|проверить)|погугли(?:те)?)(?:\\s+в\\s+(?:интернете|сети)|онлайн)?[,\\s:—–-]*", RegexOption.IGNORE_CASE), "")
-        value = value.replace(Regex("[,\\s:—–-]+$"), "").trim()
-        return value
+        value = value.replace(
+            Regex("^(?:пожалуйста[,!:\\s]*)?(?:поищи(?:те)?|найди(?:те)?|посмотри(?:те)?|проверь(?:те)?|можешь\\s+(?:найти|поискать|посмотреть|проверить)|погугли(?:те)?)(?:\\s+в\\s+(?:интернете|сети)|онлайн)?[,\\s:—–-]*", RegexOption.IGNORE_CASE),
+            "",
+        )
+        return value.replace(Regex("[,\\s:—–-]+$"), "").trim()
     }
 }
 
@@ -90,13 +92,9 @@ internal class DeferredSearchStore(private val app: Context) {
         val array = JSONArray()
         rows.forEach { row ->
             array.put(JSONObject()
-                .put("id", row.id)
-                .put("query", row.query)
-                .put("runAt", row.runAt)
-                .put("channel", row.channel.name)
-                .put("chatId", row.chatId ?: JSONObject.NULL)
-                .put("replyMessageId", row.replyMessageId ?: JSONObject.NULL)
-                .put("original", row.original))
+                .put("id", row.id).put("query", row.query).put("runAt", row.runAt)
+                .put("channel", row.channel.name).put("chatId", row.chatId ?: JSONObject.NULL)
+                .put("replyMessageId", row.replyMessageId ?: JSONObject.NULL).put("original", row.original))
         }
         return prefs.edit().putString(ROWS, array.toString()).commit()
     }
@@ -108,9 +106,7 @@ internal class DeferredSearchStore(private val app: Context) {
             val row = array.getJSONObject(index)
             val channel = runCatching { SearchChannel.valueOf(row.getString("channel")) }.getOrNull() ?: return@mapNotNull null
             DeferredSearch(
-                id = row.getString("id"),
-                query = row.getString("query"),
-                runAt = row.getLong("runAt"),
+                id = row.getString("id"), query = row.getString("query"), runAt = row.getLong("runAt"),
                 channel = channel,
                 chatId = (row.opt("chatId") as? Number)?.toLong(),
                 replyMessageId = (row.opt("replyMessageId") as? Number)?.toLong(),
@@ -123,9 +119,8 @@ internal class DeferredSearchStore(private val app: Context) {
 
     @Synchronized
     fun remove(id: String): Boolean {
-        val rows = read().filterNot { it.id == id }
         val array = JSONArray()
-        rows.forEach { row ->
+        read().filterNot { it.id == id }.forEach { row ->
             array.put(JSONObject()
                 .put("id", row.id).put("query", row.query).put("runAt", row.runAt)
                 .put("channel", row.channel.name).put("chatId", row.chatId ?: JSONObject.NULL)
@@ -151,8 +146,7 @@ internal class DeferredSearchScheduler(private val app: Context) {
 
     fun add(request: DeferredSearch): Boolean {
         if (!store.add(request)) return false
-        val now = System.currentTimeMillis()
-        return schedule(request, now)
+        return schedule(request, System.currentTimeMillis())
     }
 
     private fun schedule(request: DeferredSearch, now: Long): Boolean {
@@ -169,7 +163,7 @@ internal class DeferredSearchScheduler(private val app: Context) {
         return service.schedule(job) == JobScheduler.RESULT_SUCCESS
     }
 
-    fun jobId(id: String): Int = 50_000 + (UUID.nameUUIDFromBytes(id.toByteArray()).leastSignificantBits and 0x7fffffff) % 10_000
+    fun jobId(id: String): Int = 50_000 + ((UUID.nameUUIDFromBytes(id.toByteArray()).leastSignificantBits and 0x7fffffff) % 10_000).toInt()
 
     private companion object {
         const val EXTRA_ID = "id"
