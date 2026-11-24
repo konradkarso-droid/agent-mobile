@@ -1,7 +1,6 @@
 package com.uroboros.search
 
 import java.io.IOException
-import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -47,16 +46,11 @@ internal fun feedArticles(feed: HttpUrl, body: ByteArray): List<FeedArticle> {
         val title = entry.childNamed("title")?.text().orEmpty()
             .filterNot { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }
             .take(160).trim()
-        val date = if (atom) {
-            entry.childNamed("published")?.text() ?: entry.childNamed("updated")?.text()
-        } else {
-            entry.childNamed("pubdate")?.text() ?: entry.childNamed("date")?.text()
-        }
+        val date = entry.childNamed(if (atom) "published" else "pubdate")?.text()
         val publishedAt = date?.takeIf { it.length <= 80 }?.let {
             runCatching {
                 if (atom) OffsetDateTime.parse(it).toInstant().toEpochMilli()
-                else runCatching { ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() }
-                    .getOrElse { _ -> Instant.parse(it).toEpochMilli() }
+                else ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
             }.getOrNull()
         }
         FeedArticle(url.toString(), title, publishedAt)
