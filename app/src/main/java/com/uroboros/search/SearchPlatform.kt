@@ -50,7 +50,7 @@ internal class SearchPlatform(
         stopped = combine(EmergencyStop.active, watchdog.zone) { stop, zone -> stop || zone == SafetyZone.CRITICAL },
         blocked = ::blocked,
         available = { true },
-        authorize = { true }, // Чтение индекса локально. Обход отдельно проходит Врата.
+        authorize = { true },
         provider = SearchProvider { answer(it, lookup(it)) },
         requestTimeoutMs = 125_000,
     )
@@ -125,7 +125,6 @@ internal class SearchPlatform(
                     detail = "Условия фонового обхода сейчас не выполнены.")
             }
             guardedRefresh(scheduledRefreshRequest(), allowed, grant) {
-                // Сокеты и DNS привязаны к сети задания, а не к текущей сети приложения.
                 WebCrawler(index, CrawlTransport(network)::fetch).refresh(emptyList(), allowed, forceSeeds = false)
             }
         }
@@ -209,7 +208,9 @@ internal class SearchPlatform(
         val status = index.status()
         if (status.pages > 0) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
         val words = SearchWords(query, LemmaHolder.loaded)
-        val indexed = if (status.pages == 0) emptyList() else index.find(words, SEARCH_LIMIT, window)
+        val indexed = if (status.pages == 0) emptyList() else {
+            diverseMatches(index.find(words, CANDIDATE_LIMIT, window), SEARCH_LIMIT)
+        }
         return Matches(status, words, indexed)
     }
 
@@ -222,7 +223,6 @@ internal class SearchPlatform(
             val title = if (date == null) page.title else "$date · ${page.title}"
             SearchHit.from(title, page.url, bestExcerpt(page, matches.words))?.let { it to match }
         }
-        // Порядок чтения и нумерация выдачи совпадают, даже если часть страниц отфильтрована.
         val readable = sources.map { it.second.page }
         val answer = if (readable.isEmpty()) null else withTimeoutOrNull(75_000) {
             reader.answer(query, readable, matches.words)
@@ -245,8 +245,31 @@ internal class SearchPlatform(
 
     companion object {
         private const val HISTORY = "history"
+        private const val CANDIDATE_LIMIT = 12
         private val DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     }
+}
+
+internal fun diverseMatches(matches: List<IndexedMatch>, limit: Int): List<IndexedMatch> {
+    if (matches.size <= limit) return matches
+    val selected = mutableListOf<IndexedMatch>()
+    val counts = mutableMapOf<String, Int>()
+    for (match in matches) {
+        val host = runCatching { java.net.URI(match.page.url).host?.lowercase() }.getOrNull()
+            ?: match.page.url
+        if ((counts[host] ?: 0) >= 2) continue
+        selected += match
+        counts[host] = (counts[host] ?: 0) + 1
+        if (selected.size == limit) break
+    }
+    if (selected.size < limit) {
+        for (match in matches) {
+            if (match in selected) continue
+            selected += match
+            if (selected.size == limit) break
+        }
+    }
+    return selected
 }
 
 internal fun CrawlReport.toSearchPage(): SearchPage {
@@ -261,9 +284,7 @@ internal fun CrawlReport.toSearchPage(): SearchPage {
     val detail = buildString {
         append(indexLine(status))
         when {
-            verifiedPages > 0 -> {
-                append(" Загружено страниц: $loaded. Подтверждено без повторной загрузки: $unchanged.")
-            }
+            verifiedPages > 0 -> append(" Загружено страниц: $loaded. Подтверждено без повторной загрузки: $unchanged.")
             timedOut -> Unit
             attempted > 0 -> append(" Источники не вернули доступных страниц.")
             else -> append(" Сейчас нет страниц, ожидающих обхода.")
