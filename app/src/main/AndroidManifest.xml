@@ -1,31 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-
-    <!-- Замок экрана агента спрашивает отпечаток или PIN телефона (PresenceLock).
-         Без этого разрешения системная проверка не запускается вовсе. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
-
-    <!-- Служба переднего плана (AgentService) — тело агента: держит процесс
-         живым постоянно, а на время долгого прогона и процессор проснувшимся. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- С Android 13 без этого разрешения уведомление службы не видно в шторке.
-         Служба при этом работает; спрашивать разрешение пока некому. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Экран суда (memory.judge.CourtScreen): чёрный экран поверх блокировки,
-         чтобы прошивка не замораживала агента, пока он сам судит память.
-         Открывается уведомлением на весь экран, как будильник. -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <!-- Подъём тела агента после перезагрузки телефона (BootReceiver). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
-    <!-- Адреса держит код: api.telegram.org для Telegram, разрешённые сайты
-         для веб-поиска и частные адреса локальной сети для переезда
-         (move.Move). Android выдаёт право на сеть приложению целиком.
-         Открытый HTTP выключен ниже (usesCleartextTraffic). -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -33,7 +15,6 @@
         <package android:name="com.termux" />
     </queries>
 
-    <!-- UroborosApp: переезд агента применяется раньше любой базы (move.Move). -->
     <application
         android:name=".UroborosApp"
         android:allowBackup="false"
@@ -51,13 +32,10 @@
             </intent-filter>
         </activity>
 
-        <!-- Экран врат: токен бота и пробные отправки; за своим замком. -->
         <activity
             android:name=".gate.link.GateActivity"
             android:exported="false" />
 
-        <!-- Экран суда: своя задача, не в недавних — открыть через него
-             приложение нельзя (CourtScreenActivity). -->
         <activity
             android:name=".CourtScreenActivity"
             android:exported="false"
@@ -77,8 +55,11 @@
             android:permission="android.permission.BIND_JOB_SERVICE"
             android:exported="true" />
 
-        <!-- Тип specialUse обязателен только с Android 14: вычисление модели на
-             устройстве не подходит ни под один из готовых типов. -->
+        <service
+            android:name=".search.DeferredSearchJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
+
         <service
             android:name=".AgentService"
             android:exported="false"
@@ -88,10 +69,6 @@
                 android:value="on-device language model inference for memory maintenance" />
         </service>
 
-        <!-- Поднимает тело агента после перезагрузки и после установки новой
-             сборки. Открыт наружу, потому что оба сообщения шлёт система; чужое
-             приложение этих сообщений послать не может, остальные приёмник
-             игнорирует. -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
@@ -100,7 +77,5 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
-
     </application>
-
 </manifest>
