@@ -8,16 +8,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
 
-/**
- * Сеть Bot API: запрос и ответ, отправка файла, скачивание файла. Адреса —
- * только из [GateBotApi] (почему один адрес и почему чистится токен — там).
- *
- * Обычный `HttpURLConnection` из Android, без библиотеки. Блокирует поток —
- * звать не с главного.
- *
- * ЧЕГО НЕ УМЕЕТ: повторов и пауз нет — их ведёт [GateLink]; ошибка сети —
- * [IOException] с текстом уже без токена.
- */
+/** Сеть Bot API: запрос и ответ, отправка файла, скачивание файла. */
 class TgHttp(private val token: String) {
 
     /** Ответ телеграма; [readTimeoutMs] — для опроса больше его ожидания. */
@@ -32,15 +23,34 @@ class TgHttp(private val token: String) {
         return call(GateBotApi.methodUrl(token, "sendDocument"), body = body, contentType = "multipart/form-data; boundary=$boundary")
     }
 
-    /** Текст в чат (тело — [GateBotApi.messageBody]). */
+    /**
+     * Текст в чат (тело — [GateBotApi.messageBody]). Краткие сетевые обрывы
+     * HTTPS повторяются несколько раз, чтобы ответ веб-поиска не терялся в
+     * Telegram после разрыва TLS-соединения.
+     */
     fun sendMessage(
         chatId: Long, text: String, replyTo: Long?, thread: Long?, disablePreview: Boolean = false,
-    ): GateBotApi.Reply =
-        call(
-            GateBotApi.methodUrl(token, "sendMessage"),
-            body = GateBotApi.messageBody(chatId, text, replyTo, thread, disablePreview),
-            contentType = "application/x-www-form-urlencoded; charset=UTF-8",
-        )
+    ): GateBotApi.Reply {
+        val url = GateBotApi.methodUrl(token, "sendMessage")
+        val body = GateBotApi.messageBody(chatId, text, replyTo, thread, disablePreview)
+        var attempt = 1
+        while (true) {
+            try {
+                val (code, bytes) = exchange(
+                    url,
+                    readTimeoutMs = 30_000,
+                    body = body,
+                    contentType = "application/x-www-form-urlencoded; charset=UTF-8",
+                    maxBytes = MAX_REPLY_BYTES,
+                )
+                return GateBotApi.reply(String(bytes, Charsets.UTF_8), code)
+            } catch (e: IOException) {
+                if (attempt >= SEND_RETRIES || !isTransientNetworkFailure(e)) throw e
+                Thread.sleep(SEND_RETRY_DELAY_MS[attempt - 1])
+                attempt++
+            }
+        }
+    }
 
     /** Скачать файл по пути из `getFile`; больше [maxBytes] — не дочитывается, IOException. */
     fun download(path: String, maxBytes: Int): ByteArray {
@@ -88,6 +98,22 @@ class TgHttp(private val token: String) {
     }
 
     companion object {
+        /** Объявленное число: два повтора после первой попытки. */
+        const val SEND_RETRIES = 3
+        val SEND_RETRY_DELAY_MS = longArrayOf(500L, 1_500L)
+
+        internal fun isTransientNetworkFailure(error: IOException): Boolean {
+            val message = (error.javaClass.simpleName + " " + (error.message ?: "")).lowercase()
+            return message.contains("ssl") ||
+                message.contains("handshake") ||
+                message.contains("connection closed") ||
+                message.contains("connection reset") ||
+                message.contains("unexpected end of file") ||
+                message.contains("timed out") ||
+                message.contains("sockettimeout") ||
+                message.contains("eofexception")
+        }
+
         /** Объявленное число, не подобранное: сотня обновлений с запасом. */
         const val MAX_REPLY_BYTES = 4 * 1024 * 1024
     }
