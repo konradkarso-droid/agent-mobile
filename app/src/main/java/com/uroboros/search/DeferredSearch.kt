@@ -27,7 +27,7 @@ internal object DeferredSearchParser {
         """через\s+(пол\s*часа|(?:одну|один|два|две|три|четыре|пять|десять|пятнадцать|двадцать|тридцать|[1-9][0-9]?)\s*(секунд[уы]?|минут[уы]?|час(?:а|ов)?|дн(?:я|ей)|день))""",
         RegexOption.IGNORE_CASE,
     )
-    private val clockTime = Regex("(?:сегодня|завтра)?\s*(?:в|к)\s*(\d{1,2})(?:[:.]([0-5]?\d))?", RegexOption.IGNORE_CASE)
+    private val clockTime = Regex("(?:сегодня|завтра)?\\s*(?:в|к)\\s*(\\d{1,2})(?:[:.]([0-5]?\\d))?", RegexOption.IGNORE_CASE)
 
     fun parse(text: String, now: ZonedDateTime): DeferredSearchRequest? {
         val phrase = text.trim()
@@ -61,9 +61,9 @@ internal object DeferredSearchParser {
         }
 
         val clock = clockTime.find(phrase) ?: return null
-        var hour = clock.groupValues[1].toIntOrNull()?.takeIf { it in 0..23 } ?: return null
+        val hour = clock.groupValues[1].toIntOrNull()?.takeIf { it in 0..23 } ?: return null
         val minute = clock.groupValues[2].takeIf { it.isNotBlank() }?.toIntOrNull()?.takeIf { it in 0..59 } ?: 0
-        val tomorrow = phrase.contains(Regex("^завтра|\\sзавтра", RegexOption.IGNORE_CASE))
+        val tomorrow = Regex("^завтра|\\sзавтра", RegexOption.IGNORE_CASE).containsMatchIn(phrase)
         var run = now.withHour(hour).withMinute(minute).withSecond(0).withNano(0)
         if (tomorrow) run = run.plusDays(1)
         if (!tomorrow && run.toInstant().toEpochMilli() <= now.toInstant().toEpochMilli()) run = run.plusDays(1)
@@ -73,7 +73,7 @@ internal object DeferredSearchParser {
 
     private fun removeDelayAndCommand(text: String, delayRange: IntRange): String {
         var value = text.removeRange(delayRange).trim()
-        value = value.replace(Regex("^(?:пожалуйста[,!:\\s]*)?(?:поищи(?:те)?|найди(?:те)?|посмотри(?:те)?|проверь(?:те)?|можешь\s+(?:найти|поискать|посмотреть|проверить)|погугли(?:те)?)(?:\s+в\s+(?:интернете|сети)|онлайн)?[,\\s:—–-]*", RegexOption.IGNORE_CASE), "")
+        value = value.replace(Regex("^(?:пожалуйста[,!:\\s]*)?(?:поищи(?:те)?|найди(?:те)?|посмотри(?:те)?|проверь(?:те)?|можешь\\s+(?:найти|поискать|посмотреть|проверить)|погугли(?:те)?)(?:\\s+в\\s+(?:интернете|сети)|онлайн)?[,\\s:—–-]*", RegexOption.IGNORE_CASE), "")
         value = value.replace(Regex("[,\\s:—–-]+$"), "").trim()
         return value
     }
@@ -112,8 +112,8 @@ internal class DeferredSearchStore(private val app: Context) {
                 query = row.getString("query"),
                 runAt = row.getLong("runAt"),
                 channel = channel,
-                chatId = row.opt("chatId") as? Number?.let { it.toLong() },
-                replyMessageId = row.opt("replyMessageId") as? Number?.let { it.toLong() },
+                chatId = (row.opt("chatId") as? Number)?.toLong(),
+                replyMessageId = (row.opt("replyMessageId") as? Number)?.toLong(),
                 original = row.optString("original"),
             )
         }
