@@ -1,10 +1,24 @@
 package com.uroboros.search
 
 import android.app.job.JobInfo
+import android.app.job.JobParameters
 import android.app.job.JobScheduler
+import android.app.job.JobService
 import android.content.ComponentName
 import android.content.Context
 import android.os.PersistableBundle
+import android.util.Log
+import com.uroboros.ProcessObjects
+import com.uroboros.gate.link.GateLink
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.ZonedDateTime
 import java.util.UUID
 import org.json.JSONArray
@@ -166,6 +180,83 @@ internal class DeferredSearchScheduler(private val app: Context) {
     fun jobId(id: String): Int = 50_000 + ((UUID.nameUUIDFromBytes(id.toByteArray()).leastSignificantBits and 0x7fffffff) % 10_000).toInt()
 
     private companion object {
+        const val EXTRA_ID = "id"
+    }
+}
+
+/** Выполняет разовый поиск по системе Android JobScheduler. */
+internal class DeferredSearchJobService : JobService() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var current: Pair<JobParameters, Job>? = null
+
+    override fun onStartJob(params: JobParameters): Boolean {
+        val id = params.extras?.getString(EXTRA_ID) ?: return false
+        if (current != null) return false
+        val task = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                withContext(Dispatchers.IO) {
+                    val app = applicationContext
+                    val deferred = DeferredSearchStore(app).read().firstOrNull { it.id == id } ?: return@withContext
+                    if (System.currentTimeMillis() < deferred.runAt) return@withContext
+
+                    val objects = ProcessObjects.get(app)
+                    val reply = when (deferred.channel) {
+                        SearchChannel.APP -> objects.search.fromApp(SearchCommand.Find(deferred.query))
+                        SearchChannel.TELEGRAM -> {
+                            val chatId = deferred.chatId ?: return@withContext
+                            val sent = GateLink.sendText(
+                                chatId,
+                                deferred.query,
+                                deferred.replyMessageId,
+                                null,
+                                disablePreview = true,
+                            )
+                            if (sent.failure != null) {
+                                Log.w(TAG, "Отложенный Telegram-поиск не отправлен: " + sent.failure)
+                                return@withContext
+                            }
+                            DeferredSearchStore(app).remove(id)
+                            return@withContext
+                        }
+                    }
+
+                    // В приложение выдача сохраняется общей историей поиска.
+                    // Повторное открытие экрана получает тот же последний результат.
+                    reply
+                    DeferredSearchStore(app).remove(id)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w(TAG, "Отложенный поиск остановился: " + failure.javaClass.simpleName)
+            } finally {
+                if (current?.first === params) {
+                    current = null
+                    jobFinished(params, false)
+                }
+            }
+        }
+        current = params to task
+        task.start()
+        return true
+    }
+
+    override fun onStopJob(params: JobParameters): Boolean {
+        if (current?.first?.jobId == params.jobId) {
+            current?.second?.cancel()
+            current = null
+        }
+        return false
+    }
+
+    override fun onDestroy() {
+        current?.second?.cancel()
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    private companion object {
+        const val TAG = "DeferredSearchJob"
         const val EXTRA_ID = "id"
     }
 }
