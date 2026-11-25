@@ -5,12 +5,13 @@ import com.uroboros.memory.ActionType
 import com.uroboros.memory.StandingConsent
 import com.uroboros.memory.nav.PersonKey
 import com.uroboros.memory.nav.PersonMerge
+import com.uroboros.search.LinkOrigin
 
 /**
- * Три решения владельца для слов в телеграме — в настройках приложения:
- * согласие отвечать ([StandingConsent]), «это я» (его номер в телеграме) и
- * имена агента для сортировщика. Пишет их только экран врат за замком
- * ([GateActivity]).
+ * Четыре решения владельца для слов в телеграме — в настройках приложения:
+ * согласие отвечать ([StandingConsent]), разрешение на ссылки в группах
+ * ([groupLinks]), «это я» (его номер в телеграме) и имена агента для
+ * сортировщика. Пишет их только экран врат за замком ([GateActivity]).
  *
  * ПОЧЕМУ НЕ В БАЗЕ ПАМЯТИ. Это не записи о мире, а настройки канала: что
  * владелец разрешил и кто он в телеграме. Записи из телеграма сами несут
@@ -18,7 +19,7 @@ import com.uroboros.memory.nav.PersonMerge
  * «это я» не теряет, чьи они.
  *
  * ЧЕГО НЕ УМЕЕТ: в выгрузку баз не попадает; очистка данных приложения
- * стирает все три решения вместе с остальным.
+ * стирает все четыре решения вместе с остальным.
  */
 object ChatPrefs {
 
@@ -28,6 +29,8 @@ object ChatPrefs {
     private const val OWNER_KEY = "owner_key"
     private const val OWNER_NAME = "owner_name"
     private const val NAMES = "agent_names"
+    private const val GROUP_LINKS_AT = "group_links_at"
+    private const val GROUP_LINKS_UNTIL = "group_links_until"
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -65,6 +68,35 @@ object ChatPrefs {
     }
 
     private const val GRANTED_BY = "владелец, кнопкой на экране врат за замком"
+
+    // --- Разрешение на ссылки в группах телеграма ---
+
+    /**
+     * Отдельное разрешение владельца открывать ссылки в группах телеграма
+     * (переход по присланой ссылке — см. [LinkFollow]). Стоит рядом с
+     * согласием отвечать, но не сливается с ним: сняв одно, владелец не
+     * должен молча менять другое. Как и согласие, переживает перезапуски и
+     * снимается кнопкой или аварийным стопом.
+     */
+    fun groupLinks(context: Context, now: Long = System.currentTimeMillis()): StandingConsent? {
+        val p = prefs(context)
+        val at = p.getLong(GROUP_LINKS_AT, 0L).takeIf { it > 0 } ?: return null
+        val until = p.getLong(GROUP_LINKS_UNTIL, StandingConsent.NO_TERM)
+        return StandingConsent.restored(ActionType.NETWORK_CALL, LinkOrigin.GROUP.requestedBy, GRANTED_BY, at, until, now)
+    }
+
+    /** Только кнопка владельца на экране врат. Без срока — до «Снять» или аварийного стопа. */
+    fun grantGroupLinks(context: Context, now: Long = System.currentTimeMillis()): StandingConsent {
+        val c = StandingConsent.grantedByOwner(
+            ActionType.NETWORK_CALL, LinkOrigin.GROUP.requestedBy, GRANTED_BY, now, termMs = StandingConsent.NO_TERM,
+        )
+        prefs(context).edit().putLong(GROUP_LINKS_AT, c.grantedAt).putLong(GROUP_LINKS_UNTIL, c.expiresAt).apply()
+        return c
+    }
+
+    fun revokeGroupLinks(context: Context) {
+        prefs(context).edit().remove(GROUP_LINKS_AT).remove(GROUP_LINKS_UNTIL).apply()
+    }
 
     // --- «Это я» ---
 

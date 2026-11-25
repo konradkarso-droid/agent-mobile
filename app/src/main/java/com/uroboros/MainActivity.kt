@@ -116,6 +116,7 @@ import com.uroboros.gate.ChatOwnSpeech
 import com.uroboros.gate.ChatPromises
 import com.uroboros.gate.CrossChannel
 import com.uroboros.gate.link.ChatPrefs
+import com.uroboros.gate.link.LinkFollow
 import com.uroboros.llm.ChatDatabase
 import com.uroboros.memory.nav.AddressSorter
 import com.uroboros.safety.BodyLine
@@ -156,6 +157,7 @@ import com.uroboros.util.wordSpots
 import com.uroboros.will.SimplePendingQuerySource
 import com.uroboros.will.TermuxKotlinCompiler
 import com.uroboros.will.tasks.KotlinCodingTask
+import com.uroboros.search.LinkOrigin
 import com.uroboros.search.MAX_QUERY_LENGTH
 import com.uroboros.search.SearchCommand
 import kotlinx.coroutines.CancellationException
@@ -3646,6 +3648,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Открытие ссылки из чата приложения: ход в ленте как у веб-поиска, ответ —
+     * пересказ страницы (или причина отказа). Ссылка без сопроводительных слов
+     * читается вопросом по умолчанию; слова вокруг ссылки становятся вопросом.
+     *
+     * Голый домен без схемы («nplus1.ru») ссылкой здесь не считается — см.
+     * LinkFollow.plainTextUrl.
+     */
+    private fun submitLinkOpen(url: String, message: String) {
+        val feed = journal
+        val turn = feed.beginWebTurn(message, "Открываю ссылку…") ?: return
+        setDetailsExpanded(false)
+        backToConversation()
+        renderProgress()
+        lifecycleScope.launch {
+            val reply = processObjects.search.followLink(
+                LinkOrigin.APP, url, question = LinkFollow.question(message, url),
+            )
+            feed.finishWebTurn(turn, reply.chatText, reply.sourceUrls)
+        }
+    }
+
+    /**
      * Раскрыть или свернуть шторку с диагностикой.
      *
      * Состояние запоминается между запусками: тот, кто разбирается с
@@ -4889,7 +4913,8 @@ class MainActivity : AppCompatActivity() {
 
         binding.editTextInput.doAfterTextChanged { text ->
             if (!llmEngine.isLoaded && !turns.busy.value) {
-                binding.buttonSend.isEnabled = SearchCommand.fromOwnerWords(text?.toString()) != null
+                binding.buttonSend.isEnabled = SearchCommand.fromOwnerWords(text?.toString()) != null ||
+                    LinkFollow.plainTextUrl(text?.toString() ?: "") != null
             }
         }
 
@@ -4923,6 +4948,13 @@ class MainActivity : AppCompatActivity() {
                 if (command !is SearchCommand.Find || command.query.length <= MAX_QUERY_LENGTH) {
                     binding.editTextInput.text.clear()
                 }
+                return@setOnClickListener
+            }
+            // Ссылка в тексте — ход «открываю и пересказываю», как у веб-поиска:
+            // она не идёт ни в разговор с моделью, ни в очередь вопросов цикла.
+            LinkFollow.plainTextUrl(userText)?.let { url ->
+                submitLinkOpen(url, userText)
+                binding.editTextInput.text.clear()
                 return@setOnClickListener
             }
             if (!llmEngine.isLoaded && !isToteRunning) {
