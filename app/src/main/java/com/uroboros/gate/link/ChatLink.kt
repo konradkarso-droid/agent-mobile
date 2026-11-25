@@ -64,6 +64,7 @@ import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
+import com.uroboros.search.CrawlSources
 import com.uroboros.search.LinkOrigin
 import com.uroboros.search.SearchCommand
 import com.uroboros.search.SearchReply
@@ -1402,6 +1403,9 @@ object ChatLink {
         out += "Ссылки (телеграм): открыто ${linkOpened.get()} · не открылось ${linkFailed.get()} · запрещено правилами ${linkDenied.get()}"
         out += ChatPrefs.groupLinks(app, now)?.let { "Ссылки в группах: разрешено без срока (снять — кнопка «Ссылки» вверху справа)" }
             ?: "Ссылки в группах: не разрешено (кнопка «Ссылки» вверху справа)"
+        // Прибор выученного белого списка (CrawlSources): ноль отличает «ссылок не
+        // было» от «механизм молчит» — растущее число видно и без открытия поиска.
+        out += "Источники из ссылок: ${CrawlSources.learned().size} сайтов (обход идёт и по ним)"
         out += privacyLine(me)
         // Перехват порчи в ответах чата (AnswerLadder) стоит на этом детекторе:
         // не загружен — порча не проверяется, и это видно здесь, а не молчит.

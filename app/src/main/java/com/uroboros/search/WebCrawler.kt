@@ -4,6 +4,7 @@ import crawlercommons.robots.SimpleRobotRules
 import crawlercommons.robots.SimpleRobotRulesParser
 import java.io.IOException
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -12,6 +13,32 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 
+/**
+ * Адреса, поддерживаемые обходом, — белый список источников.
+ *
+ * ПЕРВАЯ ВЕРСИЯ — четыре сайта с правилами путей, записанными здесь же: обход
+ * сам выбирает, куда идти, и его границы объявлены, а не подобраны.
+ *
+ * ВЫУЧЕННЫЕ ИЗ ПРИСЛАНЫХ ССЫЛОК. Сайт, чью страницу агент открыл и прочёл по
+ * прямой просьбе человека (search.SearchPlatform.followLink — и из телеграма,
+ * и из чата приложения), становится источником целиком: любой путь на нём
+ * проходит [address] наравне с первыми четырьмя. Правила первых источников
+ * выучиванием не ослабляются: у ru.wikipedia.org, как и прежде, только
+ * статьи /wiki/, сколько бы ссылок на него ни прислали. Хост выучивается
+ * конечный, после переадресаций, — обход пойдёт туда, где лежит текст.
+ *
+ * ЖИЗНЬ МЕЖДУ ПЕРЕЗАПУСКАМИ: множество живёт в памяти процесса и
+ * восстанавливается с диска той же SearchPlatform при сборке ([restore]);
+ * там же оно сохраняется ([learned]). Порядок хостов не хранится и не нужен:
+ * множество, а не список.
+ *
+ * ЧЕГО НЕ УМЕЕТ: выученный сайт не снимается кнопкой — только очистка данных
+ * приложения; страница с запросом (?) выученному сайту по-прежнему не адрес
+ * обхода — граница общих проверок [address] едина для всех источников.
+ *
+ * Чистый объект: ни Android, ни сети. Множество выученных хостов — состояние
+ * процесса, как загруженный словарь у LemmaHolder.
+ */
 internal object CrawlSources {
     private val year = Regex("[0-9]{4}")
     private val month = Regex("0[1-9]|1[0-2]")
@@ -30,6 +57,24 @@ internal object CrawlSources {
         "https://ru.wikipedia.org/wiki/Настольная_игра",
     ).map { checkNotNull(address(it)).toString() }
 
+    /** Выученные из присланых ссылок хосты — состояние процесса. */
+    private val learnedHosts = ConcurrentHashMap.newKeySet<String>()
+
+    /** Снимок выученных хостов — для сохранения на диск и строки прибора. */
+    fun learned(): Set<String> = learnedHosts.toSet()
+
+    /**
+     * Выучить хост присланой ссылки. true — новый, false — уже был. Регистр
+     * сводится к нижнему: хост в адресе всегда нижний, а сравнение здесь.
+     */
+    fun learn(host: String): Boolean = learnedHosts.add(host.lowercase(Locale.ROOT))
+
+    /** Восстановить выученные хосты с диска; прежние стираются. */
+    fun restore(hosts: Set<String>) {
+        learnedHosts.clear()
+        learnedHosts.addAll(hosts.map { it.lowercase(Locale.ROOT) })
+    }
+
     fun address(value: String): HttpUrl? {
         val url = value.toHttpUrlOrNull() ?: return null
         if (!url.isHttps || url.port != 443 || url.username.isNotEmpty() || url.password.isNotEmpty() ||
@@ -46,7 +91,9 @@ internal object CrawlSources {
                 parts[1].matches(year) && parts[2].matches(month) && parts[3].matches(day) && parts[4].matches(slug)
             "developer.android.com" -> parts.size == 3 && parts[0] == "blog" && parts[1] == "posts" &&
                 parts[2].matches(slug)
-            else -> false
+            // Новый сайт — источник только если человек прислал на него ссылку
+            // и агент её открыл (см. шапку). «Любой сайт» сюда не проходит.
+            else -> url.host in learnedHosts
         }
         return if (accepted) url.newBuilder().fragment(null).build() else null
     }
