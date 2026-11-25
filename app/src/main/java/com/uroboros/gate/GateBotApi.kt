@@ -105,8 +105,8 @@ object GateBotApi {
     /** Файл в сообщении: как скачать и какого он размера (null — телеграм не сказал). */
     data class Doc(val fileId: String, val size: Long?)
 
-    /** Сущность текста (`entities`): вид и место в единицах UTF-16; [userId] — у `text_mention`. */
-    data class Entity(val type: String, val offset: Int, val length: Int, val userId: Long? = null)
+    /** Сущность текста (`entities`): вид и место в единицах UTF-16; [userId] — у `text_mention`, [url] — у `text_link`. */
+    data class Entity(val type: String, val offset: Int, val length: Int, val userId: Long? = null, val url: String? = null)
 
     /**
      * Сообщение из обновления — то, что нужно вратам (до скачивания файла) и
@@ -191,7 +191,7 @@ object GateBotApi {
         val type = TgJson.str(e["type"]) ?: return null
         val offset = TgJson.long(e["offset"])?.toInt() ?: return null
         val length = TgJson.long(e["length"])?.toInt() ?: return null
-        return Entity(type, offset, length, TgJson.obj(e["user"])?.let { TgJson.long(it["id"]) })
+        return Entity(type, offset, length, TgJson.obj(e["user"])?.let { TgJson.long(it["id"]) }, TgJson.str(e["url"]))
     }
 
     /**

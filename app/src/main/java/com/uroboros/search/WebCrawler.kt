@@ -256,8 +256,7 @@ internal class CrawlSession(
             val response = fetch(url, rules.crawlDelay.coerceAtLeast(850), CrawlResource.PAGE, cached)
             when (response.code) {
                 200 -> {
-                    val charset = response.type.substringAfter("charset=", "").substringBefore(';').trim('"', ' ')
-                        .takeIf { it.isNotBlank() && runCatching { java.nio.charset.Charset.isSupported(it) }.getOrDefault(false) }
+                    val charset = charsetOf(response.type)
                     val page = extractPage(url, response.body, response.directives, charset)
                     return CrawlOutcome.Loaded(url.toString(), page, response.validators)
                 }
