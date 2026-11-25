@@ -27,6 +27,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 internal class SearchPlatform(
     private val app: Context,
@@ -37,8 +38,16 @@ internal class SearchPlatform(
     private val preferences = app.getSharedPreferences("web_search", Context.MODE_PRIVATE)
     private val index = LocalWebIndex(app)
     private val crawler = WebCrawler(index)
+    private val linkOpener = LinkOpener()
     private val reader = PageReader(infer)
     private val autoRefresh = WebRefreshSchedule(app)
+
+    init {
+        // Выученные из присланых ссылок источники переживают перезапуск: восстановлены
+        // с диска до первого поиска и открытия ссылки. CrawlSources — состояние
+        // процесса; диск — здесь, у владельца поиска.
+        preferences.getStringSet(LEARNED_SOURCES, emptySet())?.let(CrawlSources::restore)
+    }
 
     private fun blocked() = EmergencyStop.isActive() || watchdog.zone.value == SafetyZone.CRITICAL
 
@@ -81,6 +90,81 @@ internal class SearchPlatform(
     }
 
     suspend fun snapshot(): SearchView = withContext(Dispatchers.IO) { engine.snapshot() }
+
+    /**
+     * Прямое открытие присланой ссылки: приём адреса, ворота действий, загрузка,
+     * чтение. Ответ — готовый текст для чата с источником; отказ тоже текстом,
+     * чтобы отправитель видел причину, а не молчание.
+     *
+     * [origin] задаёт компонент и происхождение для ворот: ссылка из группы
+     * идёт не-пользовательским происхождением и без отдельного разрешения
+     * владельца ([consent]) ворота её отклоняют сами. В историю поиска
+     * открытие не пишется: «что искал» и «какие страницы открывал по чужим
+     * ссылкам» — разные вопросы.
+     */
+    suspend fun followLink(
+        origin: LinkOrigin,
+        address: String,
+        question: String,
+        consent: StandingConsent? = null,
+        stillAllowed: () -> Boolean = { true },
+    ): SearchReply = withContext(Dispatchers.IO) {
+        fun refused(why: String) = SearchReply("Ссылку не открываю: $why")
+        if (blocked()) return@withContext refused("аварийный стоп или критическая зона — сеть закрыта")
+        val url = LinkAdmission.admit(address)
+            ?: return@withContext refused("адрес не годится — не https, с паролем, с портом или слишком длинный")
+        val verdict = GatedAction.evaluate(
+            app,
+            ActionRequest(
+                type = ActionType.NETWORK_CALL, requestedBy = origin.requestedBy,
+                provenance = origin.provenance, crossesDeviceBoundary = true, isReversible = false,
+            ),
+            consent,
+        )
+        if (verdict.result != GateResult.ALLOW) return@withContext refused("ворота действий отказали — причина в журнале действий")
+        val opened = withTimeoutOrNull(OPEN_LIMIT_MS) { linkOpener.open(url) { stillAllowed() && !blocked() } }
+            ?: return@withContext refused("не уложился по времени")
+        when (opened) {
+            is LinkOpener.Open.Refused -> refused(opened.why)
+            is LinkOpener.Open.Page -> {
+                // Страница открылась и прочиталась — её сайт становится источником обхода
+                // (см. learnSource): белый список растёт из присланых ссылок обоих каналов.
+                learnSource(opened.url)
+                val query = question.trim().ifEmpty { LinkOpener.SUMMARY_QUESTION }
+                val answer = withTimeoutOrNull(READ_LIMIT_MS) {
+                    reader.answer(query, listOf(IndexedPage(opened.url, opened.title, opened.text)))
+                }
+                val text = if (answer != null) "$answer\n\nИсточник: ${opened.url}"
+                else "Ответ модели недоступен. Открыл страницу «${opened.title}».\n\n${pageExcerpt(opened.text)}\n\nИсточник: ${opened.url}"
+                SearchReply(text, sourceUrls = listOf(opened.url))
+            }
+        }
+    }
+
+    /**
+     * Выучить источник из открывшейся страницы: сайт, чью страницу агент прочёл
+     * по просьбе человека, становится адресом обхода — белый список растёт и от
+     * ссылок из телеграма, и от ссылок из чата приложения (оба канала идут через
+     * [followLink]). Хост берётся конечный, после переадресаций: обход пойдёт
+     * туда, где лежит текст. Отказ и не открывшаяся страница ничего не выучивают —
+     * источником становится прочитанный сайт, а не названный наугад.
+     *
+     * Открытая страница тут же сеется в очередь обхода (frontier): без посева
+     * выученный сайт молчал бы — обход находит адреса только ссылками с уже
+     * прочитанных страниц и посевами. Прочитает её обход сам, со своей паузой и
+     * robots.txt, которых у прямого открытия нет; адрес с запросом (?) в очередь
+     * не сеется — он не адрес обхода (CrawlSources.address).
+     *
+     * Новый хост сохраняется на диск сразу: выученное переживает перезапуск.
+     */
+    private fun learnSource(pageUrl: String) {
+        val host = pageUrl.toHttpUrlOrNull()?.host ?: return
+        if (CrawlSources.learn(host)) {
+            preferences.edit().putStringSet(LEARNED_SOURCES, CrawlSources.learned()).commit()
+        }
+        // После выучивания: новому хосту адрес страницы обязан уже проходить.
+        CrawlSources.address(pageUrl)?.let { page -> index.seed(listOf(page.toString())) }
+    }
 
     suspend fun autoRefreshCommand(
         command: SearchCommand.AutoRefresh,
@@ -245,7 +329,12 @@ internal class SearchPlatform(
 
     companion object {
         private const val HISTORY = "history"
+        private const val LEARNED_SOURCES = "learned_sources"
         private const val CANDIDATE_LIMIT = 12
+
+        /** Пределы открытия одной ссылки и чтения её страниц. Объявленные числа, как у поиска. */
+        private const val OPEN_LIMIT_MS = 20_000L
+        private const val READ_LIMIT_MS = 75_000L
         private val DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     }
 }

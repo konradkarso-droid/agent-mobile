@@ -64,6 +64,8 @@ import com.uroboros.memory.nav.Portrait
 import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
+import com.uroboros.search.CrawlSources
+import com.uroboros.search.LinkOrigin
 import com.uroboros.search.SearchCommand
 import com.uroboros.search.SearchReply
 import kotlinx.coroutines.CancellationException
@@ -104,7 +106,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * канала: кто сказал, где, в каком чате, кольцо (memory.Heard). Чужие слова —
  * «Подпись: текст» ([TgWords.memoryText]): отбор, портрет и судья читают их
  * чужой речью, как реплики других, переданные владельцем. Слова владельца,
- * отмеченного «это я» ([ChatPrefs.owner]), — без подписи: они его.
+ * отмеченного «это я» ([ChatPrefs.owner]), — без подписи: они его. Адрес
+ * присланой ссылки репликой в память не ложится (LinkFollow.withoutLinks):
+ * вырезается до записи — иначе суд памяти разбирал бы адрес как слова
+ * человека, а не адрес.
  *
  * ОТВЕТ ([work]) — по одному, в очереди, под замком хода
  * (ConversationTurns.aside), с решением [ChatReply.decide] до хода и
@@ -210,6 +215,11 @@ object ChatLink {
     private val lastSent = ConcurrentHashMap<Long, Long>()
     private val direct = AtomicInteger(0)
     private val group = AtomicInteger(0)
+
+    /** Ссылки в телеграме с запуска службы — для строки прибора «Ссылки». */
+    private val linkOpened = AtomicInteger(0)
+    private val linkDenied = AtomicInteger(0)
+    private val linkFailed = AtomicInteger(0)
 
     @Volatile
     private var lastAt: Long? = null
@@ -328,11 +338,38 @@ object ChatLink {
         tallies.compute(tallyKey) { _, old -> chatName to ((old?.second ?: AddressSorter.Tally()) + route) }
 
         val owner = ChatPrefs.owner(app)?.key == w.message.sender
-        val memo = remember(app, w, route, owner)
+        val memo = remember(app, w, route, owner, LinkFollow.withoutLinks(m))
         GateLink.note("Слова (${w.name}, ${placeWord(w.place)}): ${ringWord(route.ring)} — ${route.reason}; $memo")
 
+        // Ссылка из сообщения: матрица разрешений решает до всякой сети, отказ
+        // виден строкой события. Сработавшее открытие заменяет разговорный
+        // ответ: иначе на одно сообщение приходило бы два, и разговорный
+        // отвечал бы о странице, которой не читал.
+        var linkOwnsReply = false
+        LinkFollow.telegramUrl(m)?.let { sentLink ->
+            val where = when {
+                w.place == Place.DIRECT && owner -> LinkFollow.Where.OWNER_DIRECT
+                w.place == Place.DIRECT -> LinkFollow.Where.STRANGER_DIRECT
+                w.place == Place.GROUP && AddressSorter.answer(route.ring) == AddressSorter.Answer.ANSWER ->
+                    LinkFollow.Where.GROUP
+                else -> null // группа без обращения к агенту: ссылка не «ему»
+            }
+            if (where != null) {
+                when (val verdict = LinkFollow.decide(where, ChatPrefs.groupLinks(app) != null)) {
+                    is LinkFollow.Verdict.Allow -> {
+                        val origin = if (where == LinkFollow.Where.GROUP) LinkOrigin.GROUP else LinkOrigin.OWNER_DIRECT
+                        linkOwnsReply = linkCommand(app, m, w, sentLink, origin)
+                    }
+                    is LinkFollow.Verdict.Deny -> {
+                        linkDenied.incrementAndGet()
+                        GateLink.note("Ссылка (${w.name}, ${placeWord(w.place)}): не открываю — ${verdict.why}")
+                    }
+                }
+            }
+        }
+
         val answer = AddressSorter.answer(route.ring)
-        if (answer != AddressSorter.Answer.SILENT) {
+        if (!linkOwnsReply && answer != AddressSorter.Answer.SILENT) {
             // Начатые самим агентом суд и шаги ночи уступают, как реплике на экране.
             if (selfRunning()) AgentService.yieldToConversation(app)
             val counter = waiting.getOrPut(tallyKey) { AtomicInteger(0) }
@@ -413,10 +450,76 @@ object ChatLink {
         accepted.await()
     }
 
-    /** Положить в память по кольцу; итог словами для строки события. */
-    private suspend fun remember(app: Context, w: TgWords.Words, route: AddressSorter.Route, owner: Boolean): String {
+    /**
+     * Открытие присланной ссылки из телеграма — отдельным потоком, как
+     * веб-поиск: строка сообщения уже в ленте, ответ придёт своим
+     * сообщением. Возвращает true, если ответ взят на себя (разговорный ответ
+     * этого сообщения подавлен), false — не взял (нет области, очередь занята).
+     *
+     * Отказ по матрице сюда не попадает: он решается раньше, в [heard].
+     * Согласие отвечать нужно заранее — иначе страница читалась бы впустую.
+     */
+    private fun linkCommand(
+        app: Context, m: GateBotApi.Message, w: TgWords.Words, url: String, origin: LinkOrigin,
+    ): Boolean {
+        val scope = linkScope ?: return false
+        if (!searchReplies.tryAcquire()) {
+            GateLink.note("Ссылка (${w.name}): очередь ответов занята")
+            return false
+        }
+        val group = origin == LinkOrigin.GROUP
+
+        // Разрешения пересматриваются и после открытия: владелец мог снять
+        // «Отвечать» или разрешение групп, пока страница грузилась.
+        fun stillAllowed() = ChatPrefs.consent(app) != null && (!group || ChatPrefs.groupLinks(app) != null)
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (!stillAllowed()) {
+                    GateLink.note("Ссылка (${w.name}): нужно разрешить ответы в телеграме${if (group) " и ссылки в группах" else ""}")
+                    return@launch
+                }
+                val reply = ProcessObjects.get(app).search.followLink(
+                    origin, url,
+                    question = LinkFollow.question(m.text ?: "", url),
+                    consent = if (group) ChatPrefs.groupLinks(app) else null,
+                    stillAllowed = ::stillAllowed,
+                )
+                if (reply.sourceUrls.isEmpty()) linkFailed.incrementAndGet() else linkOpened.incrementAndGet()
+                if (stillAllowed()) {
+                    val text = reply.text.take(GateBotApi.TEXT_LIMIT).trimEnd { it.isWhitespace() || it.isHighSurrogate() }
+                    val sent = sendReply(
+                        app, m.chatId, text, m.messageId, m.threadId, ActionProvenance.CODE,
+                        disablePreview = true, stillAllowed = ::stillAllowed,
+                    )
+                    sent.failure?.let { GateLink.note("Ссылка (${w.name}): ответ не отправлен — $it") }
+                } else {
+                    GateLink.note("Ссылка (${w.name}): разрешение сняли, пока открывал — не отвечаю")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (broken: Exception) {
+                linkFailed.incrementAndGet()
+                GateLink.note("Ссылка (${w.name}): открытие сорвалось — ${broken.javaClass.simpleName}")
+            }
+        }.invokeOnCompletion { searchReplies.release() }
+        return true
+    }
+
+    /**
+     * Положить в память по кольцу; итог словами для строки события.
+     *
+     * [plain] — текст сообщения без адресов ссылок (LinkFollow.withoutLinks):
+     * адрес — не реплика, в памяти он лёг бы словами владельца, и суд памяти
+     * разбирал бы его как обычную фразу — основы из домена и слагов сводили
+     * бы в пары записи, которых человек не говорил. Пустой [plain] —
+     * сообщение из одних ссылок: в память не идёт вовсе.
+     */
+    private suspend fun remember(
+        app: Context, w: TgWords.Words, route: AddressSorter.Route, owner: Boolean, plain: String,
+    ): String {
         if (AddressSorter.memory(route.ring) == AddressSorter.Memory.NONE) return "в память не идёт"
-        val text = TgWords.memoryText(w.message.text, w.signature, owner)
+        if (plain.isBlank()) return "в память не идёт — одни ссылки, реплики нет"
+        val text = TgWords.memoryText(plain, w.signature, owner)
             ?: return "в память не легло: подпись «${w.signature}» не читается чужой речью"
         return try {
             val saved = ProcessObjects.get(app).mediator.saveEvent(
@@ -1297,6 +1400,12 @@ object ChatLink {
         val names = ChatPrefs.names(app)
         out += if (names.isEmpty()) "Имена агента: не объявлены — в группах по имени не сортирую (кнопка «Имена»)"
         else "Имена агента: ${names.joinToString(", ")}"
+        out += "Ссылки (телеграм): открыто ${linkOpened.get()} · не открылось ${linkFailed.get()} · запрещено правилами ${linkDenied.get()}"
+        out += ChatPrefs.groupLinks(app, now)?.let { "Ссылки в группах: разрешено без срока (снять — кнопка «Ссылки» вверху справа)" }
+            ?: "Ссылки в группах: не разрешено (кнопка «Ссылки» вверху справа)"
+        // Прибор выученного белого списка (CrawlSources): ноль отличает «ссылок не
+        // было» от «механизм молчит» — растущее число видно и без открытия поиска.
+        out += "Источники из ссылок: ${CrawlSources.learned().size} сайтов (обход идёт и по ним)"
         out += privacyLine(me)
         // Перехват порчи в ответах чата (AnswerLadder) стоит на этом детекторе:
         // не загружен — порча не проверяется, и это видно здесь, а не молчит.

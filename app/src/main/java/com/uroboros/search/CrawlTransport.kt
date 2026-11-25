@@ -61,6 +61,15 @@ internal data class CrawlResponse(
 
 internal const val CRAWLER_NAME = "UroborosLocalSearch"
 
+/**
+ * Кодировка из заголовка Content-Type или null, если её там нет или она не
+ * поддерживается платформой. Читают и обход ([CrawlSession]), и прямое
+ * открытие присланых ссылок — разбор один, в одном месте.
+ */
+internal fun charsetOf(type: String): String? =
+    type.substringAfter("charset=", "").substringBefore(';').trim('"', ' ')
+        .takeIf { it.isNotBlank() && runCatching { java.nio.charset.Charset.isSupported(it) }.getOrDefault(false) }
+
 internal class CrawlTransport(private val client: Call.Factory) {
     /** Закрепляем проверку IP в том DNS, которым клиент устанавливает соединение. */
     constructor(network: Network? = null) : this(OkHttpClient.Builder()

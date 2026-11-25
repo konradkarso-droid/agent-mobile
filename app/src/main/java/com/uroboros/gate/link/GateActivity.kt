@@ -119,6 +119,7 @@ class GateActivity : AppCompatActivity() {
         top.addView(topButton("Ключи") { tokenDialog() })
         root.addView(top)
         val top2 = LinearLayout(this).apply { gravity = Gravity.END }
+        top2.addView(topButton("Ссылки") { groupLinksDialog() })
         top2.addView(topButton("Имена") { namesDialog() })
         top2.addView(topButton("Мой тг") { ownerDialog() })
         root.addView(top2)
@@ -192,6 +193,33 @@ class GateActivity : AppCompatActivity() {
         } else {
             b.setMessage("Разрешено без срока. Снять — здесь или аварийным стопом.")
                 .setNeutralButton("Снять") { _, _ -> ChatPrefs.revokeConsent(this); ChatLink.refresh(this) }
+                .setNegativeButton("Отмена", null)
+        }
+        b.show()
+    }
+
+    /**
+     * Отдельное разрешение открывать ссылки в группах телеграма. От согласия
+     * отвечать не зависит: снимается и даётся только здесь. Ссылки в чате
+     * приложения и в личке владельца это окно не трогает — они разрешены
+     * всегда; чужие лички запрещены всегда.
+     */
+    private fun groupLinksDialog() {
+        val held = ChatPrefs.groupLinks(this)
+        val b = AlertDialog.Builder(this).setTitle("Ссылки в группах")
+        if (held == null) {
+            b.setMessage(
+                "Разрешить агенту открывать ссылки из сообщений в группах телеграма? " +
+                    "Разрешение без срока — до «Снять» здесь же или аварийного стопа. " +
+                    "Открываются ссылки только в сообщениях, адресованных агенту, по одной на сообщение. " +
+                    "Каждое открытие — в журнале действий. " +
+                    "Ссылки в чате приложения и в вашей личке открываются и без этого разрешения; в чужих личках не открываются никогда."
+            )
+                .setPositiveButton("Разрешить") { _, _ -> ChatPrefs.grantGroupLinks(this); ChatLink.refresh(this) }
+                .setNegativeButton("Отмена", null)
+        } else {
+            b.setMessage("Разрешено без срока. Снять — здесь или аварийным стопом.")
+                .setNeutralButton("Снять") { _, _ -> ChatPrefs.revokeGroupLinks(this); ChatLink.refresh(this) }
                 .setNegativeButton("Отмена", null)
         }
         b.show()
