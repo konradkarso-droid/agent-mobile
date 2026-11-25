@@ -105,7 +105,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * канала: кто сказал, где, в каком чате, кольцо (memory.Heard). Чужие слова —
  * «Подпись: текст» ([TgWords.memoryText]): отбор, портрет и судья читают их
  * чужой речью, как реплики других, переданные владельцем. Слова владельца,
- * отмеченного «это я» ([ChatPrefs.owner]), — без подписи: они его.
+ * отмеченного «это я» ([ChatPrefs.owner]), — без подписи: они его. Адрес
+ * присланой ссылки репликой в память не ложится (LinkFollow.withoutLinks):
+ * вырезается до записи — иначе суд памяти разбирал бы адрес как слова
+ * человека, а не адрес.
  *
  * ОТВЕТ ([work]) — по одному, в очереди, под замком хода
  * (ConversationTurns.aside), с решением [ChatReply.decide] до хода и
@@ -334,7 +337,7 @@ object ChatLink {
         tallies.compute(tallyKey) { _, old -> chatName to ((old?.second ?: AddressSorter.Tally()) + route) }
 
         val owner = ChatPrefs.owner(app)?.key == w.message.sender
-        val memo = remember(app, w, route, owner)
+        val memo = remember(app, w, route, owner, LinkFollow.withoutLinks(m))
         GateLink.note("Слова (${w.name}, ${placeWord(w.place)}): ${ringWord(route.ring)} — ${route.reason}; $memo")
 
         // Ссылка из сообщения: матрица разрешений решает до всякой сети, отказ
@@ -501,10 +504,21 @@ object ChatLink {
         return true
     }
 
-    /** Положить в память по кольцу; итог словами для строки события. */
-    private suspend fun remember(app: Context, w: TgWords.Words, route: AddressSorter.Route, owner: Boolean): String {
+    /**
+     * Положить в память по кольцу; итог словами для строки события.
+     *
+     * [plain] — текст сообщения без адресов ссылок (LinkFollow.withoutLinks):
+     * адрес — не реплика, в памяти он лёг бы словами владельца, и суд памяти
+     * разбирал бы его как обычную фразу — основы из домена и слагов сводили
+     * бы в пары записи, которых человек не говорил. Пустой [plain] —
+     * сообщение из одних ссылок: в память не идёт вовсе.
+     */
+    private suspend fun remember(
+        app: Context, w: TgWords.Words, route: AddressSorter.Route, owner: Boolean, plain: String,
+    ): String {
         if (AddressSorter.memory(route.ring) == AddressSorter.Memory.NONE) return "в память не идёт"
-        val text = TgWords.memoryText(w.message.text, w.signature, owner)
+        if (plain.isBlank()) return "в память не идёт — одни ссылки, реплики нет"
+        val text = TgWords.memoryText(plain, w.signature, owner)
             ?: return "в память не легло: подпись «${w.signature}» не читается чужой речью"
         return try {
             val saved = ProcessObjects.get(app).mediator.saveEvent(
