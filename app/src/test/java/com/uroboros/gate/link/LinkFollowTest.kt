@@ -119,6 +119,55 @@ class LinkFollowTest {
         assertEquals("", LinkFollow.question("https://example.com/a", "https://example.com/a"))
     }
 
+    // --- Ссылка не реплика: что остаётся для памяти ---
+
+    @Test
+    fun `видимая ссылка вырезается — остаётся реплика без адреса`() {
+        val url = "https://example.com/a?page=1"
+        val text = "глянь $url тут"
+        val m = message(text, GateBotApi.Entity("url", text.indexOf(url), url.length))
+        assertEquals("глянь тут", LinkFollow.withoutLinks(m))
+    }
+
+    @Test
+    fun `несколько видимых ссылок вырезаются все`() {
+        val first = "https://example.com/one"
+        val second = "https://example.com/two"
+        val text = "$first и ещё $second между"
+        val m = message(
+            text,
+            GateBotApi.Entity("url", text.indexOf(first), first.length),
+            GateBotApi.Entity("url", text.indexOf(second), second.length),
+        )
+        assertEquals("и ещё между", LinkFollow.withoutLinks(m))
+    }
+
+    @Test
+    fun `сообщение из одной ссылки пусто — реплики нет`() {
+        val url = "https://example.com/a"
+        val m = message(url, GateBotApi.Entity("url", 0, url.length))
+        assertEquals("", LinkFollow.withoutLinks(m))
+    }
+
+    @Test
+    fun `скрытая ссылка text_link текст не трогает — адреса в нём нет`() {
+        val m = message("вот статья", GateBotApi.Entity("text_link", 4, 6, url = "https://example.com/hidden"))
+        assertEquals("вот статья", LinkFollow.withoutLinks(m))
+    }
+
+    @Test
+    fun `без видимых ссылок текст возвращается как есть — до последнего пробела`() {
+        val text = "строка первая\nстрока вторая  с  пробелами"
+        val m = message(text, GateBotApi.Entity("mention", 0, 6))
+        assertEquals(text, LinkFollow.withoutLinks(m))
+    }
+
+    @Test
+    fun `сущность за краем текста не читается — текст цел`() {
+        val m = message("короткий текст", GateBotApi.Entity("url", 5, 100))
+        assertEquals("короткий текст", LinkFollow.withoutLinks(m))
+    }
+
     // --- Ворота действий: ссылка из группы весит больше и требует разрешения ---
 
     private fun groupRequest() = ActionRequest(
