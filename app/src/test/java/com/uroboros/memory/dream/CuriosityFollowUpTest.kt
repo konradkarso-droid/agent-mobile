@@ -1,6 +1,8 @@
 package com.uroboros.memory.dream
 
 import com.uroboros.memory.desk.Promises
+import com.uroboros.memory.nav.SemanticFeatures
+import com.uroboros.memory.nav.TestVerbs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -35,6 +37,19 @@ class CuriosityFollowUpTest {
             assertNull(text, CuriosityFollowUp.promise(text, null, listOf(promise), now) { false })
         }
         assertNull(CuriosityFollowUp.promise(reply, "Что случилось?", listOf(promise), now) { false })
+    }
+
+    @Test
+    fun recognizesTwoSemanticAnchorsInAnOtherwiseDifferentFormulation() {
+        val semantics = SemanticFeatures(TestVerbs.vectors, TestVerbs.lemmas)
+        val original = promise.copy(
+            sentence = "Узнаю про стоматолога и лечение.",
+            asked = "Проверь стоматолога и лечение.",
+        )
+        val rephrased = "Дантист предложил терапию."
+        assertNull(CuriosityFollowUp.promise(rephrased, null, listOf(original), now, semantic = null) { false })
+        assertEquals(original, CuriosityFollowUp.promise(rephrased, null, listOf(original), now, semantics) { false })
+        assertNull(CuriosityFollowUp.promise("Дантист едет в автобусе.", null, listOf(original), now, semantics) { false })
     }
 
     @Test

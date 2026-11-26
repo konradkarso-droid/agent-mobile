@@ -1,5 +1,7 @@
 package com.uroboros.search
 
+import com.uroboros.memory.nav.SemanticFeatures
+import com.uroboros.memory.nav.TestVerbs
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -105,6 +107,29 @@ class SearchIntentTest {
         assertNull(SearchCommand.fromOwnerWords("А если расширить поиск?", prior))
         assertNull(SearchCommand.fromOwnerWords("Он сказал: «Поищи шире»", prior))
         assertNull(SearchCommand.fromOwnerWords("Да", prior))
+    }
+
+    @Test
+    fun dictionaryRecognizesChangedVerbsAndSourcesWithoutACommandPhrase() {
+        val semantics = SemanticFeatures(TestVerbs.vectors, TestVerbs.lemmas)
+        for (text in listOf(
+            "Можешь глянуть в иных изданиях?",
+            "А давай заглянем ещё куда-нибудь",
+            "Можешь выйти за рамки этой ленты?",
+            "Можешь глянуть про это на других площадках?",
+        )) assertTrue(text, SearchIntent.asksToWiden(text, semantics))
+        for (text in listOf(
+            "В иных изданиях бывают совсем другие новости.",
+            "Как глянуть в других изданиях?",
+            "Сузь поиск до этой ленты",
+            "Посмотри только в N+1",
+            "Можешь глянуть в других изданиях про марсоходы?",
+            "Можешь поискать в других источниках марсоходы?",
+            "Посмотри в других источниках Android.",
+            "Посмотри ещё в наших записях.",
+            "Можешь глянуть где-нибудь ещё завтра?",
+            "Отложи поиск в других изданиях",
+        )) assertTrue(text, !SearchIntent.asksToWiden(text, semantics))
     }
 
     @Test

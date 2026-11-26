@@ -60,6 +60,7 @@ import com.uroboros.memory.nav.AddressSorter
 import com.uroboros.memory.nav.Coordinates
 import com.uroboros.memory.nav.LemmaDictionary
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.memory.nav.MeaningHolder
 import com.uroboros.memory.nav.NameClaim
 import com.uroboros.memory.nav.OwnSpeech
 import com.uroboros.memory.nav.PersonKey
@@ -311,6 +312,7 @@ object ChatLink {
         val command = SearchCommand.parse(m.text, me.username)
             ?: if (isSearchOwner(app, m)) {
                 val prior = lastWebReply?.topicFor(me.id, m.chatId, m.messageId, m.replyToMessageId, System.nanoTime())
+                if (prior != null) loadCuriosityLexicon(app)
                 SearchCommand.fromOwnerWords(m.text, prior)
             } else null
         if (command != null) {
@@ -852,6 +854,11 @@ object ChatLink {
         sender = l.sender,
     )
 
+    private suspend fun loadCuriosityLexicon(app: Context) = withContext(Dispatchers.IO) {
+        LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
+        MeaningHolder.load { app.assets.open(MeaningHolder.ASSET) }
+    }
+
     private suspend fun generate(app: Context, job: Job, upTo: List<ChatLine>): Generated {
         val engine = ProcessObjects.get(app).llmEngine
         val owner = ChatPrefs.owner(app)
@@ -929,6 +936,7 @@ object ChatLink {
         // Тема и обещания берутся из одного диалога. Сны и пробелы экрана сюда не передаются.
         val ownsDialog = job.place == Place.DIRECT && owner?.key == job.sender && !job.senderIsBot
         val canAsk = ownsDialog && note == null && CuriosityFollowUp.mayAsk(question, previousForCuriosity)
+        if (canAsk && !promised.isNullOrEmpty()) loadCuriosityLexicon(app)
         val gap = if (!canAsk) null else CuriosityAsk.decideGap(
             Gaps.of(turnsOfWindow.map { Gaps.Turn(it.question, it.agentContent, -1) }),
             question, previousForCuriosity, awaitingDream = false,

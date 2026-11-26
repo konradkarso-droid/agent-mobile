@@ -80,7 +80,9 @@ internal sealed interface SearchCommand {
         fun fromOwnerWords(text: String?, previousQuery: String? = null): SearchCommand? {
             val phrase = text?.trim() ?: return null
             if (SearchIntent.forbidsSearch(phrase)) return null
-            if (SearchIntent.asksToWiden(phrase)) return previousQuery?.let(SearchRoute::widen)?.let(::Find)
+            val widening = if (previousQuery == null) SearchIntent.asksToWiden(phrase, semantic = null)
+                else SearchIntent.asksToWiden(phrase)
+            if (widening) return previousQuery?.let(SearchRoute::widen)?.let(::Find)
             leadingDelay.find(phrase)?.let { match ->
                 val query = phrase.substring(match.range.last + 1).trimStart { it.isWhitespace() || it in ",:—–-" }
                 val topic = query.replaceFirst(leadingOnline, "").takeUnless(localObject::containsMatchIn).orEmpty()
