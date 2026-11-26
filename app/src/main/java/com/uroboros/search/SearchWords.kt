@@ -32,6 +32,9 @@ private fun searchGroups(query: String, dictionary: LemmaDictionary?): List<Set<
         }
     }.values.toList()
 
+internal fun semanticTokens(text: String): Sequence<String> = word.findAll(text)
+    .map { it.value }.filter { it.length in 3..48 && it !in filler }
+
 internal data class MatchScore(val missingWords: List<String>, val weight: Double)
 
 internal class SearchWords(query: String, dictionary: LemmaDictionary? = null) {
@@ -49,6 +52,11 @@ internal class SearchWords(query: String, dictionary: LemmaDictionary? = null) {
                 } else form in tokens
             }
         }
+    }
+
+    fun missingGroups(text: String): List<String> {
+        val found = matchingGroups(text)
+        return groups.indices.filterNot { it in found }.map { groups[it].first() }
     }
 
     fun scoreIndexMatch(blob: ByteArray): MatchScore {

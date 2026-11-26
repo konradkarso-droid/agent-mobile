@@ -4565,9 +4565,9 @@ class MainActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) { renderMetricsPanel() }
         }
 
-        // Векторы смысла (nav.MeaningHolder) — только для прибора «смысл»: один
+        // Векторы смысла (nav.MeaningHolder) для прибора и веб-поиска: один
         // раз за процесс, не в главном потоке. Пока не загружены, прибор говорит
-        // об этом строкой; отбор и ответ от них не зависят.
+        // об этом строкой, а веб-поиск работает по словам.
         lifecycleScope.launch(Dispatchers.IO) {
             MeaningHolder.load { assets.open(MeaningHolder.ASSET) }
             withContext(Dispatchers.Main) { renderMetricsPanel() }

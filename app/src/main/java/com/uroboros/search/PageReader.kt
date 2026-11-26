@@ -36,9 +36,7 @@ internal class PageReader(private val infer: suspend (String, String) -> String?
     suspend fun answer(query: String, pages: List<IndexedPage>, words: SearchWords = SearchWords(query)): String? {
         if (pages.isEmpty()) return null
         val sections = pages.flatMapIndexed { index, page -> sections(index + 1, page) }
-        val wholePage = Regex("""всю (?:страниц[уы]|статью)|(?:прочитай|разбери) (?:е[её] )?(?:целиком|полностью)""", RegexOption.IGNORE_CASE)
-            .containsMatchIn(query)
-        val selected = if (wholePage) sections.filter { it.source == 1 } else {
+        val selected = if (asksForWholePage(query)) sections.filter { it.source == 1 } else {
             selectSections(query, sections, words) ?: return null
         }
         if (selected.isEmpty()) return null
@@ -193,6 +191,9 @@ internal fun parseSectionChoice(choice: String, allowed: List<Int>): List<Int> {
     return value.split(',').mapNotNull { it.trim().toIntOrNull()?.minus(1) }
         .filter { it in allowed }.distinct().sorted()
 }
+
+private val wholePageRequest = Regex("""всю (?:страниц[уы]|статью)|(?:прочитай|разбери) (?:е[её] )?(?:целиком|полностью)""", RegexOption.IGNORE_CASE)
+internal fun asksForWholePage(query: String): Boolean = wholePageRequest.containsMatchIn(query)
 
 internal fun bestExcerpt(page: IndexedPage, words: SearchWords): String =
     page.text.lineSequence().filter { it.isNotBlank() && !it.startsWith("# ") }

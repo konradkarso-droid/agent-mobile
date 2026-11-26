@@ -1,6 +1,7 @@
 package com.uroboros.search
 
 import android.content.Context
+import android.database.sqlite.SQLiteException
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -12,6 +13,7 @@ import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.StandingConsent
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.memory.nav.MeaningHolder
 import com.uroboros.move.MoveState
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.SafetyZone
@@ -336,17 +338,17 @@ internal class SearchPlatform(
         val window = request.window
         if (request.news) return newsListing(route, channel, allowed)
         if (route.source != null) {
-            val local = lookup(request.subject, window, route.source)
-            if (local.indexed.isNotEmpty() && !local.needsRefresh) {
+            val local = lookupWithSemantics(request.subject, window, route.source, allowed)
+            if (local.indexed.isNotEmpty() && (!local.needsRefresh || local.indexed.any { it.semanticSpan != null })) {
                 return answer(request.subject, local, "Источник задан: ${route.source.name}.", window)
             }
             return newsListing(route, channel, allowed)
         }
-        var matches = lookup(request.subject, window)
+        var matches = lookupWithSemantics(request.subject, window, null, allowed)
         var update: SearchPage? = null
         if (allowed() && (window != null || matches.needsRefresh)) {
             update = refresh(channel, matches.words.terms, allowed, window = window)
-            if (allowed()) matches = lookup(request.subject, window)
+            if (allowed()) matches = lookupWithSemantics(request.subject, window, null, allowed, build = false)
         }
         if (window == null && matches.indexed.isEmpty() && matches.status.pages == 0 && update != null) return update
         if (matches.indexed.isEmpty() && request.subject.isNotBlank() && allowed()) {
@@ -468,21 +470,72 @@ internal class SearchPlatform(
         if (verdict.result != GateResult.ALLOW) {
             return SearchPage(emptyList(), status = SearchStatus.DENIED, detail = "Врата отклонили сетевой обход.")
         }
-        return execute().toSearchPage()
+        val report = execute()
+        // Дозаполнение использует тот же рабочий проход и проверку остановки.
+        prepareSemantic(allowed)
+        return report.toSearchPage()
     }
 
-    private data class Matches(val status: IndexStatus, val words: SearchWords, val indexed: List<IndexedMatch>) {
-        val needsRefresh get() = indexed.firstOrNull()?.missingWords?.isNotEmpty() ?: true
+    private data class Matches(
+        val status: IndexStatus,
+        val words: SearchWords,
+        val indexed: List<IndexedMatch>,
+        val needsRefresh: Boolean = indexed.firstOrNull()?.missingWords?.isNotEmpty() ?: true,
+        val semanticNote: String? = null,
+    )
+
+    private fun semanticEncoder(): WebSemantics? {
+        LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
+        MeaningHolder.load { app.assets.open(MeaningHolder.ASSET) }
+        val dictionary = LemmaHolder.loaded ?: return null
+        val vectors = MeaningHolder.loaded ?: return null
+        return WebSemantics(vectors, dictionary)
     }
 
-    private fun lookup(query: String, window: PublicationWindow? = null, source: WebFeedSource? = null): Matches {
+    private suspend fun prepareSemantic(allowed: () -> Boolean) {
+        if (!allowed()) return
+        try {
+            withTimeoutOrNull(1_500) {
+                semanticEncoder()?.let { index.fillSemantic(it, allowed) }
+            }
+        } catch (_: SQLiteException) {
+            // Векторный слой может уступить место основному поиску.
+        }
+    }
+
+    private suspend fun lookupWithSemantics(
+        query: String, window: PublicationWindow?, source: WebFeedSource?, allowed: () -> Boolean, build: Boolean = true,
+    ): Matches {
+        val lexical = lookup(query, window, source, diversify = false)
+        val base = lexical.copy(indexed = diverseMatches(lexical.indexed, SEARCH_LIMIT))
+        if (base.status.pages == 0 || base.words.terms.isEmpty() || !allowed()) return base
+        val mixed = try {
+            withTimeoutOrNull(2_000) {
+                val encoder = semanticEncoder() ?: return@withTimeoutOrNull null
+                val vector = encoder.query(query) ?: return@withTimeoutOrNull emptyList<IndexedMatch>()
+                if (build) withTimeoutOrNull(1_000) { index.fillSemantic(encoder, allowed) }
+                val byMeaning = index.findSemantic(encoder, vector, base.words, CANDIDATE_LIMIT, window, source, allowed)
+                if (byMeaning.isEmpty()) return@withTimeoutOrNull emptyList<IndexedMatch>()
+                diverseMatches(combineWebMatches(lexical.indexed, byMeaning), SEARCH_LIMIT)
+            }
+        } catch (_: SQLiteException) {
+            null
+        }
+        return when {
+            mixed == null -> base.copy(semanticNote = "Поиск по смыслу сейчас недоступен.")
+            mixed.isEmpty() -> base.copy(semanticNote = "По смыслу дополнительных выдержек пока нет.")
+            else -> base.copy(indexed = mixed, semanticNote = "Выдача учитывает слова и смысл фрагментов.")
+        }
+    }
+
+    private fun lookup(
+        query: String, window: PublicationWindow? = null, source: WebFeedSource? = null, diversify: Boolean = true,
+    ): Matches {
         val status = index.status()
         if (status.pages > 0) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
         val words = SearchWords(query, LemmaHolder.loaded)
-        val indexed = if (status.pages == 0) emptyList() else {
-            diverseMatches(index.find(words, CANDIDATE_LIMIT, window, source), SEARCH_LIMIT)
-        }
-        return Matches(status, words, indexed)
+        val indexed = if (status.pages == 0) emptyList() else index.find(words, CANDIDATE_LIMIT, window, source)
+        return Matches(status, words, if (diversify) diverseMatches(indexed, SEARCH_LIMIT) else indexed)
     }
 
     private suspend fun answer(
@@ -492,15 +545,24 @@ internal class SearchPlatform(
             val page = match.page
             val date = page.publishedAt?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).format(DATE) }
             val title = if (date == null) page.title else "$date · ${page.title}"
-            SearchHit.from(title, page.url, bestExcerpt(page, matches.words))?.let { it to match }
+            val semanticText = match.semanticSpan?.text(page.text)?.takeIf { match.missingWords.isNotEmpty() }
+            val excerptPage = if (semanticText == null) page else page.copy(text = semanticText)
+            SearchHit.from(title, page.url, bestExcerpt(excerptPage, matches.words))?.let { it to match }
         }
-        val readable = sources.map { it.second.page }
+        val readable = sources.map { (_, match) ->
+            val page = match.page
+            val fragment = match.semanticSpan?.text(page.text)
+            if (fragment != null && match.missingWords.isNotEmpty() && !asksForWholePage(query)) {
+                page.copy(text = fragment)
+            } else page
+        }
         val answer = if (readable.isEmpty()) null else withTimeoutOrNull(75_000) {
             reader.answer(query, readable, matches.words)
         }
         val missingWords = sources.firstOrNull()?.second?.missingWords.orEmpty()
         val detail = buildString {
             append(updateNote ?: "${indexLine(matches.status)} Поиск выполнен по локальному индексу.")
+            matches.semanticNote?.let { append(" "); append(it) }
             window?.let { append(" Период по датам публикаций в RSS и Atom — ${it.label}.") }
             if (missingWords.isNotEmpty()) {
                 append(" Совпадение частичное. На первой странице не найдены слова «")
