@@ -70,25 +70,54 @@ internal fun charsetOf(type: String): String? =
     type.substringAfter("charset=", "").substringBefore(';').trim('"', ' ')
         .takeIf { it.isNotBlank() && runCatching { java.nio.charset.Charset.isSupported(it) }.getOrDefault(false) }
 
+/**
+ * Бюджеты ожидания одного запроса: соединение, чтение, весь вызов.
+ *
+ * ДВА НАБОРА — объявленные числа, не подобранные:
+ *  - [FetchBudgets.CRAWL] — вежливый обход: короткие бюджеты, без повтора;
+ *  - [FetchBudgets.DIRECT] — прямое открытие присланой ссылки: весь вызов
+ *    укладывается под предел открытия одной ссылки (SearchPlatform.OPEN_LIMIT_MS),
+ *    а не режет её раньше. Большая HTML-страница (github.com — около 200 КБ)
+ *    на мобильной сети в шесть секунд не влезает, и обходный бюджет срезал её
+ *    до половины объявленного предела. Повтор сломанного соединения — один:
+ *    переключение WiFi→сота на телефоне как раз такой случай.
+ */
+internal data class FetchBudgets(
+    val connectMs: Long,
+    val readMs: Long,
+    val callMs: Long,
+    /** Повторять ли сломанное соединение: обходу — нет (лишний стук в источник), прямому открытию — да. */
+    val retryConnection: Boolean,
+) {
+    companion object {
+        /** Обход: как до появления прямого открытия, вежливость не разжата. */
+        val CRAWL = FetchBudgets(4_000L, 4_000L, 6_000L, retryConnection = false)
+
+        /** Прямое открытие: под пределом одной ссылки, с одним повтором соединения. */
+        val DIRECT = FetchBudgets(8_000L, 12_000L, 18_000L, retryConnection = true)
+    }
+}
+
 internal class CrawlTransport(private val client: Call.Factory) {
     /** Закрепляем проверку IP в том DNS, которым клиент устанавливает соединение. */
-    constructor(network: Network? = null) : this(OkHttpClient.Builder()
-        .apply { network?.socketFactory?.let { socketFactory(it) } }
-        .proxy(Proxy.NO_PROXY)
-        .dns(object : Dns {
-            override fun lookup(hostname: String): List<InetAddress> =
-                (network?.getAllByName(hostname)?.toList() ?: Dns.SYSTEM.lookup(hostname))
-                    .filter(::isPublicWebAddress).ifEmpty {
-                        throw UnknownHostException("No public address for source")
-                    }
-        })
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .retryOnConnectionFailure(false)
-        .connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(4, TimeUnit.SECONDS)
-        .callTimeout(6, TimeUnit.SECONDS)
-        .build())
+    constructor(network: Network? = null, budgets: FetchBudgets = FetchBudgets.CRAWL) : this(
+        OkHttpClient.Builder()
+            .apply { network?.socketFactory?.let { socketFactory(it) } }
+            .proxy(Proxy.NO_PROXY)
+            .dns(object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> =
+                    (network?.getAllByName(hostname)?.toList() ?: Dns.SYSTEM.lookup(hostname))
+                        .filter(::isPublicWebAddress).ifEmpty {
+                            throw UnknownHostException("No public address for source")
+                        }
+            })
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .retryOnConnectionFailure(budgets.retryConnection)
+            .connectTimeout(budgets.connectMs, TimeUnit.MILLISECONDS)
+            .readTimeout(budgets.readMs, TimeUnit.MILLISECONDS)
+            .callTimeout(budgets.callMs, TimeUnit.MILLISECONDS)
+            .build())
 
     suspend fun fetch(url: HttpUrl, resource: CrawlResource, validators: PageValidators): CrawlResponse =
         suspendCancellableCoroutine { task ->

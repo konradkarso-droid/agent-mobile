@@ -73,10 +73,15 @@ internal object LinkAdmission {
  * ([extractPage]). Пауза между запросами одного сайта не выдерживается —
  * запрос всегда один на ссылку.
  *
+ * Сеть по умолчанию — [CrawlTransport] с бюджетами прямого открытия
+ * ([FetchBudgets.DIRECT]): запрос человека не обязан влезать в обходные шесть
+ * секунд, но остаётся под пределом одной ссылки ([SearchPlatform.OPEN_LIMIT_MS]).
+ *
  * Чистый объект: сеть подставляется функцией, в юнит-тесте заменяется.
  */
 internal class LinkOpener(
-    private val network: suspend (HttpUrl, CrawlResource, PageValidators) -> CrawlResponse = CrawlTransport()::fetch,
+    private val network: suspend (HttpUrl, CrawlResource, PageValidators) -> CrawlResponse =
+        CrawlTransport(budgets = FetchBudgets.DIRECT)::fetch,
 ) {
     sealed interface Open {
         data class Page(val url: String, val title: String, val text: String) : Open
@@ -132,3 +137,14 @@ internal class LinkOpener(
 internal fun pageExcerpt(text: String, limit: Int = 400): String =
     text.lineSequence().filter { it.isNotBlank() && !it.startsWith("# ") }
         .take(4).joinToString("\n").take(limit)
+
+/**
+ * Строка про недоступный ответ модели с известной причиной. Выдержка выдаётся и
+ * без модели: страницу просил открыть человек, и его просьба не зависит от
+ * состояния модели. Причина [why] называет, почему ответа нет («модель не
+ * загружена», «чтение не уложилось в срок»); null — причина неизвестна,
+ * начало строки остаётся прежним.
+ */
+internal fun modelUnavailableText(why: String?, title: String, text: String, url: String): String =
+    "Ответ модели недоступен${why?.let { " — $it" } ?: ""}. Открыл страницу «$title».\n\n" +
+        "${pageExcerpt(text)}\n\nИсточник: $url"

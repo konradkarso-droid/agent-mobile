@@ -142,11 +142,50 @@ class LinkOpenerTest {
         assertTrue((opened as LinkOpener.Open.Refused).why.contains("не достучался"))
     }
 
+    // --- Бюджеты прямого открытия ---
+
+    @Test
+    fun `весь вызов прямого открытия под пределом одной ссылки`() {
+        // Объявленная граница: один запрос не занимает всё время открытия целиком —
+        // за переадресацией должно остаться место в пределе SearchPlatform.OPEN_LIMIT_MS.
+        assertTrue(FetchBudgets.DIRECT.callMs < SearchPlatform.OPEN_LIMIT_MS)
+    }
+
+    @Test
+    fun `обход не разжат — его бюджеты остаются короче прямого открытия`() {
+        // Тишина: растяжение бюджетов прямого открытия не должно расширить
+        // вежливый обход — шесть секунд обхода остаются короче восемнадцати прямых.
+        assertTrue(FetchBudgets.CRAWL.callMs < FetchBudgets.DIRECT.callMs)
+        assertTrue(!FetchBudgets.CRAWL.retryConnection)
+        assertTrue(FetchBudgets.DIRECT.retryConnection)
+    }
+
     // --- Выдержка при недоступной модели ---
 
     @Test
     fun `выдержка берёт первые строки без заголовков`() {
         val text = "# Заголовок\n\nПервый абзац.\nВторой абзац.\n\n# Ещё заголовок\nТретий."
         assertEquals("Первый абзац.\nВторой абзац.\nТретий.", pageExcerpt(text))
+    }
+
+    @Test
+    fun `модель недоступна с причиной — причина названа в строке`() {
+        val text = modelUnavailableText(
+            why = "модель не загружена", title = "Заголовок",
+            text = "# Заголовок\nПервый абзац.\nВторой абзац.", url = "https://example.com/a",
+        )
+        assertTrue(text, text.startsWith("Ответ модели недоступен — модель не загружена."))
+        assertTrue(text.contains("Открыл страницу «Заголовок»"))
+        assertTrue(text.contains("Первый абзац."))
+        assertTrue(text.contains("Источник: https://example.com/a"))
+    }
+
+    @Test
+    fun `модель недоступна без причины — прежнее начало без тире`() {
+        val text = modelUnavailableText(
+            why = null, title = "Заголовок",
+            text = "# Заголовок\nПервый абзац.", url = "https://example.com/a",
+        )
+        assertTrue(text.startsWith("Ответ модели недоступен. Открыл страницу «Заголовок»"))
     }
 }

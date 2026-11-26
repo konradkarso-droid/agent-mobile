@@ -97,7 +97,11 @@ object ProcessObjects {
             readPassport = { stickers.passportWall().let { BuildSelfDescription.PassportWall(it, Passport.hasName(it)) } },
         )
         val turns = ConversationTurns(llmEngine, JournalStore(app), processScope)
-        val search = SearchPlatform(app, watchdog, processScope) { instruction, material ->
+        val search = SearchPlatform(app, watchdog, processScope,
+            // Причина «модель не загружена» — та же, что экран и чат зовут словами
+            // «Накладка: модель не загружена»; здесь она ляжет в строку чтения ссылки.
+            modelHalted = { if (!llmEngine.isLoaded) "модель не загружена" else null },
+        ) { instruction, material ->
             if (!llmEngine.isLoaded) null else turns.aside {
                 val text = StringBuilder()
                 var done = false
