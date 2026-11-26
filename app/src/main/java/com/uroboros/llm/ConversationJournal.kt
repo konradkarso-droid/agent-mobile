@@ -207,6 +207,7 @@ class ConversationJournal {
         val progress: String,
         val answer: String? = null,
         val sourceUrls: List<String> = emptyList(),
+        val searchQuery: String? = null,
     ) : ScreenTurn
 
     /** Один отброшенный текст скрытого хода: [label] — какая попытка («первый», «вариант 2 (повтор)»). */
@@ -217,6 +218,8 @@ class ConversationJournal {
     private val _screenTurns = MutableStateFlow<List<ScreenTurn>>(emptyList())
     val screenTurns = _screenTurns.asStateFlow()
     val pendingWeb: Web? get() = _screenTurns.value.filterIsInstance<Web>().lastOrNull { it.answer == null }
+    val recentWebQuery: String? get() = (_screenTurns.value.lastOrNull() as? Web)
+        ?.takeIf { it.afterTurn == turns.size && it.answer != null }?.searchQuery
 
 
     /**
@@ -301,9 +304,9 @@ class ConversationJournal {
         return last
     }
 
-    fun beginWebTurn(question: String, progress: String): Web? {
+    fun beginWebTurn(question: String, progress: String, searchQuery: String? = null): Web? {
         if (pendingWeb != null) return null
-        val turn = Web(turns.size, question, progress)
+        val turn = Web(turns.size, question, progress, searchQuery = searchQuery)
         _screenTurns.value += turn
         return turn
     }

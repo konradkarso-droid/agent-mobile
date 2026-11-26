@@ -273,7 +273,9 @@ internal class SearchPlatform(
                         SearchReply("Включить автообновление можно в приложении после открытия замка.")
                     } else autoRefresh.enable(grant)
                     SearchCommand.AutoRefresh.Disable -> autoRefresh.disable()
-                    SearchCommand.AutoRefresh.Status -> autoRefresh.status()
+                    SearchCommand.AutoRefresh.Status -> SearchReply(
+                        "${indexLine(index.status())}\n${autoRefresh.status().text}",
+                    )
                 }
             } catch (_: IllegalStateException) {
                 SearchReply("Не удалось связаться с планировщиком Android.")
