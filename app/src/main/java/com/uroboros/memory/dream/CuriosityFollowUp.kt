@@ -5,6 +5,7 @@ import com.uroboros.memory.SentenceKind
 import com.uroboros.memory.Sentences
 import com.uroboros.memory.desk.Promises
 import com.uroboros.memory.nav.ForeignSpeech
+import com.uroboros.memory.nav.SemanticFeatures
 
 /** Дополнительные поводы: в разговоре сверить старое обещание, после поиска предложить следующий ход. */
 internal object CuriosityFollowUp {
@@ -21,19 +22,41 @@ internal object CuriosityFollowUp {
      */
     fun promise(
         reply: String, previousAnswer: String?, promises: List<Promises.Promise>,
-        now: Long, seen: (Promises.Promise) -> Boolean,
+        now: Long, semantic: SemanticFeatures? = SemanticFeatures.available(), seen: (Promises.Promise) -> Boolean,
     ): Promises.Promise? {
         if (!mayAsk(reply, previousAnswer)) return null
         val topic = RiskTrigger.significantStems(reply)
         if (topic.size < 2) return null
+        val replyWords by lazy { semantic?.words(topicWords(reply)).orEmpty() }
         return promises.firstOrNull { promise ->
             val asked = promise.asked ?: return@firstOrNull false
             val age = now - promise.at
             if (age !in MIN_AGE_MS..Promises.TERM_MS || promise.together) return@firstOrNull false
             val shared = RiskTrigger.significantStems(promise.sentence).intersect(RiskTrigger.significantStems(asked))
-            topic.count { it in shared } >= 2 && !seen(promise)
+            if (seen(promise)) return@firstOrNull false
+            if (topic.count { it in shared } >= 2) return@firstOrNull true
+            if (semantic == null) return@firstOrNull false
+            val original = semantic.words(topicWords(asked))
+            val promised = semantic.words(topicWords(promise.sentence))
+            // Две разные опоры темы. Один расплывчатый синоним недостаточен.
+            val usedPromise = mutableSetOf<String>()
+            val usedReply = mutableSetOf<String>()
+            original.count { anchor ->
+                val before = promised.firstOrNull {
+                    it.lemma !in usedPromise && semantic.score(anchor, it) >= TOPIC_SIMILARITY
+                } ?: return@count false
+                val now = replyWords.firstOrNull {
+                    it.lemma !in usedReply && semantic.score(anchor, it) >= TOPIC_SIMILARITY
+                } ?: return@count false
+                usedPromise.add(before.lemma)
+                usedReply.add(now.lemma)
+                true
+            } >= 2
         }
     }
+
+    private fun topicWords(text: String): List<String> = RiskTrigger.significantWords(text).values.flatten()
+    private const val TOPIC_SIMILARITY = 0.56
 
     fun promiseLine(promise: Promises.Promise): String {
         val words = promise.sentence.replace(Regex("""[\r\n\[\]«»]"""), " ").trim()

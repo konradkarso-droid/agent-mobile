@@ -3,6 +3,7 @@ package com.uroboros.search
 import com.uroboros.memory.SentenceKind
 import com.uroboros.memory.Sentences
 import com.uroboros.memory.nav.LemmaHolder
+import com.uroboros.memory.nav.SemanticFeatures
 import com.uroboros.util.TextFold
 
 /**
@@ -160,19 +161,71 @@ internal object SearchIntent {
         }
     }
 
-    private val widening = setOf("шире", "расширь", "расширить", "других", "другие")
-    private val wideningFrame = setOf("поиск", "источники", "источниках", "поищи", "поищите", "поискать",
-        "посмотри", "посмотреть", "проверь", "проверить", "в", "и", "еще", "пожалуйста", "да")
+    private val expandWord = Regex("""шире|расшир(?:ь|ьте|ить)""")
+    private val otherWord = Regex("""друг(?:ой|ую|ие|их|им|ими)|ин(?:ой|ую|ые|ых|ым|ыми)|еще""")
+    private val sourceWord = Regex("""источник\p{L}*|лента|лент[еуы]|сайт\p{L}*|поиск\p{L}*""")
+    private val topicChange = Regex("""(?:^|[\s,])(?:про|об?|по\s+теме)\s+(\p{L}+)""")
+    private val localWidening = Regex("""(?:^|[\s,])(?:в|по)\s+(?:(?:своих|наших|моих|твоих)\s+)?(?:заметках|записях|файлах|чатах|памяти)(?=$|[\s,.!?])""")
+    private val contextualSubject = setOf("это", "этом", "том", "ней", "нем")
+    private val externalTerm = Regex("""[a-z0-9]""")
+    private val narrowing = Regex("""суз\p{L}*|огранич\p{L}*|сократ\p{L}*|останов\p{L}*|отмени(?:те)?""")
+    private val searchConcept = listOf("искать", "найти", "проверить", "посмотреть")
+    private val expansionConcept = listOf("широкий", "расширить")
+    private val alternativeConcept = listOf("другой", "дополнительный", "иной", "альтернативный")
+    private val sourceConcept = listOf("источник", "сайт", "издание", "газета", "редакция", "лента", "площадка", "поиск",
+        "материал", "публикация", "статья", "сведения", "информация")
+    private val boundaryConcept = listOf("предел", "рамка", "граница")
+    // Объявленный порог первого решения. Действие требует также формы просьбы
+    // и отдельного признака смены круга источников.
+    private const val CONCEPT_SIMILARITY = 0.50
+    private val likelyScope = Regex("""(?:^|[\s,])(?:шире|расшир\p{L}*|друг\p{L}*|ин(?:ой|ую|ые|ых|ым|ыми)|еще|где-нибудь|куда-нибудь|помимо|за)(?=$|[\s,.!?])""")
 
-    fun asksToWiden(text: String): Boolean {
-        val action = form(text.replaceFirst(opening, "")) ?: return false
-        if (action.words.none { it in widening } ||
-            action.words.any { it !in widening && it !in wideningFrame && it !in polite }
+    /**
+     * Просьба расширить предыдущий поиск: форма и независимые признаки смысла.
+     * Называя новую тему или конкретный сайт, владелец даёт отдельный запрос.
+     */
+    fun asksToWiden(
+        text: String, semantic: SemanticFeatures? = SemanticFeatures.available(), contextual: Boolean = true,
+    ): Boolean {
+        val phrase = text.replaceFirst(opening, "")
+        val action = form(phrase) ?: return false
+        if (!contextual && !likelyScope.containsMatchIn(action.folded)) return false
+        if (action.has("не", "ни", "если", "ли", "как", "почему", "зачем", "только") ||
+            action.matches(narrowing) || externalTerm.containsMatchIn(action.folded) ||
+            localWidening.containsMatchIn(action.folded) || SearchCommand.hasDelay(phrase)
         ) return false
-        val scopesSearch = action.has("шире", "поиск", "источники", "источниках")
-        val direct = action.has("расширь", "поищи", "поищите", "посмотри", "проверь") ||
-            action.hasPoliteVerb() && (action.matches(searchVerb) || action.has("расширить"))
-        return scopesSearch && direct
+        if (topicChange.findAll(action.folded).any { it.groupValues[1] !in contextualSubject }) return false
+
+        val terms = semantic?.words(action.words).orEmpty()
+        // Знак вопроса не снимает повелительную форму глагола.
+        val directed = action.request || action.hasPoliteVerb() || terms.any { it.imperative } ||
+            action.has("расширь", "расширьте") || action.words.any { searchVerb.matches(it) && !it.endsWith("ть") }
+        if (!directed) return false
+        fun hasMeaning(anchors: List<String>): Boolean {
+            val dictionary = semantic ?: return false
+            val concepts = dictionary.words(anchors)
+            return terms.any { dictionary.matches(it, concepts, CONCEPT_SIMILARITY) }
+        }
+        val sourceTerms = semantic?.words(sourceConcept).orEmpty()
+        val boundaryTerms = semantic?.words(boundaryConcept).orEmpty()
+        if (semantic != null && terms.any { word ->
+                word.noun && word.surface !in contextualSubject &&
+                    !sourceWord.matches(word.surface) &&
+                    !semantic.matches(word, sourceTerms, CONCEPT_SIMILARITY) &&
+                    !semantic.matches(word, boundaryTerms, CONCEPT_SIMILARITY)
+            }) return false
+
+        val searchAction = action.matches(searchVerb) || hasMeaning(searchConcept)
+        val expand = action.matches(expandWord) || hasMeaning(expansionConcept)
+        val other = action.matches(otherWord) || hasMeaning(alternativeConcept)
+        val source = action.matches(sourceWord) ||
+            (semantic != null && terms.any { semantic.matches(it, sourceTerms, CONCEPT_SIMILARITY) })
+        val elsewhere = action.has("где", "куда", "нибудь", "угодно", "помимо")
+        val beyond = action.has("за") && source &&
+            (action.has("рамки", "пределы", "границы") || hasMeaning(boundaryConcept))
+        val requestsWider = expand && (searchAction || source) || searchAction && other && (source || elsewhere) ||
+            beyond && (searchAction || action.has("выйти", "выйди", "выходи"))
+        return requestsWider && SearchRoute.parse(phrase).source == null
     }
 
     fun forbidsSearch(text: String): Boolean = offline.containsMatchIn(text)
