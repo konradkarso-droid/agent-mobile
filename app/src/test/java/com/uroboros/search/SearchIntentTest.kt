@@ -20,6 +20,8 @@ class SearchIntentTest {
             "Покажи, какие новости были вчера о телескопах?" to "телескопах",
             "А какие новости были вчера?" to "",
             "Какие сейчас новости об Android?" to "Android",
+            "Об Android какие были новости вчера?" to "Android",
+            "За неделю про телескопы были свежие новости?" to "телескопы",
         )
         for ((question, subject) in examples) {
             val query = (SearchCommand.fromOwnerWords(question) as SearchCommand.Find).query
@@ -29,7 +31,7 @@ class SearchIntentTest {
             when {
                 "вчера" in question -> assertEquals("вчера", route.publication.window?.label)
                 "сегодня" in question -> assertEquals("сегодня", route.publication.window?.label)
-                "за неделю" in question -> assertEquals("за неделю", route.publication.window?.label)
+                question.contains("за неделю", ignoreCase = true) -> assertEquals("за неделю", route.publication.window?.label)
                 else -> assertEquals("последние 24 часа", route.publication.window?.label)
             }
         }
@@ -39,9 +41,15 @@ class SearchIntentTest {
     fun naturalQuestionsCanAskForSourcesOrCurrentFacts() {
         assertEquals(SearchCommand.Find("SQLite"), SearchCommand.fromOwnerWords("Где можно почитать про SQLite?"))
         assertEquals(SearchCommand.Find("SQLite"), SearchCommand.fromOwnerWords("Можно ли почитать про SQLite?"))
+        assertEquals(SearchCommand.Find("SQLite"), SearchCommand.fromOwnerWords("Про SQLite статьи есть?"))
+        assertEquals(SearchCommand.Find("C++"), SearchCommand.fromOwnerWords("Про C++ статьи есть?"))
         assertEquals(SearchCommand.Find("телескопах"), SearchCommand.fromOwnerWords("Есть ли статьи о телескопах?"))
         assertEquals(SearchCommand.Find("Какая сейчас актуальная версия Android"),
             SearchCommand.fromOwnerWords("Какая сейчас актуальная версия Android?"))
+        assertEquals(SearchCommand.Find("как работает SQLite"),
+            SearchCommand.fromOwnerWords("В интернете бы проверить, как работает SQLite?"))
+        assertEquals(SearchCommand.Deferred("как работает SQLite", "через час"),
+            SearchCommand.fromOwnerWords("В интернете через час проверь, как работает SQLite?"))
         val command = SearchCommand.fromOwnerWords("А что нового у РБК сегодня?") as SearchCommand.Find
         val route = SearchRoute.parse(command.query, now)
         assertEquals("РБК", route.source?.name)
@@ -98,14 +106,23 @@ class SearchIntentTest {
     fun indexMaintenanceUnderstandsQuestionsAndRequests() {
         val requests = listOf(
             "Можешь обновить индекс?" to SearchCommand.Refresh,
+            "Индекс бы обновить" to SearchCommand.Refresh,
+            "Индекс, пожалуйста, освежи" to SearchCommand.Refresh,
             "Кстати, освежи источники ещё раз" to SearchCommand.Refresh,
             "А когда индекс обновлялся?" to SearchCommand.AutoRefresh.Status,
+            "Насколько новый у нас индекс?" to SearchCommand.AutoRefresh.Status,
+            "Индекс уже обновился?" to SearchCommand.AutoRefresh.Status,
             "Ты сам обновляешь индекс?" to SearchCommand.AutoRefresh.Status,
             "А сколько страниц в индексе?" to SearchCommand.AutoRefresh.Status,
             "Пусть индекс обновляется сам" to SearchCommand.AutoRefresh.Enable,
+            "Автообновление индекса можешь включить?" to SearchCommand.AutoRefresh.Enable,
+            "Сам индекс обновляй по расписанию" to SearchCommand.AutoRefresh.Enable,
             "Перестань сам обновлять индекс" to SearchCommand.AutoRefresh.Disable,
+            "Индекс автоматически больше не обновляй" to SearchCommand.AutoRefresh.Disable,
             "А что мы уже искали?" to SearchCommand.History,
+            "Какие запросы были у нас в истории поиска?" to SearchCommand.History,
             "И чем закончился поиск?" to SearchCommand.Last,
+            "Какие результаты дал поиск?" to SearchCommand.Last,
         )
         for ((text, expected) in requests) assertEquals(text, expected, SearchCommand.fromOwnerWords(text))
     }
@@ -118,6 +135,15 @@ class SearchIntentTest {
             "Он просил включить автообновление",
             "«Пусть индекс обновляется сам»",
             "Не обновляй индекс",
+            "Индекс. Пора освежить кофе.",
+            "Индекс пока рано обновлять",
+            "Как обновить индекс?",
+            "Индекс завтра обнови",
+            "Индекс в 10:15 обнови",
+            "Можно ли включить автообновление?",
+            "Биржевой индекс обновился?",
+            "Она спросила, во сколько обновится индекс?",
+            "Свежие новости меня утомляют",
         ).forEach { assertNull(it, SearchCommand.fromOwnerWords(it)) }
     }
 }

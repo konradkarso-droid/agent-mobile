@@ -58,64 +58,15 @@ internal sealed interface SearchCommand {
             """(?:[,;—–]\s*($LATER)|\s+($RELATIVE_TIME))[.!?]*$""",
             RegexOption.IGNORE_CASE,
         )
+        private val delayInRequest = Regex("""(?:^|[\s,])($LATER)(?=$|[\s,.!?])""", RegexOption.IGNORE_CASE)
         private val leadingOnline = Regex("""^$ONLINE(?=$|[\s,:—–-])[\s,:—–-]*""", RegexOption.IGNORE_CASE)
 
         private val webRequest = Regex(
             """^$ADDRESS(?:(?:$IMPERATIVE|$ASK)$POLITE\s+$ONLINE|(?:по)?гугли(?:те)?)[\s,:—–-]+(.+)$""",
             RegexOption.IGNORE_CASE,
         )
-        private const val PREFACE = """(?:(?:а|и|так|кстати|скажи|подскажи)[,\s]+){0,2}"""
-        private const val INDEX = """(?:(?:локальный\s+|поисковый\s+|веб-)?индекс(?:\s+(?:поиска|сайтов))?)"""
-        private const val CATALOG = """(?:$INDEX|источники(?:\s+(?:поиска|веб-поиска))?)"""
-        private const val AUTO = """(?:сам|автоматически|по\s+расписанию)"""
-
-        private val lastRequest = Regex(
-            """^$ADDRESS$PREFACE(?:покажи(?:те)?\s+(?:(?:выдачу|результаты)\s+(?:последнего\s+)?поиска|последний\s+(?:веб-)?поиск)|""" +
-                """что\s+(?:(?:ты|у\s+тебя)\s+)?наш(?:[её]л|лось)(?:\s+(?:в\s+интернете|в\s+поиске))?|""" +
-                """чем\s+закончился\s+поиск|какие\s+сайты\s+ты\s+(?:наш[её]л|посмотрел)\s+в\s+последнем\s+поиске|""" +
-                """(?:дай|пришли|скинь|покажи)(?:те)?\s+ссылки(?:\s+(?:на\s+(?:новости|найденное|источники)|из\s+поиска))?)[.!?]*$""",
-            RegexOption.IGNORE_CASE,
-        )
-        private val historyRequest = Regex(
-            """^$ADDRESS$PREFACE(?:покажи(?:те)?\s+историю\s+(?:веб-)?поиск(?:а|ов)|""" +
-                """что\s+(?:(?:ты|мы)\s+)?(?:уже\s+|недавно\s+)?искал(?:и)?(?:\s+в\s+интернете)?|""" +
-                """какие\s+запросы\s+мы\s+уже\s+делали)[.!?]*$""",
-            RegexOption.IGNORE_CASE,
-        )
-        private val refreshRequest = Regex(
-            """^$ADDRESS$PREFACE(?:обнови(?:те)?|переобойди|освежи(?:те)?|(?:може(?:шь|те)|сможе(?:шь|те))\s+обновить|""" +
-                """давай(?:те)?[,\s]+обновим)\s+$CATALOG(?:\s+(?:сейчас|ещ[её]\s+раз))?[.!?]*$""",
-            RegexOption.IGNORE_CASE,
-        )
-        private val enableAuto = Regex(
-            """^$ADDRESS$PREFACE(?:обновляй(?:те)?\s+$CATALOG\s+$AUTO|$AUTO\s+обновляй(?:те)?\s+$CATALOG|""" +
-                """включи(?:те)?\s+автообновление(?:\s+(?:индекса|источников))?|пусть\s+$CATALOG\s+обновля(?:ется|ются)\s+$AUTO)[.!?]*$""",
-            RegexOption.IGNORE_CASE,
-        )
-        private val disableAuto = Regex(
-            """^$ADDRESS$PREFACE(?:(?:выключи(?:те)?|отключи(?:те)?|останови(?:те)?)\s+автообновление(?:\s+(?:индекса|источников))?|""" +
-                """перестань\s+$AUTO\s+обновлять\s+$CATALOG|больше\s+не\s+обновляй\s+$CATALOG\s+$AUTO)[.!?]*$""",
-            RegexOption.IGNORE_CASE,
-        )
-        private val statusAuto = Regex(
-            """^$ADDRESS$PREFACE(?:(?:покажи(?:те)?\s+)?статус\s+(?:автообновления(?:\s+(?:индекса|источников))?|индекса)|""" +
-                """(?:как\s+там|что\s+с|насколько\s+свежий)\s+(?:$INDEX|индексом)|""" +
-                """когда\s+(?:последний\s+раз\s+)?(?:(?:ты\s+)?(?:обновлял|обновил)\s+$CATALOG|""" +
-                """$CATALOG\s+обновля(?:лся|лись)|обновля(?:лся|лись)\s+$CATALOG)|""" +
-                """сколько\s+страниц\s+в\s+индексе)[.!?]*$""",
-            RegexOption.IGNORE_CASE,
-        )
-        private val statusQuestion = Regex(
-            """^$ADDRESS$PREFACE(?:(?:ты\s+)?сам\s+обновляешь\s+$CATALOG|""" +
-                """$CATALOG\s+(?:сам\s+)?обновля(?:ется|ются)(?:\s+$AUTO)?)\s*\?+$""",
-            RegexOption.IGNORE_CASE,
-        )
         private val newsOrSourceRequest = Regex(
             """^${ADDRESS}(?:подбери(?:те)?|покажи(?:те)?|собери(?:те)?|найди(?:те)?)$POLITE$SEPARATOR(.+)$""",
-            RegexOption.IGNORE_CASE,
-        )
-        private val explicitNews = Regex(
-            """^$ADDRESS((?:(?:свежие|последние)\s+новости|подборка\s+(?:(?:свежих|последних)\s+)?новостей).*)$""",
             RegexOption.IGNORE_CASE,
         )
         private val shortRequest = Regex(
@@ -123,6 +74,8 @@ internal sealed interface SearchCommand {
             RegexOption.IGNORE_CASE,
         )
         private val localObject = Regex("""^(?:(?:у\s+себя)|(?:в|по|на)\s+(?:(?:моих|наших|своих)\s+)?(?:памяти|разговор|чате|телефоне|журнале|истории|доске|запис|файл|репозитор|интернете|сети))""", RegexOption.IGNORE_CASE)
+
+        fun hasDelay(text: String): Boolean = delayInRequest.containsMatchIn(text)
 
         fun fromOwnerWords(text: String?, previousQuery: String? = null): SearchCommand? {
             val phrase = text?.trim() ?: return null
@@ -132,13 +85,16 @@ internal sealed interface SearchCommand {
                 val topic = query.replaceFirst(leadingOnline, "").takeUnless(localObject::containsMatchIn).orEmpty()
                 return Deferred(topic, match.groupValues[1].ifEmpty { match.groupValues[2] })
             }
-            if (refreshRequest.matches(phrase)) return Refresh
             val query = webRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()
                 ?: shortRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()?.takeUnless(localObject::containsMatchIn)
+                ?: SearchIntent.webQuestion(phrase)?.let { (lead, topic) ->
+                    delayInRequest.find(lead)?.let { return Deferred(topic, it.groupValues[1]) }
+                    topic
+                }
+                ?: SearchIntent.operation(phrase)?.let { return it }
                 ?: newsOrSourceRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()?.takeIf {
                     !SearchIntent.hasLink(it) && (PublicationQuery.isNewsRequest(it) || SearchRoute.startsWithSource(it))
                 }
-                ?: explicitNews.matchEntire(phrase)?.groupValues?.get(1)?.trim()?.takeUnless(SearchIntent::hasLink)
             if (query != null && query.any { it.isLetterOrDigit() }) {
                 trailingDelay.find(query)?.let { match ->
                     return Deferred(query.substring(0, match.range.first).trimEnd(),
@@ -146,15 +102,8 @@ internal sealed interface SearchCommand {
                 }
                 return Find(SearchIntent.query(query) ?: query)
             }
-            return when {
-                lastRequest.matches(phrase) -> Last
-                historyRequest.matches(phrase) -> History
-                enableAuto.matches(phrase) -> AutoRefresh.Enable
-                disableAuto.matches(phrase) -> AutoRefresh.Disable
-                statusAuto.matches(phrase) || statusQuestion.matches(phrase) -> AutoRefresh.Status
-                else -> SearchIntent.query(phrase, previousQuery)?.takeIf(::validSearchPhrase)
-                    ?.takeUnless(trailingDelay::containsMatchIn)?.let(::Find)
-            }
+            return SearchIntent.query(phrase, previousQuery)?.takeIf(::validSearchPhrase)
+                ?.takeUnless(trailingDelay::containsMatchIn)?.let(::Find)
         }
 
         fun isOwnerDirect(
