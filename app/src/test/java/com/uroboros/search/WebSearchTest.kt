@@ -3,6 +3,7 @@ package com.uroboros.search
 import com.uroboros.memory.ActionGate
 import com.uroboros.memory.ActionType
 import com.uroboros.memory.GateResult
+import java.time.ZonedDateTime
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
@@ -54,6 +55,18 @@ class WebSearchTest {
         val reopened = engine(store) { error("Просмотр истории не вызывает сеть") }.snapshot()
         assertEquals(shared.entries, reopened.entries)
         assertEquals(reply, reopened.latestReply())
+    }
+
+    @Test
+    fun aDeferredJobCanRecoverItsResultWithoutRepeatingTheSearch() = runBlocking {
+        val id = "deferred:1:2:3"
+        val store = Store()
+        val reply = engine(store) { SearchPage(listOf(sample)) }
+            .search("пример", SearchChannel.TELEGRAM, id, resume = true)
+        val restarted = engine(store) { error("Сохранённый поиск не выполняется снова") }
+        assertEquals(reply, restarted.search("пример", SearchChannel.TELEGRAM, id, resume = true))
+        assertEquals(1, restarted.snapshot().entries.size)
+        assertTrue(restarted.search("пример", SearchChannel.TELEGRAM, id).duplicate)
     }
 
     @Test
@@ -223,7 +236,7 @@ class WebSearchTest {
             "Поищи, пожалуйста, через два часа",
             "Проверь в интернете сегодня в 19:00 расписание",
             "Погугли новости, вечером",
-        ).forEach { assertEquals(it, SearchCommand.Deferred, SearchCommand.fromOwnerWords(it)) }
+        ).forEach { assertTrue(it, SearchCommand.fromOwnerWords(it) is SearchCommand.Deferred) }
         assertEquals(
             SearchCommand.Find("какая погода вечером?"),
             SearchCommand.fromOwnerWords("Посмотри в интернете, какая погода вечером?"),
@@ -234,6 +247,41 @@ class WebSearchTest {
         )
         assertNull(SearchCommand.fromOwnerWords("Напомни о встрече вечером"))
         assertNull(SearchCommand.fromOwnerWords("Ты обещал поискать через час"))
+    }
+
+    @Test
+    fun deferredCommandKeepsOnlyTheTopicAndTheExplicitTime() {
+        assertEquals(
+            SearchCommand.Deferred("расписание", "Через час"),
+            SearchCommand.fromOwnerWords("Агент, Через час поищи в интернете расписание"),
+        )
+        assertEquals(
+            SearchCommand.Deferred("новости за вчера", "через полчаса"),
+            SearchCommand.fromOwnerWords("Погугли новости за вчера, через полчаса"),
+        )
+        assertEquals(
+            SearchCommand.Deferred("погода в 16:00", "сегодня в 19:00"),
+            SearchCommand.fromOwnerWords("Проверь в интернете сегодня в 19:00 погода в 16:00"),
+        )
+        assertEquals(SearchCommand.Deferred("", "через час"), SearchCommand.fromOwnerWords("Поищи через час"))
+        assertEquals(
+            SearchCommand.Deferred("", "через час"),
+            SearchCommand.fromOwnerWords("Поищи через час в памяти обещание"),
+        )
+    }
+
+    @Test
+    fun deferredTimeMustBeAnExplicitValidTimeInTheFuture() {
+        val now = ZonedDateTime.parse("2026-11-26T15:15:00+08:00")
+        fun millis(value: ZonedDateTime) = value.toInstant().toEpochMilli()
+        assertEquals(millis(now.plusHours(1)), DeferredSearchParser.runAt("через час", now))
+        assertEquals(millis(now.plusMinutes(30)), DeferredSearchParser.runAt("через полчаса", now))
+        assertEquals(millis(now.plusHours(2)), DeferredSearchParser.runAt("через два часа", now))
+        assertEquals(millis(now.plusDays(1).withHour(10)), DeferredSearchParser.runAt("завтра в 10:15", now))
+        assertEquals(millis(now.withHour(19).withMinute(0)), DeferredSearchParser.runAt("сегодня в 19:00", now))
+        listOf("позже", "вечером", "через 0 минут", "сегодня в 08:00", "в 25:00", "в 19:70").forEach {
+            assertNull(it, DeferredSearchParser.runAt(it, now))
+        }
     }
 
     @Test

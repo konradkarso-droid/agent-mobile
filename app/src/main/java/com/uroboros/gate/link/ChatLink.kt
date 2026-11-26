@@ -65,6 +65,7 @@ import com.uroboros.memory.nav.RecallRequest
 import com.uroboros.memory.nav.RetellHolder
 import com.uroboros.safety.BodyLine
 import com.uroboros.search.CrawlSources
+import com.uroboros.search.DeferredSearchTelegram
 import com.uroboros.search.LinkOrigin
 import com.uroboros.search.SearchCommand
 import com.uroboros.search.SearchReply
@@ -412,7 +413,8 @@ object ChatLink {
         val accepted = CompletableDeferred<Unit>()
         scope.launch(Dispatchers.IO) {
             try {
-                if (ChatPrefs.consent(app) == null) {
+                val consent = ChatPrefs.consent(app)
+                if (consent == null) {
                     GateLink.note("Веб-поиск: нужно разрешить ответы в личке")
                     return@launch
                 }
@@ -427,7 +429,10 @@ object ChatLink {
                     SearchCommand.Last -> search.snapshot().latestReply()
                     SearchCommand.History -> SearchReply(search.snapshot().historyText())
                     is SearchCommand.AutoRefresh -> search.autoRefreshCommand(command, stillAllowed = ::ownerAllowed)
-                    SearchCommand.Deferred -> SearchReply(SearchCommand.DEFERRED_MESSAGE)
+                    is SearchCommand.Deferred -> search.scheduleDeferred(
+                        command, DeferredSearchTelegram(bot.id, m.chatId, m.messageId, consent.id),
+                        stillAllowed = { ownerAllowed() && ChatPrefs.consent(app)?.id == consent.id },
+                    )
                 }
                 if (!reply.duplicate && ownerAllowed()) {
                     val text = reply.text.take(GateBotApi.TEXT_LIMIT).trimEnd { it.isWhitespace() || it.isHighSurrogate() }
@@ -448,6 +453,23 @@ object ChatLink {
         }
         // Сдвигаем offset лишь после записи поручения или явного отказа.
         accepted.await()
+    }
+
+    internal fun deferredSearchAllowed(app: Context, target: DeferredSearchTelegram): Boolean =
+        ChatPrefs.owner(app)?.key?.id == GateTelegram.userKey(target.chatId).id &&
+            ChatPrefs.consent(app)?.id == target.consentId
+
+    internal suspend fun sendDeferredSearch(
+        app: Context, target: DeferredSearchTelegram, result: String, stillAllowed: () -> Boolean,
+    ): GateLink.TextSent {
+        val text = ("Отложенный поиск\n$result").take(GateBotApi.TEXT_LIMIT)
+            .trimEnd { it.isWhitespace() || it.isHighSurrogate() }
+        return sendReply(
+            app, target.chatId, text, target.messageId, null, ActionProvenance.CODE,
+            disablePreview = true,
+            stillAllowed = { stillAllowed() && deferredSearchAllowed(app, target) },
+            botId = target.botId,
+        )
     }
 
     /**
@@ -1358,6 +1380,7 @@ object ChatLink {
     private suspend fun sendReply(
         app: Context, chatId: Long, text: String, messageId: Long, thread: Long?,
         provenance: ActionProvenance, disablePreview: Boolean = false, stillAllowed: () -> Boolean = { true },
+        botId: Long? = null,
     ): GateLink.TextSent = sendLock.withLock {
         val consent = ChatPrefs.consent(app)
         val verdict = GatedAction.evaluate(
@@ -1376,7 +1399,7 @@ object ChatLink {
         val since = System.currentTimeMillis() - (lastSent[chatId] ?: 0L)
         if (since < SEND_GAP_MS) delay(SEND_GAP_MS - since)
         if (!stillAllowed()) return@withLock GateLink.TextSent(null, "разрешение изменилось")
-        val sent = GateLink.sendText(chatId, text, messageId, thread, disablePreview)
+        val sent = GateLink.sendText(chatId, text, messageId, thread, disablePreview, botId)
         if (sent.failure == null) lastSent[chatId] = System.currentTimeMillis()
         sent
     }
