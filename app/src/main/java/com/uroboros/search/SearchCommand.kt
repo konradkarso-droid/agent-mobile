@@ -5,7 +5,7 @@ internal sealed interface SearchCommand {
     data object Last : SearchCommand
     data object History : SearchCommand
     data object Refresh : SearchCommand
-    data object Deferred : SearchCommand
+    data class Deferred(val query: String, val time: String) : SearchCommand
 
     sealed interface AutoRefresh : SearchCommand {
         data object Enable : AutoRefresh
@@ -14,8 +14,6 @@ internal sealed interface SearchCommand {
     }
 
     companion object {
-        const val DEFERRED_MESSAGE = "Веб-поиск по времени пока недоступен. Запрос в сеть не отправлен."
-
         fun parse(text: String?, botName: String?): SearchCommand? {
             val words = text?.trim()?.split(Regex("\\s+"), limit = 2) ?: return null
             val name = words.first().substringBefore('@')
@@ -53,13 +51,14 @@ internal sealed interface SearchCommand {
         // темы. Относительное «через час» в конце тоже считаем отсрочкой.
         // «Погода вечером» в самой теме остаётся поиском сейчас.
         private val leadingDelay = Regex(
-            """^$ADDRESS(?:$VERB$POLITE(?:\s+$ONLINE)?$SEPARATOR$LATER|$LATER$SEPARATOR$VERB)(?=$|[\s,.!?;:])""",
+            """^$ADDRESS(?:$VERB$POLITE(?:\s+$ONLINE)?$SEPARATOR($LATER)|($LATER)$SEPARATOR$VERB$POLITE)(?=$|[\s,.!?;:])""",
             RegexOption.IGNORE_CASE,
         )
         private val trailingDelay = Regex(
-            """(?:[,;—–]\s*$LATER|\s+$RELATIVE_TIME)[.!?]*$""",
+            """(?:[,;—–]\s*($LATER)|\s+($RELATIVE_TIME))[.!?]*$""",
             RegexOption.IGNORE_CASE,
         )
+        private val leadingOnline = Regex("""^$ONLINE(?=$|[\s,:—–-])[\s,:—–-]*""", RegexOption.IGNORE_CASE)
 
         private val webRequest = Regex(
             """^$ADDRESS(?:(?:$IMPERATIVE|$ASK)$POLITE\s+$ONLINE|(?:по)?гугли(?:те)?)[\s,:—–-]+(.+)$""",
@@ -101,12 +100,20 @@ internal sealed interface SearchCommand {
 
         fun fromOwnerWords(text: String?): SearchCommand? {
             val phrase = text?.trim() ?: return null
-            if (leadingDelay.containsMatchIn(phrase)) return Deferred
+            leadingDelay.find(phrase)?.let { match ->
+                val query = phrase.substring(match.range.last + 1).trimStart { it.isWhitespace() || it in ",:—–-" }
+                val topic = query.replaceFirst(leadingOnline, "").takeUnless(localObject::containsMatchIn).orEmpty()
+                return Deferred(topic, match.groupValues[1].ifEmpty { match.groupValues[2] })
+            }
             if (refreshRequest.matches(phrase)) return Refresh
             val query = webRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()
                 ?: shortRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()?.takeUnless(localObject::containsMatchIn)
             if (query != null && query.any { it.isLetterOrDigit() }) {
-                return if (trailingDelay.containsMatchIn(query)) Deferred else Find(query)
+                trailingDelay.find(query)?.let { match ->
+                    return Deferred(query.substring(0, match.range.first).trimEnd(),
+                        match.groupValues[1].ifEmpty { match.groupValues[2] })
+                }
+                return Find(query)
             }
             return when {
                 lastRequest.matches(phrase) -> Last

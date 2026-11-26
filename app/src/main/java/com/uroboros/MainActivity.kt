@@ -3628,7 +3628,7 @@ class MainActivity : AppCompatActivity() {
             is SearchCommand.AutoRefresh -> "Проверяю автообновление…"
             SearchCommand.Last -> "Читаю последний результат…"
             SearchCommand.History -> "Читаю историю поиска…"
-            SearchCommand.Deferred -> "Проверяю поручение…"
+            is SearchCommand.Deferred -> "Ставлю поиск в расписание…"
         }
         val feed = journal
         val turn = feed.beginWebTurn(question, progress) ?: return

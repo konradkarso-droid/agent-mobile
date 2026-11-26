@@ -365,8 +365,10 @@ object GateLink {
      */
     fun sendText(
         chatId: Long, text: String, replyTo: Long?, thread: Long?, disablePreview: Boolean = false,
+        botId: Long? = null,
     ): TextSent {
         val s = ready() ?: return TextSent(null, "канал не готов (нет токена, нет службы или аварийный стоп)")
+        if (botId != null && s.me.id != botId) return TextSent(null, "бот изменился")
         val r = try {
             s.http.sendMessage(chatId, text, replyTo, thread, disablePreview)
         } catch (e: IOException) {
@@ -383,6 +385,8 @@ object GateLink {
     // --- Действия владельца с экрана врат ---
 
     private fun ready(): Session? = session.takeIf { !EmergencyStop.isActive() }
+
+    internal fun activeBotId(): Long? = ready()?.me?.id
 
     /** Познакомиться: моя карточка по имени пользователя [username]. Блокирует поток. */
     fun introduce(username: String) {

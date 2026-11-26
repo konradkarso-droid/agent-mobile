@@ -37,6 +37,10 @@ internal enum class SearchStatus(val label: String) {
 internal const val MAX_QUERY_LENGTH = 300
 internal const val SEARCH_LIMIT = 4
 
+internal fun validSearchPhrase(phrase: String): Boolean =
+    phrase.isNotEmpty() && phrase.length <= MAX_QUERY_LENGTH &&
+        phrase.none { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }
+
 internal data class SearchEntry(
     val id: String,
     val requestId: String,
@@ -121,6 +125,7 @@ internal data class SearchReply(
     val duplicate: Boolean = false,
     val chatText: String = text,
     val sourceUrls: List<String> = emptyList(),
+    val historySaved: Boolean = true,
 )
 
 private fun resultReply(entry: SearchEntry): SearchReply {
@@ -195,24 +200,26 @@ internal class WebSearch(
         stillAllowed: () -> Boolean = { true },
         onAccepted: () -> Unit = {},
         refresh: Boolean = false,
+        resume: Boolean = false,
         operation: (suspend () -> SearchPage)? = null,
     ): SearchReply {
         val phrase = query.trim()
-        if (phrase.isEmpty() || phrase.length > MAX_QUERY_LENGTH ||
-            phrase.any { it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt() }
-        ) return SearchReply(SearchStatus.INVALID.label)
+        if (!validSearchPhrase(phrase)) return SearchReply(SearchStatus.INVALID.label)
 
-        if (!active.tryLock()) {
+        if (resume) {
+            active.lock()
+        } else if (!active.tryLock()) {
             val duplicate = snapshot().entries.any { it.channel == channel && it.requestId == requestId }
             return SearchReply(if (duplicate) "" else SearchStatus.BUSY.label, duplicate)
         }
         try {
             val entry = SearchEntry(UUID.randomUUID().toString(), requestId, phrase, channel, now(), SearchStatus.SEARCHING, refresh = refresh)
             val previous = snapshot()
-            if (previous.entries.any { it.channel == channel && it.requestId == requestId }) {
-                return SearchReply("", duplicate = true)
+            val existing = previous.entries.firstOrNull { it.channel == channel && it.requestId == requestId }
+            if (existing != null) {
+                return if (resume) resultReply(existing) else SearchReply("", duplicate = true)
             }
-            if (!save(entry)) return SearchReply(SearchStatus.STORAGE_ERROR.label)
+            if (!save(entry)) return SearchReply(SearchStatus.STORAGE_ERROR.label, historySaved = false)
             onAccepted()
 
             var result: SearchResult? = null
@@ -249,7 +256,7 @@ internal class WebSearch(
             }
             val finished = entry.copy(status = status, count = result?.hits?.size ?: 0, result = result)
             val stored = withContext(NonCancellable) { save(finished) }
-            if (!stored) return SearchReply(SearchStatus.STORAGE_ERROR.label)
+            if (!stored) return SearchReply(SearchStatus.STORAGE_ERROR.label, historySaved = false)
             return resultReply(finished)
         } finally {
             active.unlock()

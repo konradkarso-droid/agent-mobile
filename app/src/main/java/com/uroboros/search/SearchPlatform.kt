@@ -18,6 +18,7 @@ import com.uroboros.safety.SafetyZone
 import java.text.DateFormat
 import java.time.Instant
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.UUID
@@ -76,7 +77,7 @@ internal class SearchPlatform(
             is SearchCommand.AutoRefresh -> autoRefreshCommand(command, ownerPresent)
             SearchCommand.Last -> engine.snapshot().latestReply()
             SearchCommand.History -> SearchReply(engine.snapshot().historyText())
-            SearchCommand.Deferred -> SearchReply(SearchCommand.DEFERRED_MESSAGE)
+            is SearchCommand.Deferred -> scheduleDeferred(command)
         }
         if (onReply != null) withContext(Dispatchers.Main.immediate) { onReply(reply) }
         reply
@@ -92,6 +93,42 @@ internal class SearchPlatform(
     }
 
     suspend fun snapshot(): SearchView = withContext(Dispatchers.IO) { engine.snapshot() }
+
+    fun deferredSearchAllowed(): Boolean = !blocked() && MoveState.holdReason(app) == null
+
+    fun scheduleDeferred(
+        command: SearchCommand.Deferred,
+        telegram: DeferredSearchTelegram? = null,
+        stillAllowed: () -> Boolean = { true },
+    ): SearchReply {
+        val now = ZonedDateTime.now()
+        val query = command.query.trim()
+        if (!query.any { it.isLetterOrDigit() } || !validSearchPhrase(query)) {
+            return SearchReply("Укажи, что искать. Например, «поищи через час расписание поездов».")
+        }
+        val runAt = DeferredSearchParser.runAt(command.time, now)
+            ?: return SearchReply("Укажи время в будущем. Например, «через час» или «завтра в 19:00».")
+        if (!deferredSearchAllowed() || !stillAllowed()) return SearchReply(SearchStatus.DENIED.label)
+        val request = DeferredSearch(
+            id = telegram?.requestId ?: "deferred:" + UUID.randomUUID(),
+            query = query, runAt = runAt,
+            channel = if (telegram == null) SearchChannel.APP else SearchChannel.TELEGRAM, telegram = telegram,
+        )
+        val scheduled = try {
+            DeferredSearchScheduler(app).enqueue(request)
+        } catch (_: Exception) {
+            null
+        } ?: return SearchReply("Не удалось поставить поиск в расписание Android.")
+        val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(scheduled))
+        val result = if (telegram == null) "Результат появится в истории поиска." else "Результат пришлю в этот чат."
+        return SearchReply("Поиск «$query» запланирован. Android запустит его не раньше $time, когда будут сеть и заряд. $result")
+    }
+
+    suspend fun runDeferred(request: DeferredSearch, stillAllowed: () -> Boolean = { true }): SearchReply =
+        perform(
+            SearchCommand.Find(request.query), request.channel, request.id,
+            stillOwner = { deferredSearchAllowed() && stillAllowed() }, resume = true,
+        )
 
     /**
      * Прямое открытие присланой ссылки: приём адреса, ворота действий, загрузка,
@@ -230,14 +267,16 @@ internal class SearchPlatform(
 
     private suspend fun perform(
         command: SearchCommand, channel: SearchChannel, requestId: String = UUID.randomUUID().toString(),
-        stillOwner: () -> Boolean = { true }, onAccepted: () -> Unit = {},
+        stillOwner: () -> Boolean = { true }, onAccepted: () -> Unit = {}, resume: Boolean = false,
     ): SearchReply {
         val phrase = when (command) {
             is SearchCommand.Find -> command.query
             SearchCommand.Refresh -> "Обновить источники"
             else -> error("Not a search operation")
         }
-        return engine.search(phrase, channel, requestId, stillOwner, onAccepted, refresh = command == SearchCommand.Refresh) {
+        return engine.search(
+            phrase, channel, requestId, stillOwner, onAccepted, refresh = command == SearchCommand.Refresh, resume = resume,
+        ) {
             val allowed = { stillOwner() && !blocked() }
             if (command == SearchCommand.Refresh) {
                 refresh(channel, emptyList(), allowed, forceSeeds = true)
