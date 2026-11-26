@@ -90,6 +90,24 @@ class SearchIntentTest {
     }
 
     @Test
+    fun wideningRequiresARequestAndKeepsTopicPeriodAndSummary() {
+        val prior = "новости о телескопах из N+1 за неделю с кратким пересказом"
+        for (text in listOf("Поищи шире", "А можешь в других источниках поискать?", "Расширь поиск")) {
+            val command = SearchCommand.fromOwnerWords(text, prior) as SearchCommand.Find
+            val route = SearchRoute.parse(command.query, now)
+            assertNull(route.source)
+            assertEquals("телескопах", route.publication.subject)
+            assertEquals("за неделю", route.publication.window?.label)
+            assertTrue(route.publication.summary)
+        }
+        assertNull(SearchCommand.fromOwnerWords("Поищи шире"))
+        assertNull(SearchCommand.fromOwnerWords("Не ищи шире", prior))
+        assertNull(SearchCommand.fromOwnerWords("А если расширить поиск?", prior))
+        assertNull(SearchCommand.fromOwnerWords("Он сказал: «Поищи шире»", prior))
+        assertNull(SearchCommand.fromOwnerWords("Да", prior))
+    }
+
+    @Test
     fun followupUsesOnlyTheSameBotAndChatAndRecentReply() {
         val start = 1_000_000_000L
         val prior = SearchIntent.RecentReply(1, 2, 42, "новости о космосе", start)

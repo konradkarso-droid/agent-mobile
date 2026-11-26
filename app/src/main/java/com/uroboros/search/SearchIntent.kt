@@ -160,6 +160,21 @@ internal object SearchIntent {
         }
     }
 
+    private val widening = setOf("шире", "расширь", "расширить", "других", "другие")
+    private val wideningFrame = setOf("поиск", "источники", "источниках", "поищи", "поищите", "поискать",
+        "посмотри", "посмотреть", "проверь", "проверить", "в", "и", "еще", "пожалуйста", "да")
+
+    fun asksToWiden(text: String): Boolean {
+        val action = form(text.replaceFirst(opening, "")) ?: return false
+        if (action.words.none { it in widening } ||
+            action.words.any { it !in widening && it !in wideningFrame && it !in polite }
+        ) return false
+        val scopesSearch = action.has("шире", "поиск", "источники", "источниках")
+        val direct = action.has("расширь", "поищи", "поищите", "посмотри", "проверь") ||
+            action.hasPoliteVerb() && (action.matches(searchVerb) || action.has("расширить"))
+        return scopesSearch && direct
+    }
+
     fun forbidsSearch(text: String): Boolean = offline.containsMatchIn(text)
     fun hasLink(text: String): Boolean = link.containsMatchIn(text)
 

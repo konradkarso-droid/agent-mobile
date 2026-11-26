@@ -18,6 +18,12 @@ internal data class SearchRoute(val publication: PublicationQuery, val source: W
         }
 
         fun startsWithSource(query: String): Boolean = named.find(query)?.range?.first == 0
+
+        fun widen(query: String): String? {
+            val match = named.find(query) ?: return null
+            val broader = query.removeRange(match.range).trim(' ', ',').replaceFirst(material, "")
+            return broader.takeIf(::validSearchPhrase)
+        }
     }
 }
 

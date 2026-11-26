@@ -12,6 +12,7 @@ import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.StandingConsent
+import com.uroboros.memory.dream.CuriosityFollowUp
 import com.uroboros.memory.nav.LemmaHolder
 import com.uroboros.memory.nav.MeaningHolder
 import com.uroboros.move.MoveState
@@ -362,7 +363,9 @@ internal class SearchPlatform(
         val updateNote = update?.detail?.let { note ->
             if (update.status == SearchStatus.DENIED) "${indexLine(matches.status)} $note" else note
         }
-        return answer(query, matches, updateNote, window)
+        val result = answer(query, matches, updateNote, window)
+        return withSearchFollowUp(result, matches.status.pages > 0 &&
+            (update == null || update.status == SearchStatus.UPDATED), sourceSpecified = false)
     }
 
     private suspend fun newsListing(
@@ -446,8 +449,17 @@ internal class SearchPlatform(
                 "${check.source.name} · $status · заголовков за период ${observed.size}$span"
             })
         }
-        return SearchPage(hits, status = if (hits.isEmpty()) SearchStatus.EMPTY else SearchStatus.FOUND,
-            detail = detail, answer = summary)
+        return withSearchFollowUp(
+            SearchPage(hits, status = if (hits.isEmpty()) SearchStatus.EMPTY else SearchStatus.FOUND,
+                detail = detail, answer = summary),
+            networkAllowed && checks.any { !it.state.failed && it.state.checkedAt != null },
+            sourceSpecified = route.source != null,
+        )
+    }
+
+    private fun withSearchFollowUp(page: SearchPage, usableSources: Boolean, sourceSpecified: Boolean): SearchPage {
+        val followUp = CuriosityFollowUp.afterSearch(usableSources, page.hits.size, sourceSpecified) ?: return page
+        return page.copy(detail = listOfNotNull(page.detail, followUp).joinToString(" "))
     }
 
     private suspend fun refresh(
