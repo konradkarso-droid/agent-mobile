@@ -5,9 +5,14 @@ import crawlercommons.robots.SimpleRobotRulesParser
 import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -91,9 +96,8 @@ internal object CrawlSources {
                 parts[1].matches(year) && parts[2].matches(month) && parts[3].matches(day) && parts[4].matches(slug)
             "developer.android.com" -> parts.size == 3 && parts[0] == "blog" && parts[1] == "posts" &&
                 parts[2].matches(slug)
-            // Новый сайт — источник только если человек прислал на него ссылку
-            // и агент её открыл (см. шапку). «Любой сайт» сюда не проходит.
-            else -> url.host in learnedHosts
+            // Для лент открыт только путь к публикациям своей редакции.
+            else -> url.host in learnedHosts || webSources.any { it.accepts(url) }
         }
         return if (accepted) url.newBuilder().fragment(null).build() else null
     }
@@ -164,8 +168,11 @@ private const val RETRY = 5 * 60_000L
 private const val CRAWL_ATTEMPTS = 16
 private const val FEED_CHECK_INTERVAL = 6 * 60 * 60_000L
 private const val FEED_TARGET_LIMIT = 6
+private const val NEWS_FEED_MAX_AGE = 20 * 60_000L
+private const val FEED_TIMEOUT_MS = 8_000L
 
 private data class FeedDiscovery(val targets: List<String>, val attempted: Int, val checked: Int)
+internal data class FeedCheck(val source: WebFeedSource, val state: FeedState, val attempted: Boolean)
 
 
 internal class WebCrawler(
@@ -188,7 +195,7 @@ internal class WebCrawler(
             val sitemapTargets = if (window == null) {
                 withTimeoutOrNull(10_000) { discoverFromSitemap(session, terms) }.orEmpty()
             } else emptyList()
-            feeds = discoverFromFeeds(session, terms, stillAllowed, window)
+            feeds = discoverFromFeeds(terms, stillAllowed, window)
             val targets = (feeds.targets + sitemapTargets).distinct()
             while (attempted < CRAWL_ATTEMPTS && stillAllowed()) {
                 val now = System.currentTimeMillis()
@@ -230,31 +237,12 @@ internal class WebCrawler(
     }
 
     private suspend fun discoverFromFeeds(
-        session: CrawlSession, terms: List<String>, stillAllowed: () -> Boolean, window: PublicationWindow?,
+        terms: List<String>, stillAllowed: () -> Boolean, window: PublicationWindow?,
     ): FeedDiscovery {
-        var attempted = 0
-        var checked = 0
-        for (feed in webFeeds) {
-            if (!stillAllowed()) break
-            val key = feed.toString()
-            val previous = index.feedState(key)
-            if (previous.due > System.currentTimeMillis()) continue
-            attempted++
-            val update = try {
-                withTimeoutOrNull(5_000) { session.feed(feed, previous.validators) }
-            } catch (_: IOException) {
-                null
-            }
-            currentCoroutineContext().ensureActive()
-            if (!stillAllowed()) break
-            val at = System.currentTimeMillis()
-            if (update == null) {
-                index.recordFeed(key, FeedUpdate(null, previous.validators), at + RETRY)
-            } else {
-                checked++
-                index.recordFeed(key, update, at + FEED_CHECK_INTERVAL)
-            }
-        }
+        val sources = if (terms.isEmpty() || window != null) webSources else webSources.filterNot { it.general }
+        val reports = checkFeeds(sources, stillAllowed, explicit = false)
+        val attempted = reports.count { it.attempted }
+        val checked = reports.count { it.attempted && !it.state.failed }
         val now = System.currentTimeMillis()
         if (!stillAllowed()) return FeedDiscovery(emptyList(), attempted, checked)
         val urls = index.feedCandidates(now)
@@ -266,6 +254,73 @@ internal class WebCrawler(
             })
             .map { it.first.url }.distinct().take(FEED_TARGET_LIMIT)
         return FeedDiscovery(index.queueFeedTargets(urls, now), attempted, checked)
+    }
+
+    suspend fun checkFeeds(
+        sources: List<WebFeedSource>, allowed: () -> Boolean, explicit: Boolean,
+    ): List<FeedCheck> = coroutineScope {
+        // Две волны для каталога из шести лент. Один недоступный сайт не задерживает остальные.
+        val active = Semaphore(3)
+        sources.map { source ->
+            async { active.withPermit { checkFeed(source, allowed, explicit) } }
+        }.awaitAll()
+    }
+
+    private suspend fun checkFeed(source: WebFeedSource, allowed: () -> Boolean, explicit: Boolean): FeedCheck {
+        val key = source.feed.toString()
+        val previous = index.feedState(key)
+        val now = System.currentTimeMillis()
+        val due = if (explicit && !previous.failed) (previous.checkedAt ?: 0L) + NEWS_FEED_MAX_AGE
+            else previous.due
+        if (!allowed() || due > now) return FeedCheck(source, previous, false)
+        val session = CrawlSession(network, index::validators, allowed)
+        val update = try {
+            withTimeoutOrNull(FEED_TIMEOUT_MS) { session.feed(source.feed, previous.validators) }
+        } catch (_: IOException) {
+            null
+        }
+        currentCoroutineContext().ensureActive()
+        if (!allowed()) return FeedCheck(source, previous, false)
+        val at = System.currentTimeMillis()
+        val interval = if (update == null) RETRY else FEED_CHECK_INTERVAL
+        index.recordFeed(key, update, at + interval, at)
+        return FeedCheck(source, index.feedState(key), true)
+    }
+
+    suspend fun readHeadlines(
+        items: List<NewsHeadline>, allowed: () -> Boolean, networkAllowed: Boolean,
+    ): List<IndexedPage> {
+        val session = CrawlSession(network, index::validators, allowed)
+        return buildList {
+            for (item in items) {
+                if (!allowed()) break
+                val address = item.article.url
+                val saved = index.page(address)
+                if (saved != null) {
+                    add(saved)
+                    continue
+                }
+                if (!networkAllowed) continue
+                val url = CrawlSources.address(address)?.takeIf(item.source::accepts) ?: continue
+                val outcome = try {
+                    withTimeoutOrNull(FEED_TIMEOUT_MS) { session.download(url, item.source::accepts) }
+                } catch (_: IOException) {
+                    null
+                }
+                if (!allowed()) break
+                val page = when (outcome) {
+                    is CrawlOutcome.Loaded -> {
+                        val at = System.currentTimeMillis()
+                        index.seed(listOf(address))
+                        index.record(address, outcome, at + DAY, at)
+                        outcome.content.page
+                    }
+                    is CrawlOutcome.Unchanged -> index.page(outcome.url)
+                    else -> null
+                }
+                if (page != null) add(page.copy(url = address, publishedAt = item.article.publishedAt))
+            }
+        }
     }
 
     private suspend fun discoverFromSitemap(session: CrawlSession, terms: List<String>): List<String> {
@@ -293,9 +348,10 @@ internal class CrawlSession(
     private val rulesByHost = mutableMapOf<String, SimpleRobotRules?>()
     private val lastByHost = mutableMapOf<String, Long>()
 
-    suspend fun download(start: HttpUrl): CrawlOutcome {
+    suspend fun download(start: HttpUrl, accepts: (HttpUrl) -> Boolean = { true }): CrawlOutcome {
         var url = start
         repeat(4) {
+            if (!accepts(url)) return CrawlOutcome.Removed(url.toString())
             val rules = rules(url)
             if (!rules.isAllowed(url.toString())) return CrawlOutcome.Removed(url.toString())
             if (rules.crawlDelay > 5_000) throw IOException("Source requests a longer pause than one search allows")

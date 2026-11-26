@@ -287,8 +287,17 @@ internal class SearchPlatform(
     }
 
     private suspend fun searchQuery(query: String, channel: SearchChannel, allowed: () -> Boolean): SearchPage {
-        val request = PublicationQuery.parse(query)
+        val route = SearchRoute.parse(query)
+        val request = route.publication
         val window = request.window
+        if (request.news) return newsListing(route, channel, allowed)
+        if (route.source != null) {
+            val local = lookup(request.subject, window, route.source)
+            if (local.indexed.isNotEmpty() && !local.needsRefresh) {
+                return answer(request.subject, local, "Источник задан: ${route.source.name}.", window)
+            }
+            return newsListing(route, channel, allowed)
+        }
         var matches = lookup(request.subject, window)
         var update: SearchPage? = null
         if (allowed() && (window != null || matches.needsRefresh)) {
@@ -308,6 +317,84 @@ internal class SearchPlatform(
             if (update.status == SearchStatus.DENIED) "${indexLine(matches.status)} $note" else note
         }
         return answer(query, matches, updateNote, window)
+    }
+
+    private suspend fun newsListing(
+        route: SearchRoute, channel: SearchChannel, allowed: () -> Boolean,
+    ): SearchPage {
+        val request = route.publication
+        val window = request.window ?: PublicationWindow(0L, System.currentTimeMillis() + 1L, "доступное в ленте")
+        val sources = sourcesForNews(request.subject, route.source)
+        val networkAllowed = GatedAction.evaluate(
+            app,
+            ActionRequest(
+                type = ActionType.NETWORK_CALL, requestedBy = "web-search/news/" + channel.name,
+                provenance = ActionProvenance.USER, crossesDeviceBoundary = true, isReversible = false,
+            ),
+        ).result == GateResult.ALLOW
+        val checks = if (networkAllowed && allowed()) crawler.checkFeeds(sources, allowed, explicit = true)
+        else sources.map { FeedCheck(it, index.feedState(it.feed.toString()), false) }
+        if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
+        LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
+        val words = SearchWords(newsWords(request.subject), LemmaHolder.loaded)
+        val headlines = selectHeadlines(index.headlines(sources), words, window, SEARCH_LIMIT)
+        val matches = if (headlines.isEmpty() && request.window != null) {
+            val stored = lookup(request.subject, window, route.source).indexed.mapNotNull { match ->
+                val page = match.page
+                val address = page.url.toHttpUrlOrNull() ?: return@mapNotNull null
+                val source = sources.firstOrNull { it.accepts(address) } ?: return@mapNotNull null
+                NewsHeadline(source, FeedArticle(page.url, page.title, page.publishedAt), indexed = true)
+            }
+            selectHeadlines(stored, words, window, SEARCH_LIMIT)
+        } else headlines
+        val selected = matches.mapNotNull { item ->
+            val article = item.article
+            val date = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                .format(Date(checkNotNull(article.publishedAt)))
+            val origin = if (item.indexed) "Публикация из локального индекса." else "Заголовок из ленты."
+            SearchHit.from("$date · ${item.source.name} · ${article.title}", article.url, origin)
+                ?.let { item to it }
+        }
+        val hits = selected.map { it.second }
+        val articles = if (request.summary && selected.isNotEmpty() && modelHalted() == null) {
+            val toRead = selected.take(2).map { it.first }
+            val sourcesByUrl = toRead.mapIndexed { number, item -> item.article.url to number + 1 }.toMap()
+            crawler.readHeadlines(toRead, allowed, networkAllowed).mapNotNull { page ->
+                sourcesByUrl[page.url]?.let { it to page }
+            }
+        } else emptyList()
+        val summary = if (allowed() && articles.isNotEmpty()) withTimeoutOrNull(NEWS_SUMMARY_MS) {
+            reader.answerBrief(request.subject.ifBlank { "Кратко перескажи новости" }, articles, words)
+        } else null
+        if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
+
+        val detail = buildString {
+            append("Период — ${window.label}. ")
+            if (hits.isEmpty()) append("Совпадений за этот период среди доступных публикаций нет. ")
+            if (!networkAllowed) append("Обновление сети отклонено. ")
+            if (request.summary && summary == null && hits.isNotEmpty()) {
+                append("Краткий пересказ сейчас недоступен. ")
+            }
+            if (summary != null) {
+                append(articles.joinToString(prefix = "Пересказ по статьям ", postfix = ". ") { "[${it.first}]" })
+                if (articles.size < hits.size) append("Остальные позиции приведены заголовками. ")
+            }
+            append(checks.joinToString(prefix = "Ленты — ", separator = "; ", postfix = ".") { check ->
+                val last = check.state.checkedAt?.let {
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it))
+                }
+                val status = when {
+                    check.state.failed && last != null -> "сбой, данные от $last"
+                    check.state.failed -> "сбой"
+                    check.attempted && last != null -> "проверено $last"
+                    last != null -> "данные от $last"
+                    else -> "данных пока нет"
+                }
+                "${check.source.name} · $status"
+            })
+        }
+        return SearchPage(hits, status = if (hits.isEmpty()) SearchStatus.EMPTY else SearchStatus.FOUND,
+            detail = detail, answer = summary)
     }
 
     private suspend fun refresh(
@@ -337,12 +424,12 @@ internal class SearchPlatform(
         val needsRefresh get() = indexed.firstOrNull()?.missingWords?.isNotEmpty() ?: true
     }
 
-    private fun lookup(query: String, window: PublicationWindow? = null): Matches {
+    private fun lookup(query: String, window: PublicationWindow? = null, source: WebFeedSource? = null): Matches {
         val status = index.status()
         if (status.pages > 0) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
         val words = SearchWords(query, LemmaHolder.loaded)
         val indexed = if (status.pages == 0) emptyList() else {
-            diverseMatches(index.find(words, CANDIDATE_LIMIT, window), SEARCH_LIMIT)
+            diverseMatches(index.find(words, CANDIDATE_LIMIT, window, source), SEARCH_LIMIT)
         }
         return Matches(status, words, indexed)
     }
@@ -385,6 +472,7 @@ internal class SearchPlatform(
          * предел открытия виден юнит-тесту бюджетов прямого открытия (LinkOpenerTest). */
         internal const val OPEN_LIMIT_MS = 20_000L
         private const val READ_LIMIT_MS = 75_000L
+        private const val NEWS_SUMMARY_MS = 22_000L
         private val DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     }
 }

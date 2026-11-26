@@ -50,6 +50,21 @@ internal class PageReader(private val infer: suspend (String, String) -> String?
         return infer(SYNTHESIS, request(query, "заметки", JSONArray(evidence)))?.let(::cleanAnswer)
     }
 
+    suspend fun answerBrief(query: String, pages: List<Pair<Int, IndexedPage>>, words: SearchWords): String? {
+        val material = JSONArray()
+        for ((number, page) in pages) {
+            val excerpt = bestExcerpt(page, words).take(500).trimEnd { it.isHighSurrogate() }
+            if (excerpt.isNotBlank()) {
+                material.put(JSONObject().put("source", number).put("title", page.title.take(140)).put("text", excerpt))
+            }
+        }
+        if (material.length() == 0) return null
+        return infer(
+            ANSWER + " Дай краткую сводку по тем статьям, которые показаны. Пиши до четырёх коротких предложений.",
+            request(query, "выдержки статей", material),
+        )?.let(::cleanAnswer)
+    }
+
     private suspend fun selectSections(query: String, sections: List<PageSection>, words: SearchWords): List<PageSection>? {
         data class RankedSection(val index: Int, val coveredWords: Int, val bodyWords: Int)
         val ranked = sections.mapIndexed { index, section ->

@@ -92,6 +92,14 @@ internal sealed interface SearchCommand {
             """^$ADDRESS(?:покажи(?:те)?\s+)?статус\s+автообновления(?:\s+источников)?[.!?]*$""",
             RegexOption.IGNORE_CASE,
         )
+        private val newsOrSourceRequest = Regex(
+            """^${ADDRESS}(?:подбери(?:те)?|покажи(?:те)?|собери(?:те)?|найди(?:те)?)$POLITE$SEPARATOR(.+)$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val explicitNews = Regex(
+            """^$ADDRESS((?:(?:свежие|последние)\s+новости|подборка\s+(?:(?:свежих|последних)\s+)?новостей).*)$""",
+            RegexOption.IGNORE_CASE,
+        )
         private val shortRequest = Regex(
             """^${ADDRESS}поищи(?:те)?$POLITE$SEPARATOR(.+)$""",
             RegexOption.IGNORE_CASE,
@@ -108,6 +116,10 @@ internal sealed interface SearchCommand {
             if (refreshRequest.matches(phrase)) return Refresh
             val query = webRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()
                 ?: shortRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()?.takeUnless(localObject::containsMatchIn)
+                ?: newsOrSourceRequest.matchEntire(phrase)?.groupValues?.get(1)?.trim()?.takeIf {
+                    PublicationQuery.isNewsRequest(it) || SearchRoute.startsWithSource(it)
+                }
+                ?: explicitNews.matchEntire(phrase)?.groupValues?.get(1)?.trim()
             if (query != null && query.any { it.isLetterOrDigit() }) {
                 trailingDelay.find(query)?.let { match ->
                     return Deferred(query.substring(0, match.range.first).trimEnd(),
