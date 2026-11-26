@@ -96,7 +96,7 @@ internal sealed interface SearchCommand {
             """^${ADDRESS}поищи(?:те)?$POLITE$SEPARATOR(.+)$""",
             RegexOption.IGNORE_CASE,
         )
-        private val localObject = Regex("""^(?:(?:у\s+себя)|(?:в|по|на)\s+(?:(?:моих|наших|своих)\s+)?(?:памяти|разговор|чате|телефоне|журнале|истории|доске|запис|файл|интернете|сети))""", RegexOption.IGNORE_CASE)
+        private val localObject = Regex("""^(?:(?:у\s+себя)|(?:в|по|на)\s+(?:(?:моих|наших|своих)\s+)?(?:памяти|разговор|чате|телефоне|журнале|истории|доске|запис|файл|репозитор|интернете|сети))""", RegexOption.IGNORE_CASE)
 
         fun fromOwnerWords(text: String?): SearchCommand? {
             val phrase = text?.trim() ?: return null

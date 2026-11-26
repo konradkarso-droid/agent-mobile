@@ -11,6 +11,18 @@ private const val BLOCK_CHARS = 4_200
 
 /** Два прохода: по карте разделов, затем по полному тексту выбранных частей. */
 internal class PageReader(private val infer: suspend (String, String) -> String?) {
+    suspend fun answerCode(query: String, excerpts: List<RepositoryExcerpt>): String? {
+        if (excerpts.isEmpty()) return null
+        val material = JSONArray()
+        excerpts.forEachIndexed { index, excerpt ->
+            material.put(JSONObject().put("source", index + 1)
+                .put("file", excerpt.path).put("code", excerpt.snippet.numbered()))
+        }
+        val instruction = ANSWER + " Ссылайся также на номера строк. " +
+            "Если показанных фрагментов мало, укажи, каких сведений не хватает для ответа."
+        return infer(instruction, request(query, "фрагменты исходников", material))?.let(::cleanAnswer)
+    }
+
     suspend fun alternative(query: String): String? {
         val prompt = "Переформулируй поисковый запрос на русском. " +
             "Используй распространённые термины того же предмета. Ответь одной короткой поисковой фразой."
