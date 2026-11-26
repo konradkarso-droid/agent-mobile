@@ -33,6 +33,8 @@ internal class SearchPlatform(
     private val app: Context,
     private val watchdog: DeviceSafetyWatchdog,
     private val processScope: CoroutineScope,
+    /** Почему модель сейчас не может отвечать (null — может); причина ляжет в строку «Ответ модели недоступен — …». */
+    private val modelHalted: () -> String? = { null },
     infer: suspend (String, String) -> String?,
 ) {
     private val preferences = app.getSharedPreferences("web_search", Context.MODE_PRIVATE)
@@ -131,11 +133,19 @@ internal class SearchPlatform(
                 // (см. learnSource): белый список растёт из присланых ссылок обоих каналов.
                 learnSource(opened.url)
                 val query = question.trim().ifEmpty { LinkOpener.SUMMARY_QUESTION }
+                // Чтение помнит, кончилось ли само: сорванный срок и честный пустой ответ
+                // модели дают одинаковый null, а называются по-разному — владелец
+                // видит причину, а не молчание.
+                var finished = false
                 val answer = withTimeoutOrNull(READ_LIMIT_MS) {
                     reader.answer(query, listOf(IndexedPage(opened.url, opened.title, opened.text)))
+                        .also { finished = true }
                 }
                 val text = if (answer != null) "$answer\n\nИсточник: ${opened.url}"
-                else "Ответ модели недоступен. Открыл страницу «${opened.title}».\n\n${pageExcerpt(opened.text)}\n\nИсточник: ${opened.url}"
+                else modelUnavailableText(
+                    why = if (finished) modelHalted() else "чтение не уложилось в срок",
+                    title = opened.title, text = opened.text, url = opened.url,
+                )
                 SearchReply(text, sourceUrls = listOf(opened.url))
             }
         }
@@ -332,8 +342,9 @@ internal class SearchPlatform(
         private const val LEARNED_SOURCES = "learned_sources"
         private const val CANDIDATE_LIMIT = 12
 
-        /** Пределы открытия одной ссылки и чтения её страниц. Объявленные числа, как у поиска. */
-        private const val OPEN_LIMIT_MS = 20_000L
+        /** Пределы открытия одной ссылки и чтения её страниц. Объявленные числа, как у поиска;
+         * предел открытия виден юнит-тесту бюджетов прямого открытия (LinkOpenerTest). */
+        internal const val OPEN_LIMIT_MS = 20_000L
         private const val READ_LIMIT_MS = 75_000L
         private val DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     }
