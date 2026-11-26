@@ -178,14 +178,18 @@ internal object SearchIntent {
     // Объявленный порог первого решения. Действие требует также формы просьбы
     // и отдельного признака смены круга источников.
     private const val CONCEPT_SIMILARITY = 0.50
+    private val likelyScope = Regex("""(?:^|[\s,])(?:шире|расшир\p{L}*|друг\p{L}*|ин(?:ой|ую|ые|ых|ым|ыми)|еще|где-нибудь|куда-нибудь|помимо|за)(?=$|[\s,.!?])""")
 
     /**
      * Просьба расширить предыдущий поиск: форма и независимые признаки смысла.
      * Называя новую тему или конкретный сайт, владелец даёт отдельный запрос.
      */
-    fun asksToWiden(text: String, semantic: SemanticFeatures? = SemanticFeatures.available()): Boolean {
+    fun asksToWiden(
+        text: String, semantic: SemanticFeatures? = SemanticFeatures.available(), contextual: Boolean = true,
+    ): Boolean {
         val phrase = text.replaceFirst(opening, "")
         val action = form(phrase) ?: return false
+        if (!contextual && !likelyScope.containsMatchIn(action.folded)) return false
         if (action.has("не", "ни", "если", "ли", "как", "почему", "зачем", "только") ||
             action.matches(narrowing) || externalTerm.containsMatchIn(action.folded) ||
             localWidening.containsMatchIn(action.folded) || SearchCommand.hasDelay(phrase)
