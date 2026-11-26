@@ -493,7 +493,11 @@ object ChatLink {
 
         // Разрешения пересматриваются и после открытия: владелец мог снять
         // «Отвечать» или разрешение групп, пока страница грузилась.
-        fun stillAllowed() = ChatPrefs.consent(app) != null && (!group || ChatPrefs.groupLinks(app) != null)
+        fun stillAllowed() = ChatPrefs.consent(app) != null && if (group) {
+            ChatPrefs.groupLinks(app) != null
+        } else {
+            ChatPrefs.owner(app)?.key == w.message.sender
+        }
         scope.launch(Dispatchers.IO) {
             try {
                 if (!stillAllowed()) {

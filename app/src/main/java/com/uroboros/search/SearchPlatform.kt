@@ -41,7 +41,9 @@ internal class SearchPlatform(
     private val preferences = app.getSharedPreferences("web_search", Context.MODE_PRIVATE)
     private val index = LocalWebIndex(app)
     private val crawler = WebCrawler(index)
-    private val linkOpener = LinkOpener()
+    private val directFetch = CrawlTransport(budgets = FetchBudgets.DIRECT)::fetch
+    private val linkOpener = LinkOpener(directFetch)
+    private val github = GitHubRepository(directFetch)
     private val reader = PageReader(infer)
     private val autoRefresh = WebRefreshSchedule(app)
 
@@ -152,15 +154,21 @@ internal class SearchPlatform(
         if (blocked()) return@withContext refused("аварийный стоп или критическая зона — сеть закрыта")
         val url = LinkAdmission.admit(address)
             ?: return@withContext refused("адрес не годится — не https, с паролем, с портом или слишком длинный")
+        val repository = if (origin == LinkOrigin.GROUP) null
+            else GitHubTarget.parse(url, address.substringAfter('#', ""))
         val verdict = GatedAction.evaluate(
             app,
             ActionRequest(
-                type = ActionType.NETWORK_CALL, requestedBy = origin.requestedBy,
+                type = ActionType.NETWORK_CALL,
+                requestedBy = if (repository == null) origin.requestedBy else "repository-search/" + origin.name,
                 provenance = origin.provenance, crossesDeviceBoundary = true, isReversible = false,
             ),
             consent,
         )
         if (verdict.result != GateResult.ALLOW) return@withContext refused("ворота действий отказали — причина в журнале действий")
+        if (repository != null) {
+            return@withContext readRepository(repository, question) { stillAllowed() && !blocked() }
+        }
         val opened = withTimeoutOrNull(OPEN_LIMIT_MS) { linkOpener.open(url) { stillAllowed() && !blocked() } }
             ?: return@withContext refused("не уложился по времени")
         when (opened) {
@@ -186,6 +194,40 @@ internal class SearchPlatform(
                 SearchReply(text, sourceUrls = listOf(opened.url))
             }
         }
+    }
+
+    private suspend fun readRepository(
+        target: GitHubTarget, question: String, allowed: () -> Boolean,
+    ): SearchReply {
+        val result = withTimeoutOrNull(REPOSITORY_LIMIT_MS) {
+            github.read(target, question, LemmaHolder.loaded, allowed)
+        } ?: return SearchReply("Репозиторий не успел открыться за отведённое время.")
+        if (result is RepositoryReading.Refused) return SearchReply("Репозиторий не прочитан: ${result.why}")
+        check(result is RepositoryReading.Found)
+        if (!allowed()) return SearchReply("Чтение репозитория остановлено.")
+        if (result.excerpts.isEmpty()) {
+            val paths = result.paths.joinToString(", ")
+            val list = if (paths.isEmpty()) "" else "\n\nНа карте: $paths"
+            return SearchReply(result.status() + list, sourceUrls = listOf(result.project.url))
+        }
+
+        val excerpts = result.excerpts
+        val query = question.ifBlank { "Объясни, что видно из этих файлов репозитория." }
+        var finished = false
+        val answer = withTimeoutOrNull(READ_LIMIT_MS) {
+            reader.answerCode(query, excerpts).also { finished = true }
+        }
+        if (!allowed()) return SearchReply("Чтение репозитория остановлено.")
+        val first = excerpts.first()
+        val body = answer ?: buildString {
+            val reason = if (finished) modelHalted() else "чтение не уложилось в срок"
+            appendLine(reason?.let { "Ответ модели недоступен — $it." } ?: "Ответ модели недоступен.")
+            appendLine(first.path)
+            append(first.snippet.numbered().lineSequence().take(9).joinToString("\n").take(750))
+        }
+        val references = excerpts.mapIndexed { i, excerpt -> "[${i + 1}] ${excerpt.url}" }.joinToString("\n")
+        val text = result.status() + "\n\n" + body + "\n\n" + references
+        return SearchReply(text, sourceUrls = excerpts.map { it.url })
     }
 
     /**
@@ -384,6 +426,7 @@ internal class SearchPlatform(
         /** Пределы открытия одной ссылки и чтения её страниц. Объявленные числа, как у поиска;
          * предел открытия виден юнит-тесту бюджетов прямого открытия (LinkOpenerTest). */
         internal const val OPEN_LIMIT_MS = 20_000L
+        private const val REPOSITORY_LIMIT_MS = 60_000L
         private const val READ_LIMIT_MS = 75_000L
         private val DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     }

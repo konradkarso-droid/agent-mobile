@@ -23,7 +23,9 @@ internal enum class CrawlResource(val accept: String, val limit: Int) {
     PAGE("text/html", 2 * 1024 * 1024),
     ROBOTS("text/plain", 512 * 1024),
     FEED("application/rss+xml, application/atom+xml, application/xml, text/xml", 512 * 1024),
-    SITEMAP("application/xml, text/xml, application/gzip", 4 * 1024 * 1024);
+    SITEMAP("application/xml, text/xml, application/gzip", 4 * 1024 * 1024),
+    REPOSITORY_JSON("application/vnd.github+json", 2 * 1024 * 1024),
+    REPOSITORY_SOURCE("text/plain", 128 * 1024);
 
     fun accepts(type: String): Boolean = when (this) {
         PAGE -> type.equals(accept, true)
@@ -33,6 +35,8 @@ internal enum class CrawlResource(val accept: String, val limit: Int) {
         )
         SITEMAP -> type.lowercase(java.util.Locale.ROOT) in
             setOf("application/xml", "text/xml", "application/gzip", "application/x-gzip")
+        REPOSITORY_JSON -> type.equals("application/json", true) || type.equals(accept, true)
+        REPOSITORY_SOURCE -> type.equals(accept, true)
     }
 }
 
