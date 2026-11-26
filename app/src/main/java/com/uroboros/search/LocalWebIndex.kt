@@ -6,9 +6,13 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.util.PriorityQueue
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 internal data class IndexedPage(val url: String, val title: String, val text: String, val publishedAt: Long? = null)
-internal data class IndexedMatch(val page: IndexedPage, val missingWords: List<String>)
+internal data class IndexedMatch(
+    val page: IndexedPage, val missingWords: List<String>, val semanticSpan: WebSpan? = null,
+)
 internal data class IndexStatus(val pages: Int, val checkedAt: Long?)
 
 /**
@@ -17,10 +21,10 @@ internal data class IndexStatus(val pages: Int, val checkedAt: Long?)
  * Предел в байтах применяется к самой базе SQLite. Временные файлы SQLite
  * при записи могут занимать дополнительное место.
  */
-internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 6) {
+internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 7) {
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
-        if (!db.isReadOnly) db.setMaximumSize(100_000_000L)
+        if (!db.isReadOnly) db.setMaximumSize(MAX_DB_BYTES)
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -33,28 +37,33 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         db.execSQL("CREATE INDEX frontier_due ON frontier(due)")
         db.execSQL("CREATE TABLE refresh (checked_at INTEGER NOT NULL)")
         createFeedTables(db)
+        createSemanticTable(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(newVersion == 6 && oldVersion in 1..5) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
+        check(newVersion == 7 && oldVersion in 1..6) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
         if (oldVersion == 1) {
             db.execSQL("ALTER TABLE pages ADD COLUMN etag TEXT")
             db.execSQL("ALTER TABLE pages ADD COLUMN last_modified TEXT")
         }
         if (oldVersion < 4) db.execSQL("ALTER TABLE pages ADD COLUMN published_at INTEGER")
-        if (oldVersion < 3) {
-            createFeedTables(db)
-            return
+        if (oldVersion < 3) createFeedTables(db)
+        else {
+            if (oldVersion == 3) {
+                db.execSQL("ALTER TABLE feed_articles ADD COLUMN published_at INTEGER")
+                db.execSQL("UPDATE feeds SET due = 0, etag = NULL, last_modified = NULL")
+            }
+            if (oldVersion < 5) {
+                db.execSQL("ALTER TABLE feeds ADD COLUMN checked_at INTEGER")
+                db.execSQL("ALTER TABLE feeds ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
+            }
+            if (oldVersion < 6) db.execSQL("ALTER TABLE feed_articles ADD COLUMN in_latest INTEGER NOT NULL DEFAULT 1")
         }
-        if (oldVersion == 3) {
-            db.execSQL("ALTER TABLE feed_articles ADD COLUMN published_at INTEGER")
-            db.execSQL("UPDATE feeds SET due = 0, etag = NULL, last_modified = NULL")
-        }
-        if (oldVersion < 5) {
-            db.execSQL("ALTER TABLE feeds ADD COLUMN checked_at INTEGER")
-            db.execSQL("ALTER TABLE feeds ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
-        }
-        db.execSQL("ALTER TABLE feed_articles ADD COLUMN in_latest INTEGER NOT NULL DEFAULT 1")
+        createSemanticTable(db)
+    }
+
+    private fun createSemanticTable(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE page_vectors (page_id INTEGER PRIMARY KEY, spans BLOB NOT NULL)")
     }
 
     private fun createFeedTables(db: SQLiteDatabase) {
@@ -322,6 +331,79 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         }
     }
 
+    /** За проход обрабатываются только несколько страниц, включая страницы из старой базы. */
+    suspend fun fillSemantic(encoder: WebSemantics, allowed: () -> Boolean) {
+        val db = writableDatabase
+        val allocated = db.pageSize * db.rawQuery("PRAGMA page_count", null).use {
+            check(it.moveToFirst())
+            it.getLong(0)
+        }
+        if (allocated >= MAX_DB_BYTES - WEB_TEXT_RESERVE) return
+        val filled = android.database.DatabaseUtils.queryNumEntries(db, "page_vectors")
+        val limit = (MAX_VECTOR_PAGES - filled).coerceIn(0L, VECTOR_BATCH)
+        if (limit == 0L) return
+        val context = currentCoroutineContext()
+        val pending = db.rawQuery(
+            "SELECT url, title, body, published_at, id FROM pages p " +
+                "WHERE NOT EXISTS (SELECT 1 FROM page_vectors v WHERE v.page_id = p.id) ORDER BY p.id DESC LIMIT ?",
+            arrayOf(limit.toString()),
+        ).use { rows ->
+            buildList {
+                while (rows.moveToNext()) add(rows.getLong(4) to rows.page())
+            }
+        }
+        for ((id, page) in pending) {
+            context.ensureActive()
+            if (!allowed()) break
+            val spans = encoder.encode(page)
+            context.ensureActive()
+            if (!allowed()) break
+            // Пустой BLOB отмечает страницу без пригодного спектра.
+            db.execSQL(
+                "INSERT OR IGNORE INTO page_vectors(page_id, spans) SELECT id, ? FROM pages " +
+                    "WHERE id = ? AND url = ? AND title = ? AND body = ?",
+                arrayOf(spans, id, page.url, page.title, page.text),
+            )
+        }
+    }
+
+    suspend fun findSemantic(
+        encoder: WebSemantics, query: QuantizedWebVector, words: SearchWords, limit: Int,
+        window: PublicationWindow?, source: WebFeedSource?, allowed: () -> Boolean,
+    ): List<IndexedMatch> {
+        data class Ranked(val id: Long, val match: WebSimilarity)
+        val context = currentCoroutineContext()
+        val db = readableDatabase
+        val order = compareByDescending<Ranked> { it.match.score }.thenBy { it.id }
+        val best = PriorityQueue(order.reversed())
+        val sql = "SELECT v.page_id, v.spans FROM page_vectors v JOIN pages p ON p.id = v.page_id WHERE 1=1" +
+            (if (window == null) "" else " AND p.published_at >= ? AND p.published_at < ?") + sourceClause(source)
+        val args = buildList {
+            if (window != null) {
+                add(window.from.toString())
+                add(window.until.toString())
+            }
+            addAll(sourceArguments(source))
+        }
+        db.rawQuery(sql, args.toTypedArray()).use { rows ->
+            while (rows.moveToNext()) {
+                context.ensureActive()
+                if (!allowed()) return emptyList()
+                val match = encoder.best(rows.getBlob(1), query) ?: continue
+                best.add(Ranked(rows.getLong(0), match))
+                if (best.size > limit) best.remove()
+            }
+        }
+        return best.sortedWith(order).mapNotNull { (id, match) ->
+            db.rawQuery("SELECT url, title, body, published_at FROM pages WHERE id = ?", arrayOf(id.toString())).use { row ->
+                if (!row.moveToFirst()) return@use null
+                val page = row.page()
+                if (match.span.text(page.text) == null) return@use null
+                IndexedMatch(page, words.missingGroups(page.title + "\n" + page.text), match.span)
+            }
+        }
+    }
+
     private fun recent(window: PublicationWindow, limit: Int, source: WebFeedSource?): List<IndexedMatch> =
         readableDatabase.rawQuery(
         "SELECT url, title, body, published_at FROM pages p WHERE published_at >= ? AND published_at < ?" +
@@ -346,6 +428,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
         } ?: return null
         // FTS4 читает старый текст из pages при удалении, поэтому порядок важен.
         db.execSQL("DELETE FROM pages_fts WHERE docid = ?", arrayOf(id))
+        db.execSQL("DELETE FROM page_vectors WHERE page_id = ?", arrayOf(id))
         db.execSQL("DELETE FROM pages WHERE id = ?", arrayOf(id))
         return id
     }
@@ -369,6 +452,10 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
     }
 
     private companion object {
+        const val MAX_DB_BYTES = 100_000_000L
+        const val WEB_TEXT_RESERVE = 12_000_000L
+        const val MAX_VECTOR_PAGES = 5_000L
+        const val VECTOR_BATCH = 16L
         const val FRONTIER_LIMIT = 12_000L
         // Объявленные пределы истории каждой ленты. Издания отдают только видимую часть выпусков.
         const val FEED_HISTORY_AGE_MS = 14 * 24 * 60 * 60_000L
