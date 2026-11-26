@@ -4,6 +4,7 @@ import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -108,7 +109,25 @@ class WebFeedTest {
         val result = session.feed(nPlusOne, validators)
         assertEquals(validators, sent)
         assertNull(result.articles)
+        assertFalse(result.clearHistory)
         assertEquals(PageValidators(validators.etag, updated.modified), result.validators)
+    }
+
+    @Test
+    fun noFollowClearsSavedHeadlinesEvenWhenTheResponseIsNotModified() = runBlocking {
+        val validators = PageValidators(etag = "\"feed-version\"")
+        for (code in listOf(200, 304)) {
+            val session = CrawlSession(
+                network = { _, resource, _ ->
+                    if (resource == CrawlResource.ROBOTS) CrawlResponse(
+                        200, "text/plain", "User-agent: *\nDisallow:\n".toByteArray(), null, "",
+                    ) else CrawlResponse(code, "application/rss+xml", byteArrayOf(), null, "nofollow")
+                },
+                stored = { null },
+                stillAllowed = { true },
+            )
+            assertTrue(session.feed(nPlusOne, validators).clearHistory)
+        }
     }
 
     @Test

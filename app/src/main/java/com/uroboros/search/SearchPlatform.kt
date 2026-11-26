@@ -381,7 +381,8 @@ internal class SearchPlatform(
         if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
         if (request.subject.isNotBlank()) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
         val words = SearchWords(newsWords(request.subject), LemmaHolder.loaded)
-        val headlines = selectHeadlines(index.headlines(sources), words, window, SEARCH_LIMIT)
+        val savedHeadlines = index.headlines(sources, window, System.currentTimeMillis())
+        val headlines = selectHeadlines(savedHeadlines, words, window, SEARCH_LIMIT)
         val matches = if (headlines.isEmpty() && request.window != null) {
             val stored = lookup(request.subject, window, route.source).indexed.mapNotNull { match ->
                 val page = match.page
@@ -423,6 +424,8 @@ internal class SearchPlatform(
                 append(articles.joinToString(prefix = "Пересказ по статьям ", postfix = ". ") { "[${it.first}]" })
                 if (articles.size < hits.size) append("Остальные позиции приведены заголовками. ")
             }
+            val savedBySource = savedHeadlines.groupBy { it.source }
+            val dates = DateFormat.getDateInstance(DateFormat.SHORT)
             append(checks.joinToString(prefix = "Ленты — ", separator = "; ", postfix = ".") { check ->
                 val last = check.state.checkedAt?.let {
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it))
@@ -432,9 +435,13 @@ internal class SearchPlatform(
                     check.state.failed -> "сбой"
                     check.attempted && last != null -> "проверено $last"
                     last != null -> "данные от $last"
-                    else -> "данных пока нет"
+                    else -> "нет записи о проверке"
                 }
-                "${check.source.name} · $status"
+                val observed = savedBySource[check.source].orEmpty().mapNotNull { it.article.publishedAt }
+                val first = observed.minOrNull()?.let { dates.format(Date(it)) }
+                val lastDay = observed.maxOrNull()?.let { dates.format(Date(it)) }
+                val span = if (first == null) "" else if (first == lastDay) " ($first)" else " ($first – $lastDay)"
+                "${check.source.name} · $status · заголовков за период ${observed.size}$span"
             })
         }
         return SearchPage(hits, status = if (hits.isEmpty()) SearchStatus.EMPTY else SearchStatus.FOUND,

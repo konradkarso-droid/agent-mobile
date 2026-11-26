@@ -56,7 +56,9 @@ internal data class FeedState(
     val due: Long = 0, val validators: PageValidators = PageValidators(),
     val checkedAt: Long? = null, val failed: Boolean = false,
 )
-internal data class FeedUpdate(val articles: List<FeedArticle>?, val validators: PageValidators)
+internal data class FeedUpdate(
+    val articles: List<FeedArticle>?, val validators: PageValidators, val clearHistory: Boolean = false,
+)
 
 internal const val FEED_ARTICLE_LIMIT = 24
 private const val FEED_PARSE_LIMIT = 100

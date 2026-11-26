@@ -390,10 +390,11 @@ internal class CrawlSession(
         val response = fetch(url, rules.crawlDelay.coerceAtLeast(850), CrawlResource.FEED, cached)
         val follow = directiveWords(response.directives).none { it in setOf("none", "nofollow") }
         return when (response.code) {
-            200 -> FeedUpdate(if (follow) feedArticles(url, response.body) else emptyList(), response.validators)
+            200 -> FeedUpdate(if (follow) feedArticles(url, response.body) else emptyList(), response.validators,
+                clearHistory = !follow)
             304 -> {
                 if (!cached.present) throw IOException("Not modified without a cached feed")
-                FeedUpdate(if (follow) null else emptyList(), cached.updatedBy(response.validators))
+                FeedUpdate(null, cached.updatedBy(response.validators), clearHistory = !follow)
             }
             else -> throw IOException("Feed returned HTTP " + response.code)
         }

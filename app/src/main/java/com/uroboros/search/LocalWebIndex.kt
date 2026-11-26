@@ -17,7 +17,7 @@ internal data class IndexStatus(val pages: Int, val checkedAt: Long?)
  * Предел в байтах применяется к самой базе SQLite. Временные файлы SQLite
  * при записи могут занимать дополнительное место.
  */
-internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 5) {
+internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_pages.db", null, 6) {
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         if (!db.isReadOnly) db.setMaximumSize(100_000_000L)
@@ -36,7 +36,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(newVersion == 5 && oldVersion in 1..4) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
+        check(newVersion == 6 && oldVersion in 1..5) { "Unsupported web index upgrade: $oldVersion -> $newVersion" }
         if (oldVersion == 1) {
             db.execSQL("ALTER TABLE pages ADD COLUMN etag TEXT")
             db.execSQL("ALTER TABLE pages ADD COLUMN last_modified TEXT")
@@ -50,8 +50,11 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
             db.execSQL("ALTER TABLE feed_articles ADD COLUMN published_at INTEGER")
             db.execSQL("UPDATE feeds SET due = 0, etag = NULL, last_modified = NULL")
         }
-        db.execSQL("ALTER TABLE feeds ADD COLUMN checked_at INTEGER")
-        db.execSQL("ALTER TABLE feeds ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE feeds ADD COLUMN checked_at INTEGER")
+            db.execSQL("ALTER TABLE feeds ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
+        }
+        db.execSQL("ALTER TABLE feed_articles ADD COLUMN in_latest INTEGER NOT NULL DEFAULT 1")
     }
 
     private fun createFeedTables(db: SQLiteDatabase) {
@@ -59,7 +62,7 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
             "last_modified TEXT, checked_at INTEGER, failed INTEGER NOT NULL DEFAULT 0)")
         db.execSQL(
             "CREATE TABLE feed_articles (feed TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, " +
-                "position INTEGER NOT NULL, published_at INTEGER, PRIMARY KEY (feed, url))",
+                "position INTEGER NOT NULL, published_at INTEGER, in_latest INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (feed, url))",
         )
     }
 
@@ -118,38 +121,65 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
             put("checked_at", at)
         }, SQLiteDatabase.CONFLICT_REPLACE)
         check(stored != -1L)
-        val articles = update.articles ?: return@transaction
-        db.delete("feed_articles", "feed = ?", arrayOf(url))
+        if (update.clearHistory) {
+            db.delete("feed_articles", "feed = ?", arrayOf(url))
+            return@transaction
+        }
+        update.articles?.let { storeFeedArticles(db, url, it) }
+        pruneFeedHistory(db, url, at)
+    }
+
+    private fun storeFeedArticles(db: SQLiteDatabase, feed: String, articles: List<FeedArticle>) {
+        db.execSQL("UPDATE feed_articles SET in_latest = 0 WHERE feed = ? AND in_latest = 1", arrayOf(feed))
         articles.distinctBy { it.url }.take(FEED_ARTICLE_LIMIT).forEachIndexed { position, article ->
-            db.insertOrThrow("feed_articles", null, ContentValues().apply {
-                put("feed", url)
-                put("url", article.url)
+            val values = ContentValues().apply {
                 put("title", article.title)
                 put("position", position)
-                put("published_at", article.publishedAt)
-            })
+                put("in_latest", 1)
+                article.publishedAt?.let { put("published_at", it) }
+            }
+            if (db.update("feed_articles", values, "feed = ? AND url = ?", arrayOf(feed, article.url)) == 0) {
+                values.put("feed", feed)
+                values.put("url", article.url)
+                db.insertOrThrow("feed_articles", null, values)
+            }
             article.publishedAt?.let { published ->
                 db.execSQL("UPDATE pages SET published_at = ? WHERE url = ?", arrayOf(published, article.url))
             }
         }
     }
 
+    private fun pruneFeedHistory(db: SQLiteDatabase, feed: String, now: Long) {
+        db.execSQL(
+            "DELETE FROM feed_articles WHERE feed = ? AND in_latest = 0 " +
+                "AND (published_at IS NULL OR published_at < ? OR published_at > ?)",
+            arrayOf(feed, now - FEED_HISTORY_AGE_MS, now),
+        )
+        db.execSQL(
+            "DELETE FROM feed_articles WHERE rowid IN (SELECT rowid FROM feed_articles " +
+                "WHERE feed = ? AND in_latest = 0 ORDER BY published_at DESC, url LIMIT -1 OFFSET ?)",
+            arrayOf(feed, FEED_HISTORY_LIMIT),
+        )
+    }
+
     fun feedCandidates(now: Long): List<FeedArticle> = readableDatabase.rawQuery(
         "SELECT a.url, a.title, a.published_at FROM feed_articles a LEFT JOIN frontier f ON a.url = f.url " +
-            "LEFT JOIN pages p ON a.url = p.url WHERE p.id IS NULL AND (f.due IS NULL OR f.due <= ?) " +
+            "LEFT JOIN pages p ON a.url = p.url WHERE a.in_latest = 1 AND p.id IS NULL AND (f.due IS NULL OR f.due <= ?) " +
             "ORDER BY a.position, a.feed, a.url",
         arrayOf(now.toString()),
     ).use { rows ->
         buildList { while (rows.moveToNext()) add(FeedArticle(rows.getString(0), rows.getString(1), rows.longOrNull(2))) }
     }
 
-    fun headlines(sources: List<WebFeedSource>): List<NewsHeadline> {
+    fun headlines(sources: List<WebFeedSource>, window: PublicationWindow, now: Long): List<NewsHeadline> {
         if (sources.isEmpty()) return emptyList()
         val names = sources.associateBy { it.feed.toString() }
         val marks = names.keys.joinToString(", ") { "?" }
         return readableDatabase.rawQuery(
-            "SELECT feed, url, title, published_at FROM feed_articles WHERE feed IN ($marks)",
-            names.keys.toTypedArray(),
+            "SELECT feed, url, title, published_at FROM feed_articles WHERE feed IN ($marks) AND title <> '' " +
+                "AND published_at >= ? AND published_at < ? AND (in_latest = 1 OR published_at >= ?)",
+            (names.keys.toList() + listOf(window.from.toString(), window.until.toString(),
+                (now - FEED_HISTORY_AGE_MS).toString())).toTypedArray(),
         ).use { rows ->
             buildList {
                 while (rows.moveToNext()) {
@@ -181,7 +211,8 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
                 db.execSQL(
                     "DELETE FROM frontier WHERE url IN (" +
                         "SELECT f.url FROM frontier f LEFT JOIN pages p ON f.url = p.url " +
-                        "WHERE f.due = 0 AND p.id IS NULL AND f.url NOT IN (SELECT url FROM feed_articles) " +
+                        "WHERE f.due = 0 AND p.id IS NULL " +
+                        "AND f.url NOT IN (SELECT url FROM feed_articles WHERE in_latest = 1) " +
                         "AND f.url NOT IN ($keep) ORDER BY f.rowid DESC LIMIT ?)",
                     (seeds + needed.toString()).toTypedArray(),
                 )
@@ -339,6 +370,9 @@ internal class LocalWebIndex(context: Context) : SQLiteOpenHelper(context, "web_
 
     private companion object {
         const val FRONTIER_LIMIT = 12_000L
+        // Объявленные пределы истории каждой ленты. Издания отдают только видимую часть выпусков.
+        const val FEED_HISTORY_AGE_MS = 14 * 24 * 60 * 60_000L
+        const val FEED_HISTORY_LIMIT = 1_024
     }
 
     private fun transaction(write: (SQLiteDatabase) -> Unit) {
