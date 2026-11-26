@@ -335,7 +335,7 @@ internal class SearchPlatform(
         val checks = if (networkAllowed && allowed()) crawler.checkFeeds(sources, allowed, explicit = true)
         else sources.map { FeedCheck(it, index.feedState(it.feed.toString()), false) }
         if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
-        LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
+        if (request.subject.isNotBlank()) LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) }
         val words = SearchWords(newsWords(request.subject), LemmaHolder.loaded)
         val headlines = selectHeadlines(index.headlines(sources), words, window, SEARCH_LIMIT)
         val matches = if (headlines.isEmpty() && request.window != null) {
