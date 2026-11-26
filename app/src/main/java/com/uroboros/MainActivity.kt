@@ -160,6 +160,7 @@ import com.uroboros.will.tasks.KotlinCodingTask
 import com.uroboros.search.LinkOrigin
 import com.uroboros.search.MAX_QUERY_LENGTH
 import com.uroboros.search.SearchCommand
+import com.uroboros.search.SearchIntent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -3631,7 +3632,7 @@ class MainActivity : AppCompatActivity() {
             is SearchCommand.Deferred -> "Ставлю поиск в расписание…"
         }
         val feed = journal
-        val turn = feed.beginWebTurn(question, progress) ?: return
+        val turn = feed.beginWebTurn(question, progress, (command as? SearchCommand.Find)?.query) ?: return
         setDetailsExpanded(false)
         backToConversation()
         renderProgress()
@@ -4913,8 +4914,9 @@ class MainActivity : AppCompatActivity() {
 
         binding.editTextInput.doAfterTextChanged { text ->
             if (!llmEngine.isLoaded && !turns.busy.value) {
-                binding.buttonSend.isEnabled = SearchCommand.fromOwnerWords(text?.toString()) != null ||
-                    LinkFollow.plainTextUrl(text?.toString() ?: "") != null
+                val phrase = text?.toString().orEmpty()
+                binding.buttonSend.isEnabled = SearchCommand.fromOwnerWords(phrase, journal.recentWebQuery) != null ||
+                    (!SearchIntent.forbidsSearch(phrase) && LinkFollow.plainTextUrl(phrase) != null)
             }
         }
 
@@ -4943,7 +4945,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Поиск уже идёт", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            SearchCommand.fromOwnerWords(userText)?.let { command ->
+            SearchCommand.fromOwnerWords(userText, journal.recentWebQuery)?.let { command ->
                 submitWebSearch(command, userText)
                 if (command !is SearchCommand.Find || command.query.length <= MAX_QUERY_LENGTH) {
                     binding.editTextInput.text.clear()
@@ -4952,7 +4954,7 @@ class MainActivity : AppCompatActivity() {
             }
             // Ссылка в тексте — ход «открываю и пересказываю», как у веб-поиска:
             // она не идёт ни в разговор с моделью, ни в очередь вопросов цикла.
-            LinkFollow.plainTextUrl(userText)?.let { url ->
+            LinkFollow.plainTextUrl(userText)?.takeUnless { SearchIntent.forbidsSearch(userText) }?.let { url ->
                 submitLinkOpen(url, userText)
                 binding.editTextInput.text.clear()
                 return@setOnClickListener

@@ -10,8 +10,10 @@ internal data class PublicationQuery(
     val subject: String, val window: PublicationWindow?, val news: Boolean = false, val summary: Boolean = false,
 ) {
     companion object {
+        private const val DAYS = """последние\s+([1-9][0-9]?)\s+(?:день|дня|дней)"""
+        internal const val PERIOD = """сегодня|вчера|за\s+(?:(?:последнюю\s+)?неделю|$DAYS|сутки|последние\s+24\s+часа)"""
         private val time = Regex(
-            """(?:^|\s+)(сегодня|вчера|за\s+(?:(?:последнюю\s+)?неделю|последние\s+([1-9][0-9]?)\s+(?:день|дня|дней)|сутки|последние\s+24\s+часа))[.!?]*$""",
+            """(?:^|\s+)($PERIOD)[.!?]*$""",
             RegexOption.IGNORE_CASE,
         )
         private val headlineRequest = Regex(

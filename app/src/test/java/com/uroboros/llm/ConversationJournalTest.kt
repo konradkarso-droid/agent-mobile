@@ -746,9 +746,10 @@ class ConversationJournalHiddenTest {
         val question = "Поищи новости"
         val title = "Пересказ новости"
         val link = "https://nplus1.ru/news/2026/11/22/news"
-        val pending = requireNotNull(journal.beginWebTurn(question, "Ищу в интернете…"))
+        val pending = requireNotNull(journal.beginWebTurn(question, "Ищу в интернете…", "новости"))
         assertEquals(pending, journal.pendingWeb)
         assertEquals(null, journal.beginWebTurn("Другой поиск", "Ищу"))
+        assertEquals(null, journal.recentWebQuery)
 
         journal.finishWebTurn(pending, "$title\n$link", listOf(link))
         val visible = journal.screenTurns.value.single() as ConversationJournal.Web
@@ -757,10 +758,12 @@ class ConversationJournalHiddenTest {
         assertEquals("$title\n$link", visible.answer)
         assertEquals(listOf(link), visible.sourceUrls)
         assertEquals(null, journal.pendingWeb)
+        assertEquals("новости", journal.recentWebQuery)
         assertEquals(before, journal.messagesFor("Как дела?"))
         assertEquals(2, journal.history().size)
 
         journal.dropLastWeb(visible)
+        assertEquals(null, journal.recentWebQuery)
         assertTrue(journal.screenTurns.value.isEmpty())
         assertEquals(2, journal.history().size)
     }

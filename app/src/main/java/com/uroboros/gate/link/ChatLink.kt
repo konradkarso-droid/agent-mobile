@@ -68,6 +68,7 @@ import com.uroboros.search.CrawlSources
 import com.uroboros.search.DeferredSearchTelegram
 import com.uroboros.search.LinkOrigin
 import com.uroboros.search.SearchCommand
+import com.uroboros.search.SearchIntent
 import com.uroboros.search.SearchReply
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -267,6 +268,7 @@ object ChatLink {
     private val searchReplies = Semaphore(2)
     private val searchQuotedEntities = setOf("blockquote", "expandable_blockquote", "pre", "code")
     private val sendLock = Mutex()
+    @Volatile private var lastWebReply: SearchIntent.RecentReply? = null
 
     /** Запустить очередь ответов в области службы; уже идёт — ничего. */
     @Synchronized
@@ -303,7 +305,10 @@ object ChatLink {
     suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
         this.me = me
         val command = SearchCommand.parse(m.text, me.username)
-            ?: SearchCommand.fromOwnerWords(m.text)?.takeIf { isSearchOwner(app, m) }
+            ?: if (isSearchOwner(app, m)) {
+                val prior = lastWebReply?.topicFor(me.id, m.chatId, m.messageId, m.replyToMessageId, System.nanoTime())
+                SearchCommand.fromOwnerWords(m.text, prior)
+            } else null
         if (command != null) {
             searchCommand(app, m, me, command)
             return
@@ -347,7 +352,7 @@ object ChatLink {
         // ответ: иначе на одно сообщение приходило бы два, и разговорный
         // отвечал бы о странице, которой не читал.
         var linkOwnsReply = false
-        LinkFollow.telegramUrl(m)?.let { sentLink ->
+        LinkFollow.telegramUrl(m)?.takeUnless { SearchIntent.forbidsSearch(m.text.orEmpty()) }?.let { sentLink ->
             val where = when {
                 w.place == Place.DIRECT && owner -> LinkFollow.Where.OWNER_DIRECT
                 w.place == Place.DIRECT -> LinkFollow.Where.STRANGER_DIRECT
@@ -423,7 +428,7 @@ object ChatLink {
                     is SearchCommand.Find, SearchCommand.Refresh -> search.fromTelegram(
                         command,
                         bot.id.toString() + ":" + m.chatId + ":" + m.messageId,
-                        stillOwner = ::ownerAllowed,
+                        stillOwner = { ownerAllowed() && ChatPrefs.consent(app)?.id == consent.id },
                         onAccepted = { accepted.complete(Unit) },
                     )
                     SearchCommand.Last -> search.snapshot().latestReply()
@@ -441,6 +446,10 @@ object ChatLink {
                         disablePreview = true, stillAllowed = { ownerAllowed() && ChatPrefs.consent(app) != null },
                     )
                     sent.failure?.let { GateLink.note("Веб-поиск: ответ не отправлен — $it") }
+                    val replyId = sent.messageId
+                    if (sent.failure == null && replyId != null && command is SearchCommand.Find) {
+                        lastWebReply = SearchIntent.RecentReply(bot.id, m.chatId, replyId, command.query, System.nanoTime())
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled

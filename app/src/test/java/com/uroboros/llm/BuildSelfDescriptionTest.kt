@@ -19,12 +19,12 @@ import org.junit.Test
 class BuildSelfDescriptionTest {
 
     @Test
-    fun localSearchIsKnownInBothChannelsAndTimersAreUnavailable() {
+    fun searchAndDeferredActionsAreDescribedInBothChannels() {
         for (telegram in listOf(false, true)) {
             val lines = BuildSelfDescription.lines(1, telegram)
             assertTrue(BuildSelfDescription.WEB_SEARCH_LINE in lines)
             assertTrue(BuildSelfDescription.DEFERRED_ACTIONS_LINE in lines)
-            assertTrue(lines.any { "обнови источники" in it })
+            assertTrue(BuildSelfDescription.WEB_SEARCH_LINE.contains("обновить индекс"))
             assertFalse(lines.any { "Brave Search" in it })
         }
     }
