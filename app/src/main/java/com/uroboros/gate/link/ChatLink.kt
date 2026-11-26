@@ -42,6 +42,10 @@ import com.uroboros.memory.EmergencyStop
 import com.uroboros.memory.GateResult
 import com.uroboros.memory.GatedAction
 import com.uroboros.memory.desk.Promises
+import com.uroboros.memory.dream.CuriosityAsk
+import com.uroboros.memory.dream.CuriosityFollowUp
+import com.uroboros.memory.dream.CuriosityFollowUpStore
+import com.uroboros.memory.dream.Gaps
 import com.uroboros.memory.dream.DreamTopic
 import com.uroboros.memory.dream.SelfClaim
 import com.uroboros.memory.dream.SelfClaimReader
@@ -792,6 +796,9 @@ object ChatLink {
             return "промолчал сам ${clock(System.currentTimeMillis())} — $why · промолчал ${count[1]} из ${count[0] + count[1]} за запуск службы"
         }
         send(app, job, text, ActionProvenance.MODEL_OUTPUT, generated.records, generated.dreamNote)?.let { return "ответ не ушёл — $it" }
+        generated.promiseFollowUp?.let { promise ->
+            runCatching { CuriosityFollowUpStore(app).note(job.tallyKey, promise) }
+        }
         count[0]++
         return ChatTurnMeter.answered(clock(System.currentTimeMillis()), generated.tookMs ?: 0L, text.length, generated.ladder)
     }
@@ -827,6 +834,7 @@ object ChatLink {
         val records: List<String> = emptyList(),
         /** Описание ночи, поданное модели в этот ход (см. [NightNote]). */
         val dreamNote: String? = null,
+        val promiseFollowUp: Promises.Promise? = null,
     )
 
     /** Имена колец, строки которых модель читает (AddressSorter.modelReads), — для запросов к ленте чата. */
@@ -898,7 +906,6 @@ object ChatLink {
         val cross = crossFor(app, job, owner, upTo.last().at, dictionary, agentNames, installedAt)
         // Заявки прошлого ответа без опоры — последней строкой хвоста, ближе к реплике.
         val claimNote = claims.found?.let { SelfClaim.note(it) }
-        val tailBlock = listOfNotNull(cross.first, tail?.let(ChatThread::tailText), insist, promisedText, claimNote).joinToString("\n")
         threads[job.tallyKey] = ChatThread.meterLine(chatName, window, moved, head, tail, dictionary != null, hhmm, previous = previous) +
             " · обещаний этого чата: ${promised?.size ?: "не прочитались"} · $body · ${cross.second}"
 
@@ -917,6 +924,25 @@ object ChatLink {
         // Записи памяти этого хода — по границе чата (ChatRecall). Не прочитались —
         // ход идёт без них, строка экрана говорит почему.
         val question = ChatFeed.question(window)
+        val turnsOfWindow = ChatFeed.history(window)
+        val previousForCuriosity = turnsOfWindow.lastOrNull()?.agentContent
+        // Тема и обещания берутся из одного диалога. Сны и пробелы экрана сюда не передаются.
+        val ownsDialog = job.place == Place.DIRECT && owner?.key == job.sender && !job.senderIsBot
+        val canAsk = ownsDialog && note == null && CuriosityFollowUp.mayAsk(question, previousForCuriosity)
+        val gap = if (!canAsk) null else CuriosityAsk.decideGap(
+            Gaps.of(turnsOfWindow.map { Gaps.Turn(it.question, it.agentContent, -1) }),
+            question, previousForCuriosity, awaitingDream = false,
+        )
+        val gapAsk = (gap as? CuriosityAsk.GapDecision.Ask)?.gap
+        val promiseFollowUp = if (!canAsk || gapAsk != null || claimChecker == null) null else {
+            val store = CuriosityFollowUpStore(app)
+            CuriosityFollowUp.promise(question, previousForCuriosity, promised.orEmpty(), now) {
+                store.offered(job.tallyKey, it)
+            }
+        }
+        val curiosityLine = gapAsk?.let(CuriosityAsk::gapLine) ?: promiseFollowUp?.let(CuriosityFollowUp::promiseLine)
+        val tailBlock = listOfNotNull(cross.first, tail?.let(ChatThread::tailText), insist, promisedText, claimNote,
+            curiosityLine).joinToString("\n")
         val recall = recallFor(app, job, window, question, owner, dictionary, chatName, now, claimChecker)
         // Описание ночи — первым в том же сообщении агента, что записи хода, как
         // на экране строка о ночи стоит перед записями (ConversationJournal.messagesFor).
@@ -924,7 +950,18 @@ object ChatLink {
             app, ChatRecall.scope(job.place == Place.DIRECT, owner?.key == job.sender),
             addressOf(window, question, now), readRaw.filter { it.id >= window.startId }, chatName, now,
         )
-        recalls[job.tallyKey] = recall.meter + "\n" + night.meter
+        recalls[job.tallyKey] = buildString {
+            append(recall.meter).append('\n').append(night.meter)
+            if (ownsDialog) {
+                val reason = when {
+                    gapAsk != null -> "предложено уточнить пробел этого чата"
+                    promiseFollowUp != null -> "предложена сверка обещания"
+                    !canAsk -> "реплика не даёт повода для вопроса"
+                    else -> (gap as? CuriosityAsk.GapDecision.Refuse)?.reason ?: "нет повода"
+                }
+                append("\nЛюбопытство: ").append(reason)
+            }
+        }
         val remembered = listOfNotNull(night.line, recall.message).joinToString("\n\n").ifEmpty { null }
 
         // Лента чата для лестницы ответа (AnswerLadder): запрос — окно чата,
@@ -932,7 +969,6 @@ object ChatLink {
         // уходит первый: скрыть ход в телеграме значит промолчать человеку
         // (решение владельца). Памяти это не трогает: свои ответы агента ложатся
         // только в ленту чата.
-        val turnsOfWindow = ChatFeed.history(window)
         var chosen: String? = null
         var sentFirst = false
         val ribbon = object : AnswerLadder.Ribbon {
@@ -1016,7 +1052,7 @@ object ChatLink {
         if (text.isEmpty()) {
             return Generated(null, if (ran.glanced) "глянул на приборы, после доски ответа нет" else "модель не выдала ни знака", tookMs, said)
         }
-        return Generated(text, null, tookMs, said, recall.records, night.line)
+        return Generated(text, null, tookMs, said, recall.records, night.line, promiseFollowUp)
     }
 
     /**

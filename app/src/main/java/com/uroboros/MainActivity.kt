@@ -95,6 +95,8 @@ import com.uroboros.memory.dream.AgentRecall
 import com.uroboros.memory.dream.AgentRecaller
 import com.uroboros.memory.dream.DreamDoor
 import com.uroboros.memory.dream.CuriosityAsk
+import com.uroboros.memory.dream.CuriosityFollowUp
+import com.uroboros.memory.dream.CuriosityFollowUpStore
 import com.uroboros.memory.dream.Gaps
 import com.uroboros.memory.dream.SelfGap
 import com.uroboros.memory.dream.SelfGapReader
@@ -634,6 +636,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Выход «спросить» в базе, см. CuriosityAsk. */
     private val curiosityAskMarker by lazy { CuriosityAskMarker(applicationContext) }
+    private val curiosityFollowUps by lazy { CuriosityFollowUpStore(applicationContext) }
 
     /** Прибор «Нажитое о себе», см. UnpromptedLeader. */
     private val unpromptedLeaderGauge by lazy { UnpromptedLeaderGauge(applicationContext) }
@@ -5624,18 +5627,38 @@ class MainActivity : AppCompatActivity() {
                 }.getOrNull()
                 val askedGap = if (selfGapLine != null || homeTell != null) null
                 else (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
+                val previousForCuriosity = journal.history().lastOrNull()?.agentContent
+                val promiseFollowUp = if (
+                    selfGapLine == null && homeTell == null && askedGap == null && requestedNote == null &&
+                    prochnostNote == null && claimChecker != null &&
+                    CuriosityFollowUp.mayAsk(userText, previousForCuriosity)
+                ) {
+                    try {
+                        val now = System.currentTimeMillis()
+                        val found = Promises.find(deskTurns(now - Promises.TERM_MS), now, LemmaHolder.loaded)
+                        CuriosityFollowUp.promise(userText, previousForCuriosity,
+                            (found as? Promises.Found.Ok)?.promises.orEmpty(), now) {
+                            curiosityFollowUps.offered(CuriosityFollowUp.SCREEN, it)
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else null
                 curiosityAskLine = when {
+                    promiseFollowUp != null -> "Спросить: предложена сверка обещания по теме разговора"
                     selfGapLine != null -> "Спросить: в этой реплике предложено выбрать себе имя"
                     homeTell != null -> "Спросить: в этой реплике предложено рассказать о доме — ${homeTell.what}"
                     else -> CuriosityAsk.meter(gapDecision, tellDecision, askDecision)
                 }
-                val toldTeller = if (askedGap != null || selfGapLine != null || homeTell != null) null
+                val toldTeller = if (askedGap != null || promiseFollowUp != null || selfGapLine != null || homeTell != null) null
                 else (tellDecision as? CuriosityAsk.TellDecision.Tell)?.teller
                 // Рассказ в ходе один: мысль из сна раньше ночи (DreamTopic,
                 // «НЕСКАЗАННАЯ НОЧЬ»). Ночь по вопросу владельца — не рассказ
                 // без спроса, ей мысль не помеха.
                 val dreamNote = requestedNote
-                    ?: if (nightUnpromptedRefusal == null && toldTeller == null && homeTell == null) dreamCandidate else null
+                    ?: if (nightUnpromptedRefusal == null && toldTeller == null && homeTell == null && promiseFollowUp == null) dreamCandidate else null
                 dreamInMirrorLine = DreamTopic.meter(
                     DreamTopic.toldWithinDay(toldBefore, System.currentTimeMillis()) + (if (dreamNote != null) 1 else 0),
                     when {
@@ -5654,7 +5677,7 @@ class MainActivity : AppCompatActivity() {
                 val askedLeader = when {
                     selfGapLine != null -> null
                     homeTell != null -> null
-                    askedGap != null -> null
+                    askedGap != null || promiseFollowUp != null -> null
                     toldTeller != null -> toldTeller.leader
                     else -> (askDecision as? CuriosityAsk.Decision.Ask)?.leader
                 }
@@ -5696,6 +5719,7 @@ class MainActivity : AppCompatActivity() {
                     curiosityAsk = selfGapLine
                         ?: homeTell?.line
                         ?: askedGap?.let { CuriosityAsk.gapLine(it) }
+                        ?: promiseFollowUp?.let(CuriosityFollowUp::promiseLine)
                         ?: toldTeller?.let { CuriosityAsk.tellLine(it) }
                         ?: askedLeader?.let { CuriosityAsk.line(it) },
                 )
@@ -5857,6 +5881,9 @@ class MainActivity : AppCompatActivity() {
                     // неё отказывает само, и оба выхода её назовут.
                     val repliedAt = System.currentTimeMillis()
                     conversationTimes.noteOwnerReply(repliedAt)
+                    promiseFollowUp?.let { promise ->
+                        runCatching { curiosityFollowUps.note(CuriosityFollowUp.SCREEN, promise, repliedAt) }
+                    }
                     askedLeader?.let { leader ->
                         runCatching { curiosityAskMarker.markAsked(leader, repliedAt) }
                             .onFailure { curiosityAskFailure = it.javaClass.simpleName }
