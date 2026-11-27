@@ -84,6 +84,17 @@ class GateBotApiTest {
         ]}
     """.trimIndent()
 
+    @Test fun documentCaptionAndDeliveryStayInThread() {
+        val raw = """[{"update_id":1,"message":{"chat":{"id":-1,"type":"supergroup"},"caption":"Замени срок","message_thread_id":8,"is_topic_message":true,"document":{"file_id":"x","file_name":"условия.docx"}}}]"""
+        val message = GateBotApi.updates(TgJson.parse(raw)).single().message!!
+        assertTrue(message.documentCaption)
+        assertEquals("Замени срок", message.text)
+        assertEquals("условия.docx", message.doc?.name)
+        val body = GateBotApi.documentBody("-1", "result.docx", byteArrayOf(1), "separator", 17, 8).decodeToString()
+        assertTrue(body.contains("name=\"reply_parameters\"\r\n\r\n{\"message_id\":17}"))
+        assertTrue(body.contains("name=\"message_thread_id\"\r\n\r\n8"))
+    }
+
     private fun parsed() = GateBotApi.updates((GateBotApi.reply(updates, 200) as GateBotApi.Reply.Ok).result)
 
     @Test
@@ -94,7 +105,7 @@ class GateBotApiTest {
         assertEquals(222L, m.chatId)
         assertTrue(m.privateChat)
         assertEquals("kate_ai_bot", m.fromUsername)
-        assertEquals(GateBotApi.Doc("BQAC", 512), m.doc)
+        assertEquals(GateBotApi.Doc("BQAC", 512, "trafaret.txt"), m.doc)
         assertFalse(m.edited)
         assertTrue(u[1].message!!.edited)
         assertEquals(-100777L, u[2].message!!.senderChatId)

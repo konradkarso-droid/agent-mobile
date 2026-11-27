@@ -498,6 +498,21 @@
         android:textColor="#7FA3AE"
         android:text="Долгое нажатие: Показать — лог · Сохранить — экспорт · Модель — папка · Разбор — запуск"/>
 
+    <TextView
+        android:id="@+id/attachedDocument"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="middle"
+        android:maxLines="1"
+        android:visibility="gone"/>
+
+    <Button
+        android:id="@+id/saveChatDocument"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Сохранить готовый файл"
+        android:visibility="gone"/>
+
     <!-- Поле ввода — в самом низу, как в чате, и растёт по высоте с текстом.
          Отправка — стрелкой внутри поля у правого края: у левши большой
          палец держит низ экрана, а стрелка стоит там, где кончается набор.
@@ -524,6 +539,15 @@
             android:inputType="textMultiLine"
             android:maxLines="4"
             android:hint="Запрос, текст для сохранения или вопрос агенту"/>
+
+        <ImageButton
+            android:id="@+id/buttonDocument"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="start|bottom"
+            android:background="?attr/selectableItemBackground"
+            android:src="@drawable/ic_attach_plus"
+            android:contentDescription="Добавить документ в чат"/>
 
         <ImageButton
             android:id="@+id/buttonSend"

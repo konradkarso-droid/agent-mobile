@@ -51,6 +51,39 @@ class ChatTasksTest {
         assertNull(ChatTaskPlan.control("Я уже сказал его имя, а ты вместо файла открыл сайт", true, false))
     }
 
+    @Test fun editsAndExportsWordWithoutModelOrJudge() = runBlocking {
+        val agent = ChatTasks(this, guard, store, { true }, { false },
+            { _, _ -> error("память") }, { _, _ -> error("поиск") }, { _, _, _ -> error("телеграм") },
+            { error("суд") }, { _, _ -> error("модель") }, { true },
+            { JSONObject().put("format", "docx").put("text", "Срок завтра") })
+        val task = "Замени «завтра» на «сегодня» в документе"
+        assertTrue(agent.accepts(task))
+        agent.submit(task, "")
+        until { state() == "done" }
+        val file = requireNotNull(agent.appFile())
+        assertEquals("result.docx", file.first)
+        assertEquals("Срок сегодня", com.uroboros.documents.DocumentText.read("docx", file.second))
+    }
+
+    @Test fun documentTaskUsesTheSelectedAttachmentWhenLatestIsUnavailable() = runBlocking {
+        val originalKey = "tg:7:8:msg:10"
+        val selectedKeys = mutableListOf<String>()
+        val source = JSONObject().put("format", "txt").put("text", "Срок завтра")
+        val tg = DeferredSearchTelegram(7, 8, 12, "grant")
+        val delivered = CompletableDeferred<String>()
+        val agent = ChatTasks(this, guard, store, { true }, { false },
+            { _, _ -> error("память") }, { _, _ -> error("поиск") }, { _, _, _ -> true },
+            { error("суд") }, { _, _ -> error("модель") }, { false },
+            { key -> selectedKeys += key; if (key == originalKey) source else null },
+            { _, _, bytes, _ ->
+                delivered.complete(com.uroboros.documents.DocumentText.read("txt", bytes))
+                true
+            })
+        agent.submit("Замени «завтра» на «сегодня»", "", tg, lineId = 12, sourceKey = originalKey)
+        assertEquals("Срок сегодня", withTimeout(5000) { delivered.await() })
+        assertEquals(listOf(originalKey), selectedKeys)
+    }
+
     @Test fun interruptedProcessResumesAtFirstUnconfirmedStep() = runBlocking {
         val first = CoroutineScope(Job())
         val executing = CompletableDeferred<Unit>()

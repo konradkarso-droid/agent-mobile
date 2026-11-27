@@ -74,6 +74,7 @@ data class ChatLine(
     val taskOwner: Long? = null,
     val taskGrant: String? = null,
     val taskText: String? = null,
+    val taskDocumentKey: String? = null,
 )
 
 /** Последний собеседник в личке — для отметки «это я» на экране врат. */

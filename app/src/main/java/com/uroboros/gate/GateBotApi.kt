@@ -19,7 +19,7 @@ import java.net.URLEncoder
  * HTTPS; из обновлений берёт только сообщения и их правку (`allowed_updates`
  * в [updatesUrl]); из сообщения — то, что нужно вратам и словам чата
  * ([TgWords]): текст, сущности, ответ на чьё, ветку, пересылку как признак;
- * подписи к файлу, картинки, голос не читает.
+ * читает подписи к документам.
  *
  * Чистый объект: ни сети, ни базы, ни Android.
  */
@@ -98,7 +98,7 @@ object GateBotApi {
     }
 
     /** Файл в сообщении: как скачать и какого он размера (null — телеграм не сказал). */
-    data class Doc(val fileId: String, val size: Long?)
+    data class Doc(val fileId: String, val size: Long?, val name: String? = null)
 
     /** Сущность текста (`entities`): вид и место в единицах UTF-16; [userId] — у `text_mention`, [url] — у `text_link`. */
     data class Entity(val type: String, val offset: Int, val length: Int, val userId: Long? = null, val url: String? = null)
@@ -134,6 +134,8 @@ object GateBotApi {
         val replyToMessageId: Long? = null,
         val replyToTopicRoot: Boolean = false,
         val forwarded: Boolean = false,
+        val replyToDocument: Boolean = false,
+        val documentCaption: Boolean = false,
     ) {
         fun toTg(file: ByteArray?) = TgMessage(chatId, privateChat, fromId, senderChatId, edited, dateSec, file)
     }
@@ -153,7 +155,7 @@ object GateBotApi {
         val chat = TgJson.obj(m["chat"]) ?: return null
         val chatId = TgJson.long(chat["id"]) ?: return null
         val from = TgJson.obj(m["from"])
-        val doc = TgJson.obj(m["document"])?.let { d -> TgJson.str(d["file_id"])?.let { Doc(it, TgJson.long(d["file_size"])) } }
+        val doc = TgJson.obj(m["document"])?.let { d -> TgJson.str(d["file_id"])?.let { Doc(it, TgJson.long(d["file_size"]), TgJson.str(d["file_name"])) } }
         val reply = TgJson.obj(m["reply_to_message"])
         return Message(
             chatId = chatId,
@@ -172,11 +174,13 @@ object GateBotApi {
             fromIsBot = from?.let { TgJson.bool(it["is_bot"]) } == true,
             fromFirstName = from?.let { TgJson.str(it["first_name"]) },
             fromLastName = from?.let { TgJson.str(it["last_name"]) },
-            text = TgJson.str(m["text"]),
-            entities = TgJson.list(m["entities"]).orEmpty().mapNotNull { e -> entity(TgJson.obj(e)) },
+            text = TgJson.str(m["text"]) ?: doc?.let { TgJson.str(m["caption"]) },
+            entities = TgJson.list(m["entities"] ?: m["caption_entities"]).orEmpty().mapNotNull { e -> entity(TgJson.obj(e)) },
             replyToFromId = reply?.let { TgJson.obj(it["from"]) }?.let { TgJson.long(it["id"]) },
             replyToMessageId = reply?.let { TgJson.long(it["message_id"]) },
             replyToTopicRoot = reply?.containsKey("forum_topic_created") == true,
+            replyToDocument = reply?.get("document") != null,
+            documentCaption = doc != null && m["caption"] != null,
             forwarded = m["forward_origin"] != null || m["forward_from"] != null || m["forward_date"] != null,
         )
     }
@@ -243,14 +247,16 @@ object GateBotApi {
      * `document`. [boundary] — разделитель, которого нет в файле (у форм врат
      * случайной строки из 32 знаков hex там быть не может, но проверяется).
      */
-    fun documentBody(chatId: String, fileName: String, bytes: ByteArray, boundary: String): ByteArray {
+    fun documentBody(chatId: String, fileName: String, bytes: ByteArray, boundary: String, replyTo: Long? = null, thread: Long? = null): ByteArray {
         require(!String(bytes, Charsets.ISO_8859_1).contains(boundary)) { "разделитель встретился в файле" }
         require(fileName.all { it.isLetterOrDigit() || it in "._-" }) { "имя файла — только буквы, цифры, «._-»" }
+        fun field(name: String, value: String?) = value?.let { "--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$it\r\n" }.orEmpty()
+        val type = if (fileName.endsWith(".docx")) "application/vnd.openxmlformats-officedocument.wordprocessingml.document" else "text/plain"
         val head = "--$boundary\r\n" +
             "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n$chatId\r\n" +
-            "--$boundary\r\n" +
+            field("reply_parameters", replyTo?.let { "{\"message_id\":$it}" }) + field("message_thread_id", thread?.toString()) + "--$boundary\r\n" +
             "Content-Disposition: form-data; name=\"document\"; filename=\"$fileName\"\r\n" +
-            "Content-Type: text/plain\r\n\r\n"
+            "Content-Type: $type\r\n\r\n"
         return head.toByteArray(Charsets.UTF_8) + bytes + "\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8)
     }
 
