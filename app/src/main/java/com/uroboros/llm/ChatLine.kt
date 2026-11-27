@@ -70,6 +70,10 @@ data class ChatLine(
     val place: String,
     val recall: String? = null,
     val dreamNote: String? = null,
+    val taskBot: Long? = null,
+    val taskOwner: Long? = null,
+    val taskGrant: String? = null,
+    val taskText: String? = null,
 )
 
 /** Последний собеседник в личке — для отметки «это я» на экране врат. */

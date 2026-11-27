@@ -405,7 +405,7 @@ class AgentService : Service() {
     /** Всё, из чего решается «написать первым»: входы, повод и прочитанные времена. */
     private class InitiativeCheck(
         val inputs: InitiativeDecision.Inputs,
-        val offer: InitiativeSource.Offer,
+        val offer: InitiativeSource.Offer?,
         val times: ConversationTimes.Snapshot?,
     ) {
         val refusal: InitiativeDecision.Refusal? = InitiativeDecision.check(inputs)
@@ -417,29 +417,29 @@ class AgentService : Service() {
         val watchdog = objects.watchdog
         val turns = objects.turns
         val times = runCatching { conversationTimes.read() }
+        val snapshot = times.getOrNull()
+        val inputs = InitiativeDecision.Inputs(
+            running = working || job?.isActive == true || nightLock.isLocked,
+            emergencyStop = EmergencyStop.isActive(),
+            powerKnown = watchdog.zoneObservation().powerLastAtMs != null,
+            watchdogRefusal = watchdog.longRunBlockReason(),
+            // Замок хода — тоже занятость: экран может вести ход или
+            // поднимать ленту, ещё не дойдя до движка.
+            engineBusy = engine.activity.busy || turns.busy.value,
+            timesUnreadable = times.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName },
+            ownerReplyAt = snapshot?.ownerReplyAt,
+            lastInitiativeAt = snapshot?.initiative?.at,
+            now = System.currentTimeMillis(),
+            sourceRefusal = null,
+            modelChosen = ModelPrefs.lastModelUri(applicationContext) != null,
+        )
+        if (InitiativeDecision.check(inputs) != null) {
+            return InitiativeCheck(inputs, null, snapshot)
+        }
         val offer = runCatching { initiativeSource.offer() }.getOrElse {
             InitiativeSource.Offer.Silent("не прочиталось, что сказать (${it.javaClass.simpleName})")
         }
-        val snapshot = times.getOrNull()
-        return InitiativeCheck(
-            InitiativeDecision.Inputs(
-                running = working || job?.isActive == true || nightLock.isLocked,
-                emergencyStop = EmergencyStop.isActive(),
-                powerKnown = watchdog.zoneObservation().powerLastAtMs != null,
-                watchdogRefusal = watchdog.longRunBlockReason(),
-                // Замок хода — тоже занятость: экран может вести ход или
-                // поднимать ленту, ещё не дойдя до движка.
-                engineBusy = engine.activity.busy || turns.busy.value,
-                timesUnreadable = times.exceptionOrNull()?.let { it.message ?: it.javaClass.simpleName },
-                ownerReplyAt = snapshot?.ownerReplyAt,
-                lastInitiativeAt = snapshot?.initiative?.at,
-                now = System.currentTimeMillis(),
-                sourceRefusal = (offer as? InitiativeSource.Offer.Silent)?.reason,
-                modelChosen = ModelPrefs.lastModelUri(applicationContext) != null,
-            ),
-            offer,
-            snapshot,
-        )
+        return InitiativeCheck(inputs.copy(sourceRefusal = (offer as? InitiativeSource.Offer.Silent)?.reason), offer, snapshot)
     }
 
     /** Показать строку «Первым:» по итогу проверки. */

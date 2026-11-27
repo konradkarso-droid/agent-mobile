@@ -254,7 +254,10 @@ object ChatLink {
     private var me: GateBotApi.Me? = null
 
     /** Канал открыт: кто я — для прибора и для чтения слов. Зовёт GateLink после `getMe`. */
+    private val connectedBot = MutableStateFlow<Long?>(null)
+
     fun knowMe(context: Context, me: GateBotApi.Me) {
+        connectedBot.value = me.id
         this.me = me
         refresh(context.applicationContext)
     }
@@ -320,14 +323,17 @@ object ChatLink {
             val first = text.takeWhile { !it.isWhitespace() }
             if (first.trimEnd(',', ':').equals("@${me.username}", true)) text.drop(first.length).trimStart() else text
         }
-        val taskWords = taskTarget != null && tasks.accepts(taskText, taskTarget)
+        val repositoryScope = "tg:${me.id}:${m.chatId}:${m.threadId ?: 0}"
+        val repositoryUrl = if (taskTarget != null && m.privateChat && !SearchIntent.forbidsSearch(taskText))
+            ProcessObjects.get(app).search.repositoryFile(repositoryScope, taskText) else null
+        val taskWords = repositoryUrl == null && taskTarget != null && tasks.accepts(taskText, taskTarget)
         val command = SearchCommand.parse(m.text, me.username)
             ?: if (!taskWords && isSearchOwner(app, m)) {
                 val prior = lastWebReply?.topicFor(me.id, m.chatId, m.messageId, m.replyToMessageId, System.nanoTime())
                 if (prior != null) loadCuriosityLexicon(app)
                 SearchCommand.fromOwnerWords(m.text, prior)
             } else null
-        if (command != null) {
+        if (command != null && repositoryUrl == null) {
             searchCommand(app, m, me, command)
             return
         }
@@ -347,12 +353,15 @@ object ChatLink {
         }
         val prior = dao.recent(w.chat.id, w.thread, 1).firstOrNull()?.let(::priorOf)
         val route = AddressSorter.sort(w.message, self(app, me), prior)
+        val acceptedTarget = taskTarget.takeIf { taskWords }
         val lineId = dao.insert(
             ChatLine(
                 chat = w.chat.id, thread = w.thread, messageId = w.messageId, sender = w.message.sender.id,
                 name = w.name, signature = w.signature, isBot = w.senderIsBot, isAgent = false,
                 text = w.message.text, ring = route.ring.name, reason = route.reason,
                 replyTo = w.message.replyTo?.id, at = w.atMs, place = w.place.name,
+                taskBot = acceptedTarget?.botId, taskOwner = acceptedTarget?.ownerId,
+                taskGrant = acceptedTarget?.consentId, taskText = taskText.takeIf { taskWords },
             )
         )
         if (w.place == Place.DIRECT) direct.incrementAndGet() else group.incrementAndGet()
@@ -370,7 +379,7 @@ object ChatLink {
         // ответ: иначе на одно сообщение приходило бы два, и разговорный
         // отвечал бы о странице, которой не читал.
         var linkOwnsReply = false
-        LinkFollow.telegramUrl(m)?.takeUnless { SearchIntent.forbidsSearch(m.text.orEmpty()) }?.let { sentLink ->
+        (LinkFollow.telegramUrl(m) ?: repositoryUrl)?.takeUnless { SearchIntent.forbidsSearch(m.text.orEmpty()) }?.let { sentLink ->
             val where = when {
                 w.place == Place.DIRECT && owner -> LinkFollow.Where.OWNER_DIRECT
                 w.place == Place.DIRECT -> LinkFollow.Where.STRANGER_DIRECT
@@ -382,7 +391,7 @@ object ChatLink {
                 when (val verdict = LinkFollow.decide(where, ChatPrefs.groupLinks(app) != null)) {
                     is LinkFollow.Verdict.Allow -> {
                         val origin = if (where == LinkFollow.Where.GROUP) LinkOrigin.GROUP else LinkOrigin.OWNER_DIRECT
-                        linkOwnsReply = linkCommand(app, m, w, sentLink, origin)
+                        linkOwnsReply = linkCommand(app, m, w, sentLink, origin, me.id)
                     }
                     is LinkFollow.Verdict.Deny -> {
                         linkDenied.incrementAndGet()
@@ -518,7 +527,7 @@ object ChatLink {
      * Согласие отвечать нужно заранее — иначе страница читалась бы впустую.
      */
     private fun linkCommand(
-        app: Context, m: GateBotApi.Message, w: TgWords.Words, url: String, origin: LinkOrigin,
+        app: Context, m: GateBotApi.Message, w: TgWords.Words, url: String, origin: LinkOrigin, botIdForScope: Long,
     ): Boolean {
         val scope = linkScope ?: return false
         if (!searchReplies.tryAcquire()) {
@@ -543,6 +552,7 @@ object ChatLink {
                 val reply = ProcessObjects.get(app).search.followLink(
                     origin, url,
                     question = LinkFollow.question(m.text ?: "", url),
+                    repositoryScope = "tg:${botIdForScope}:${m.chatId}:${m.threadId ?: 0}",
                     consent = if (group) ChatPrefs.groupLinks(app) else null,
                     stillAllowed = ::stillAllowed,
                 )
@@ -626,6 +636,7 @@ object ChatLink {
     // --- Очередь ответов ---
 
     private suspend fun work(app: Context) {
+        connectedBot.first { it != null }
         // Подхваченные после комы — раньше всех новых: они пришли раньше.
         for (job in revive(app)) process(app, job)
         for (job in queue) {
@@ -720,6 +731,9 @@ object ChatLink {
             chatId = chatId, chat = l.chat, thread = l.thread, lineId = l.id, messageId = l.messageId,
             sender = PersonKey(l.sender), answer = AddressSorter.answer(ring), senderIsBot = l.isBot, atMs = l.at,
             place = place, chatTitle = null, tallyKey = tallyKey,
+            taskTarget = if (l.taskBot != null && l.taskOwner != null && l.taskGrant != null)
+                DeferredSearchTelegram(l.taskBot, chatId, l.messageId, l.taskGrant, l.taskOwner, l.thread) else null,
+            taskText = l.taskText,
         )
     }
 
@@ -798,7 +812,7 @@ object ChatLink {
     private suspend fun answer(app: Context, job: Job, upTo: List<ChatLine>): String {
         val objects = ProcessObjects.get(app)
         job.taskTarget?.let { target ->
-            if (!deferredSearchAllowed(app, target)) return "поручение остановлено: разрешение изменилось"
+            if (GateLink.activeBotId() != target.botId || !deferredSearchAllowed(app, target)) return "поручение остановлено: разрешение изменилось"
             val history = upTo.dropLast(1).filter { it.isAgent || it.ring in readRings }.takeLast(5).joinToString("\n") { it.name + ": " + it.text }
             ensureModel(app, objects)
             val promises = promisesFor(app, job, System.currentTimeMillis(), LemmaHolder.loaded, job.sender.id,

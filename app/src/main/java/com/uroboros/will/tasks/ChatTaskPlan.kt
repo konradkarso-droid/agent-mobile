@@ -16,7 +16,7 @@ internal object ChatTaskPlan {
         if (text.length > 1600 || quoted.containsMatchIn(text) || SearchIntent.hasLink(text)) return emptyList()
         return text.split(split).map { it.trim().trimStart('-', '•').trim() }.filter { part ->
             val word = part.takeWhile(Char::isLetter).lowercase()
-            SentenceKind.of(part).kind == SentenceKind.Kind.REQUEST ||
+            SentenceKind.of(part).isSureRequest ||
                 LemmaHolder.loaded?.analyze(word)?.any { "impr" in it.tags } == true
         }
     }
@@ -45,7 +45,7 @@ internal object ChatTaskPlan {
         if ((topic && forms.any { it in setOf("что", "как", "статус", "где", "этап") }) ||
             ("где" in forms && "остановились" in forms)) return "status"
         if (!active) return null
-        if (forms.any { it in setOf("только", "уточнение", "поправка", "вместо") } ||
+        if (surface.firstOrNull() in setOf("только", "уточнение", "поправка", "вместо") ||
             SearchIntent.forbidsSearch(text)) return "amend"
         if (surface.joinToString(" ") in setOf("уже не нужно", "не надо", "больше не нужно")) return "cancel"
         val requested = parts(text).isNotEmpty() || surface.size == 1
@@ -61,8 +61,31 @@ internal object ChatTaskPlan {
     fun webQueries(text: String): List<String> = if (SearchIntent.forbidsSearch(text)) emptyList() else
         parts(text).mapNotNull { (SearchCommand.fromOwnerWords(it) as? SearchCommand.Find)?.query }.distinct()
 
+    /** Для простой последовательности из запроса человека модель-планировщик не требуется. */
+    fun searchAndWrite(text: String, queries: List<String>): org.json.JSONArray? {
+        if (queries.size !in 1..2 || SearchIntent.forbidsSearch(text)) return null
+        val clauses = parts(text)
+        if (clauses.size != queries.size + 1) return null
+        val searches = clauses.dropLast(1).map { (SearchCommand.fromOwnerWords(it) as? SearchCommand.Find)?.query }
+        if (searches != queries) return null
+        val output = clauses.last()
+        val verb = output.substringBefore(' ').lowercase()
+        if (verb !in setOf("сравни", "сопоставь", "обобщи", "перескажи", "опиши")) return null
+        if (output.length !in 3..180) return null
+        return org.json.JSONArray().apply {
+            searches.forEach { put(org.json.JSONObject().put("tool", "web").put("goal", "Найти источник: ${it.orEmpty().take(145)}")) }
+            put(org.json.JSONObject().put("tool", "write").put("goal", output))
+        }
+    }
+
     fun validate(raw: String, webSteps: Int): org.json.JSONArray? = runCatching {
-        val steps = org.json.JSONArray(raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim())
+        // Небольшая модель иногда окружает корректный массив пояснением.
+        val first = raw.indexOf('[')
+        val last = raw.lastIndexOf(']')
+        require(first >= 0 && last > first)
+        val parser = org.json.JSONTokener(raw.substring(first, last + 1))
+        val steps = parser.nextValue() as org.json.JSONArray
+        require(parser.nextClean() == 0.toChar())
         require(steps.length() in 1..3)
         val tools = (0 until steps.length()).map { index ->
             val step = steps.getJSONObject(index)

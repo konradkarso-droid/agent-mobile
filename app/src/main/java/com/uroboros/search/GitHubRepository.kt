@@ -116,18 +116,29 @@ internal class GitHubRepository(
         val words = RepositoryWords(question, dictionary)
         when (target) {
             is GitHubTarget.File -> readFile(target, words, allowed)
-            is GitHubTarget.Project -> readProject(target, question.isBlank(), words, allowed)
+            is GitHubTarget.Project -> {
+                val rootListing = Regex("""(?i)главн\p{L}*\s+страниц|(?:список|перечень)\s+(?:файлов|папок)|в\s+корне""").containsMatchIn(question)
+                readProject(target, question.isBlank(), words, allowed, rootListing)
+            }
         }
     } catch (failure: Failure) {
         RepositoryReading.Refused(failure.reason)
     }
 
     private suspend fun readProject(
-        target: GitHubTarget.Project, overview: Boolean, words: RepositoryWords, allowed: () -> Boolean,
+        target: GitHubTarget.Project, overview: Boolean, words: RepositoryWords, allowed: () -> Boolean, rootListing: Boolean,
     ): RepositoryReading {
         val project = target.project
         val version = resolve(project, target.ref, allowed)
         val tree = trees[version.tree] ?: tree(project, version.tree, allowed).also { trees.put(version.tree, it) }
+        if (rootListing) {
+            requireAllowed(allowed)
+            val paths = tree.files.map { file ->
+                if ('/' in file.path) file.path.substringBefore('/') + "/" else file.path
+            }.distinct().sorted().take(80)
+            return RepositoryReading.Found(project, version.commit, emptyList(), 0, 0, tree.files.size,
+                paths, if (tree.partial) "Карта неполная." else null)
+        }
         val candidates = tree.files.asSequence()
             .filter { it.size in 1..CrawlResource.REPOSITORY_SOURCE.limit && isText(it.name) }
             .map { file ->

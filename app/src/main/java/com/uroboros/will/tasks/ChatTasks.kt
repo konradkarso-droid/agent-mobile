@@ -258,9 +258,13 @@ internal class ChatTasks(
                 "Если поручение невозможно этими инструментами, верни пустой массив. Сохрани ограничения пользователя. Верни объекты с полями tool и goal. goal — конкретный ожидаемый результат. Инструменты: memory (найти прежние сведения), " +
                 "write (подготовить текст по поручению). Последний пункт write даёт весь ответ. " +
                 (if (queries.isEmpty()) "Интернет для этого поручения недоступен." else "Добавь по пункту web для каждой темы по порядку: ${queries.joinToString()}.")
-            if (!cooled()) return
-            val raw = infer(instruction, JSONObject().put("поручение", request).put("контекст", row.getString("context")).toString())
-            val plan = raw?.let { ChatTaskPlan.validate(it, queries.size) }
+            var plan = ChatTaskPlan.searchAndWrite(request, queries)
+            var raw: String? = null
+            if (plan == null) {
+                if (!cooled()) return
+                raw = infer(instruction, JSONObject().put("поручение", request).put("контекст", row.getString("context")).toString())
+                plan = raw?.let { ChatTaskPlan.validate(it, queries.size) }
+            }
             if (plan == null) {
                 synchronized(this) { if (current()) {
                     if (raw != null) record(row, "plan", "missing")
@@ -290,13 +294,27 @@ internal class ChatTasks(
             val step = steps.getJSONObject(index)
             val goal = step.getString("goal")
             val tool = step.getString("tool")
+            var localMiss = false
             val cycle = ToteEngine<String?>(
                 test = StepTest { result -> StepOutcome(!result.isNullOrBlank(), !result.isNullOrBlank(), tool,
                     awaitingFirstAttempt = result == null) },
                 operate = StepOperate { _, _ ->
                     when (tool) {
-                        "memory" -> recall(request, recipient) ?: row.optString("clarification").takeIf { it.isNotBlank() }?.let {
-                            "Уточнение человека: $it"
+                        "memory" -> {
+                            val local = recall(goal, recipient) ?: request.takeIf { it != goal }?.let { recall(it, recipient) }
+                            val clarification = row.optString("clarification").takeIf { it.isNotBlank() }
+                            val webFollows = (index + 1 until steps.length()).any {
+                                steps.getJSONObject(it).getString("tool") == "web"
+                            }
+                            when {
+                                local != null -> local
+                                clarification != null -> "Уточнение человека: $clarification"
+                                webFollows -> {
+                                    localMiss = true
+                                    "В локальной памяти нет ответа на «$goal». Следующий источник — согласованный веб-поиск."
+                                }
+                                else -> null
+                            }
                         }
                         "web" -> {
                             val channel = if (recipient == null) SearchChannel.APP else SearchChannel.TELEGRAM
@@ -345,7 +363,7 @@ internal class ChatTasks(
                     if (tool == "memory") "Что именно нужно вспомнить для пункта «$goal»?" else "Пункт «$goal» остался без подтверждённого результата.", !safe() || !modelReady()) } }
                 return
             }
-            record(row, tool, "ok")
+            record(row, tool, if (localMiss) "missing" else "ok")
             results.put(value)
             row.remove("draft")
             row.remove("repair")
@@ -385,7 +403,7 @@ internal class ChatTasks(
                     val chat = TgWords.chatRefOf(GateTelegram.chatKey(recipient.chatId), recipient.threadId)
                     dao.saidIn(chat, ChatRecall.POOL)
                 } else dao.getRanked(Prism.ALL_LAYERS, ChatRecall.POOL)
-                ChatRecall.pick(request, pool, LemmaHolder.loaded, emptyList())
+                ChatRecall.forTask(request, pool, LemmaHolder.loaded)
                     .joinToString("\n") { it.content }.take(2400).ifBlank { null }
             }, search::taskEvidence, { recipient, text, safe ->
                 val sent = ChatLink.sendTaskReply(app, recipient, text, safe)
