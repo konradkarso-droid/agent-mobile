@@ -322,25 +322,43 @@ class AnswerLadderTest {
     }
 
     @Test
-    fun `оборванный первый ответ не меряется и ложится как есть`() {
+    fun `оборванный ответ с порчей скрывается без повторного прогона`() {
         val e = FakeEngine(Reply("Привет повторяюек", end = GenerationEnd.WATCHDOG_CRITICAL))
         val r = FakeRibbon()
         val res = run(e, r)
         assertNull(res.intercept)
         assertEquals(GenerationEnd.WATCHDOG_CRITICAL, res.generationEnd)
         assertEquals(1, e.calls.size)
-        assertEquals("Привет повторяюек" to null, r.closed)
+        assertTrue(res.hidden)
+        assertNull(r.closed)
     }
 
     @Test
-    fun `остановка перед второй попыткой — ход ложится первым, второй попытки нет`() {
+    fun `остановка перед второй попыткой скрывает испорченный ответ`() {
         val e = FakeEngine(Reply("Привет, всё повторяюек хорошо."))
         val r = FakeRibbon()
         val res = run(e, r, halt = { "аварийный стоп" })
         assertNull(res.intercept)
         assertEquals("аварийный стоп", res.haltedBy)
-        assertEquals("Привет, всё повторяюек хорошо." to null, r.closed)
+        assertTrue(res.hidden)
+        assertNull(r.closed)
         assertEquals(1, e.calls.size)
+    }
+
+    @Test
+    fun `обрыв второй или третьей попытки не возвращает испорченный ответ`() {
+        for (replies in listOf(
+            arrayOf(Reply("Привет повторяюек."), Reply("Привет", GenerationEnd.WATCHDOG_CRITICAL)),
+            arrayOf(Reply("Привет повторяюек."), Reply("Привет порчаслово."), Reply("Привет", GenerationEnd.WATCHDOG_CRITICAL)),
+        )) {
+            val engine = FakeEngine(*replies)
+            val ribbon = FakeRibbon()
+            val result = run(engine, ribbon)
+            assertTrue(result.hidden)
+            assertNull(result.kept)
+            assertNull(ribbon.closed)
+            assertEquals(replies.size, engine.calls.size)
+        }
     }
 
     @Test

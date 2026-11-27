@@ -329,14 +329,21 @@ class AnswerLadder(
         // Вызов приборов в ленту не ложится никогда: каждый проход режет его
         // сам, а здесь страховка на путь, которого не предусмотрели. Лёг бы —
         // модель видела бы в ленте свой неразобранный вызов как ответ.
-        val close: (String, String?) -> Unit = { text, rejected ->
-            val content = text.substringBefore(Glance.CALL_OPEN).trimEnd()
-            ribbon.close(content, rejected)
-            kept = content
-        }
         val hide: (String, String, List<ConversationJournal.Rejected>) -> Unit = { reason, first, rejected ->
             ribbon.hide(reason, first, rejected)
             hidden = true
+        }
+        val close: (String, String?, () -> Set<String>) -> Unit = { text, rejected, words ->
+            val content = text.substringBefore(Glance.CALL_OPEN).trimEnd()
+            val damaged = damage()?.check(content, words()).orEmpty()
+            if (damaged.isEmpty()) {
+                ribbon.close(content, rejected)
+                kept = content
+            } else {
+                hide(reasonOf(Cause.Damage(damaged)), rejected ?: content,
+                    listOfNotNull(rejected?.let { ConversationJournal.Rejected("первый", it) },
+                        ConversationJournal.Rejected(if (rejected == null) "первый" else "второй", content)))
+            }
         }
         fun stopped(): Boolean {
             if (haltedBy == null) haltedBy = halt()
@@ -439,8 +446,8 @@ class AnswerLadder(
                         answer.toString(),
                         listOf(ConversationJournal.Rejected("первый", answer.toString())),
                     )
-                    cause != null && stopped() -> close(answer.toString(), null)
-                    cause == null -> close(answer.toString(), null)
+                    cause != null && stopped() -> close(answer.toString(), null) { request }
+                    cause == null -> close(answer.toString(), null) { request }
                 }
             }
         }
@@ -457,7 +464,7 @@ class AnswerLadder(
             metrics = metrics,
             generationEnd = generationEnd!!,
             failure = failure,
-            intercept = intercept,
+            intercept = if (hidden) intercept?.copy(replaced = false) else intercept,
             hidden = hidden,
             kept = kept,
             glanced = glanced || intercept?.secondGlanced == true,
@@ -608,7 +615,7 @@ class AnswerLadder(
         onRetry: (Cause) -> Unit,
         onThird: () -> Unit,
         onEvent: (GenerationEvent) -> Unit,
-        close: (String, String?) -> Unit,
+        close: (String, String?, () -> Set<String>) -> Unit,
         hide: (String, String, List<ConversationJournal.Rejected>) -> Unit,
     ): Intercept {
         // История снимается ДО закрытия хода: мера второго ответа — против тех
@@ -701,13 +708,14 @@ class AnswerLadder(
             if (needThird && halt()) needThird = false
             // Третья ступень закроет ход сама — при любом своём исходе.
             if (!needThird) {
-                if (replaced) close(second.toString(), first) else close(first, null)
+                if (replaced) close(second.toString(), first, requestHere) else close(first, null, request)
             }
         }
         val secondMs = System.currentTimeMillis() - startedAt
-        // Без третьей ступени в ленте лежало бы: при повторе — вторая (с пометкой),
-        // при порче — первая. Это же остаётся, если третья оборвётся или собьётся.
-        val fallback = if (replaced) second.toString() to first else first to null
+        // При обрыве третьей ступени проверяем запасной ответ перед записью.
+        val fallback = {
+            if (replaced) close(second.toString(), first, requestHere) else close(first, null, request)
+        }
         val third = if (needThird) {
             thirdAttempt(cause, ribbon, question, history, requestHere, tail, fallback, first, second.toString(), onThird, close, hide)
         } else {
@@ -769,11 +777,11 @@ class AnswerLadder(
         history: List<ConversationJournal.Turn>,
         request: () -> Set<String>,
         glanceTail: List<Pair<String, String>>,
-        fallback: Pair<String, String?>,
+        fallback: () -> Unit,
         first: String,
         second: String,
         onThird: () -> Unit,
-        close: (String, String?) -> Unit,
+        close: (String, String?, () -> Set<String>) -> Unit,
         hide: (String, String, List<ConversationJournal.Rejected>) -> Unit,
     ): Third {
         val without = (cause as? Cause.Repeat)?.without ?: emptySet()
@@ -844,12 +852,12 @@ class AnswerLadder(
             }
             val pick = chosen
             when {
-                pick != null -> close(pick, first)
+                pick != null -> close(pick, first, request)
                 completed -> {
                     hidden = true
                     hide(reasonOf(cause), first, rejectedOf(first, second, variants, text.toString()))
                 }
-                else -> close(fallback.first, fallback.second)
+                else -> fallback()
             }
         }
         return Third(

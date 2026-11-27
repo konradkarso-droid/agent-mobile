@@ -1000,6 +1000,7 @@ object ChatLink {
         // экрана — без этой строки порча в чате молча не проверялась бы.
         // Загружен — второй раз не грузится.
         withContext(Dispatchers.IO) { WordDamageHolder.load { app.assets.open(WordDamageHolder.ASSET) } }
+        if (WordDamageHolder.damage == null) return Generated(null, WordDamageHolder.meterLine())
 
         // Записи памяти этого хода — по границе чата (ChatRecall). Не прочитались —
         // ход идёт без них, строка экрана говорит почему.

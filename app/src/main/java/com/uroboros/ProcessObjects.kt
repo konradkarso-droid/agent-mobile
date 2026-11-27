@@ -9,6 +9,7 @@ import com.uroboros.llm.BuildSelfDescription
 import com.uroboros.llm.ConversationTurns
 import com.uroboros.llm.JournalStore
 import com.uroboros.llm.LlmEngine
+import com.uroboros.llm.WordDamageHolder
 import com.uroboros.memory.MemoryDatabase
 import com.uroboros.memory.TrustedMediator
 import com.uroboros.memory.dream.Passport
@@ -21,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -109,13 +111,21 @@ object ProcessObjects {
                 } catch (_: JudgeGenerationException) { null }
             }
         }
+        val inferProse: suspend (String, String) -> String? = { instruction, material ->
+            withContext(Dispatchers.IO) { WordDamageHolder.load { app.assets.open(WordDamageHolder.ASSET) } }
+            WordDamageHolder.damage?.let { detector ->
+                infer(instruction, material)?.let { answer ->
+                    detector.checkedProse(answer, "$instruction\n$material\n${llmEngine.wallText.orEmpty()}")
+                }
+            }
+        }
         val search = SearchPlatform(app, watchdog, processScope,
             // Причина «модель не загружена» — та же, что экран и чат зовут словами
             // «Накладка: модель не загружена»; здесь она ляжет в строку чтения ссылки.
             modelHalted = { if (!llmEngine.isLoaded) "модель не загружена" else null },
-            infer = infer,
+            infer = inferProse,
         )
-        val tasks = ChatTasks.forProcess(app, processScope, watchdog, search, { llmEngine.isLoaded }, infer) { material ->
+        val tasks = ChatTasks.forProcess(app, processScope, watchdog, search, { llmEngine.isLoaded }, infer, inferProse) { material ->
             turns.aside {
                 try {
                     llmEngine.withDeterministicSampling {
