@@ -45,12 +45,14 @@ class AnswerLadderTest {
         private val turns: List<ConversationJournal.Turn> = emptyList(),
         private val own: List<String> = emptyList(),
         private val theirs: List<String> = emptyList(),
+        private val speaker: String? = null,
     ) : AnswerLadder.Ribbon {
         var closed: Pair<String, String?>? = null
         var hidden: Pair<String, String>? = null
         override fun history() = turns
         override fun ownSpeech() = own
         override fun theirWords() = theirs
+        override fun speakerText(question: String) = speaker ?: question
         override fun messages(without: Set<Int>) =
             listOf(ConversationJournal.ROLE_USER to "Иван: вопрос" + if (without.isEmpty()) "" else " (без $without)")
         override fun messages(without: Set<Int>, withoutRecall: Set<String>) =
@@ -112,8 +114,33 @@ class AnswerLadderTest {
         val res = run(e, r, damage = null)
         assertTrue(res.intercept!!.secondAppropriates)
         val third = res.intercept!!.third!!
-        assertEquals("чужое «я»", third.variants.first().second)
+        assertEquals("перепутаны «я» и «ты»", third.variants.first().second)
         assertEquals("Ты фехтуешь в клубе.", third.chosen)
+    }
+
+    @Test
+    fun `слова текущего собеседника проверяются на всех ступенях`() {
+        val sentence = "Я работаю по субботам."
+        val correct = "Ты работаешь по субботам."
+        val engine = FakeEngine(Reply(sentence), Reply(sentence), Reply("1. $sentence\n2. $correct\n3. Привет."))
+        val ribbon = FakeRibbon(speaker = sentence)
+        val result = run(engine, ribbon, question = "Слова нескольких людей в группе", damage = null)
+        assertTrue(result.intercept?.cause is AnswerLadder.Cause.Appropriated)
+        assertEquals(correct, result.kept)
+        assertTrue(engine.calls[1].messages.last().second.contains("«Я» — агент"))
+        assertTrue(engine.calls[2].messages.last().second.contains("три разных"))
+    }
+
+    @Test
+    fun `путаницу лиц нельзя отправить запасным ответом`() {
+        val sentence = "У тебя в памяти сохранилась последняя запись."
+        val engine = FakeEngine(Reply(sentence), Reply(sentence), Reply("$sentence\n$sentence\n$sentence"))
+        val stencil = WordDamage.fromWords(sentence.trimEnd('.').lowercase().split(' '))
+        val result = run(engine, FakeRibbon(speaker = sentence), question = "Слова нескольких людей в группе", damage = stencil)
+        assertTrue(result.hidden)
+        assertFalse(result.rejectedFirstCanBeSent)
+        assertNull(result.kept)
+        assertTrue(com.uroboros.gate.ChatTurnMeter.ladderNote(result, sentFirst = false).contains("ответ не отправлен"))
     }
 
     @Test
