@@ -4074,6 +4074,7 @@ class MainActivity : AppCompatActivity() {
      * загружая её второй раз.
      */
     private fun showLoadedModel(displayName: String) {
+        processObjects.tasks.recover()
         binding.textModelStatus.text = "Модель загружена: $displayName"
         binding.buttonSend.isEnabled = true
         // Момент выбран не случайно: строка про ctx/threads/batch
@@ -4440,6 +4441,11 @@ class MainActivity : AppCompatActivity() {
         // Память, сторож и движок — одни на процесс, см. ProcessObjects. Экран,
         // созданный заново, получает те же объекты, а не заводит свои.
         processObjects = ProcessObjects.get(applicationContext)
+        lifecycleScope.launch {
+            processObjects.tasks.appStatus.collect { task ->
+                if (task != null) journal.showTask(task.id, task.question, task.answer)
+            }
+        }
         mediator = processObjects.mediator
         watchdog = processObjects.watchdog
         llmEngine = processObjects.llmEngine
@@ -4918,7 +4924,7 @@ class MainActivity : AppCompatActivity() {
         binding.editTextInput.doAfterTextChanged { text ->
             if (!llmEngine.isLoaded && !turns.busy.value) {
                 val phrase = text?.toString().orEmpty()
-                binding.buttonSend.isEnabled = SearchCommand.fromOwnerWords(phrase, journal.recentWebQuery) != null ||
+                binding.buttonSend.isEnabled = processObjects.tasks.accepts(phrase) || SearchCommand.fromOwnerWords(phrase, journal.recentWebQuery) != null ||
                     (!SearchIntent.forbidsSearch(phrase) && LinkFollow.plainTextUrl(phrase) != null)
             }
         }
@@ -4946,6 +4952,22 @@ class MainActivity : AppCompatActivity() {
             }
             if (journal.pendingWeb != null) {
                 Toast.makeText(this, "Поиск уже идёт", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (processObjects.tasks.accepts(userText)) {
+                val context = journal.history().takeLast(4).joinToString("\n") { it.question + "\n" + it.agentContent }
+                lifecycleScope.launch {
+                    val desk = try { withContext(Dispatchers.IO) { deskView.forAgent() } }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { listOf("Доска обещаний и пробелов сейчас недоступна.") }
+                    val initiative = InitiativeHolder.meter(InitiativeHolder.read(journal.history()))
+                    val reply = processObjects.tasks.submit(userText, (desk + initiative + context).joinToString("\n"))
+                    if (reply != processObjects.tasks.appStatus.value?.answer) {
+                        Toast.makeText(this@MainActivity, reply, Toast.LENGTH_LONG).show()
+                    }
+                }
+                binding.editTextInput.text.clear()
+                backToConversation()
                 return@setOnClickListener
             }
             SearchCommand.fromOwnerWords(userText, journal.recentWebQuery)?.let { command ->

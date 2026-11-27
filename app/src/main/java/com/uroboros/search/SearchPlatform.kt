@@ -129,6 +129,18 @@ internal class SearchPlatform(
         return SearchReply("Поиск «$query» запланирован. Android запустит его не раньше $time, когда будут сеть и заряд. $result")
     }
 
+    /** Для пункта плана свидетельство — выдержка из сохранённого текста страницы. */
+    suspend fun taskEvidence(work: DeferredSearch, allowed: () -> Boolean): String? {
+        val reply = runDeferred(work, allowed)
+        if (!reply.historySaved || !allowed()) return null
+        val words = SearchWords(work.query, LemmaHolder.loaded)
+        return reply.sourceUrls.asSequence().mapNotNull { url ->
+            index.page(url)?.let { page ->
+                bestExcerpt(page, words).trim().take(600).takeIf { it.isNotEmpty() }?.let { "$it\n$url" }
+            }
+        }.take(2).joinToString("\n").ifBlank { null }
+    }
+
     suspend fun runDeferred(request: DeferredSearch, stillAllowed: () -> Boolean = { true }): SearchReply =
         perform(
             SearchCommand.Find(request.query), request.channel, request.id,

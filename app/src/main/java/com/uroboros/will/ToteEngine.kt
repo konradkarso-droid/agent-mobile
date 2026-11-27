@@ -96,7 +96,8 @@ data class StepOutcome(
     val success: Boolean,
     val usefulProgress: Boolean,
     val signature: String,
-    val detail: String = ""
+    val detail: String = "",
+    val awaitingFirstAttempt: Boolean = false,
 )
 
 fun interface StepTest<S> {
@@ -156,7 +157,8 @@ class ToteEngine<S>(
     private val stuckThreshold: Int = 3,
     private val pendingQuerySource: PendingQuerySource? = null,
     private val queryHandler: QueryHandler<S>? = null,
-    private val promptBudgetGate: PromptBudgetGate<S>? = null
+    private val promptBudgetGate: PromptBudgetGate<S>? = null,
+    private val verifyLastOperation: Boolean = false,
 ) {
     /**
      * Item 9: опрос шва — забрать вопрос, если он есть, классифицировать и отдать
@@ -248,7 +250,7 @@ class ToteEngine<S>(
             // застревания — см. комментарий класса.
             if (isRepeat) {
                 energyBudget.applyRepeatDamage(consecutiveSimilar)
-            } else {
+            } else if (!outcome.awaitingFirstAttempt) {
                 energyBudget.applyDamage(
                     if (!outcome.usefulProgress) ErrorSeverity.MEDIUM else ErrorSeverity.LIGHT
                 )
@@ -311,7 +313,11 @@ class ToteEngine<S>(
         // Последний опрос: сюда цикл приходит после operate() последней итерации,
         // и вопрос, заданный во время неё, иначе не был бы забран никогда — новой
         // итерации, на шве которой его подобрали бы, уже не будет.
+        if (verifyLastOperation) lastOutcome = test.invoke(state)
         serveQuery(state, lastOutcome, taskDescription)
+        if (verifyLastOperation && lastOutcome?.let { it.success && it.usefulProgress } == true) {
+            return ToteResult.Success(state, iteration)
+        }
         return ToteResult.HardStopped(state, iteration, lastOutcome, seenSignatures.size)
     }
 }

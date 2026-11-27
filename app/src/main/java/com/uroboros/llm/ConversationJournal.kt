@@ -208,6 +208,7 @@ class ConversationJournal {
         val answer: String? = null,
         val sourceUrls: List<String> = emptyList(),
         val searchQuery: String? = null,
+        val taskId: String? = null,
     ) : ScreenTurn
 
     /** Один отброшенный текст скрытого хода: [label] — какая попытка («первый», «вариант 2 (повтор)»). */
@@ -302,6 +303,13 @@ class ConversationJournal {
         if (last.afterTurn != turns.size) return null
         _screenTurns.value = _screenTurns.value.dropLast(1)
         return last
+    }
+
+    fun showTask(id: String, question: String, status: String) {
+        val rows = _screenTurns.value
+        val previous = rows.filterIsInstance<Web>().lastOrNull { it.taskId == id }
+        val row = Web(previous?.afterTurn ?: turns.size, question, "", answer = status, taskId = id)
+        _screenTurns.value = if (previous == null) rows + row else rows.map { if (it === previous) row else it }
     }
 
     fun beginWebTurn(question: String, progress: String, searchQuery: String? = null): Web? {
