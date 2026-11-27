@@ -107,6 +107,9 @@ class AnswerLadder(
          */
         fun theirWords(): List<String> = emptyList()
 
+        /** Слова адресата этого ответа. В группе общий хвост может включать других людей. */
+        fun speakerText(question: String): String = question
+
         /** Ход ложится ответом [answer]; [rejected] — отброшенный первый ответ или null. */
         fun close(answer: String, rejected: String?)
 
@@ -144,11 +147,9 @@ class AnswerLadder(
         data class Mirror(val sentence: String) : Cause()
 
         /**
-         * Чужое «я» ([ForeignSelf]): агент произнёс от себя фразу собеседника о
-         * нём самом из записей хода. Вторая попытка на том же запросе, со
-         * штрафом DRY против этих фраз: убрать запись из запроса нельзя — она
-         * нужна для ответа, ошибка в том, чьим голосом она сказана.
-         * [sentence] — предложение ответа с копией.
+         * Перепутаны роли собеседника и агента ([ForeignSelf]). На второй
+         * попытке модель получает указание сохранить владельца каждого факта.
+         * [sentence] — предложение с подменой лица.
          */
         data class Appropriated(val sentence: String) : Cause()
     }
@@ -243,6 +244,7 @@ class AnswerLadder(
      *   этом true: модель отвечала по доске, хотя сама её не звала.
      * @property loop петля до потолка ([loopAtCeiling]); null — не было.
      * @property haltedBy лестница остановлена перед очередным проходом — чем; null — нет.
+     * @property rejectedFirstCanBeSent первый ответ скрытого хода прошёл проверку слов и лиц.
      */
     data class Result(
         val answer: String,
@@ -259,6 +261,7 @@ class AnswerLadder(
         val loop: EchoCheck.Result?,
         val haltedBy: String?,
         val deskByCode: String? = null,
+        val rejectedFirstCanBeSent: Boolean = false,
     )
 
     /**
@@ -324,6 +327,9 @@ class AnswerLadder(
             WordDamage.requestWords((messages + glanceTail).joinToString("\n") { it.second } + "\n" + (engine.wallText ?: ""))
         }
 
+        val speakerCheck by lazy { ForeignSelf.checker(ribbon.speakerText(question), ribbon.theirWords()) }
+        val misplaced: (String) -> String? = { speakerCheck(it) }
+
         var kept: String? = null
         var hidden = false
         // Вызов приборов в ленту не ложится никогда: каждый проход режет его
@@ -336,11 +342,13 @@ class AnswerLadder(
         val close: (String, String?, () -> Set<String>) -> Unit = { text, rejected, words ->
             val content = text.substringBefore(Glance.CALL_OPEN).trimEnd()
             val damaged = damage()?.check(content, words()).orEmpty()
-            if (damaged.isEmpty()) {
+            val rejection = if (damaged.isNotEmpty()) Cause.Damage(damaged)
+                else misplaced(content)?.let { Cause.Appropriated(it) }
+            if (rejection == null) {
                 ribbon.close(content, rejected)
                 kept = content
             } else {
-                hide(reasonOf(Cause.Damage(damaged)), rejected ?: content,
+                hide(reasonOf(rejection), rejected ?: content,
                     listOfNotNull(rejected?.let { ConversationJournal.Rejected("первый", it) },
                         ConversationJournal.Rejected(if (rejected == null) "первый" else "второй", content)))
             }
@@ -438,7 +446,7 @@ class AnswerLadder(
                 // Петля до потолка проверяется раньше перехвата: такой ответ
                 // скрывается, а не переспрашивается (см. [loopAtCeiling]).
                 loop = if (finished) loopAtCeiling(answer.toString(), metrics?.tokensPredicted ?: tokensSeen, answerLimit) else null
-                cause = if (finished && loop == null) causeOf(answer.toString(), question, ribbon.history(), ribbon.ownSpeech(), ribbon.theirWords()) { request } else null
+                cause = if (finished && loop == null) causeOf(answer.toString(), question, ribbon.history(), ribbon.ownSpeech(), misplaced) { request } else null
                 val looped = loop
                 when {
                     looped != null -> hide(
@@ -455,7 +463,7 @@ class AnswerLadder(
         // Сюда ход доходит, только если первую попытку не отменили (отмена
         // брошена выше, и ход уже закрыт первым ответом).
         val intercept = cause?.takeIf { haltedBy == null }?.let { c ->
-            secondAttempt(c, ribbon, question, answer.toString(), { request }, glanceTail, desk, halt = ::stopped, onGlance, onRetry, onThird, onEvent, close, hide)
+            secondAttempt(c, ribbon, question, answer.toString(), misplaced, { request }, glanceTail, desk, halt = ::stopped, onGlance, onRetry, onThird, onEvent, close, hide)
         }
         return Result(
             answer = answer.toString(),
@@ -472,13 +480,17 @@ class AnswerLadder(
             loop = loop,
             haltedBy = haltedBy,
             deskByCode = deskByCode,
+            rejectedFirstCanBeSent = hidden && answer.toString().substringBefore(Glance.CALL_OPEN).trimEnd().let { first ->
+                val detector = damage()
+                detector != null && detector.check(first, request).isEmpty() && misplaced(first) == null
+            },
         )
     }
 
     /**
      * Почему перехватывать готовый ответ, или null — не надо. Повтор проверяется
-     * первым: при повторе ответ уходит целиком, и его порча уже не важна. Зеркало
-     * — вторым, по той же причине. Детектор не загружен ([WordDamageHolder]) —
+     * первым; затем подмена лица, зеркало и порча. Детектор не загружен
+     * ([WordDamageHolder]) —
      * порча не проверяется вовсе, и об этом говорит его строка на экране.
      */
     private fun causeOf(
@@ -486,12 +498,12 @@ class AnswerLadder(
         question: String,
         history: List<ConversationJournal.Turn>,
         ownSpeech: List<String>,
-        theirs: List<String>,
+        misplaced: (String) -> String?,
         request: () -> Set<String>,
     ): Cause? {
         EchoIntercept.decide(answer, question, history, ownSpeech)?.let { return Cause.Repeat(it.sentence, it.without, it.withoutRecall) }
+        misplaced(answer)?.let { return Cause.Appropriated(it) }
         EchoCheck.mirrorToIntercept(answer, question)?.let { return Cause.Mirror(it) }
-        ForeignSelf.find(answer, theirs)?.let { return Cause.Appropriated(it) }
         val found = damage()?.check(answer, request()).orEmpty()
         return if (found.isEmpty()) null else Cause.Damage(found)
     }
@@ -607,6 +619,7 @@ class AnswerLadder(
         ribbon: Ribbon,
         question: String,
         first: String,
+        misplaced: (String) -> String?,
         request: () -> Set<String>,
         glanceTail: List<Pair<String, String>>,
         desk: (suspend () -> String)?,
@@ -627,12 +640,13 @@ class AnswerLadder(
         val theirs = ribbon.theirWords()
         val dry = when (cause) {
             is Cause.Mirror -> question
-            is Cause.Appropriated -> theirs.joinToString("\n")
+            is Cause.Appropriated -> (theirs + cause.sentence).distinct().joinToString("\n")
             else -> null
         }
         // Доска взгляда — и сюда: повторная попытка отвечает на тот же вопрос
         // о приборах и без доски назвала бы числа из головы.
         val base = ribbon.messages(without, withoutRecall)
+        val correction = if (cause is Cause.Appropriated) listOf(ConversationJournal.ROLE_SYSTEM to SPEAKER_CORRECTION) else emptyList()
         val stable = ribbon.stableMessages(without)
         // Хвост взгляда этой попытки: доска первого прохода или своя, если
         // вторая попытка позвала приборы сама. Его видит и третья ступень.
@@ -661,7 +675,7 @@ class AnswerLadder(
         // отменой — для хода это законченная выдача.
         var cutByCall = false
         try {
-            val before = passCatchingCall(base + tail, second, onEvent, stable, dryAgainst = dry, onPiece = { pieces++ }) { metrics = it }
+            val before = passCatchingCall(base + tail + correction, second, onEvent, stable, dryAgainst = dry, onPiece = { pieces++ }) { metrics = it }
             if (before != null && tail.isEmpty() && !halt()) {
                 glancedHere = true
                 onGlance()
@@ -674,7 +688,7 @@ class AnswerLadder(
                 second.clear()
                 pieces = 0
                 metrics = null
-                val again = passCatchingCall(base + tail, second, onEvent, stable, dryAgainst = dry, onPiece = { pieces++ }) { metrics = it }
+                val again = passCatchingCall(base + tail + correction, second, onEvent, stable, dryAgainst = dry, onPiece = { pieces++ }) { metrics = it }
                 if (again != null) {
                     cutByCall = true
                     if (cutAtCall(second, again)) pieces = 0
@@ -696,7 +710,7 @@ class AnswerLadder(
             if (done) {
                 repeats = EchoIntercept.decide(second.toString(), question, history, ownSpeech) != null
                 mirrors = EchoCheck.mirrorToIntercept(second.toString(), question) != null
-                appropriates = ForeignSelf.find(second.toString(), theirs) != null
+                appropriates = misplaced(second.toString()) != null
                 found = dmg?.check(second.toString(), requestHere()).orEmpty()
             }
             needThird = done && (repeats || mirrors || appropriates || found.isNotEmpty())
@@ -717,7 +731,7 @@ class AnswerLadder(
             if (replaced) close(second.toString(), first, requestHere) else close(first, null, request)
         }
         val third = if (needThird) {
-            thirdAttempt(cause, ribbon, question, history, requestHere, tail, fallback, first, second.toString(), onThird, close, hide)
+            thirdAttempt(cause, ribbon, question, history, misplaced, appropriates, requestHere, tail, fallback, first, second.toString(), onThird, close, hide)
         } else {
             null
         }
@@ -775,6 +789,8 @@ class AnswerLadder(
         ribbon: Ribbon,
         question: String,
         history: List<ConversationJournal.Turn>,
+        misplaced: (String) -> String?,
+        secondSwappedRoles: Boolean,
         request: () -> Set<String>,
         glanceTail: List<Pair<String, String>>,
         fallback: () -> Unit,
@@ -806,7 +822,9 @@ class AnswerLadder(
         var hidden = false
         try {
             onThird()
-            val messages = ribbon.messages(without, withoutRecall) + glanceTail + (ConversationJournal.ROLE_SYSTEM to THREE_VARIANTS_ASK)
+            val instruction = if (cause is Cause.Appropriated || secondSwappedRoles)
+                "$THREE_VARIANTS_ASK $SPEAKER_CORRECTION" else THREE_VARIANTS_ASK
+            val messages = ribbon.messages(without, withoutRecall) + glanceTail + (ConversationJournal.ROLE_SYSTEM to instruction)
             // Как у второй попытки: с выкинутыми ходами снимок не снимается.
             engine.generate(messages, sources.joinToString("\n"), ribbon.stableMessages(without), first = false).collect { event ->
                 when (event) {
@@ -842,7 +860,7 @@ class AnswerLadder(
                         v.endsWith(":") -> "вступление"
                         EchoIntercept.decide(v, question, history, ownSpeech) != null -> "повтор"
                         EchoCheck.mirrorToIntercept(v, question) != null -> "зеркало"
-                        ForeignSelf.find(v, theirs) != null -> "чужое «я»"
+                        misplaced(v) != null -> "перепутаны «я» и «ты»"
                         else -> dmg?.check(v, request())?.takeIf { it.isNotEmpty() }
                             ?.let { "порча «${it.joinToString(", ")}»" }
                     }
@@ -876,7 +894,7 @@ class AnswerLadder(
         is Cause.Repeat -> "повтор «${cause.sentence}»"
         is Cause.Damage -> "порча слов «${cause.words.joinToString(", ")}»"
         is Cause.Mirror -> "зеркало «${cause.sentence}»"
-        is Cause.Appropriated -> "чужое «я» «${cause.sentence}»"
+        is Cause.Appropriated -> "перепутаны «я» и «ты» в «${cause.sentence}»"
     }
 
     /**
@@ -906,6 +924,9 @@ class AnswerLadder(
          * Просьба третьей ступени — системным сообщением в конце запроса. Слова те,
          * что мерили стенды; меняя их, меняешь то, что мерили.
          */
+        private const val SPEAKER_CORRECTION = "Говори от лица агента. «Я» — агент, «ты» — собеседник, которому отвечаешь. " +
+            "Сохрани владельца каждого факта и согласуй с ним местоимения и глаголы."
+
         const val THREE_VARIANTS_ASK =
             "Дай три разных коротких варианта ответа на последнюю реплику собеседника, " +
                 "каждый с новой строки, без нумерации и пояснений."

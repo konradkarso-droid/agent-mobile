@@ -1,5 +1,9 @@
 package com.uroboros.llm
 
+import com.uroboros.memory.nav.LemmaDictionary
+import com.uroboros.memory.nav.MeaningVectors
+import com.uroboros.memory.nav.SemanticFeatures
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -43,4 +47,36 @@ class ForeignSelfTest {
         assertNull(ForeignSelf.find("Я тоже люблю историю.", theirs))
         assertNull(ForeignSelf.find("Я состою в клубе исторического фехтования.", emptyList()))
     }
+    @Test
+    fun `в группе меряются только слова адресата ответа`() {
+        val result = ForeignSelf.checker("Я работаю по субботам.", emptyList(), semantic = null)
+        assertEquals("Я работаю по субботам.", result("Я работаю по субботам."))
+        assertNull(result("Я живу в Варшаве."))
+        assertNull(result("Ты работаешь по субботам."))
+        assertNull(result("Я тоже работаю по субботам."))
+        assertNull(result("Я не работаю по субботам."))
+        assertNull(result("«Я работаю по субботам» — это цитата."))
+    }
+
+    @Test
+    fun `вопрос о самом агенте требует ответа от первого лица`() {
+        val detector = ForeignSelf.checker("У тебя в памяти сохранилась последняя запись?", emptyList(), semantic = null)
+        assertEquals("У тебя в памяти сохранилась последняя запись.", detector("У тебя в памяти сохранилась последняя запись."))
+        assertNull(detector("У меня в памяти сохранилась последняя запись."))
+    }
+
+    @Test
+    fun `перефраз о собеседнике проверяется по настоящим векторам`() {
+        val assets = listOf(File("src/main/assets"), File("app/src/main/assets")).first { it.isDirectory }
+        val dictionary = File(assets, "lemma_forms.txt").useLines { LemmaDictionary.read(it) }
+        val vectors = File(assets, "meaning_vectors.bin").inputStream().use(MeaningVectors::read)
+        val borrow = "Я купил новый автомобиль."
+        val paraphrase = "Я приобрёл новый автомобиль."
+        val detector = ForeignSelf.checker(borrow, emptyList(), SemanticFeatures(vectors, dictionary))
+        assertNull(ForeignSelf.checker(borrow, emptyList(), semantic = null)(paraphrase))
+        assertEquals(paraphrase, detector(paraphrase))
+        assertNull(detector("Ты приобрёл новый автомобиль."))
+        assertNull(detector("Я купил новый велосипед."))
+    }
+
 }

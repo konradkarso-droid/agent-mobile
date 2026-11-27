@@ -32,7 +32,7 @@ object ChatTurnMeter {
      * Что было на лестнице ответа (llm.AnswerLadder) словами: глядел ли на
      * приборы — сам или доску показал код по слову вопроса (раздельно: иначе не
      * видно, зовёт ли модель приборы сама), был ли перехват и что ушло. [sentFirst] — годного ответа не
-     * нашлось, и ушёл первый (в телеграме молчания из-за перехвата нет).
+     * нашлось, но первый прошёл проверки лиц и порчи и был отправлен.
      */
     fun ladderNote(r: AnswerLadder.Result, sentFirst: Boolean): String = listOfNotNull(
         when {
@@ -45,18 +45,19 @@ object ChatTurnMeter {
         r.intercept?.let { i ->
             "перехват: " + causeWords(i.cause) + " → " + when {
                 sentFirst -> "годного нет, ушёл первый ответ"
+                r.hidden -> "годного ответа нет"
                 i.third?.chosen != null -> "ушёл вариант из трёх"
                 i.replaced -> "ушла вторая попытка"
                 else -> "вторая не лучше, ушёл первый ответ"
             }
-        },
+        } ?: "ответ скрыт".takeIf { r.hidden && !sentFirst },
     ).joinToString(" · ")
 
     private fun causeWords(c: AnswerLadder.Cause): String = when (c) {
         is AnswerLadder.Cause.Repeat -> "повтор «${c.sentence}»"
         is AnswerLadder.Cause.Mirror -> "зеркало «${c.sentence}»"
         is AnswerLadder.Cause.Damage -> "порча «${c.words.joinToString(", ")}»"
-        is AnswerLadder.Cause.Appropriated -> "чужое «я» «${c.sentence}»"
+        is AnswerLadder.Cause.Appropriated -> "перепутаны «я» и «ты» в «${c.sentence}»"
     }
 
     /**

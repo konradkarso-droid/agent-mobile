@@ -860,6 +860,12 @@ object ChatLink {
         }
         generated.why?.let { return "не отвечаю — $it" + (generated.ladder?.let { l -> " · $l" } ?: "") }
         val text = generated.text ?: return "не отвечаю — ответа нет"
+        if (generated.stub) {
+            val sent = sendReply(app, job.chatId, text, job.messageId, job.thread, ActionProvenance.CODE,
+                stillAllowed = { ChatPrefs.consent(app) != null })
+            val status = sent.failure?.let { "заглушка не ушла — $it" } ?: "отправил заглушку"
+            return status + (generated.ladder?.let { " · $it" } ?: "")
+        }
         tallies.computeIfPresent(job.tallyKey) { _, v -> v.first to v.second.read() }
         val count = decisions.getOrPut(job.tallyKey) { IntArray(2) }
         // Право промолчать (Silence): решила модель — в телеграм не уходит.
@@ -908,6 +914,7 @@ object ChatLink {
         /** Описание ночи, поданное модели в этот ход (см. [NightNote]). */
         val dreamNote: String? = null,
         val promiseFollowUp: Promises.Promise? = null,
+        val stub: Boolean = false,
     )
 
     /** Имена колец, строки которых модель читает (AddressSorter.modelReads), — для запросов к ленте чата. */
@@ -945,8 +952,8 @@ object ChatLink {
         val chatName = tallies[job.tallyKey]?.first ?: job.chat
         val hhmm: (Long) -> String = { clock(it) }
 
-        // Словарь — для слов-тем нити. Его грузят экран и ночь; загружен — второй раз не грузится.
-        withContext(Dispatchers.IO) { LemmaHolder.load { app.assets.open(LemmaHolder.ASSET) } }
+        // Словарь и векторы нужны и при запуске чата без открытого экрана.
+        loadCuriosityLexicon(app)
         val dictionary = LemmaHolder.loaded
 
         // Окно — из читаемых строк до текущей; сетка — от начала чата (ChatFeed, «ГДЕ ВСТАЁТ НАЧАЛО»).
@@ -1047,15 +1054,17 @@ object ChatLink {
         val remembered = listOfNotNull(night.line, recall.message).joinToString("\n\n").ifEmpty { null }
 
         // Лента чата для лестницы ответа (AnswerLadder): запрос — окно чата,
-        // ходы для мер перехвата — ответы агента в окне. Годного ответа нет —
-        // уходит первый: скрыть ход в телеграме значит промолчать человеку
-        // (решение владельца). Памяти это не трогает: свои ответы агента ложатся
-        // только в ленту чата.
+        // ходы для мер перехвата — ответы агента в окне. Первый ответ можно
+        // оставить запасным, пока в нём не обнаружена порча или подмена лиц.
         var chosen: String? = null
         var sentFirst = false
         val ribbon = object : AnswerLadder.Ribbon {
             override fun history() = turnsOfWindow
             override fun theirWords() = ForeignSelf.theirWords(recall.message)
+            override fun speakerText(question: String) = readRaw.asSequence()
+                .filter { it.id >= window.startId && !it.isAgent && it.sender == job.sender.id }
+                .filter { it.id == job.lineId || it.ring == AddressSorter.Ring.TO_AGENT.name }
+                .toList().takeLast(4).joinToString("\n") { it.text }
             override fun messages(without: Set<Int>) =
                 ChatFeed.messages(ChatFeed.without(window, without), place, headText, tailBlock, note, remembered)
             override fun stableMessages(without: Set<Int>) =
@@ -1123,12 +1132,15 @@ object ChatLink {
         val ran = ladder.run(ribbon, question, desk, halt = { haltReason(app) }, deskFirst = Glance.asksInstruments(question))
         meterFirst()
         val tookMs = System.currentTimeMillis() - startedAt
-        val said = ChatTurnMeter.ladderNote(ran, sentFirst)
+        val said = ChatTurnMeter.ladderNote(ran, sentFirst && ran.rejectedFirstCanBeSent)
         ran.haltedBy?.let { return Generated(null, "лестница остановлена — $it", tookMs, said) }
         ran.failure?.let { return Generated(null, "движок: ${it.message ?: it.javaClass.simpleName}", tookMs, said) }
         // Первая попытка оборвана (сторож, сбой) — ответа нет: оборванный текст
         // показывает не то, что модель хотела сказать.
         if (ran.generationEnd != GenerationEnd.COMPLETED) return Generated(null, engine.getGenerationEndReport(), tookMs, said)
+        if (ran.hidden && !ran.rejectedFirstCanBeSent) {
+            return Generated(ConversationJournal.STUB, null, tookMs, said, stub = true)
+        }
         ran.metrics?.let { speeds[job.tallyKey] = String.format(Locale.ROOT, "%.1f", it.tokensPerSecond) }
         val text = TgWords.cut(chosen.orEmpty())
         if (text.isEmpty()) {
