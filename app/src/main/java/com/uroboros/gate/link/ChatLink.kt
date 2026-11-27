@@ -194,6 +194,7 @@ object ChatLink {
         val chatTitle: String?,
         val tallyKey: String,
         val taskTarget: DeferredSearchTelegram? = null,
+        val taskText: String? = null,
     )
 
     private val queue = Channel<Job>(Channel.UNLIMITED)
@@ -311,11 +312,15 @@ object ChatLink {
     /** Сообщение без файла из канала. Зовёт опрос [GateLink] на своём потоке. */
     suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
         this.me = me
-        val taskTarget = if (isSearchOwner(app, m) && m.threadId == null && m.messageId > 0) ChatPrefs.consent(app)?.let {
-            DeferredSearchTelegram(me.id, m.chatId, m.messageId, it.id)
+        val taskTarget = if (isOwnerMessage(app, m, m.chatType in setOf("group", "supergroup") || (m.privateChat && m.chatId == m.fromId)) && m.messageId > 0) ChatPrefs.consent(app)?.let {
+            DeferredSearchTelegram(me.id, m.chatId, m.messageId, it.id, requireNotNull(m.fromId), m.threadId?.takeIf { m.topicMessage })
         } else null
         val tasks = ProcessObjects.get(app).tasks
-        val taskWords = taskTarget != null && tasks.accepts(m.text.orEmpty(), taskTarget)
+        val taskText = m.text.orEmpty().trimStart().let { text ->
+            val first = text.takeWhile { !it.isWhitespace() }
+            if (first.trimEnd(',', ':').equals("@${me.username}", true)) text.drop(first.length).trimStart() else text
+        }
+        val taskWords = taskTarget != null && tasks.accepts(taskText, taskTarget)
         val command = SearchCommand.parse(m.text, me.username)
             ?: if (!taskWords && isSearchOwner(app, m)) {
                 val prior = lastWebReply?.topicFor(me.id, m.chatId, m.messageId, m.replyToMessageId, System.nanoTime())
@@ -401,7 +406,7 @@ object ChatLink {
                         chatId = m.chatId, chat = w.chat.id, thread = w.thread, lineId = lineId, messageId = w.messageId,
                         sender = w.message.sender, answer = answer, senderIsBot = w.senderIsBot, atMs = w.atMs,
                         place = w.place, chatTitle = w.chatTitle, tallyKey = tallyKey,
-                        taskTarget = taskTarget.takeIf { taskWords },
+                        taskTarget = taskTarget.takeIf { taskWords }, taskText = taskText.takeIf { taskWords },
                     )
                 )
             }
@@ -409,8 +414,10 @@ object ChatLink {
         refresh(app)
     }
 
-    private fun isSearchOwner(app: Context, m: GateBotApi.Message): Boolean = SearchCommand.isOwnerDirect(
-        privateChat = m.chatType == "private" && m.chatId == m.fromId,
+    private fun isSearchOwner(app: Context, m: GateBotApi.Message) =
+        isOwnerMessage(app, m, m.chatType == "private" && m.chatId == m.fromId)
+
+    private fun isOwnerMessage(app: Context, m: GateBotApi.Message, placeAllowed: Boolean): Boolean = placeAllowed && SearchCommand.isOriginalOwner(
         owner = ChatPrefs.owner(app)?.key?.id,
         sender = m.fromId?.let { GateTelegram.userKey(it).id },
         bot = m.fromIsBot,
@@ -479,13 +486,13 @@ object ChatLink {
     }
 
     internal fun deferredSearchAllowed(app: Context, target: DeferredSearchTelegram): Boolean =
-        ChatPrefs.owner(app)?.key?.id == GateTelegram.userKey(target.chatId).id &&
+        ChatPrefs.owner(app)?.key?.id == GateTelegram.userKey(target.ownerId).id &&
             ChatPrefs.consent(app)?.id == target.consentId
 
     internal suspend fun sendTaskReply(
         app: Context, target: DeferredSearchTelegram, text: String, allowed: () -> Boolean,
     ) = sendReply(app, target.chatId, text.take(GateBotApi.TEXT_LIMIT).trimEnd(Char::isHighSurrogate),
-        target.messageId, null, ActionProvenance.MODEL_OUTPUT, disablePreview = true,
+        target.messageId, target.threadId, ActionProvenance.MODEL_OUTPUT, disablePreview = true,
         stillAllowed = { allowed() && deferredSearchAllowed(app, target) }, botId = target.botId)
 
     internal suspend fun sendDeferredSearch(
@@ -796,7 +803,7 @@ object ChatLink {
             ensureModel(app, objects)
             val promises = promisesFor(app, job, System.currentTimeMillis(), LemmaHolder.loaded, job.sender.id,
                 objects.llmEngine, runCatching { SelfClaimReader.checker(app) }.getOrNull())
-            val status = objects.tasks.submit(upTo.last().text,
+            val status = objects.tasks.submit(job.taskText ?: upTo.last().text,
                 listOfNotNull(history, promises?.let { ChatPromises.chatText(it, ::day) }).joinToString("\n"), target, job.lineId)
             val sent = sendTaskReply(app, target, status) { deferredSearchAllowed(app, target) }
             return sent.failure ?: "Поручение: $status"

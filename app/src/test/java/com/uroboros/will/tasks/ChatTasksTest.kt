@@ -26,7 +26,7 @@ class ChatTasksTest {
     private val sends = AtomicInteger()
     private val progress = java.util.concurrent.CopyOnWriteArrayList<String>()
     private fun tasks(scope: CoroutineScope, judge: suspend (String) -> String? = { "1" }, generate: suspend (String) -> String?) = ChatTasks(
-        scope, guard, store, { true }, { true }, { recalls.incrementAndGet(); "Запись о выборе" },
+        scope, guard, store, { true }, { true }, { _, _ -> recalls.incrementAndGet(); "Запись о выборе" },
         { _, _ -> error("Сеть закрыта") }, { _, text, _ ->
             if (text.startsWith("План\n")) {
                 progress.add(text)
@@ -106,6 +106,42 @@ class ChatTasksTest {
         next.recover()
         until { state() == "done" }
         assertEquals("Сохранённый ответ", next.appStatus.value?.answer)
+    }
+
+    @Test fun warmPhoneWaitsBeforePlanningAndBeforeJudging() = runBlocking {
+        val generated = AtomicInteger()
+        val judged = AtomicInteger()
+        guard.zone.value = SafetyZone.WARNING
+        val worker = tasks(this, { judged.incrementAndGet(); "1" }) {
+            generated.incrementAndGet()
+            if (it.contains("материалы")) {
+                guard.zone.value = SafetyZone.WARNING
+                "Итог"
+            } else plan
+        }
+        worker.submit(request, "")
+        until { JSONObject(store.read("app")!!).optInt("attempts") == 1 }
+        assertEquals(0, generated.get())
+        guard.zone.value = SafetyZone.COMFORT
+        until { JSONObject(store.read("app")!!).optString("draft") == "Итог" }
+        assertEquals(0, judged.get())
+        guard.zone.value = SafetyZone.COMFORT
+        until { state() == "done" }
+        assertEquals(2, generated.get())
+        assertEquals(1, judged.get())
+    }
+
+    @Test fun groupTopicsKeepIndependentPlansAndReplyAddresses() = runBlocking {
+        val worker = tasks(this) { if (it.contains("материалы")) "Итог" else plan }
+        for (thread in listOf(11L, 22L)) {
+            worker.submit(request, "", DeferredSearchTelegram(7, -8, thread + 1, "grant", 42, thread))
+        }
+        until { sends.get() == 2 }
+        for (thread in listOf(11L, 22L)) {
+            val row = JSONObject(store.read("tg:7:-8/$thread")!!)
+            assertEquals(42L, row.getLong("owner"))
+            assertEquals(thread, row.getLong("thread"))
+        }
     }
 
     @Test fun uncertainDeliveryIsNeverRepeatedOnStartup() = runBlocking {

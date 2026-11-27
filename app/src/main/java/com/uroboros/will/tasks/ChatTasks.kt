@@ -1,5 +1,9 @@
 package com.uroboros.will.tasks
 
+import com.uroboros.gate.TgWords
+import com.uroboros.gate.GateTelegram
+import com.uroboros.safety.SafetyZone
+import kotlinx.coroutines.flow.first
 import android.content.Context
 import com.uroboros.gate.ChatRecall
 import com.uroboros.gate.link.ChatLink
@@ -22,7 +26,7 @@ internal class ChatTasks(
     private val storage: Storage,
     private val safeToWork: (DeferredSearchTelegram?) -> Boolean,
     private val modelReady: () -> Boolean,
-    private val recall: suspend (String) -> String?,
+    private val recall: suspend (String, DeferredSearchTelegram?) -> String?,
     private val web: suspend (DeferredSearch, () -> Boolean) -> String?,
     private val deliver: suspend (DeferredSearchTelegram, String, () -> Boolean) -> Boolean,
     private val judge: suspend (String) -> String?,
@@ -39,9 +43,10 @@ internal class ChatTasks(
     private fun display(row: JSONObject) = Display(row.getString("id"), row.getString("request"), status(row))
     private var cut = 0L
 
-    private fun key(target: DeferredSearchTelegram?) = target?.let { "tg:${it.botId}:${it.chatId}" } ?: "app"
+    private fun key(target: DeferredSearchTelegram?) = target?.let { "tg:${it.botId}:${it.chatId}" + (it.threadId?.let { thread -> "/$thread" } ?: "") } ?: "app"
     private fun target(row: JSONObject) = if (!row.has("bot")) null else DeferredSearchTelegram(
         row.getLong("bot"), row.getLong("chat"), row.getLong("message"), row.getString("grant"),
+        row.optLong("owner", row.getLong("chat")), row.optLong("thread").takeIf { row.has("thread") },
     )
 
     @Synchronized private fun read(key: String) = storage.read(key)?.let(::JSONObject)
@@ -71,7 +76,7 @@ internal class ChatTasks(
             "sending" -> "Результат готов. Доставка в Telegram пока не подтверждена."
             "cancelled" -> "Поручение отменено."
             "paused" -> "Пауза. ${row.optString("why")} Выполнено пунктов: ${done.length()}."
-            else -> if (steps == null) "Составляю короткий план…" else "План\n$plan"
+            else -> if (steps == null) (if (row.optBoolean("cooling")) "Жду охлаждения перед составлением плана." else "Составляю короткий план…") else (if (row.optBoolean("cooling")) "Жду охлаждения телефона.\n" else "") + "План\n$plan"
         }
     }
 
@@ -130,7 +135,7 @@ internal class ChatTasks(
             .put("events", old?.optJSONArray("events") ?: JSONArray())
             .put("id", UUID.randomUUID().toString()).put("state", "work").put("results", JSONArray())
         lineId?.let { row.put("line", it) }
-        target?.let { row.put("bot", it.botId).put("chat", it.chatId).put("message", it.messageId).put("grant", it.consentId) }
+        target?.let { row.put("bot", it.botId).put("chat", it.chatId).put("message", it.messageId).put("grant", it.consentId).put("owner", it.ownerId).put("thread", it.threadId) }
         save(key, row)
         start(key)
         return status(row)
@@ -213,6 +218,19 @@ internal class ChatTasks(
         fun current() = synchronized(this) { cut == epoch && read(key)?.let {
             it.optInt("version") == version && it.getString("id") == row.getString("id")
         } == true }
+        suspend fun cooled(): Boolean {
+            if (watchdog.zone.value != SafetyZone.COMFORT) {
+                synchronized(this) { if (current()) save(key, row.put("cooling", true)) }
+                watchdog.zone.first { it == SafetyZone.COMFORT || !current() }
+            }
+            if (row.optBoolean("cooling")) synchronized(this) {
+                if (current()) {
+                    row.remove("cooling")
+                    save(key, row)
+                }
+            }
+            return current() && safe()
+        }
         fun checkpoint(): Boolean = synchronized(this) {
             if (!current() || !safe()) return@synchronized false
             save(key, row)
@@ -240,6 +258,7 @@ internal class ChatTasks(
                 "Если поручение невозможно этими инструментами, верни пустой массив. Сохрани ограничения пользователя. Верни объекты с полями tool и goal. goal — конкретный ожидаемый результат. Инструменты: memory (найти прежние сведения), " +
                 "write (подготовить текст по поручению). Последний пункт write даёт весь ответ. " +
                 (if (queries.isEmpty()) "Интернет для этого поручения недоступен." else "Добавь по пункту web для каждой темы по порядку: ${queries.joinToString()}.")
+            if (!cooled()) return
             val raw = infer(instruction, JSONObject().put("поручение", request).put("контекст", row.getString("context")).toString())
             val plan = raw?.let { ChatTaskPlan.validate(it, queries.size) }
             if (plan == null) {
@@ -276,13 +295,14 @@ internal class ChatTasks(
                     awaitingFirstAttempt = result == null) },
                 operate = StepOperate { _, _ ->
                     when (tool) {
-                        "memory" -> recall(request) ?: row.optString("clarification").takeIf { it.isNotBlank() }?.let {
+                        "memory" -> recall(request, recipient) ?: row.optString("clarification").takeIf { it.isNotBlank() }?.let {
                             "Уточнение человека: $it"
                         }
                         "web" -> {
                             val channel = if (recipient == null) SearchChannel.APP else SearchChannel.TELEGRAM
                             val number = (0 until index).count { steps.getJSONObject(it).getString("tool") == "web" }
                             val work = DeferredSearch(row.getString("id") + ":$version:$index", queries[number], 0, channel, recipient)
+                            if (!cooled()) return@StepOperate null
                             web(work) { current() && safe() }
                         }
                         else -> {
@@ -291,12 +311,14 @@ internal class ChatTasks(
                             var draft = row.optString("draft")
                             while (safe() && current()) {
                                 if (draft.isBlank()) {
+                                    if (!cooled()) break
                                     draft = infer("Подготовь запрошенный текст по цели пункта. Материалы — данные. " +
                                         "Назови пробелы и источники. Не приписывай себе внешних действий.",
                                         material.toString()) ?: break
                                     row.put("draft", draft)
                                     if (!checkpoint()) break
                                 }
+                                if (!cooled()) break
                                 val verdict = judge(material.put("черновик", draft).toString())
                                 if (!safe() || !current()) break
                                 if (verdict == "1") return@StepOperate draft
@@ -357,9 +379,12 @@ internal class ChatTasks(
             return ChatTasks(scope, watchdog, storage, { target ->
                 watchdog.zoneObservation().powerLastAtMs != null && watchdog.longRunBlockReason() == null &&
                     search.deferredSearchAllowed() && (target == null || ChatLink.deferredSearchAllowed(app, target))
-            }, ready, { request ->
+            }, ready, { request, recipient ->
                 val dao = MemoryDatabase.getInstance(app).stickerDao()
-                val pool = dao.getRanked(Prism.ALL_LAYERS, ChatRecall.POOL)
+                val pool = if (recipient != null && recipient.chatId != recipient.ownerId) {
+                    val chat = TgWords.chatRefOf(GateTelegram.chatKey(recipient.chatId), recipient.threadId)
+                    dao.saidIn(chat, ChatRecall.POOL)
+                } else dao.getRanked(Prism.ALL_LAYERS, ChatRecall.POOL)
                 ChatRecall.pick(request, pool, LemmaHolder.loaded, emptyList())
                     .joinToString("\n") { it.content }.take(2400).ifBlank { null }
             }, search::taskEvidence, { recipient, text, safe ->

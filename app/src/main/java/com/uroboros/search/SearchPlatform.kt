@@ -47,7 +47,9 @@ internal class SearchPlatform(
     private val directFetch = CrawlTransport(budgets = FetchBudgets.DIRECT)::fetch
     private val linkOpener = LinkOpener(directFetch)
     private val github = GitHubRepository(directFetch)
-    private val reader = PageReader(infer)
+    private val reader = PageReader { instruction, material ->
+        if (watchdog.zone.value == SafetyZone.COMFORT) infer(instruction, material) else null
+    }
     private val autoRefresh = WebRefreshSchedule(app)
 
     init {
@@ -131,10 +133,13 @@ internal class SearchPlatform(
 
     /** Для пункта плана свидетельство — выдержка из сохранённого текста страницы. */
     suspend fun taskEvidence(work: DeferredSearch, allowed: () -> Boolean): String? {
-        val reply = runDeferred(work, allowed)
+        val reply = perform(SearchCommand.Find(work.query), work.channel, work.id,
+            stillOwner = { deferredSearchAllowed() && allowed() }, resume = true, evidenceOnly = true)
         if (!reply.historySaved || !allowed()) return null
         val words = SearchWords(work.query, LemmaHolder.loaded)
         return reply.sourceUrls.asSequence().mapNotNull { url ->
+            val group = work.telegram?.let { it.ownerId != it.chatId } == true
+            if (group && url.toHttpUrlOrNull()?.let { address -> webSources.any { it.accepts(address) } } != true) return@mapNotNull null
             index.page(url)?.let { page ->
                 bestExcerpt(page, words).trim().take(600).takeIf { it.isNotEmpty() }?.let { "$it\n$url" }
             }
@@ -326,7 +331,7 @@ internal class SearchPlatform(
 
     private suspend fun perform(
         command: SearchCommand, channel: SearchChannel, requestId: String = UUID.randomUUID().toString(),
-        stillOwner: () -> Boolean = { true }, onAccepted: () -> Unit = {}, resume: Boolean = false,
+        stillOwner: () -> Boolean = { true }, onAccepted: () -> Unit = {}, resume: Boolean = false, evidenceOnly: Boolean = false,
     ): SearchReply {
         val phrase = when (command) {
             is SearchCommand.Find -> command.query
@@ -340,22 +345,22 @@ internal class SearchPlatform(
             if (command == SearchCommand.Refresh) {
                 refresh(channel, emptyList(), allowed, forceSeeds = true)
             } else {
-                searchQuery(phrase, channel, allowed)
+                searchQuery(phrase, channel, allowed, evidenceOnly)
             }
         }
     }
 
-    private suspend fun searchQuery(query: String, channel: SearchChannel, allowed: () -> Boolean): SearchPage {
+    private suspend fun searchQuery(query: String, channel: SearchChannel, allowed: () -> Boolean, evidenceOnly: Boolean): SearchPage {
         val route = SearchRoute.parse(query)
         val request = route.publication
         val window = request.window
-        if (request.news) return newsListing(route, channel, allowed)
+        if (request.news) return newsListing(route, channel, allowed, evidenceOnly)
         if (route.source != null) {
             val local = lookupWithSemantics(request.subject, window, route.source, allowed)
             if (local.indexed.isNotEmpty() && (!local.needsRefresh || local.indexed.any { it.semanticSpan != null })) {
-                return answer(request.subject, local, "Источник задан: ${route.source.name}.", window)
+                return answer(request.subject, local, "Источник задан: ${route.source.name}.", window, evidenceOnly)
             }
-            return newsListing(route, channel, allowed)
+            return newsListing(route, channel, allowed, evidenceOnly)
         }
         var matches = lookupWithSemantics(request.subject, window, null, allowed)
         var update: SearchPage? = null
@@ -364,7 +369,7 @@ internal class SearchPlatform(
             if (allowed()) matches = lookupWithSemantics(request.subject, window, null, allowed, build = false)
         }
         if (window == null && matches.indexed.isEmpty() && matches.status.pages == 0 && update != null) return update
-        if (matches.indexed.isEmpty() && request.subject.isNotBlank() && allowed()) {
+        if (!evidenceOnly && matches.indexed.isEmpty() && request.subject.isNotBlank() && allowed()) {
             val alternative = withTimeoutOrNull(10_000) { reader.alternative(request.subject) }
             if (alternative != null && allowed()) {
                 val rewritten = lookup(alternative, window)
@@ -375,13 +380,13 @@ internal class SearchPlatform(
         val updateNote = update?.detail?.let { note ->
             if (update.status == SearchStatus.DENIED) "${indexLine(matches.status)} $note" else note
         }
-        val result = answer(query, matches, updateNote, window)
+        val result = answer(query, matches, updateNote, window, evidenceOnly)
         return withSearchFollowUp(result, matches.status.pages > 0 &&
             (update == null || update.status == SearchStatus.UPDATED), sourceSpecified = false)
     }
 
     private suspend fun newsListing(
-        route: SearchRoute, channel: SearchChannel, allowed: () -> Boolean,
+        route: SearchRoute, channel: SearchChannel, allowed: () -> Boolean, evidenceOnly: Boolean,
     ): SearchPage {
         val request = route.publication
         val window = request.window ?: PublicationWindow(0L, System.currentTimeMillis() + 1L, "доступное в ленте")
@@ -418,14 +423,14 @@ internal class SearchPlatform(
                 ?.let { item to it }
         }
         val hits = selected.map { it.second }
-        val articles = if (request.summary && selected.isNotEmpty() && modelHalted() == null) {
+        val articles = if ((evidenceOnly || request.summary) && selected.isNotEmpty() && (evidenceOnly || modelHalted() == null)) {
             val toRead = selected.take(2).map { it.first }
             val sourcesByUrl = toRead.mapIndexed { number, item -> item.article.url to number + 1 }.toMap()
             crawler.readHeadlines(toRead, allowed, networkAllowed).mapNotNull { page ->
                 sourcesByUrl[page.url]?.let { it to page }
             }
         } else emptyList()
-        val summary = if (allowed() && articles.isNotEmpty()) withTimeoutOrNull(NEWS_SUMMARY_MS) {
+        val summary = if (!evidenceOnly && allowed() && articles.isNotEmpty()) withTimeoutOrNull(NEWS_SUMMARY_MS) {
             reader.answerBrief(request.subject.ifBlank { "Кратко перескажи новости" }, articles, words)
         } else null
         if (!allowed()) return SearchPage(emptyList(), status = SearchStatus.DENIED)
@@ -517,10 +522,11 @@ internal class SearchPlatform(
     }
 
     private suspend fun prepareSemantic(allowed: () -> Boolean) {
-        if (!allowed()) return
+        fun coolEnough() = allowed() && watchdog.zone.value == SafetyZone.COMFORT
+        if (!coolEnough()) return
         try {
             withTimeoutOrNull(1_500) {
-                semanticEncoder()?.let { index.fillSemantic(it, allowed) }
+                semanticEncoder()?.let { index.fillSemantic(it, ::coolEnough) }
             }
         } catch (_: SQLiteException) {
             // Векторный слой может уступить место основному поиску.
@@ -532,12 +538,12 @@ internal class SearchPlatform(
     ): Matches {
         val lexical = lookup(query, window, source, diversify = false)
         val base = lexical.copy(indexed = diverseMatches(lexical.indexed, SEARCH_LIMIT))
-        if (base.status.pages == 0 || base.words.terms.isEmpty() || !allowed()) return base
+        if (base.status.pages == 0 || base.words.terms.isEmpty() || !allowed() || watchdog.zone.value != SafetyZone.COMFORT) return base
         val mixed = try {
             withTimeoutOrNull(2_000) {
                 val encoder = semanticEncoder() ?: return@withTimeoutOrNull null
                 val vector = encoder.query(query) ?: return@withTimeoutOrNull emptyList<IndexedMatch>()
-                if (build) withTimeoutOrNull(1_000) { index.fillSemantic(encoder, allowed) }
+                if (build && watchdog.zone.value == SafetyZone.COMFORT) withTimeoutOrNull(1_000) { index.fillSemantic(encoder) { allowed() && watchdog.zone.value == SafetyZone.COMFORT } }
                 val byMeaning = index.findSemantic(encoder, vector, base.words, CANDIDATE_LIMIT, window, source, allowed)
                 if (byMeaning.isEmpty()) return@withTimeoutOrNull emptyList<IndexedMatch>()
                 diverseMatches(combineWebMatches(lexical.indexed, byMeaning), SEARCH_LIMIT)
@@ -563,7 +569,7 @@ internal class SearchPlatform(
     }
 
     private suspend fun answer(
-        query: String, matches: Matches, updateNote: String? = null, window: PublicationWindow? = null,
+        query: String, matches: Matches, updateNote: String? = null, window: PublicationWindow? = null, evidenceOnly: Boolean = false,
     ): SearchPage {
         val sources = matches.indexed.mapNotNull { match ->
             val page = match.page
@@ -580,7 +586,7 @@ internal class SearchPlatform(
                 page.copy(text = fragment)
             } else page
         }
-        val answer = if (readable.isEmpty()) null else withTimeoutOrNull(75_000) {
+        val answer = if (evidenceOnly || readable.isEmpty()) null else withTimeoutOrNull(75_000) {
             reader.answer(query, readable, matches.words)
         }
         val missingWords = sources.firstOrNull()?.second?.missingWords.orEmpty()
@@ -593,7 +599,7 @@ internal class SearchPlatform(
                 append(missingWords.joinToString("», «"))
                 append("».")
             }
-            if (sources.isNotEmpty() && answer == null) {
+            if (!evidenceOnly && sources.isNotEmpty() && answer == null) {
                 append(" Ответ модели недоступен. Ниже найдённые выдержки.")
             }
         }

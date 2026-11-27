@@ -110,6 +110,9 @@ internal sealed interface SearchCommand {
         fun isOwnerDirect(
             privateChat: Boolean, owner: String?, sender: String?, bot: Boolean,
             forwarded: Boolean, edited: Boolean, senderChat: Boolean, quoted: Boolean = false,
-        ): Boolean = privateChat && owner != null && owner == sender && !bot && !forwarded && !edited && !senderChat && !quoted
+        ): Boolean = privateChat && isOriginalOwner(owner, sender, bot, forwarded, edited, senderChat, quoted)
+
+        fun isOriginalOwner(owner: String?, sender: String?, bot: Boolean, forwarded: Boolean,
+                            edited: Boolean, senderChat: Boolean, quoted: Boolean): Boolean = owner != null && owner == sender && !bot && !forwarded && !edited && !senderChat && !quoted
     }
 }
