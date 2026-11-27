@@ -259,6 +259,15 @@ internal class ChatTasks(
         while (results.length() < steps.length()) {
             if (!current() || !safe()) break
             val index = results.length()
+            // Показ плана в Telegram — внешняя отправка. Отметку сохраняем перед ней:
+            // после перезапуска уже показанный или неподтверждённый статус не посылаем повторно.
+            val progressKey = "$version/$index"
+            if (recipient != null && row.optString("progressNotice") != progressKey) {
+                row.put("progressNotice", progressKey)
+                if (!checkpoint()) return
+                deliver(recipient, status(row)) { current() && safe() }
+                if (!current() || !safe()) return
+            }
             val step = steps.getJSONObject(index)
             val goal = step.getString("goal")
             val tool = step.getString("tool")

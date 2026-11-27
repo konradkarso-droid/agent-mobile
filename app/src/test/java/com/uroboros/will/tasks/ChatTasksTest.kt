@@ -24,9 +24,18 @@ class ChatTasksTest {
     private val guard = object : SafetyZoneSource { override val zone = MutableStateFlow(SafetyZone.COMFORT) }
     private val recalls = AtomicInteger()
     private val sends = AtomicInteger()
+    private val progress = java.util.concurrent.CopyOnWriteArrayList<String>()
     private fun tasks(scope: CoroutineScope, judge: suspend (String) -> String? = { "1" }, generate: suspend (String) -> String?) = ChatTasks(
         scope, guard, store, { true }, { true }, { recalls.incrementAndGet(); "Запись о выборе" },
-        { _, _ -> error("Сеть закрыта") }, { _, _, _ -> sends.incrementAndGet(); false },
+        { _, _ -> error("Сеть закрыта") }, { _, text, _ ->
+            if (text.startsWith("План\n")) {
+                progress.add(text)
+                true
+            } else {
+                sends.incrementAndGet()
+                false
+            }
+        },
         judge, { _, material -> generate(material) },
     )
     private suspend fun until(test: () -> Boolean) = withTimeout(5000) { while (!test()) delay(5) }
@@ -108,6 +117,10 @@ class ChatTasksTest {
         restored.recover()
         assertTrue(restored.submit(request, "", tg).contains("не подтверждена"))
         assertEquals(1, sends.get())
+        assertEquals(2, progress.size)
+        assertTrue(progress.first().contains("→ Восстановить выбор"))
+        assertTrue(progress.last().contains("✓ Восстановить выбор"))
+        assertTrue(progress.last().contains("→ Сравнить варианты"))
     }
 
     @Test fun ordinaryRequestUsesDictionaryAndKeepsTwoDifferentSearchTopics() {
