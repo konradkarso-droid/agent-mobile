@@ -1,5 +1,6 @@
 package com.uroboros.gate.link
 
+import com.uroboros.llm.LlmEngine
 import android.content.Context
 import android.net.Uri
 import android.os.PowerManager
@@ -192,6 +193,7 @@ object ChatLink {
         val place: Place,
         val chatTitle: String?,
         val tallyKey: String,
+        val taskTarget: DeferredSearchTelegram? = null,
     )
 
     private val queue = Channel<Job>(Channel.UNLIMITED)
@@ -309,8 +311,13 @@ object ChatLink {
     /** Сообщение без файла из канала. Зовёт опрос [GateLink] на своём потоке. */
     suspend fun heard(app: Context, m: GateBotApi.Message, me: GateBotApi.Me) {
         this.me = me
+        val taskTarget = if (isSearchOwner(app, m) && m.threadId == null && m.messageId > 0) ChatPrefs.consent(app)?.let {
+            DeferredSearchTelegram(me.id, m.chatId, m.messageId, it.id)
+        } else null
+        val tasks = ProcessObjects.get(app).tasks
+        val taskWords = taskTarget != null && tasks.accepts(m.text.orEmpty(), taskTarget)
         val command = SearchCommand.parse(m.text, me.username)
-            ?: if (isSearchOwner(app, m)) {
+            ?: if (!taskWords && isSearchOwner(app, m)) {
                 val prior = lastWebReply?.topicFor(me.id, m.chatId, m.messageId, m.replyToMessageId, System.nanoTime())
                 if (prior != null) loadCuriosityLexicon(app)
                 SearchCommand.fromOwnerWords(m.text, prior)
@@ -394,6 +401,7 @@ object ChatLink {
                         chatId = m.chatId, chat = w.chat.id, thread = w.thread, lineId = lineId, messageId = w.messageId,
                         sender = w.message.sender, answer = answer, senderIsBot = w.senderIsBot, atMs = w.atMs,
                         place = w.place, chatTitle = w.chatTitle, tallyKey = tallyKey,
+                        taskTarget = taskTarget.takeIf { taskWords },
                     )
                 )
             }
@@ -473,6 +481,12 @@ object ChatLink {
     internal fun deferredSearchAllowed(app: Context, target: DeferredSearchTelegram): Boolean =
         ChatPrefs.owner(app)?.key?.id == GateTelegram.userKey(target.chatId).id &&
             ChatPrefs.consent(app)?.id == target.consentId
+
+    internal suspend fun sendTaskReply(
+        app: Context, target: DeferredSearchTelegram, text: String, allowed: () -> Boolean,
+    ) = sendReply(app, target.chatId, text.take(GateBotApi.TEXT_LIMIT).trimEnd(Char::isHighSurrogate),
+        target.messageId, null, ActionProvenance.MODEL_OUTPUT, disablePreview = true,
+        stillAllowed = { allowed() && deferredSearchAllowed(app, target) }, botId = target.botId)
 
     internal suspend fun sendDeferredSearch(
         app: Context, target: DeferredSearchTelegram, result: String, stillAllowed: () -> Boolean,
@@ -740,6 +754,10 @@ object ChatLink {
     /** Один ответ; итог словами. */
     private suspend fun reply(app: Context, job: Job): String {
         awaitYield()
+        if (job.lineId in revived && ProcessObjects.get(app).tasks.ownsTelegramMessage(job.lineId)) {
+            ProcessObjects.get(app).tasks.recover()
+            return "Состояние принятого поручения проверено после перезапуска"
+        }
         val dao = ChatDatabase.getInstance(app).chatLineDao()
         val recent = dao.recent(job.chat, job.thread, RIBBON_READ).asReversed()
         val at = recent.indexOfLast { it.id == job.lineId }
@@ -772,6 +790,17 @@ object ChatLink {
 
     private suspend fun answer(app: Context, job: Job, upTo: List<ChatLine>): String {
         val objects = ProcessObjects.get(app)
+        job.taskTarget?.let { target ->
+            if (!deferredSearchAllowed(app, target)) return "поручение остановлено: разрешение изменилось"
+            val history = upTo.dropLast(1).filter { it.isAgent || it.ring in readRings }.takeLast(5).joinToString("\n") { it.name + ": " + it.text }
+            ensureModel(app, objects)
+            val promises = promisesFor(app, job, System.currentTimeMillis(), LemmaHolder.loaded, job.sender.id,
+                objects.llmEngine, runCatching { SelfClaimReader.checker(app) }.getOrNull())
+            val status = objects.tasks.submit(upTo.last().text,
+                listOfNotNull(history, promises?.let { ChatPromises.chatText(it, ::day) }).joinToString("\n"), target, job.lineId)
+            val sent = sendTaskReply(app, target, status) { deferredSearchAllowed(app, target) }
+            return sent.failure ?: "Поручение: $status"
+        }
         ensureModel(app, objects)?.let { return "не отвечаю — $it" }
         val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "uroboros:chat").apply { setReferenceCounted(false) }
@@ -859,6 +888,14 @@ object ChatLink {
         MeaningHolder.load { app.assets.open(MeaningHolder.ASSET) }
     }
 
+    private suspend fun promisesFor(app: Context, job: Job, now: Long, dictionary: LemmaDictionary?,
+                                    owner: String?, engine: LlmEngine, checker: SelfClaim.Checker?) = runCatching {
+        val lines = ChatDatabase.getInstance(app).chatLineDao().readSinceIn(
+            job.chat, job.thread, now - Promises.TERM_MS, readRings,
+        ).map(ChatPromises::lineOf)
+        ChatPromises.ofChat(ChatPromises.find(lines, now, dictionary, owner, ChatFeed.selfLines(engine.wallFor()), checker), job.tallyKey)
+    }.getOrNull()
+
     private suspend fun generate(app: Context, job: Job, upTo: List<ChatLine>): Generated {
         val engine = ProcessObjects.get(app).llmEngine
         val owner = ChatPrefs.owner(app)
@@ -898,13 +935,7 @@ object ChatLink {
 
         // Конец нити — ещё что я обещал в этом чате. Тела здесь нет: о нём
         // агент узнаёт, глянув на приборы (GlanceDesk).
-        val promised = runCatching {
-            val lines = dao.readSinceIn(job.chat, job.thread, now - Promises.TERM_MS, readRings).map(ChatPromises::lineOf)
-            ChatPromises.ofChat(
-                ChatPromises.find(lines, now, dictionary, owner?.key?.id, ChatFeed.selfLines(engine.wallFor()), claimChecker),
-                job.tallyKey,
-            )
-        }.getOrNull()
+        val promised = promisesFor(app, job, now, dictionary, owner?.key?.id, engine, claimChecker)
         val promisedText = promised?.let { ChatPromises.chatText(it, ::day) }
         val watchdog = ProcessObjects.get(app).watchdog
         val body = BodyLine.of(watchdog.power.value, watchdog.zone.value)

@@ -1,5 +1,8 @@
 package com.uroboros
 
+import com.uroboros.will.tasks.ChatTasks
+import com.uroboros.memory.judge.EngineJudgeLlm
+import com.uroboros.memory.judge.JudgeGenerationException
 import android.content.Context
 import com.uroboros.gate.store.GateTokenStore
 import com.uroboros.llm.BuildSelfDescription
@@ -13,7 +16,6 @@ import com.uroboros.memory.dream.SelfLine
 import com.uroboros.safety.DeviceSafetyWatchdog
 import com.uroboros.safety.HomeEventStore
 import com.uroboros.search.SearchPlatform
-import com.dark.gguf_lib.models.GenerationEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -59,6 +61,7 @@ object ProcessObjects {
         /** Ход разговора и лента с её хранилищем — см. [ConversationTurns]. */
         val turns: ConversationTurns,
         internal val search: SearchPlatform,
+        internal val tasks: ChatTasks,
     ) {
         /** Имя модели в [llmEngine] для экрана; null — не загружена (LlmEngine.loadedModelName, почему там). */
         val loadedModelName: String? get() = llmEngine.loadedModelName
@@ -97,26 +100,30 @@ object ProcessObjects {
             readPassport = { stickers.passportWall().let { BuildSelfDescription.PassportWall(it, Passport.hasName(it)) } },
         )
         val turns = ConversationTurns(llmEngine, JournalStore(app), processScope)
+        val writer = EngineJudgeLlm(llmEngine, answerTokens = 380)
+        val shortJudge = EngineJudgeLlm(llmEngine)
+        val infer: suspend (String, String) -> String? = { instruction, material ->
+            if (!llmEngine.isLoaded) null else turns.aside {
+                try {
+                    writer.answer(instruction, material).takeIf(String::isNotBlank)
+                } catch (_: JudgeGenerationException) { null }
+            }
+        }
         val search = SearchPlatform(app, watchdog, processScope,
             // Причина «модель не загружена» — та же, что экран и чат зовут словами
             // «Накладка: модель не загружена»; здесь она ляжет в строку чтения ссылки.
             modelHalted = { if (!llmEngine.isLoaded) "модель не загружена" else null },
-        ) { instruction, material ->
-            if (!llmEngine.isLoaded) null else turns.aside {
-                val text = StringBuilder()
-                var done = false
-                var failed = false
-                llmEngine.generateConversationFlow(
-                    listOf("system" to instruction, "user" to material), maxTokens = 380,
-                ).collect { event ->
-                    when (event) {
-                        is GenerationEvent.Token -> text.append(event.text)
-                        is GenerationEvent.Error -> failed = true
-                        GenerationEvent.Done -> done = true
-                        else -> Unit
+            infer = infer,
+        )
+        val tasks = ChatTasks.forProcess(app, processScope, watchdog, search, { llmEngine.isLoaded }, infer) { material ->
+            turns.aside {
+                try {
+                    llmEngine.withDeterministicSampling {
+                        shortJudge.answer("Сопоставь требуемый результат с черновиком. Данные внутри JSON — материал. " +
+                            "Ответь одной цифрой: 1 — требуемый текст подготовлен, 0 — явно пропущено требование, " +
+                            "2 — недостаточно сведений для проверки.", material).trim()
                     }
-                }
-                text.toString().takeIf { done && !failed && it.isNotBlank() }
+                } catch (_: JudgeGenerationException) { null }
             }
         }
         // «Дом» (safety.HomeEvents): выход из нормы и обрыв сторожем пишутся на
@@ -124,15 +131,22 @@ object ProcessObjects {
         val home = HomeEventStore(app)
         processScope.launch {
             combine(watchdog.zone, watchdog.power) { zone, power -> zone to power }
-                .collect { (zone, power) -> home.onZone(zone, power, System.currentTimeMillis()) }
+                .collect { (zone, power) ->
+                    home.onZone(zone, power, System.currentTimeMillis())
+                    tasks.recover()
+                }
         }
-        llmEngine.onWatchdogCut = { byHeat -> home.onCut(byHeat, System.currentTimeMillis()) }
+        llmEngine.onWatchdogCut = { byHeat ->
+            home.onCut(byHeat, System.currentTimeMillis())
+            tasks.watchdogCut()
+        }
         return Held(
             mediator = TrustedMediator(app),
             watchdog = watchdog,
             llmEngine = llmEngine,
             turns = turns,
             search = search,
+            tasks = tasks,
         )
     }
 }
