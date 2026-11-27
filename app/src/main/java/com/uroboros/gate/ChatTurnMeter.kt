@@ -45,7 +45,7 @@ object ChatTurnMeter {
         r.intercept?.let { i ->
             "перехват: " + causeWords(i.cause) + " → " + when {
                 sentFirst -> "годного нет, ушёл первый ответ"
-                r.hidden -> "годного нет, ответ не отправлен"
+                r.hidden -> "годного ответа нет"
                 i.third?.chosen != null -> "ушёл вариант из трёх"
                 i.replaced -> "ушла вторая попытка"
                 else -> "вторая не лучше, ушёл первый ответ"

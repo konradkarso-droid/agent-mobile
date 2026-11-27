@@ -140,7 +140,7 @@ class AnswerLadderTest {
         assertTrue(result.hidden)
         assertFalse(result.rejectedFirstCanBeSent)
         assertNull(result.kept)
-        assertTrue(com.uroboros.gate.ChatTurnMeter.ladderNote(result, sentFirst = false).contains("ответ не отправлен"))
+        assertTrue(com.uroboros.gate.ChatTurnMeter.ladderNote(result, sentFirst = false).contains("годного ответа нет"))
     }
 
     @Test
