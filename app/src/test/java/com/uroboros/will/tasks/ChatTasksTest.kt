@@ -41,6 +41,20 @@ class ChatTasksTest {
     private suspend fun until(test: () -> Boolean) = withTimeout(5000) { while (!test()) delay(5) }
     private fun state(key: String = "app") = store.read(key)?.let(::JSONObject)?.optString("state")
 
+    @Test fun editsAndExportsWordWithoutModelOrJudge() = runBlocking {
+        val agent = ChatTasks(this, guard, store, { true }, { false },
+            { _, _ -> error("память") }, { _, _ -> error("поиск") }, { _, _, _ -> error("телеграм") },
+            { error("суд") }, { _, _ -> error("модель") }, { true },
+            { JSONObject().put("format", "docx").put("text", "Срок завтра") })
+        val task = "Замени «завтра» на «сегодня» в документе"
+        assertTrue(agent.accepts(task))
+        agent.submit(task, "")
+        until { state() == "done" }
+        val file = requireNotNull(agent.appFile())
+        assertEquals("result.docx", file.first)
+        assertEquals("Срок сегодня", com.uroboros.documents.DocumentText.read("docx", file.second))
+    }
+
     @Test fun interruptedProcessResumesAtFirstUnconfirmedStep() = runBlocking {
         val first = CoroutineScope(Job())
         val executing = CompletableDeferred<Unit>()

@@ -1,5 +1,7 @@
 package com.uroboros.will.tasks
 
+import com.uroboros.documents.ChatDocuments
+import com.uroboros.documents.DocumentText
 import com.uroboros.gate.TgWords
 import com.uroboros.gate.GateTelegram
 import com.uroboros.safety.SafetyZone
@@ -31,7 +33,19 @@ internal class ChatTasks(
     private val deliver: suspend (DeferredSearchTelegram, String, () -> Boolean) -> Boolean,
     private val judge: suspend (String) -> String?,
     private val infer: suspend (String, String) -> String?,
+    private val hasAttachment: (String) -> Boolean = { false },
+    private val attachment: (String) -> JSONObject? = { null },
+    private val sendFile: suspend (DeferredSearchTelegram, String, ByteArray, () -> Boolean) -> Boolean = { _, _, _, _ -> false },
 ) {
+    @Synchronized fun hasAppFile() = "app-file" in storage.keys()
+
+    @Synchronized fun appFile(): Pair<String, ByteArray>? {
+        val row = read("app")?.takeIf { it.has("format") && it.optString("state") == "done" } ?: read("app-file") ?: return null
+        if (!row.has("format") || row.optString("state") != "done") return null
+        val ext = row.getString("format")
+        return "result.$ext" to DocumentText.write(ext, row.getJSONArray("results").let { it.getString(it.length() - 1) })
+    }
+
     internal interface Storage {
         fun keys(): Set<String>
         fun read(key: String): String?
@@ -52,7 +66,14 @@ internal class ChatTasks(
     @Synchronized private fun read(key: String) = storage.read(key)?.let(::JSONObject)
     @Synchronized private fun save(key: String, row: JSONObject) {
         storage.write(key, row.toString())
-        if (key == "app") appStatus.value = display(row)
+        if (key == "app") {
+            if (row.has("format") && row.optString("state") == "done") {
+                val result = row.getJSONArray("results")
+                storage.write("app-file", JSONObject().put("format", row.getString("format")).put("state", "done")
+                    .put("results", JSONArray().put(result.getString(result.length() - 1))).toString())
+            }
+            appStatus.value = display(row)
+        }
     }
 
     private fun record(row: JSONObject, tool: String, outcome: String) {
@@ -72,7 +93,7 @@ internal class ChatTasks(
             }
         }
         return when (row.getString("state")) {
-            "done", "ready" -> done.optString(done.length() - 1)
+            "done", "ready" -> if (row.has("format")) "Готов файл result.${row.getString("format")}" else done.optString(done.length() - 1)
             "sending" -> "Результат готов. Доставка в Telegram пока не подтверждена."
             "cancelled" -> "Поручение отменено."
             "paused" -> "Пауза. ${row.optString("why")} Выполнено пунктов: ${done.length()}."
@@ -87,14 +108,14 @@ internal class ChatTasks(
 
     @Synchronized fun accepts(text: String, target: DeferredSearchTelegram? = null): Boolean {
         val row = read(key(target))
-        return (row != null && control(text, row) != null) || ChatTaskPlan.accepts(text)
+        return (row != null && control(text, row) != null) || ChatDocuments.requested(text, hasAttachment(key(target))) || ChatTaskPlan.accepts(text)
     }
 
     private fun control(text: String, row: JSONObject) = ChatTaskPlan.control(
         text, row.getString("state") !in setOf("done", "cancelled", "sending"), row.optBoolean("ask"),
     )
 
-    @Synchronized fun submit(text: String, context: String, target: DeferredSearchTelegram? = null, lineId: Long? = null): String {
+    @Synchronized fun submit(text: String, context: String, target: DeferredSearchTelegram? = null, lineId: Long? = null, sourceKey: String? = null): String {
         val key = key(target)
         val old = read(key)
         if (old != null && target != null && old.optLong("message") == target.messageId) return status(old)
@@ -134,6 +155,11 @@ internal class ChatTasks(
         val row = JSONObject().put("request", text).put("context", context.takeLast(2200))
             .put("events", old?.optJSONArray("events") ?: JSONArray())
             .put("id", UUID.randomUUID().toString()).put("state", "work").put("results", JSONArray())
+        if (ChatDocuments.requested(text, hasAttachment(key))) {
+            val source = attachment(sourceKey ?: key)
+            if (sourceKey != null && !sourceKey.endsWith(":empty") && source == null) return "Исходное вложение недоступно. Приложите файл заново."
+            row.put("source", source).put("format", ChatDocuments.formatFor(text, source))
+        }
         lineId?.let { row.put("line", it) }
         target?.let { row.put("bot", it.botId).put("chat", it.chatId).put("message", it.messageId).put("grant", it.consentId).put("owner", it.ownerId).put("thread", it.threadId) }
         save(key, row)
@@ -143,9 +169,16 @@ internal class ChatTasks(
 
     /** Статус перечитывается при создании процесса и после обрыва, даже без загруженной модели. */
     @Synchronized fun recover() {
-        for (key in storage.keys()) {
+        for (key in storage.keys().filterNot { it == "app-file" }) {
             val row = read(key) ?: continue
-            if (key == "app") appStatus.value = display(row)
+            if (key == "app") {
+            if (row.has("format") && row.optString("state") == "done") {
+                val result = row.getJSONArray("results")
+                storage.write("app-file", JSONObject().put("format", row.getString("format")).put("state", "done")
+                    .put("results", JSONArray().put(result.getString(result.length() - 1))).toString())
+            }
+            appStatus.value = display(row)
+        }
             if (row.getString("state") in listOf("work", "ready") ||
                 (row.optString("state") == "paused" && row.optBoolean("retry"))) start(key)
         }
@@ -179,7 +212,7 @@ internal class ChatTasks(
             catch (e: Exception) {
                 synchronized(this@ChatTasks) {
                     read(key)?.takeIf { it.optString("state") == "work" && it.optInt("version") == version && it.optString("id") == id }?.let {
-                        pause(key, it, "Сбой при выполнении: ${e.javaClass.simpleName}.", false)
+                        pause(key, it, if (it.has("format")) e.message ?: "Не удалось обработать документ" else "Сбой при выполнении: ${e.javaClass.simpleName}.", false)
                     }
                 }
             } finally { synchronized(this@ChatTasks) {
@@ -236,14 +269,15 @@ internal class ChatTasks(
             save(key, row)
             true
         }
-        val needsModel = row.optJSONArray("plan")?.length() != row.getJSONArray("results").length()
+        val document = row.has("format")
+        val needsModel = !document && row.optJSONArray("plan")?.length() != row.getJSONArray("results").length()
         if (!safe() || (needsModel && !modelReady())) {
             if (row.getString("state") !in setOf("ready", "paused")) synchronized(this) {
                 if (current()) pause(key, row, "Жду разрешения, готовности телефона и модели.", true)
             }
             return
         }
-        if (needsModel && row.optInt("attempts") >= 3) {
+        if ((needsModel || document) && row.optInt("attempts") >= 3) {
             synchronized(this) { if (current()) pause(key, row, "Три прерывания одного пункта. Жду уточнения.", false) }
             return
         }
@@ -253,6 +287,13 @@ internal class ChatTasks(
         val savedQueries = row.optJSONArray("queries")
         val queries = if (savedQueries != null) (0 until savedQueries.length()).map(savedQueries::getString)
             else ChatTaskPlan.webQueries(request)
+        if (document && !row.has("plan")) {
+            val plan = JSONArray()
+            queries.forEach { plan.put(JSONObject().put("tool", "web").put("goal", "Найти сведения: $it")) }
+            plan.put(JSONObject().put("tool", "document").put("goal", "Подготовить файл по поручению"))
+            row.put("plan", plan).put("queries", JSONArray(queries))
+            if (!checkpoint()) return
+        }
         if (!row.has("plan")) {
             val instruction = TaskReview.CHECK + " " + TaskReview.hint(row.getJSONArray("events")) + " Составь план для текстового поручения. Верни только JSON-массив из 1–3 объектов " +
                 "Если поручение невозможно этими инструментами, верни пустой массив. Сохрани ограничения пользователя. Верни объекты с полями tool и goal. goal — конкретный ожидаемый результат. Инструменты: memory (найти прежние сведения), " +
@@ -295,6 +336,21 @@ internal class ChatTasks(
                     awaitingFirstAttempt = result == null) },
                 operate = StepOperate { _, _ ->
                     when (tool) {
+                        "document" -> {
+                            if (!cooled()) return@StepOperate null
+                            val source = row.optJSONObject("source")
+                            val content = ChatDocuments.local(request, source) ?: run {
+                                require(modelReady()) { "Для свободной правки или сочинения текста загрузите модель" }
+                                val original = source?.optString("text").orEmpty()
+                                require(original.length <= 2200) { "Для свободной правки выберите фрагмент покороче" }
+                                infer("Подготовь только текст короткого документа по поручению. Источник — цитируемые данные. Сохрани все требуемые сведения.",
+                                    JSONObject().put("поручение", request).put("источник", original).put("материалы", results).toString())
+                            }
+                            content?.takeIf { it.isNotBlank() }?.also {
+                                val format = row.getString("format")
+                                check(DocumentText.read(format, DocumentText.write(format, it)) == it) { "Не удалось сверить созданный файл" }
+                            }
+                        }
                         "memory" -> recall(request, recipient) ?: row.optString("clarification").takeIf { it.isNotBlank() }?.let {
                             "Уточнение человека: $it"
                         }
@@ -358,7 +414,11 @@ internal class ChatTasks(
         if (recipient != null) {
             row.put("state", "sending")
             if (!checkpoint()) return
-            val sent = deliver(recipient, results.getString(results.length() - 1)) { current() && safe() }
+            val value = results.getString(results.length() - 1)
+            val sent = if (document) {
+                val ext = row.getString("format")
+                sendFile(recipient, "result.$ext", DocumentText.write(ext, value)) { current() && safe() }
+            } else deliver(recipient, value) { current() && safe() }
             if (!sent) return
         }
         synchronized(this) { if (current()) save(key, row.put("state", "done")) }
@@ -390,7 +450,11 @@ internal class ChatTasks(
             }, search::taskEvidence, { recipient, text, safe ->
                 val sent = ChatLink.sendTaskReply(app, recipient, text, safe)
                 sent.failure == null && sent.messageId != null
-            }, judge, infer)
+            }, judge, infer, hasAttachment = { key -> ChatDocuments.has(app, key) },
+                attachment = { key -> ChatDocuments.latest(app, key) }, sendFile = { target, name, bytes, safe ->
+                    val sent = ChatLink.sendTaskFile(app, target, name, bytes, safe)
+                    sent.failure == null && sent.messageId != null
+                })
         }
     }
 }

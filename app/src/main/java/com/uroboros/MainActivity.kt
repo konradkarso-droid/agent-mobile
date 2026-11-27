@@ -25,6 +25,8 @@ import android.util.Log
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import com.uroboros.documents.ChatDocuments
+import com.uroboros.documents.DocumentText
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -4403,6 +4405,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val pickDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) lifecycleScope.launch {
+            try {
+                val name = withContext(Dispatchers.IO) {
+                    check(!EmergencyStop.isActive() && MoveState.holdReason(this@MainActivity) == null) { "Работа с файлами остановлена" }
+                    val file = androidx.documentfile.provider.DocumentFile.fromSingleUri(this@MainActivity, uri)
+                    val name = requireNotNull(file?.name) { "Имя файла недоступно" }
+                    val bytes = requireNotNull(contentResolver.openInputStream(uri)).use { DocumentText.bounded(it, DocumentText.MAX_BYTES) }
+                    ChatDocuments.attach(this@MainActivity, "app", name, bytes, "app:owner", 0)
+                    name
+                }
+                binding.attachedDocument.text = "Вложение · $name"
+                binding.attachedDocument.visibility = View.VISIBLE
+            } catch (e: Exception) { Toast.makeText(this@MainActivity, e.message, Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    private val exportDocument = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val pending = java.io.File(cacheDir, "document-export")
+        if (uri == null) pending.delete()
+        else lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    check(!EmergencyStop.isActive() && MoveState.holdReason(this@MainActivity) == null) { "Работа с файлами остановлена" }
+                    pending.inputStream().use { input ->
+                        requireNotNull(contentResolver.openOutputStream(uri, "wt")).use { input.copyTo(it) }
+                    }
+                    pending.delete()
+                }
+                Toast.makeText(this@MainActivity, "Файл сохранён", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) { Toast.makeText(this@MainActivity, e.message, Toast.LENGTH_LONG).show() }
+        }
+    }
+
     private val pickFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         if (uri != null) {
             contentResolver.takePersistableUriPermission(
@@ -4444,6 +4480,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             processObjects.tasks.appStatus.collect { task ->
                 if (task != null) journal.showTask(task.id, task.question, task.answer)
+                binding.saveChatDocument.visibility = if (processObjects.tasks.hasAppFile()) View.VISIBLE else View.GONE
             }
         }
         mediator = processObjects.mediator
@@ -4893,6 +4930,26 @@ class MainActivity : AppCompatActivity() {
             setDetailsExpanded(false)
             binding.textResults.text = codingTask.getDebugLog()
             true
+        }
+
+        binding.buttonDocument.setOnClickListener {
+            pickDocument.launch(arrayOf("text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+        }
+        ChatDocuments.latest(this, "app")?.let {
+            binding.attachedDocument.text = "Вложение · ${it.getString("name")}"
+            binding.attachedDocument.visibility = View.VISIBLE
+        }
+        binding.saveChatDocument.setOnClickListener {
+            lifecycleScope.launch {
+                try {
+                    val name = withContext(Dispatchers.IO) {
+                        val output = requireNotNull(processObjects.tasks.appFile()) { "Файл недоступен" }
+                        java.io.File(cacheDir, "document-export").writeBytes(output.second)
+                        output.first
+                    }
+                    exportDocument.launch(name)
+                } catch (e: Exception) { Toast.makeText(this@MainActivity, e.message, Toast.LENGTH_LONG).show() }
+            }
         }
 
         binding.buttonLoadModel.setOnClickListener {
