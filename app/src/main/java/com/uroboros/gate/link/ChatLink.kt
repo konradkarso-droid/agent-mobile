@@ -195,6 +195,7 @@ object ChatLink {
         val tallyKey: String,
         val taskTarget: DeferredSearchTelegram? = null,
         val taskText: String? = null,
+        val documentKey: String? = null,
     )
 
     private val queue = Channel<Job>(Channel.UNLIMITED)
@@ -320,6 +321,8 @@ object ChatLink {
             val first = text.takeWhile { !it.isWhitespace() }
             if (first.trimEnd(',', ':').equals("@${me.username}", true)) text.drop(first.length).trimStart() else text
         }
+        if (taskTarget != null && com.uroboros.documents.ChatDocuments.has(app,
+                com.uroboros.documents.ChatDocuments.scope(me.id, m.chatId, taskTarget.threadId))) loadCuriosityLexicon(app)
         val taskWords = taskTarget != null && tasks.accepts(taskText, taskTarget)
         val command = SearchCommand.parse(m.text, me.username)
             ?: if (!taskWords && isSearchOwner(app, m)) {
@@ -406,6 +409,13 @@ object ChatLink {
                         chatId = m.chatId, chat = w.chat.id, thread = w.thread, lineId = lineId, messageId = w.messageId,
                         sender = w.message.sender, answer = answer, senderIsBot = w.senderIsBot, atMs = w.atMs,
                         place = w.place, chatTitle = w.chatTitle, tallyKey = tallyKey,
+                        documentKey = taskTarget?.takeIf { taskWords }?.let {
+                            val scope = com.uroboros.documents.ChatDocuments.scope(me.id, m.chatId, it.threadId)
+                            val latest = com.uroboros.documents.ChatDocuments.latest(app, scope)
+                            val id = if (m.documentCaption) m.messageId else m.replyToMessageId?.takeIf { m.replyToDocument }
+                                ?: latest?.optLong("message")
+                            id?.let { number -> "$scope:msg:$number" } ?: "$scope:empty"
+                        },
                         taskTarget = taskTarget.takeIf { taskWords }, taskText = taskText.takeIf { taskWords },
                     )
                 )
@@ -494,6 +504,10 @@ object ChatLink {
     ) = sendReply(app, target.chatId, text.take(GateBotApi.TEXT_LIMIT).trimEnd(Char::isHighSurrogate),
         target.messageId, target.threadId, ActionProvenance.MODEL_OUTPUT, disablePreview = true,
         stillAllowed = { allowed() && deferredSearchAllowed(app, target) }, botId = target.botId)
+
+    internal suspend fun sendTaskFile(app: Context, target: DeferredSearchTelegram, name: String, bytes: ByteArray, allowed: () -> Boolean) =
+        sendReply(app, target.chatId, "", target.messageId, target.threadId, ActionProvenance.MODEL_OUTPUT,
+            stillAllowed = { allowed() && deferredSearchAllowed(app, target) }, botId = target.botId, file = name to bytes)
 
     internal suspend fun sendDeferredSearch(
         app: Context, target: DeferredSearchTelegram, result: String, stillAllowed: () -> Boolean,
@@ -800,11 +814,12 @@ object ChatLink {
         job.taskTarget?.let { target ->
             if (!deferredSearchAllowed(app, target)) return "поручение остановлено: разрешение изменилось"
             val history = upTo.dropLast(1).filter { it.isAgent || it.ring in readRings }.takeLast(5).joinToString("\n") { it.name + ": " + it.text }
-            ensureModel(app, objects)
-            val promises = promisesFor(app, job, System.currentTimeMillis(), LemmaHolder.loaded, job.sender.id,
+            val docTask = com.uroboros.documents.ChatDocuments.requested(job.taskText.orEmpty(), job.documentKey?.endsWith(":empty") == false)
+            if (!docTask) ensureModel(app, objects)
+            val promises = if (docTask) null else promisesFor(app, job, System.currentTimeMillis(), LemmaHolder.loaded, job.sender.id,
                 objects.llmEngine, runCatching { SelfClaimReader.checker(app) }.getOrNull())
             val status = objects.tasks.submit(job.taskText ?: upTo.last().text,
-                listOfNotNull(history, promises?.let { ChatPromises.chatText(it, ::day) }).joinToString("\n"), target, job.lineId)
+                listOfNotNull(history, promises?.let { ChatPromises.chatText(it, ::day) }).joinToString("\n"), target, job.lineId, job.documentKey)
             val sent = sendTaskReply(app, target, status) { deferredSearchAllowed(app, target) }
             return sent.failure ?: "Поручение: $status"
         }
@@ -1475,7 +1490,7 @@ object ChatLink {
     private suspend fun sendReply(
         app: Context, chatId: Long, text: String, messageId: Long, thread: Long?,
         provenance: ActionProvenance, disablePreview: Boolean = false, stillAllowed: () -> Boolean = { true },
-        botId: Long? = null,
+        botId: Long? = null, file: Pair<String, ByteArray>? = null,
     ): GateLink.TextSent = sendLock.withLock {
         val consent = ChatPrefs.consent(app)
         val verdict = GatedAction.evaluate(
@@ -1494,7 +1509,7 @@ object ChatLink {
         val since = System.currentTimeMillis() - (lastSent[chatId] ?: 0L)
         if (since < SEND_GAP_MS) delay(SEND_GAP_MS - since)
         if (!stillAllowed()) return@withLock GateLink.TextSent(null, "разрешение изменилось")
-        val sent = GateLink.sendText(chatId, text, messageId, thread, disablePreview, botId)
+        val sent = GateLink.sendText(chatId, text, messageId, thread, disablePreview, botId, file)
         if (sent.failure == null) lastSent[chatId] = System.currentTimeMillis()
         sent
     }

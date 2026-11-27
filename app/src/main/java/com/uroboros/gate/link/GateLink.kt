@@ -11,6 +11,8 @@ import com.uroboros.gate.store.GateKeystoreOpener
 import com.uroboros.gate.store.GateKeystoreSigner
 import com.uroboros.gate.store.GateStore
 import com.uroboros.gate.store.GateTokenStore
+import com.uroboros.documents.ChatDocuments
+import com.uroboros.documents.DocumentText
 import com.uroboros.memory.EmergencyStop
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -283,10 +285,32 @@ object GateLink {
             }
             return
         }
+        val name = doc.name
+        val sender = m.fromId
+        var fetched: ByteArray? = null
+        val ordinary = name != null && ChatDocuments.format(name) != null && !m.edited &&
+            sender != null && !m.fromIsBot && m.senderChatId == null && !EmergencyStop.isActive() &&
+            (m.chatType in setOf("group", "supergroup") || (m.privateChat && ChatPrefs.owner(app)?.key == GateTelegram.userKey(sender)))
+        if (ordinary) {
+            try {
+                require((doc.size ?: 0) <= DocumentText.MAX_BYTES) { "Файл слишком велик" }
+                val bytes = fetch(s, doc.fileId, DocumentText.MAX_BYTES)
+                if (com.uroboros.gate.GateWire.formOf(bytes) == null) {
+                    check(!EmergencyStop.isActive() && com.uroboros.move.MoveState.holdReason(app) == null) { "Работа с файлами остановлена" }
+                    val key = ChatDocuments.scope(s.me.id, m.chatId, m.threadId.takeIf { m.topicMessage })
+                    ChatDocuments.attach(app, key, requireNotNull(name), bytes, "tg:user:$sender", m.messageId)
+                    note("Документ принят: $name")
+                    if (!m.text.isNullOrBlank()) ChatLink.heard(app, m.copy(doc = null), s.me)
+                    return
+                }
+                fetched = bytes
+            } catch (c: kotlinx.coroutines.CancellationException) { throw c }
+            catch (e: Exception) { note("Документ не принят: ${GateBotApi.scrub(e.message.orEmpty(), s.token)}"); return }
+        }
         var file: ByteArray? = null
         if (GateBotApi.needsFile(m) && doc != null) {
             file = try {
-                fetch(s, doc.fileId)
+                fetched ?: fetch(s, doc.fileId)
             } catch (e: IOException) {
                 note("Не пакет: файл не скачан — ${e.message}")
                 return
@@ -310,12 +334,12 @@ object GateLink {
         }
     }
 
-    private fun fetch(s: Session, fileId: String): ByteArray {
+    private fun fetch(s: Session, fileId: String, limit: Int = KONVERT_LIMITS.maxBytes): ByteArray {
         val path = when (val r = s.http.call(GateBotApi.getFileUrl(s.token, fileId))) {
             is GateBotApi.Reply.Error -> throw IOException("getFile: ${r.code} ${GateBotApi.scrub(r.description, s.token)}")
             is GateBotApi.Reply.Ok -> GateBotApi.filePath(r.result) ?: throw IOException("getFile: без пути")
         }
-        return s.http.download(path, KONVERT_LIMITS.maxBytes)
+        return s.http.download(path, limit)
     }
 
     private val KONVERT_LIMITS = GateIntake.Limits.DECLARED.let { it.copy(maxBytes = it.maxKonvertBytes) }
@@ -365,12 +389,13 @@ object GateLink {
      */
     fun sendText(
         chatId: Long, text: String, replyTo: Long?, thread: Long?, disablePreview: Boolean = false,
-        botId: Long? = null,
+        botId: Long? = null, file: Pair<String, ByteArray>? = null,
     ): TextSent {
         val s = ready() ?: return TextSent(null, "канал не готов (нет токена, нет службы или аварийный стоп)")
         if (botId != null && s.me.id != botId) return TextSent(null, "бот изменился")
         val r = try {
-            s.http.sendMessage(chatId, text, replyTo, thread, disablePreview)
+            if (file != null) s.http.sendDocument(chatId.toString(), file.first, file.second, replyTo, thread)
+            else s.http.sendMessage(chatId, text, replyTo, thread, disablePreview)
         } catch (e: IOException) {
             return TextSent(null, e.message ?: "сеть")
         } catch (e: IllegalArgumentException) {

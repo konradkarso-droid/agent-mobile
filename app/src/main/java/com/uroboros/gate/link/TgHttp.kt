@@ -17,9 +17,9 @@ class TgHttp(private val token: String) {
         return GateBotApi.reply(String(bytes, Charsets.UTF_8), code)
     }
 
-    fun sendDocument(chatId: String, fileName: String, bytes: ByteArray): GateBotApi.Reply {
+    fun sendDocument(chatId: String, fileName: String, bytes: ByteArray, replyTo: Long? = null, thread: Long? = null): GateBotApi.Reply {
         val boundary = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { String.format("%02x", it) }
-        val body = GateBotApi.documentBody(chatId, fileName, bytes, boundary)
+        val body = GateBotApi.documentBody(chatId, fileName, bytes, boundary, replyTo, thread)
         return call(GateBotApi.methodUrl(token, "sendDocument"), body = body, contentType = "multipart/form-data; boundary=$boundary")
     }
 
