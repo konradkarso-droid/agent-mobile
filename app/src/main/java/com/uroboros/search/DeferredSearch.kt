@@ -29,6 +29,8 @@ internal data class DeferredSearchTelegram(
     val chatId: Long,
     val messageId: Long,
     val consentId: String,
+    val ownerId: Long = chatId,
+    val threadId: Long? = null,
 ) {
     val requestId get() = "deferred:$botId:$chatId:$messageId"
 }
