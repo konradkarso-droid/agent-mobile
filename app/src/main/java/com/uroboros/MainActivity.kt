@@ -4982,7 +4982,7 @@ class MainActivity : AppCompatActivity() {
             if (!llmEngine.isLoaded && !turns.busy.value) {
                 val phrase = text?.toString().orEmpty()
                 binding.buttonSend.isEnabled = processObjects.tasks.accepts(phrase) || SearchCommand.fromOwnerWords(phrase, journal.recentWebQuery) != null ||
-                    (!SearchIntent.forbidsSearch(phrase) && LinkFollow.plainTextUrl(phrase) != null)
+                    (!SearchIntent.forbidsSearch(phrase) && (LinkFollow.plainTextUrl(phrase) != null || processObjects.search.repositoryFile("app", phrase) != null))
             }
         }
 
@@ -5009,6 +5009,15 @@ class MainActivity : AppCompatActivity() {
             }
             if (journal.pendingWeb != null) {
                 Toast.makeText(this, "Поиск уже идёт", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val attached = ChatDocuments.has(applicationContext, "app")
+            val attachmentRequest = attached && ChatDocuments.requested(userText, attached = true)
+            val repositoryUrl = if (!attachmentRequest && !SearchIntent.forbidsSearch(userText))
+                processObjects.search.repositoryFile("app", userText) else null
+            if (repositoryUrl != null) {
+                submitLinkOpen(repositoryUrl, userText)
+                binding.editTextInput.text.clear()
                 return@setOnClickListener
             }
             if (processObjects.tasks.accepts(userText)) {
@@ -5307,11 +5316,14 @@ class MainActivity : AppCompatActivity() {
                             Retelling.retell(line.sentence, portraitTable).text?.let { sticker to it }
                         }.take(DolmenCircle.RECORDS_CEILING)
                     }
+                val missedTopic = gapsFound?.getOrNull()?.lastOrNull {
+                    it.missed.isNotEmpty() && Gaps.touches(it, userText)
+                }
                 val contextResult = mediator.getContextWithSummary(
                     purpose = RetrievalPurpose.ANSWERING_USER,
                     query = userText,
                     limit = 5,
-                    recentQuestions = episodeQuestions,
+                    recentQuestions = episodeQuestions + listOfNotNull(missedTopic?.question),
                     excludedTexts = ribbonQuestions + userText,
                     previousAnswer = journal.history().lastOrNull()?.agentContent,
                     address = address,
@@ -5704,11 +5716,11 @@ class MainActivity : AppCompatActivity() {
                 val homeTell = if (selfGapLine != null) null else runCatching {
                     HomeEvents.tell(homeStore.read(), homeStore.toldUpTo(), ::fmtMoment)
                 }.getOrNull()
-                val askedGap = if (selfGapLine != null || homeTell != null) null
+                val gapCandidate = if (selfGapLine != null || homeTell != null) null
                 else (gapDecision as? CuriosityAsk.GapDecision.Ask)?.gap
                 val previousForCuriosity = journal.history().lastOrNull()?.agentContent
                 val promiseFollowUp = if (
-                    selfGapLine == null && homeTell == null && askedGap == null && requestedNote == null &&
+                    selfGapLine == null && homeTell == null && requestedNote == null &&
                     prochnostNote == null && claimChecker != null &&
                     CuriosityFollowUp.mayAsk(userText, previousForCuriosity)
                 ) {
@@ -5725,6 +5737,9 @@ class MainActivity : AppCompatActivity() {
                         null
                     }
                 } else null
+                val askedGap = gapCandidate.takeIf { promiseFollowUp == null }
+                val gapEvidence = askedGap?.takeUnless { it.aboutOwner || SearchIntent.forbidsSearch(userText) }
+                    ?.let { processObjects.search.localGapEvidence(it.question) }
                 curiosityAskLine = when {
                     promiseFollowUp != null -> "Спросить: предложена сверка обещания по теме разговора"
                     selfGapLine != null -> "Спросить: в этой реплике предложено выбрать себе имя"
@@ -5797,6 +5812,7 @@ class MainActivity : AppCompatActivity() {
                     recallAsk = RecallRequest.ASK_BACK.takeIf { recallPlan?.askBack == true },
                     curiosityAsk = selfGapLine
                         ?: homeTell?.line
+                        ?: gapEvidence
                         ?: askedGap?.let { CuriosityAsk.gapLine(it) }
                         ?: promiseFollowUp?.let(CuriosityFollowUp::promiseLine)
                         ?: toldTeller?.let { CuriosityAsk.tellLine(it) }

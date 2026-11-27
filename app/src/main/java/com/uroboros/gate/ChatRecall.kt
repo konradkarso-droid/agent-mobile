@@ -148,6 +148,25 @@ object ChatRecall {
             .toList()
     }
 
+    /** Повторный локальный поиск для поручения. Пул уже ограничен адресатом. */
+    fun forTask(question: String, pool: List<Sticker>, dictionary: LemmaDictionary?): List<Sticker> {
+        val direct = pick(question, pool, dictionary, emptyList())
+        if (direct.isNotEmpty()) return direct
+        val semantic = com.uroboros.memory.nav.SemanticFeatures.available() ?: return emptyList()
+        val topic = semantic.words(allMeaningfulWords(question)).filter { it.noun }
+        if (topic.size < 2) return emptyList()
+        return pool.asSequence().take(48).filterNot {
+            RiskTrigger.isOnlyQuestions(it.content) || RiskTrigger.isOnlyRequests(it.content) ||
+                RiskTrigger.isOnlySocial(it.content)
+        }.filter { record ->
+            val candidates = semantic.words(allMeaningfulWords(record.content)).filter { it.noun }.toMutableList()
+            topic.count { term ->
+                val match = candidates.maxByOrNull { semantic.score(term, it) }
+                match != null && semantic.score(term, match) >= 0.70 && candidates.remove(match)
+            } >= 2
+        }.take(NARROW_SEATS).toList()
+    }
+
     /** Есть ли в приведённом тексте слово с тем же началом, что у [word]: без двух последних букв, но не короче [MIN_PREFIX]. */
     private fun hasWord(folded: String, word: String): Boolean {
         val prefix = if (word.length - 2 >= MIN_PREFIX) word.dropLast(2) else word

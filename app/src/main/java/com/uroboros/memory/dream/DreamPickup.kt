@@ -41,12 +41,10 @@ import com.uroboros.memory.StickerDao
  * между ходами.
  *
  * ЧЕГО НЕ УМЕЕТ:
- *  - сравнивает слова, а не смысл: пересказ своими словами не засчитается,
- *    случайное совпадение одной основы — засчитается;
+ *  - лексическое совпадение или близкое по смыслу существительное только указывает тему;
  *  - видит только сны, поданные на одном предыдущем ходе. Сон, поданный
  *    раньше, владелец может подхватить и позже — такое не считается;
- *  - «предыдущий ход» живёт в памяти процесса, как двери сна ([DreamDoor]):
- *    после комы первая реплика ничего не подхватывает;
+ *  - для чата приложения прежний вопрос и ключи снов сохраняются между запусками;
  *  - проверка тратится одна на ход: реплика, которая дошла до движка, но хода
  *    не закрыла, всё равно её съедает. Иначе повторная отправка той же реплики
  *    засчитала бы подхват дважды.
@@ -57,21 +55,47 @@ object DreamPickup {
     data class Previous(val question: String, val dreams: List<Dream>)
 
     private var previous: Previous? = null
+    private var prefs: android.content.SharedPreferences? = null
+
+    @Synchronized
+    fun restore(context: Context) {
+        val disk = context.getSharedPreferences("screen_dream_pickup", Context.MODE_PRIVATE)
+        prefs = disk
+        previous = runCatching {
+            val row = org.json.JSONObject(disk.getString("pending", null) ?: return)
+            val list = row.getJSONArray("dreams")
+            Previous(row.getString("question"), (0 until list.length()).map { i ->
+                val key = list.getJSONArray(i)
+                Dream(key.getLong(0), key.getString(1), key.getString(2))
+            })
+        }.getOrNull()
+    }
 
     /** Ход закрыт: запомнить, что на нём подано. Пустая подача стирает прежнее. */
     @Synchronized
     fun afterTurn(question: String, served: List<Dream>) {
-        previous = if (served.isEmpty()) null else Previous(question, served)
+        if (served.isEmpty()) {
+            forget()
+            return
+        }
+        if (prefs != null) {
+            val keys = org.json.JSONArray()
+            served.forEach { keys.put(org.json.JSONArray().put(it.nightAt).put(it.recordIds).put(it.kind)) }
+            prefs?.edit()?.putString("pending", org.json.JSONObject().put("question", question)
+                .put("dreams", keys).toString())?.apply()
+        }
+        previous = Previous(question, served)
     }
 
     /** Забрать поданное на предыдущем ходе. Второй вызов вернёт null. */
     @Synchronized
-    fun take(): Previous? = previous.also { previous = null }
+    fun take(): Previous? = previous.also { if (it != null) forget() }
 
     /** Разговор закрыт: подхватывать в новом разговоре нечего. */
     @Synchronized
     fun forget() {
         previous = null
+        prefs?.edit()?.remove("pending")?.apply()
     }
 
     /**
@@ -94,7 +118,13 @@ object DreamPickup {
             if (records.any { Dream.silences(it) }) return@mapNotNull null
             val live = records.map { it!! }
             val own = live.flatMapTo(HashSet()) { RiskTrigger.significantStems(it.content) } - excluded
-            if (own.none { it in said }) null else dream to live
+            if (own.any { it in said }) return@mapNotNull dream to live
+            val related = com.uroboros.memory.nav.SemanticFeatures.available() ?: return@mapNotNull null
+            val excludedWords = com.uroboros.memory.allMeaningfulWords(previousQuestion).toSet()
+            val words = related.words(com.uroboros.memory.allMeaningfulWords(reply) - excludedWords)
+            val topic = related.words(live.flatMap { com.uroboros.memory.allMeaningfulWords(it.content) } - excludedWords)
+                .filter { it.noun }
+            if (words.any { it.noun && related.matches(it, topic, 0.75) }) dream to live else null
         }
     }
 }

@@ -65,13 +65,28 @@ object LinkFollow {
             when (e.type) {
                 "url" -> {
                     if (text != null && e.offset >= 0 && e.length > 0 && e.offset + e.length <= text.length) {
-                        text.substring(e.offset, e.offset + e.length).trim().takeIf { it.isNotEmpty() }?.let { return it }
+                        text.substring(e.offset, e.offset + e.length).trim().takeIf { it.isNotEmpty() }?.let { if (!fileName.matches(it)) return it }
                     }
                 }
                 "text_link" -> e.url?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
             }
         }
         return null
+    }
+
+    private val fileName = Regex("""(?<![\w./:-])(?:[\w-]+/)*[\w-]+\.(?:md|kt|kts|java|py|cpp|json|yaml|yml|txt)(?![\w./-])""", RegexOption.IGNORE_CASE)
+
+    fun ownRepository(text: String): Boolean {
+        val words = text.lowercase().split(Regex("""[^а-яё]+"""))
+        return words.any { it.startsWith("репозитори") } &&
+            words.any { it in setOf("свой", "своём", "своем", "твой", "твоём", "твоем") } &&
+            words.any { it in setOf("открой", "найди", "покажи", "назови") } &&
+            words.none { it == "не" } && plainTextUrl(text) == null
+    }
+
+    fun repositoryPath(text: String): String? {
+        if (plainTextUrl(text) != null) return null
+        return fileName.findAll(text).map { it.value }.distinct().singleOrNull()
     }
 
     /**
@@ -109,7 +124,7 @@ object LinkFollow {
         for (e in m.entities) {
             if (e.type != "url") continue
             if (e.offset < 0 || e.length <= 0 || e.offset + e.length > text.length) continue
-            spans += e.offset to e.offset + e.length
+            if (!fileName.matches(text.substring(e.offset, e.offset + e.length))) spans += e.offset to e.offset + e.length
         }
         if (spans.isEmpty()) return text
         spans.sortBy { it.first }

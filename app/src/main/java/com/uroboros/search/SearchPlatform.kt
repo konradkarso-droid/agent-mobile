@@ -42,6 +42,14 @@ internal class SearchPlatform(
     infer: suspend (String, String) -> String?,
 ) {
     private val preferences = app.getSharedPreferences("web_search", Context.MODE_PRIVATE)
+    fun repositoryFile(scope: String, text: String): String? {
+        val path = com.uroboros.gate.link.LinkFollow.repositoryPath(text)
+        if (path == null) return if (com.uroboros.gate.link.LinkFollow.ownRepository(text))
+            "https://github.com/konradkarso-droid/agent-mobile" else null
+        val base = preferences.getString("repository/$scope", null)?.toHttpUrlOrNull() ?: return null
+        return base.newBuilder().addPathSegments(path).build().toString()
+    }
+
     private val index = LocalWebIndex(app)
     private val crawler = WebCrawler(index)
     private val directFetch = CrawlTransport(budgets = FetchBudgets.DIRECT)::fetch
@@ -131,18 +139,33 @@ internal class SearchPlatform(
         return SearchReply("Поиск «$query» запланирован. Android запустит его не раньше $time, когда будут сеть и заряд. $result")
     }
 
-    /** Для пункта плана свидетельство — выдержка из сохранённого текста страницы. */
+    /** Пробел проверяется по уже доступным на телефоне страницам. */
+    suspend fun localGapEvidence(query: String): String? = withContext(Dispatchers.IO) {
+        fun available() = !blocked() && watchdog.zone.value == SafetyZone.COMFORT
+        if (!available()) return@withContext null
+        try {
+            val found = lookupWithSemantics(query, null, null, ::available, build = false)
+            val match = found.indexed.firstOrNull { it.missingWords.isEmpty() || it.semanticSpan != null }
+                ?: return@withContext null
+            val quote = match.semanticSpan?.text(match.page.text) ?: bestExcerpt(match.page, found.words)
+            if (!available() || quote.isBlank()) null else
+                "В локальном индексе есть материал по вопросу «${query.take(160)}». " +
+                    "Проверь, отвечает ли выдержка на вопрос. Источник: ${match.page.url}\n" +
+                    org.json.JSONObject.quote(quote.take(480))
+        } catch (_: SQLiteException) {
+            null
+        }
+    }
+
     suspend fun taskEvidence(work: DeferredSearch, allowed: () -> Boolean): String? {
         val reply = perform(SearchCommand.Find(work.query), work.channel, work.id,
             stillOwner = { deferredSearchAllowed() && allowed() }, resume = true, evidenceOnly = true)
         if (!reply.historySaved || !allowed()) return null
-        val words = SearchWords(work.query, LemmaHolder.loaded)
-        return reply.sourceUrls.asSequence().mapNotNull { url ->
+        return reply.hits.asSequence().mapNotNull { hit ->
+            val url = hit.url
             val group = work.telegram?.let { it.ownerId != it.chatId } == true
             if (group && url.toHttpUrlOrNull()?.let { address -> webSources.any { it.accepts(address) } } != true) return@mapNotNull null
-            index.page(url)?.let { page ->
-                bestExcerpt(page, words).trim().take(600).takeIf { it.isNotEmpty() }?.let { "$it\n$url" }
-            }
+            hit.description.takeIf { it.isNotBlank() }?.let { "$it\n$url" }
         }.take(2).joinToString("\n").ifBlank { null }
     }
 
@@ -167,6 +190,7 @@ internal class SearchPlatform(
         origin: LinkOrigin,
         address: String,
         question: String,
+        repositoryScope: String = "app",
         consent: StandingConsent? = null,
         stillAllowed: () -> Boolean = { true },
     ): SearchReply = withContext(Dispatchers.IO) {
@@ -187,7 +211,7 @@ internal class SearchPlatform(
         )
         if (verdict.result != GateResult.ALLOW) return@withContext refused("ворота действий отказали — причина в журнале действий")
         if (repository != null) {
-            return@withContext readRepository(repository, question) { stillAllowed() && !blocked() }
+            return@withContext readRepository(repository, question, repositoryScope) { stillAllowed() && !blocked() }
         }
         val opened = withTimeoutOrNull(OPEN_LIMIT_MS) { linkOpener.open(url) { stillAllowed() && !blocked() } }
             ?: return@withContext refused("не уложился по времени")
@@ -217,7 +241,7 @@ internal class SearchPlatform(
     }
 
     private suspend fun readRepository(
-        target: GitHubTarget, question: String, allowed: () -> Boolean,
+        target: GitHubTarget, question: String, scope: String, allowed: () -> Boolean,
     ): SearchReply {
         val result = withTimeoutOrNull(REPOSITORY_LIMIT_MS) {
             github.read(target, question, LemmaHolder.loaded, allowed)
@@ -225,6 +249,7 @@ internal class SearchPlatform(
         if (result is RepositoryReading.Refused) return SearchReply("Репозиторий не прочитан: ${result.why}")
         check(result is RepositoryReading.Found)
         if (!allowed()) return SearchReply("Чтение репозитория остановлено.")
+        preferences.edit().putString("repository/$scope", "${result.project.url}/blob/${result.commit}").apply()
         if (result.excerpts.isEmpty()) {
             val paths = result.paths.joinToString(", ")
             val list = if (paths.isEmpty()) "" else "\n\nНа карте: $paths"
@@ -430,6 +455,12 @@ internal class SearchPlatform(
                 sourcesByUrl[page.url]?.let { it to page }
             }
         } else emptyList()
+        if (evidenceOnly) {
+            val evidence = articles.mapNotNull { (number, page) ->
+                SearchHit.from(hits[number - 1].title, page.url, bestExcerpt(page, words))
+            }
+            return SearchPage(evidence)
+        }
         val summary = if (!evidenceOnly && allowed() && articles.isNotEmpty()) withTimeoutOrNull(NEWS_SUMMARY_MS) {
             reader.answerBrief(request.subject.ifBlank { "Кратко перескажи новости" }, articles, words)
         } else null

@@ -126,6 +126,7 @@ internal data class SearchReply(
     val chatText: String = text,
     val sourceUrls: List<String> = emptyList(),
     val historySaved: Boolean = true,
+    val hits: List<SearchHit> = emptyList(),
 )
 
 private fun resultReply(entry: SearchEntry): SearchReply {
@@ -155,6 +156,7 @@ private fun resultReply(entry: SearchEntry): SearchReply {
         text = listOf(heading, body).filter { it.isNotEmpty() }.joinToString("\n"),
         chatText = body.ifEmpty { entry.status.label },
         sourceUrls = hits.map { it.url },
+        hits = hits,
     )
 }
 

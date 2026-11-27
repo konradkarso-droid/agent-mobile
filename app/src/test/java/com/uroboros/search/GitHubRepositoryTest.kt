@@ -53,6 +53,25 @@ class GitHubRepositoryTest {
     }
 
     @Test
+    fun rootListingThenNamedMarkdownUsesTheSameCommit() = runBlocking {
+        val repository = GitHubRepository { url, kind, _ ->
+            when {
+                kind == CrawlResource.REPOSITORY_SOURCE -> {
+                    assertEquals(project.raw(commit, "BIBLE.md"), url)
+                    response("# Уроборос\nПравила агента.")
+                }
+                "/trees/" in url.encodedPath -> response(listing("BIBLE.md" to blob, "src/A.kt" to blob))
+                else -> response(ref())
+            }
+        }
+        val view = repository.read(GitHubTarget.Project(project, null), "Что видно на главной странице?") { true } as RepositoryReading.Found
+        assertEquals(listOf("BIBLE.md", "src/"), view.paths)
+        val file = GitHubTarget.File(view.project, listOf(view.commit, "BIBLE.md"), null)
+        val read = repository.read(file, "Открой BIBLE.md") { true } as RepositoryReading.Found
+        assertTrue(read.excerpts.single().snippet.numbered().contains("Правила агента"))
+    }
+
+    @Test
     fun repositoryFetchesRelevantFilesAndReusesVersionedMapAndParsedSource() = runBlocking {
         val requestUrls = mutableListOf<String>()
         val search = GitHubRepository { url, type, _ ->

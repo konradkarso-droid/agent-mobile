@@ -30,9 +30,8 @@ object GateBotApi {
     /** Сколько сервер держит опрос без новостей, с. Объявленное число, не подобранное. */
     const val POLL_SECONDS = 50
 
-    /** Пауза после сбоя: начало и потолок. Объявленные числа, не подобранные. */
+    /** Пауза после обычного сбоя связи. Сервер может запросить более долгую. */
     const val PAUSE_FIRST_MS = 30_000L
-    const val PAUSE_MAX_MS = 10 * 60_000L
 
     fun methodUrl(token: String, method: String) = "https://$HOST/bot$token/$method"
 
@@ -61,20 +60,15 @@ object GateBotApi {
         return TOKEN_ANYWHERE.replace(s, "‹токен›")
     }
 
-    /** Пауза после сбоя номер [failures] (с первого): 30 с, 60 с… не больше 10 мин. */
-    fun pauseMs(failures: Int): Long {
-        var ms = PAUSE_FIRST_MS
-        repeat(maxOf(0, failures - 1)) { ms = minOf(ms * 2, PAUSE_MAX_MS) }
-        return ms
-    }
-
     // --- Ответы ---
 
     sealed class Reply {
         class Ok(val result: Any?) : Reply()
 
         /** [code] — `error_code` телеграма (409 — опрашивает кто-то ещё, 401 — токен не принят). */
-        data class Error(val code: Int, val description: String) : Reply()
+        data class Error(val code: Int, val description: String, val retryAfterSeconds: Long? = null) : Reply() {
+            val pauseMs: Long get() = maxOf(PAUSE_FIRST_MS, (retryAfterSeconds ?: 0L).coerceIn(0L, Long.MAX_VALUE / 1000) * 1000)
+        }
     }
 
     /** Ответ телеграма целиком; не разобрался — ошибка с кодом HTTP [httpCode]. */
@@ -86,7 +80,8 @@ object GateBotApi {
         } ?: return Reply.Error(httpCode, "ответ не JSON (HTTP $httpCode)")
         if (TgJson.bool(o["ok"]) == true) return Reply.Ok(o["result"])
         val code = TgJson.long(o["error_code"])?.toInt() ?: httpCode
-        return Reply.Error(code, TgJson.str(o["description"]) ?: "без описания")
+        val retryAfter = TgJson.long(TgJson.obj(o["parameters"])?.get("retry_after"))
+        return Reply.Error(code, TgJson.str(o["description"]) ?: "без описания", retryAfter)
     }
 
     /**

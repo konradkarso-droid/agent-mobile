@@ -50,10 +50,10 @@ class GateBotApiTest {
     }
 
     @Test
-    fun `пауза после сбоя растёт до потолка`() {
-        assertEquals(30_000L, GateBotApi.pauseMs(1))
-        assertEquals(60_000L, GateBotApi.pauseMs(2))
-        assertEquals(GateBotApi.PAUSE_MAX_MS, GateBotApi.pauseMs(20))
+    fun `обычный сбой и ограничение сервера`() {
+        assertEquals(30_000L, GateBotApi.Reply.Error(503, "").pauseMs)
+        val error = GateBotApi.reply("""{"ok":false,"error_code":429,"parameters":{"retry_after":720}}""", 429)
+        assertEquals(720_000L, (error as GateBotApi.Reply.Error).pauseMs)
     }
 
     @Test

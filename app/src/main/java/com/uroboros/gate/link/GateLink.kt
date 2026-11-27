@@ -39,8 +39,7 @@ import java.util.concurrent.ConcurrentHashMap
  * здесь сеть берёт килобайты.
  *
  * ОПРОС ДЛИННЫЙ ([GateBotApi.POLL_SECONDS]): одна открытая связь, сервер
- * отвечает, когда пришло что-то, или по сроку. Сбой — пауза, растущая до
- * потолка ([GateBotApi.pauseMs]). Ответ 409 — тревога: этим токеном опрашивает
+ * отвечает, когда пришло что-то, или по сроку. Сбой связи — пауза 30 с. Сервер может назначить более долгую паузу. Ответ 409 — тревога: этим токеном опрашивает
  * кто-то ещё (двойник с украденным токеном или прежний опрос после перезапуска
  * — отличить нельзя, строка говорит оба). 401 — токен не принят: опрос ждёт
  * другого токена.
@@ -142,7 +141,6 @@ object GateLink {
 
     private suspend fun loop(app: Context) {
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        var failures = 0
         var refusedToken: String? = null
         var cleanedAt = 0L
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
@@ -178,15 +176,18 @@ object GateLink {
             val s: Session = if (held != null && held.token == token) held else {
                 val opened = try {
                     open(app, token, prefs)
+                } catch (e: ServerPause) {
+                    status(null, "Телеграм: повтор через ${e.ms / 1000} с")
+                    delay(e.ms)
+                    continue
                 } catch (e: Refused401) {
                     refusedToken = token
                     note("Телеграм: токен не принят — ${e.message}")
                     continue
                 } catch (e: Exception) {
-                    failures++
                     status(null, "Телеграм: не опрашиваю — ${GateBotApi.scrub(e.message ?: e.javaClass.simpleName, token)}; " +
-                        "снова через ${GateBotApi.pauseMs(failures) / 1000} с")
-                    delay(GateBotApi.pauseMs(failures))
+                        "снова через ${GateBotApi.PAUSE_FIRST_MS / 1000} с")
+                    delay(GateBotApi.PAUSE_FIRST_MS)
                     continue
                 }
                 session = opened
@@ -201,18 +202,31 @@ object GateLink {
             }
             for (send in runCatching { s.post.due() }.getOrDefault(emptyList())) deliver(s, send)
 
+            val pendingKey = "pending_update_${s.me.id}"
+            val pending = prefs.getString(pendingKey, null)
+            if (pending != null) {
+                try {
+                    val update = GateBotApi.updates(listOf(com.uroboros.gate.TgJson.parse(pending))).single()
+                    update.message?.let { handle(app, s, it) }
+                    check(prefs.edit().remove(pendingKey).commit())
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    note("Врата: отложен повтор приёма — ${failure.javaClass.simpleName}")
+                    delay(GateBotApi.PAUSE_FIRST_MS)
+                }
+                continue
+            }
             val offset = prefs.getLong(offsetKey(s.me.id), -1L).takeIf { it >= 0 }
             val reply = try {
                 s.http.call(GateBotApi.updatesUrl(token, offset), readTimeoutMs = (GateBotApi.POLL_SECONDS + 20) * 1000)
             } catch (e: IOException) {
-                failures++
-                status(s, "Телеграм: нет связи — ${e.message}; снова через ${GateBotApi.pauseMs(failures) / 1000} с")
-                delay(GateBotApi.pauseMs(failures))
+                status(s, "Телеграм: нет связи — ${e.message}; снова через ${GateBotApi.PAUSE_FIRST_MS / 1000} с")
+                delay(GateBotApi.PAUSE_FIRST_MS)
                 continue
             }
             when (reply) {
                 is GateBotApi.Reply.Error -> {
-                    failures++
                     when (reply.code) {
                         409 -> note("Телеграм: тревога — этим ботом опрашивает кто-то ещё (ответ 409; возможно, перезапуск)")
                         401 -> {
@@ -223,20 +237,38 @@ object GateLink {
                         }
                         else -> note("Телеграм: ошибка ${reply.code} — ${GateBotApi.scrub(reply.description, token)}")
                     }
-                    status(s, "Телеграм: опрос не удался (${reply.code}); снова через ${GateBotApi.pauseMs(failures) / 1000} с")
-                    delay(GateBotApi.pauseMs(failures))
+                    status(s, "Телеграм: опрос не удался (${reply.code}); снова через ${reply.pauseMs / 1000} с")
+                    delay(reply.pauseMs)
                 }
                 is GateBotApi.Reply.Ok -> {
-                    failures = 0
                     status(s, "Телеграм: опрос идёт, последний ответ сервера ${clock(System.currentTimeMillis())}")
-                    for (u in GateBotApi.updates(reply.result)) {
-                        u.message?.let { handle(app, s, it) }
-                        prefs.edit().putLong(offsetKey(s.me.id), u.id + 1).apply()
+                    for (item in com.uroboros.gate.TgJson.list(reply.result).orEmpty()) {
+                        val raw = com.uroboros.gate.TgJson.obj(item) ?: continue
+                        val id = com.uroboros.gate.TgJson.long(raw["update_id"]) ?: continue
+                        val saved = prefs.edit().putString(pendingKey, org.json.JSONObject(raw).toString())
+                            .putLong(offsetKey(s.me.id), id + 1).commit()
+                        if (!saved) {
+                            note("Врата: не удалось сохранить входящее сообщение")
+                            delay(GateBotApi.PAUSE_FIRST_MS)
+                            break
+                        }
+                        try {
+                            GateBotApi.updates(listOf(raw)).single().message?.let { handle(app, s, it) }
+                            check(prefs.edit().remove(pendingKey).commit())
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            note("Врата: отложен повтор приёма — ${failure.javaClass.simpleName}")
+                            delay(GateBotApi.PAUSE_FIRST_MS)
+                            break
+                        }
                     }
                 }
             }
         }
     }
+
+    private class ServerPause(val ms: Long) : IOException()
 
     private class Refused401(message: String) : Exception(message)
 
@@ -244,7 +276,11 @@ object GateLink {
     private fun open(app: Context, token: String, prefs: android.content.SharedPreferences): Session {
         val http = TgHttp(token)
         val me = when (val r = http.call(GateBotApi.methodUrl(token, "getMe"))) {
-            is GateBotApi.Reply.Error -> if (r.code == 401) throw Refused401(r.description) else throw IOException("getMe: ${r.code} ${r.description}")
+            is GateBotApi.Reply.Error -> when {
+                r.code == 401 -> throw Refused401(r.description)
+                r.retryAfterSeconds != null -> throw ServerPause(r.pauseMs)
+                else -> throw IOException("getMe: ${r.code} ${r.description}")
+            }
             is GateBotApi.Reply.Ok -> GateBotApi.me(r.result) ?: throw IOException("getMe: ответ без номера")
         }
         val meKey = GateTelegram.userKey(me.id)
@@ -273,16 +309,8 @@ object GateLink {
         if (m.fromId != null && fromUsername != null) names[fromUsername.lowercase(Locale.ROOT)] = m.fromId
         GateClock.selfCheck(m.dateSec * 1000, System.currentTimeMillis(), GateTelegram.SERVER)?.let { note(it) }
         val doc = m.doc
-        // Без файла пакета нет: это слова чата. Сбой слов не роняет опрос —
-        // сдвиг всё равно запишется, и сообщение не придёт снова бесконечно.
         if (doc == null) {
-            try {
-                ChatLink.heard(app, m, s.me)
-            } catch (c: kotlinx.coroutines.CancellationException) {
-                throw c
-            } catch (t: Throwable) {
-                note("Слова: приём сорвался — ${t.javaClass.simpleName}: ${GateBotApi.scrub(t.message ?: "", s.token)}")
-            }
+            ChatLink.heard(app, m, s.me)
             return
         }
         val name = doc.name
@@ -292,20 +320,27 @@ object GateLink {
             sender != null && !m.fromIsBot && m.senderChatId == null && !EmergencyStop.isActive() &&
             (m.chatType in setOf("group", "supergroup") || (m.privateChat && ChatPrefs.owner(app)?.key == GateTelegram.userKey(sender)))
         if (ordinary) {
-            try {
+            val bytes = try {
                 require((doc.size ?: 0) <= DocumentText.MAX_BYTES) { "Файл слишком велик" }
-                val bytes = fetch(s, doc.fileId, DocumentText.MAX_BYTES)
-                if (com.uroboros.gate.GateWire.formOf(bytes) == null) {
+                val contents = fetch(s, doc.fileId, DocumentText.MAX_BYTES)
+                if (com.uroboros.gate.GateWire.formOf(contents) == null) {
                     check(!EmergencyStop.isActive() && com.uroboros.move.MoveState.holdReason(app) == null) { "Работа с файлами остановлена" }
                     val key = ChatDocuments.scope(s.me.id, m.chatId, m.threadId.takeIf { m.topicMessage })
-                    ChatDocuments.attach(app, key, requireNotNull(name), bytes, "tg:user:$sender", m.messageId)
-                    note("Документ принят: $name")
-                    if (!m.text.isNullOrBlank()) ChatLink.heard(app, m.copy(doc = null), s.me)
-                    return
-                }
-                fetched = bytes
-            } catch (c: kotlinx.coroutines.CancellationException) { throw c }
-            catch (e: Exception) { note("Документ не принят: ${GateBotApi.scrub(e.message.orEmpty(), s.token)}"); return }
+                    ChatDocuments.attach(app, key, requireNotNull(name), contents, "tg:user:$sender", m.messageId)
+                    null
+                } else contents
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                note("Документ не принят: ${GateBotApi.scrub(e.message.orEmpty(), s.token)}")
+                return
+            }
+            if (bytes == null) {
+                note("Документ принят: $name")
+                if (!m.text.isNullOrBlank()) ChatLink.heard(app, m.copy(doc = null), s.me)
+                return
+            }
+            fetched = bytes
         }
         var file: ByteArray? = null
         if (GateBotApi.needsFile(m) && doc != null) {

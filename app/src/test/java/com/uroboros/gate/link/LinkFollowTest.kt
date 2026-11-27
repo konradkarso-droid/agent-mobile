@@ -15,6 +15,16 @@ import org.junit.Test
 
 class LinkFollowTest {
 
+    @Test
+    fun markdownNameInFollowupIsARepositoryPath() {
+        val text = "Правильно, открой в этом списке BIBLE.md"
+        assertNull(LinkFollow.telegramUrl(message(text, GateBotApi.Entity("url", text.indexOf("BIBLE.md"), 8))))
+        assertEquals("BIBLE.md", LinkFollow.repositoryPath(text))
+        assertEquals("docs/notes.md", LinkFollow.repositoryPath("Прочитай docs/notes.md"))
+        assertNull(LinkFollow.repositoryPath("Открой https://bible.md"))
+        assertNull(LinkFollow.repositoryPath("Сравни A.md и B.md"))
+    }
+
     // --- Матрица разрешений ---
 
     @Test

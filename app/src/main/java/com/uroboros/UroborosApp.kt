@@ -21,6 +21,7 @@ class UroborosApp : Application() {
         super.onCreate()
         runCatching { MoveAndroid.applyOnStart(this) }
             .onFailure { MoveState.noteArrived(this, "не применён: ${it.javaClass.simpleName} ${it.message.orEmpty()}") }
+        com.uroboros.memory.dream.DreamPickup.restore(this)
         MoveState.movedAt(this)?.let { EmergencyStop.triggerManual(MoveState.stopNote(it)) }
     }
 }

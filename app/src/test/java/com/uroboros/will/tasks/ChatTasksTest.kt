@@ -41,6 +41,16 @@ class ChatTasksTest {
     private suspend fun until(test: () -> Boolean) = withTimeout(5000) { while (!test()) delay(5) }
     private fun state(key: String = "app") = store.read(key)?.let(::JSONObject)?.optString("state")
 
+    @Test fun aReportOfAnEarlierMistakeIsNotANewAssignment() {
+        assertFalse(ChatTaskPlan.accepts("Я уже сказал его имя, а ты вместо файла в своем репо Библию открыл. Передам в работу, пусть поправят) а то во время кодинга может выйти неловко)"))
+    }
+
+    @Test fun planMayHaveProseButMayNotContainTwoCompetingPlans() {
+        assertNotNull(ChatTaskPlan.validate("Вот план.\n$plan\nГотово.", 0))
+        assertNull(ChatTaskPlan.validate("$plan $plan", 0))
+        assertNull(ChatTaskPlan.control("Я уже сказал его имя, а ты вместо файла открыл сайт", true, false))
+    }
+
     @Test fun editsAndExportsWordWithoutModelOrJudge() = runBlocking {
         val agent = ChatTasks(this, guard, store, { true }, { false },
             { _, _ -> error("память") }, { _, _ -> error("поиск") }, { _, _, _ -> error("телеграм") },
@@ -53,6 +63,25 @@ class ChatTasksTest {
         val file = requireNotNull(agent.appFile())
         assertEquals("result.docx", file.first)
         assertEquals("Срок сегодня", com.uroboros.documents.DocumentText.read("docx", file.second))
+    }
+
+    @Test fun documentTaskUsesTheSelectedAttachmentWhenLatestIsUnavailable() = runBlocking {
+        val originalKey = "tg:7:8:msg:10"
+        val selectedKeys = mutableListOf<String>()
+        val source = JSONObject().put("format", "txt").put("text", "Срок завтра")
+        val tg = DeferredSearchTelegram(7, 8, 12, "grant")
+        val delivered = CompletableDeferred<String>()
+        val agent = ChatTasks(this, guard, store, { true }, { false },
+            { _, _ -> error("память") }, { _, _ -> error("поиск") }, { _, _, _ -> true },
+            { error("суд") }, { _, _ -> error("модель") }, { false },
+            { key -> selectedKeys += key; if (key == originalKey) source else null },
+            { _, _, bytes, _ ->
+                delivered.complete(com.uroboros.documents.DocumentText.read("txt", bytes))
+                true
+            })
+        agent.submit("Замени «завтра» на «сегодня»", "", tg, lineId = 12, sourceKey = originalKey)
+        assertEquals("Срок сегодня", withTimeout(5000) { delivered.await() })
+        assertEquals(listOf(originalKey), selectedKeys)
     }
 
     @Test fun interruptedProcessResumesAtFirstUnconfirmedStep() = runBlocking {
@@ -145,6 +174,42 @@ class ChatTasksTest {
         assertEquals(1, judged.get())
     }
 
+    @Test fun comparisonResumesAfterCoolingWithoutRepeatingRecallOrSearch() = runBlocking {
+        val file = listOf("src/main/assets", "app/src/main/assets").map {
+            java.io.File(it, com.uroboros.memory.nav.LemmaHolder.ASSET)
+        }.first { it.exists() }
+        com.uroboros.memory.nav.LemmaHolder.load { file.inputStream() }
+        val work = "Вспомни прошлый выбор, поищи в интернете Android и сравни варианты"
+        val searches = AtomicInteger()
+        val calls = AtomicInteger()
+        fun worker(scope: CoroutineScope) = ChatTasks(scope, guard, store, { true }, { true },
+            { _, _ -> recalls.incrementAndGet(); "Выбор вчера" },
+            { query, _ ->
+                assertEquals("Android", query.query)
+                searches.incrementAndGet()
+                guard.zone.value = SafetyZone.WARNING
+                "Второй вариант из статьи\nhttps://example.org/source"
+            }, { _, _, _ -> error("Поручение в приложении") }, { "1" }, { _, material ->
+                calls.incrementAndGet()
+                if (JSONObject(material).has("материалы")) {
+                    assertTrue(material.contains("Выбор вчера") && material.contains("Второй вариант из статьи"))
+                    "Сравнение двух вариантов"
+                } else """[{"tool":"memory","goal":"Вспомнить выбор"},{"tool":"web","goal":"Найти Android"},{"tool":"write","goal":"Сравнить варианты"}]"""
+            })
+        val initial = CoroutineScope(Job())
+        worker(initial).submit(work, "")
+        until { JSONObject(store.read("app")!!).getJSONArray("results").length() == 2 }
+        initial.coroutineContext.job.cancelAndJoin()
+        guard.zone.value = SafetyZone.COMFORT
+        val resumed = worker(this)
+        resumed.recover()
+        until { state() == "done" }
+        assertEquals("Сравнение двух вариантов", resumed.appStatus.value?.answer)
+        assertEquals(1, recalls.get())
+        assertEquals(1, searches.get())
+        assertEquals(2, calls.get())
+    }
+
     @Test fun groupTopicsKeepIndependentPlansAndReplyAddresses() = runBlocking {
         val worker = tasks(this) { if (it.contains("материалы")) "Итог" else plan }
         for (thread in listOf(11L, 22L)) {
@@ -180,6 +245,8 @@ class ChatTasksTest {
         assertTrue(ChatTaskPlan.accepts(request))
         val two = "Поищи в интернете Kotlin, поищи в интернете Android и сравни результаты"
         assertEquals(listOf("Kotlin", "Android"), ChatTaskPlan.webQueries(two))
+        val direct = ChatTaskPlan.searchAndWrite(two, ChatTaskPlan.webQueries(two))!!
+        assertEquals(listOf("web", "web", "write"), (0 until direct.length()).map { direct.getJSONObject(it).getString("tool") })
     }
 
     @Test fun validatesPlanAgainstAvailableToolsAndSize() {

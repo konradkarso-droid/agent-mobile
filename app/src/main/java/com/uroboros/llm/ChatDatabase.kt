@@ -27,7 +27,7 @@ abstract class ChatDatabase : RoomDatabase() {
     abstract fun chatLineDao(): ChatLineDao
 
     companion object {
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 5
 
         /**
          * Поле [ChatLine.recall]. У прежних строк оно пустое — и это правда
@@ -53,6 +53,21 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_lines ADD COLUMN taskBot INTEGER")
+                db.execSQL("ALTER TABLE chat_lines ADD COLUMN taskOwner INTEGER")
+                db.execSQL("ALTER TABLE chat_lines ADD COLUMN taskGrant TEXT")
+                db.execSQL("ALTER TABLE chat_lines ADD COLUMN taskText TEXT")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_lines ADD COLUMN taskDocumentKey TEXT")
+            }
+        }
+
         const val FILE_NAME = "uroboros_chats.db"
 
         @Volatile
@@ -61,7 +76,7 @@ abstract class ChatDatabase : RoomDatabase() {
         fun getInstance(context: Context): ChatDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(context.applicationContext, ChatDatabase::class.java, FILE_NAME)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build().also { INSTANCE = it }
             }
     }
