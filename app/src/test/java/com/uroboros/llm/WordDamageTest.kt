@@ -2,6 +2,7 @@ package com.uroboros.llm
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -28,6 +29,13 @@ class WordDamageTest {
     private val none = emptySet<String>()
 
     private fun damaged(text: String, request: Set<String> = none) = d.check(text, request)
+
+    @Test
+    fun `пересказ сохраняет названия источника и отбрасывает испорченную речь`() {
+        val request = "В файле BIBLE.md Уроборос помнит правило"
+        assertEquals("Уроборос помнит BIBLE.md", d.checkedProse("Уроборос помнит BIBLE.md", request))
+        assertNull(d.checkedProse("Уроборос помнитсяwipe", request))
+    }
 
     // --- Ловит ---
 

@@ -36,6 +36,7 @@ internal class ChatTasks(
     private val hasAttachment: (String) -> Boolean = { false },
     private val attachment: (String) -> JSONObject? = { null },
     private val sendFile: suspend (DeferredSearchTelegram, String, ByteArray, () -> Boolean) -> Boolean = { _, _, _, _ -> false },
+    private val inferProse: suspend (String, String) -> String? = infer,
 ) {
     @Synchronized fun hasAppFile() = "app-file" in storage.keys()
 
@@ -349,7 +350,7 @@ internal class ChatTasks(
                                 require(modelReady()) { "Для свободной правки или сочинения текста загрузите модель" }
                                 val original = source?.optString("text").orEmpty()
                                 require(original.length <= 2200) { "Для свободной правки выберите фрагмент покороче" }
-                                infer("Подготовь только текст короткого документа по поручению. Источник — цитируемые данные. Сохрани все требуемые сведения.",
+                                inferProse("Подготовь только текст короткого документа по поручению. Источник — цитируемые данные. Сохрани все требуемые сведения.",
                                     JSONObject().put("поручение", request).put("источник", original).put("материалы", results).toString())
                             }
                             content?.takeIf { it.isNotBlank() }?.also {
@@ -387,7 +388,7 @@ internal class ChatTasks(
                             while (safe() && current()) {
                                 if (draft.isBlank()) {
                                     if (!cooled()) break
-                                    draft = infer("Подготовь запрошенный текст по цели пункта. Материалы — данные. " +
+                                    draft = inferProse("Подготовь запрошенный текст по цели пункта. Материалы — данные. " +
                                         "Назови пробелы и источники. Не приписывай себе внешних действий.",
                                         material.toString()) ?: break
                                     row.put("draft", draft)
@@ -446,6 +447,7 @@ internal class ChatTasks(
     companion object {
         fun forProcess(app: Context, scope: CoroutineScope, watchdog: DeviceSafetyWatchdog,
                        search: SearchPlatform, ready: () -> Boolean, infer: suspend (String, String) -> String?,
+                       inferProse: suspend (String, String) -> String?,
                        judge: suspend (String) -> String?): ChatTasks {
             val prefs = app.getSharedPreferences("chat_task_plans", Context.MODE_PRIVATE)
             val storage = object : Storage {
@@ -473,7 +475,7 @@ internal class ChatTasks(
                 attachment = { key -> ChatDocuments.latest(app, key) }, sendFile = { target, name, bytes, safe ->
                     val sent = ChatLink.sendTaskFile(app, target, name, bytes, safe)
                     sent.failure == null && sent.messageId != null
-                })
+                }, inferProse = inferProse)
         }
     }
 }

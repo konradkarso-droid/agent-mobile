@@ -149,6 +149,10 @@ class WordDamage private constructor(private val codes: Packed) {
         return found
     }
 
+    /** Готовая речь вне лестницы ответа, например пересказ статьи. */
+    fun checkedProse(answer: String, request: String): String? =
+        answer.takeIf { it.isNotBlank() && check(it, requestWords(request)).isEmpty() }
+
     /**
      * Слово запроса с падежным окончанием: «Пракс» → «Праксом», «Уроборос» →
      * «уроборосов». Имени нет в словаре, и его формы, которых нет в запросе
@@ -329,11 +333,10 @@ object WordDamageHolder {
      * (нет файла, обрезан, нехватка памяти) или проваленная самопроверка —
      * [State.Failed] с причиной.
      */
+    @Synchronized
     fun load(open: () -> InputStream) {
-        synchronized(this) {
-            if (started) return
-            started = true
-        }
+        if (started) return
+        started = true
         val t0 = System.nanoTime()
         state = try {
             val d = open().use { WordDamage.read(it) }
